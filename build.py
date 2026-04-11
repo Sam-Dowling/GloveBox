@@ -473,15 +473,23 @@ HTML = f"""<!DOCTYPE html>
 </body>
 </html>"""
 
-# Also keep a copy in dist/ for reference
+# dist/ copy
 dist = os.path.join(BASE, 'dist')
 os.makedirs(dist, exist_ok=True)
 with open(os.path.join(dist, 'docx-viewer.html'), 'w', encoding='utf-8') as _f:
     _f.write(HTML)
 
+# docs/index.html — served by GitHub Pages
+docs = os.path.join(BASE, 'docs')
+os.makedirs(docs, exist_ok=True)
+with open(os.path.join(docs, 'index.html'), 'w', encoding='utf-8') as _f:
+    _f.write(HTML)
+
+# root copy — convenient for local use
 out = os.path.join(BASE, 'docx-viewer.html')
 with open(out, 'w', encoding='utf-8') as f:
     f.write(HTML)
 
 size = os.path.getsize(out)
 print(f"OK  Built {out}  ({size:,} bytes / {size//1024} KB)")
+print(f"     docs/index.html ready for GitHub Pages")
