@@ -203,6 +203,28 @@ body.dark .tb-btn:active {
   transform: scale(.97);
 }
 
+/* Nav back button for archive drill-down */
+.nav-back-btn {
+  background: rgba(59, 130, 246, .1) !important;
+  border-color: rgba(59, 130, 246, .25) !important;
+  color: #3b82f6 !important;
+  font-weight: 600 !important;
+}
+.nav-back-btn:hover {
+  background: rgba(59, 130, 246, .2) !important;
+  border-color: rgba(59, 130, 246, .4) !important;
+}
+body.dark .nav-back-btn {
+  background: rgba(96, 165, 250, .12) !important;
+  border-color: rgba(96, 165, 250, .2) !important;
+  color: #60a5fa !important;
+}
+body.dark .nav-back-btn:hover {
+  background: rgba(96, 165, 250, .22) !important;
+  border-color: rgba(96, 165, 250, .35) !important;
+}
+.nav-back-btn.hidden { display: none; }
+
 /* ── Floating Zoom Controls ── */
 .zoom-fab {
   position: absolute;
@@ -14201,7 +14223,10 @@ Object.assign(App.prototype, {
         // Listen for inner-file open events from clickable archive entries
         docEl.addEventListener('open-inner-file', (e) => {
           const innerFile = e.detail;
-          if (innerFile) this._loadFile(innerFile);
+          if (innerFile) {
+            this._pushNavState(file.name);
+            this._loadFile(innerFile);
+          }
         });
       } else if (['iso', 'img'].includes(ext)) {
         const r = new IsoRenderer();
@@ -14267,6 +14292,9 @@ Object.assign(App.prototype, {
 
       // Auto-run YARA scan against loaded file
       this._autoYaraScan();
+
+      // Show/hide back button for archive navigation
+      this._updateNavBackButton();
     } catch (e) {
       console.error(e);
       this._toast(`Failed to open: ${e.message}`, 'error');
@@ -14354,6 +14382,88 @@ Object.assign(App.prototype, {
       entropy -= p * Math.log2(p);
     }
     return Math.round(entropy * 1000) / 1000;
+  },
+
+  // ── Navigation stack (for going back from inner archive files) ──────────
+  _pushNavState(parentName) {
+    if (!this._navStack) this._navStack = [];
+    const pc = document.getElementById('page-container');
+    this._navStack.push({
+      findings: this.findings,
+      fileHashes: this.fileHashes,
+      fileMeta: this._fileMeta,
+      fileBuffer: this._fileBuffer,
+      yaraResults: this._yaraResults,
+      pageHTML: pc.innerHTML,
+      fileInfoText: document.getElementById('file-info').textContent,
+      parentName,
+    });
+  },
+
+  _navBack() {
+    if (!this._navStack || !this._navStack.length) return;
+    const state = this._navStack.pop();
+    this.findings = state.findings;
+    this.fileHashes = state.fileHashes;
+    this._fileMeta = state.fileMeta;
+    this._fileBuffer = state.fileBuffer;
+    this._yaraResults = state.yaraResults;
+
+    const pc = document.getElementById('page-container');
+    pc.innerHTML = state.pageHTML;
+    document.getElementById('file-info').textContent = state.fileInfoText;
+
+    // Re-attach click handlers on ZIP rows (innerHTML loses event listeners)
+    // We need to re-render from the stored buffer instead
+    // For simplicity, just show the saved HTML — the user can re-open the archive file if needed
+    // But we DO need to re-wire the open-inner-file listeners
+    const zipView = pc.querySelector('.zip-view');
+    if (zipView && state.fileBuffer) {
+      // Re-render the ZIP to get working click handlers
+      this._reRenderZip(state, pc);
+    }
+
+    // Re-render sidebar
+    this._renderSidebar(state.parentName, null);
+
+    // Update back button visibility
+    this._updateNavBackButton();
+  },
+
+  async _reRenderZip(state, pc) {
+    try {
+      const r = new ZipRenderer();
+      const buf = state.fileBuffer;
+      const docEl = await r.render(buf, state.parentName);
+      docEl.addEventListener('open-inner-file', (e) => {
+        const innerFile = e.detail;
+        if (innerFile) {
+          this._pushNavState(state.parentName);
+          this._loadFile(innerFile);
+        }
+      });
+      pc.innerHTML = '';
+      pc.appendChild(docEl);
+    } catch (_) { /* fallback: static HTML already set */ }
+  },
+
+  _updateNavBackButton() {
+    let btn = document.getElementById('btn-nav-back');
+    if (this._navStack && this._navStack.length > 0) {
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.id = 'btn-nav-back';
+        btn.className = 'tb-btn nav-back-btn';
+        btn.textContent = '← Back';
+        btn.title = 'Return to parent archive';
+        btn.addEventListener('click', () => this._navBack());
+        const fileInfoWrap = document.getElementById('file-info-wrap');
+        fileInfoWrap.parentNode.insertBefore(btn, fileInfoWrap);
+      }
+      btn.classList.remove('hidden');
+    } else {
+      if (btn) btn.classList.add('hidden');
+    }
   },
 
   // ── Interesting string extraction ────────────────────────────────────────
