@@ -37,9 +37,20 @@ body.dark .tb-btn:hover { background: #4a4a4a; }
 #viewer { flex: 1; padding: 20px; display: flex; flex-direction: column; align-items: center; overflow: auto; }
 #page-container { display: flex; flex-direction: column; align-items: center; gap: 20px; transform-origin: top center; }
 
+/* ── Sidebar resize handle ── */
+#sidebar-resize {
+  width: 5px; flex-shrink: 0; cursor: col-resize;
+  background: transparent; position: relative; z-index: 10;
+  transition: background .15s;
+}
+#sidebar-resize:hover, body.sb-resizing #sidebar-resize { background: #1a73e8; }
+#sidebar-resize.hidden { display: none; }
+body.dark #sidebar-resize:hover, body.dark.sb-resizing #sidebar-resize { background: #5aabff; }
+body.sb-resizing { cursor: col-resize; user-select: none; }
+
 /* ── Sidebar ── */
 #sidebar {
-  width: 340px; min-width: 340px; flex-shrink: 0;
+  width: fit-content; min-width: 250px; max-width: 50vw; flex-shrink: 0;
   border-left: 1px solid #ddd;
   display: flex; flex-direction: column;
   background: #fafafa; overflow: hidden;
@@ -135,10 +146,7 @@ body.dark .ext-table td { border-color: #252525; }
 }
 #drop-zone:hover, #drop-zone.drag-over { border-color: #4a90e2; background: rgba(74,144,226,.1); color: #90c0ff; }
 #drop-zone.drag-over { border-style: solid; }
-#drop-zone.has-document {
-  padding: 10px 20px; border-style: solid; border-color: #888;
-  border-radius: 6px; font-size: 13px; color: #aaa; max-width: 100%;
-}
+#drop-zone.has-document { display: none; }
 .dz-icon { font-size: 48px; display: block; margin-bottom: 12px; }
 .dz-text { font-size: 18px; margin-bottom: 6px; }
 .dz-sub  { font-size: 12px; opacity: .6; }

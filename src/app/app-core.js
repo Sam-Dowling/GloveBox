@@ -12,6 +12,7 @@ class App {
     document.getElementById('btn-theme').textContent='☀';
     this._setupDrop();
     this._setupToolbar();
+    this._setupSidebarResize();
     // Keyboard shortcuts: S=toggle sidebar, 1/2/3=switch tabs
     document.addEventListener('keydown',e=>{
       if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'||e.altKey||e.ctrlKey||e.metaKey) return;

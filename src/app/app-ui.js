@@ -19,6 +19,32 @@ Object.assign(App.prototype, {
   _toggleSidebar() {
     this.sidebarOpen=!this.sidebarOpen;
     document.getElementById('sidebar').classList.toggle('hidden',!this.sidebarOpen);
+    document.getElementById('sidebar-resize').classList.toggle('hidden',!this.sidebarOpen);
+  },
+
+  // ── Sidebar resize ─────────────────────────────────────────────────────
+  _setupSidebarResize() {
+    const handle=document.getElementById('sidebar-resize');
+    const sidebar=document.getElementById('sidebar');
+    let startX, startW;
+    const onMove=e=>{
+      const dx=startX-e.clientX;
+      const newW=Math.min(Math.max(startW+dx,200),window.innerWidth*0.6);
+      sidebar.style.width=newW+'px';
+    };
+    const onUp=()=>{
+      document.body.classList.remove('sb-resizing');
+      window.removeEventListener('mousemove',onMove);
+      window.removeEventListener('mouseup',onUp);
+    };
+    handle.addEventListener('mousedown',e=>{
+      e.preventDefault();
+      startX=e.clientX;
+      startW=sidebar.getBoundingClientRect().width;
+      document.body.classList.add('sb-resizing');
+      window.addEventListener('mousemove',onMove);
+      window.addEventListener('mouseup',onUp);
+    });
   },
 
   // ── Downloads ────────────────────────────────────────────────────────────

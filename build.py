@@ -73,6 +73,9 @@ HTML = f"""<!DOCTYPE html>
       <div id="page-container"></div>
     </div>
 
+    <!-- sidebar resize handle -->
+    <div id="sidebar-resize" class="hidden"></div>
+
     <!-- sidebar -->
     <div id="sidebar" class="hidden">
       <!-- risk bar -->
