@@ -104,6 +104,11 @@ Object.assign(App.prototype, {
     // Reset state
     this.findings = null; this.fileHashes = null;
     this._fileBuffer = null; this._yaraResults = null;
+    this._fileMeta = null;
+    // Clear navigation stack and hide back button
+    this._navStack = [];
+    const backBtn = document.getElementById('btn-nav-back');
+    if (backBtn) backBtn.classList.add('hidden');
     // Remove pan cursor
     document.getElementById('viewer').classList.remove('pannable');
     // Reset zoom
