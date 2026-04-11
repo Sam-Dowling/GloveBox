@@ -365,6 +365,16 @@ body:not(.dark) #drop-zone { border-color: #bbb; color: #888; background: rgba(0
 body:not(.dark) #drop-zone:hover,
 body:not(.dark) #drop-zone.drag-over { border-color: #4a90e2; background: rgba(74,144,226,.06); color: #4a90e2; }
 
+/* ── Drag overlay ─────────────────────────────────────────────────────────
+   Full-page transparent layer shown during external file drags.
+   Sits above all content (including iframes) so dropped files are always
+   captured by the app rather than navigating/downloading inside an iframe. */
+#drag-overlay {
+  position: fixed; inset: 0; z-index: 99999;
+  display: none;                          /* shown via JS during drag       */
+  background: transparent;                /* invisible but captures events  */
+}
+
 /* ── Spinner / Loading ── */
 .spinner {
   display: inline-block; width: 20px; height: 20px;

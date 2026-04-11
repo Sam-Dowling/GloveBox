@@ -28,26 +28,50 @@ class App {
 
   _setupDrop() {
     const dz=document.getElementById('drop-zone'),fi=document.getElementById('file-input');
-    let _dragTimer;
-    window.addEventListener('dragenter',()=>{
-      clearTimeout(_dragTimer);
-      document.querySelectorAll('iframe').forEach(f=>f.style.pointerEvents='none');
+
+    // ── Full-page drag overlay ──────────────────────────────────────────
+    // Sits above everything (including iframes) so dropped files never
+    // reach an iframe's content document, which would cause the browser
+    // to navigate/download the file inside the iframe.
+    const overlay=document.createElement('div');
+    overlay.id='drag-overlay';
+    document.body.appendChild(overlay);
+
+    let _enterCount=0;                       // track nested dragenter/dragleave pairs
+
+    const showOverlay=()=>{ overlay.style.display='block'; };
+    const hideOverlay=()=>{ overlay.style.display=''; _enterCount=0; };
+
+    window.addEventListener('dragenter',e=>{
+      e.preventDefault();
+      _enterCount++;
+      if(_enterCount===1) showOverlay();
     });
-    window.addEventListener('dragover',e=>{e.preventDefault();e.stopPropagation();});
-    window.addEventListener('dragleave',()=>{
-      _dragTimer=setTimeout(()=>{
-        document.querySelectorAll('iframe').forEach(f=>f.style.pointerEvents='');
-      },100);
+
+    overlay.addEventListener('dragover',e=>{
+      e.preventDefault();
+      e.dataTransfer.dropEffect='copy';
+      // Show drop-zone highlight when the drop-zone is visible
+      if(!dz.classList.contains('has-document')) dz.classList.add('drag-over');
     });
-    window.addEventListener('drop',e=>{
+
+    overlay.addEventListener('dragleave',e=>{
+      _enterCount--;
+      if(_enterCount<=0){ hideOverlay(); dz.classList.remove('drag-over'); }
+    });
+
+    overlay.addEventListener('drop',e=>{
       e.preventDefault();e.stopPropagation();
-      clearTimeout(_dragTimer);
-      document.querySelectorAll('iframe').forEach(f=>f.style.pointerEvents='');
+      hideOverlay();
+      dz.classList.remove('drag-over');
       this._handleFiles(e.dataTransfer?.files);
     });
-    dz.addEventListener('dragover',e=>{e.preventDefault();dz.classList.add('drag-over');});
-    dz.addEventListener('dragleave',()=>dz.classList.remove('drag-over'));
-    dz.addEventListener('drop',e=>{e.preventDefault();dz.classList.remove('drag-over');this._handleFiles(e.dataTransfer?.files);});
+
+    // Safety net: prevent default on window so the browser never navigates
+    window.addEventListener('dragover',e=>{e.preventDefault();});
+    window.addEventListener('drop',e=>{e.preventDefault();e.stopPropagation();hideOverlay();});
+
+    // ── Drop-zone click / file-input ────────────────────────────────────
     dz.addEventListener('click',()=>fi.click());
     fi.addEventListener('change',e=>{const f=e.target.files[0];if(f)this._loadFile(f);fi.value='';});
   }
