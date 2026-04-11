@@ -2,6 +2,9 @@
 
 A **single-file, fully offline** viewer for common Microsoft Office and email formats. Open any supported file by dragging it onto the page — no server, no cloud, no dependencies at runtime. All processing happens entirely in your browser.
 
+> 🌐 **[Try it online →](https://sam-dowling.github.io/office-viewer/)**  
+> *(No install needed — runs entirely in your browser)*
+
 ---
 
 ## Features
