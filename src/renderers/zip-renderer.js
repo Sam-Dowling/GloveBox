@@ -112,13 +112,9 @@ class ZipRenderer {
       const isDouble = this._isDoubleExt(e.path);
       if (isDangerous || isDouble) tr.className = 'zip-row-danger';
 
-      // Make file rows clickable
+      // Highlight file rows on hover (clickable via Open button)
       if (!e.dir) {
         tr.classList.add('zip-row-clickable');
-        tr.title = `Click to open ${e.path.split('/').pop()} for analysis`;
-        tr.addEventListener('click', () => {
-          this._extractAndOpen(zip, e.path, wrap);
-        });
       }
 
       // Icon
@@ -150,6 +146,11 @@ class ZipRenderer {
       if (!e.dir) {
         const openBtn = document.createElement('span'); openBtn.className = 'zip-badge-open';
         openBtn.textContent = '🔍 Open';
+        openBtn.title = `Open ${e.path.split('/').pop()} for analysis`;
+        openBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          this._extractAndOpen(zip, e.path, wrap);
+        });
         tdAction.appendChild(openBtn);
       }
       tr.appendChild(tdAction);
