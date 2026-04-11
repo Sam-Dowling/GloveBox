@@ -39,6 +39,8 @@ Object.assign(App.prototype, {
     const ext=file.name.split('.').pop().toLowerCase();
     try {
       const buffer=await file.arrayBuffer();
+      // Store buffer for YARA scanning
+      this._fileBuffer=buffer;
       let docEl, analyzer=null;
 
       // Compute file hashes in parallel with parsing
@@ -82,6 +84,13 @@ Object.assign(App.prototype, {
         const r=new HtaRenderer();
         this.findings=r.analyzeForSecurity(buffer);
         docEl=r.render(buffer);
+      } else if(['html','htm','mht','mhtml','xhtml','svg'].includes(ext)){
+        const r=new HtmlRenderer();
+        this.findings=r.analyzeForSecurity(buffer,file.name);
+        if(this.findings.augmentedBuffer){
+          this._fileBuffer=this.findings.augmentedBuffer;
+        }
+        docEl=r.render(buffer,file.name);
       } else if(ext==='pdf'){
         const r=new PdfRenderer();
         this.findings=await r.analyzeForSecurity(buffer,file.name);
@@ -115,6 +124,9 @@ Object.assign(App.prototype, {
       // Await hashes and render sidebar
       this.fileHashes=await hashPromise;
       this._renderSidebar(file.name,analyzer);
+
+      // Auto-run YARA scan against loaded file
+      this._autoYaraScan();
     } catch(e){
       console.error(e);
       this._toast(`Failed to open: ${e.message}`,'error');
@@ -163,7 +175,7 @@ Object.assign(App.prototype, {
     for(const mod of (findings.modules||[])){
       for(const m of (mod.source||'').matchAll(/https?:\/\/[^\s"']{6,}/g)){
         const v=m[0].replace(/[.,;:!?)\]>]+$/,'');
-        if(!seen.has(v)){seen.add(v);results.push({type:'URL (VBA)',url:v,severity:'high'});}
+        if(!seen.has(v)){seen.add(v);results.push({type:'URL',url:v,severity:'high'});}
       }
     }
     return results.slice(0,300);

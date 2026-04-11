@@ -5,13 +5,25 @@ Object.assign(App.prototype, {
 
   _renderSidebar(fileName, analyzer) {
     const f=this.findings;
+    // Compute threat signature summary
+    const sigMatches = f.signatureMatches || [];
+    const threatLevel = sigMatches.length ? ThreatScanner.computeThreatLevel(sigMatches) : null;
+    const yaraCount = (this._yaraResults || []).length;
     // Risk bar
     const rb=document.getElementById('sb-risk');
     rb.className=`sb-risk risk-${f.risk}`;
-    document.getElementById('sb-risk-title').textContent=
-      f.risk==='high'?'🔴 HIGH RISK — Auto-execute macros detected':
-      f.risk==='medium'?(f.hasMacros?'🟡 Macros present':'🟡 Potential risks detected'):
-      '🟢 No threats detected';
+    let riskText;
+    if (f.risk === 'high') {
+      if (f.hasMacros && (f.autoExec||[]).length) riskText = '🔴 HIGH RISK — Auto-execute macros detected';
+      else if (sigMatches.some(m => m.score >= 3)) riskText = '🔴 HIGH RISK — High-severity signatures matched';
+      else if (yaraCount) riskText = '🔴 HIGH RISK — YARA rules matched';
+      else riskText = '🔴 HIGH RISK — Dangerous content detected';
+    } else if (f.risk === 'medium') {
+      riskText = f.hasMacros ? '🟡 Macros present' : '🟡 Potential risks detected';
+    } else {
+      riskText = '🟢 No threats detected';
+    }
+    document.getElementById('sb-risk-title').textContent = riskText;
     // Populate tabs
     this._renderSummaryTab(fileName);
     const allRefs=[...(f.externalRefs||[]),...(f.interestingStrings||[])];
@@ -120,7 +132,7 @@ Object.assign(App.prototype, {
     const pane=document.getElementById('stab-extracted');pane.innerHTML='';
     if(!refs.length){
       const p=document.createElement('p');p.style.cssText='color:#888;text-align:center;margin-top:20px;font-size:12px;';
-      p.textContent='✅ No external references or interesting strings found.';pane.appendChild(p);return;
+      p.textContent='✅ No signatures or indicators found.';pane.appendChild(p);return;
     }
     // Severity summary bar
     const high=refs.filter(r=>r.severity==='high').length;
@@ -151,9 +163,12 @@ Object.assign(App.prototype, {
       const td1=document.createElement('td');td1.textContent=ref.type;
       const td2=document.createElement('td');td2.className='ext-val';
       const sp=document.createElement('span');sp.textContent=ref.url;td2.appendChild(sp);
-      const cb=document.createElement('button');cb.className='copy-url-btn';cb.textContent='📋';cb.title='Copy';
-      cb.addEventListener('click',(e)=>{e.stopPropagation();this._copyToClipboard(ref.url);});
-      td2.appendChild(cb);
+      const iocTypes=new Set(['URL','Email','IP Address']);
+      if(iocTypes.has(ref.type)){
+        const cb=document.createElement('button');cb.className='copy-url-btn';cb.textContent='📋';cb.title='Copy';
+        cb.addEventListener('click',(e)=>{e.stopPropagation();this._copyToClipboard(ref.url);});
+        td2.appendChild(cb);
+      }
       const td3=document.createElement('td');
       const badge=document.createElement('span');badge.className=`badge badge-${ref.severity}`;badge.textContent=ref.severity;
       td3.appendChild(badge);

@@ -108,6 +108,7 @@ Object.assign(App.prototype, {
     if(this.sidebarOpen) this._toggleSidebar();
     // Reset state
     this.findings=null; this.fileHashes=null;
+    this._fileBuffer=null; this._yaraResults=null;
     // Remove pan cursor
     document.getElementById('viewer').classList.remove('pannable');
     // Reset zoom

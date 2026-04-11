@@ -12,7 +12,8 @@ class SecurityAnalyzer {
    */
   analyze(parsed) {
     const f = {hasMacros:false, autoExec:[], externalRefs:[], modules:[],
-               metadata:{}, risk:'low', macroSize:0, macroHash:null, rawBin:null};
+               metadata:{}, risk:'low', macroSize:0, macroHash:null, rawBin:null,
+               signatureMatches:[]};
     if (parsed.metadata) f.metadata = this._metadata(parsed.metadata);
     if (parsed.macros?.present) {
       f.hasMacros = true;
@@ -26,10 +27,20 @@ class SecurityAnalyzer {
           if (p.length) f.autoExec.push({module: m.name, patterns: p});
         }
       }
+      // Run threat signature scan against VBA source
+      const vbaSrc = f.modules.map(m => m.source || '').join('\n');
+      if (vbaSrc.trim()) {
+        const sigMatches = ThreatScanner.scan(vbaSrc, ['office_vba', 'general_obfuscation']);
+        f.signatureMatches.push(...sigMatches);
+        f.externalRefs.push(...ThreatScanner.toFindings(sigMatches));
+        const tl = ThreatScanner.computeThreatLevel(sigMatches);
+        if (tl.level === 'high') f.risk = 'high';
+        else if (tl.level === 'medium' && f.risk !== 'high') f.risk = 'medium';
+      }
     }
-    f.externalRefs = this._externalRefs(parsed);
+    f.externalRefs.push(...this._externalRefs(parsed));
     if (f.hasMacros && f.autoExec.length) f.risk = 'high';
-    else if (f.hasMacros || f.externalRefs.length) f.risk = 'medium';
+    else if (f.hasMacros || f.externalRefs.length) if (f.risk === 'low') f.risk = 'medium';
     return f;
   }
 

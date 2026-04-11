@@ -77,7 +77,8 @@ class PlainTextRenderer {
     const ext = (fileName || '').split('.').pop().toLowerCase();
     const f = {
       risk: 'low', hasMacros: false, macroSize: 0, macroHash: '',
-      autoExec: [], modules: [], externalRefs: [], metadata: {}
+      autoExec: [], modules: [], externalRefs: [], metadata: {},
+      signatureMatches: []
     };
 
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
@@ -86,7 +87,7 @@ class PlainTextRenderer {
     if (isText) {
       const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
 
-      // Dangerous-pattern scan
+      // Dangerous-pattern scan (legacy patterns)
       for (const { rx, label, sev } of PlainTextRenderer.DANGER_PATTERNS) {
         const matches = text.match(rx);
         if (matches) {
@@ -99,6 +100,15 @@ class PlainTextRenderer {
           else if (sev === 'medium' && f.risk !== 'high') f.risk = 'medium';
         }
       }
+
+      // Threat signature scan
+      const categories = ThreatScanner.getCategories(fileName);
+      const sigMatches = ThreatScanner.scan(text, categories);
+      f.signatureMatches = sigMatches;
+      f.externalRefs.push(...ThreatScanner.toFindings(sigMatches));
+      const threatLevel = ThreatScanner.computeThreatLevel(sigMatches);
+      if (threatLevel.level === 'high') f.risk = 'high';
+      else if (threatLevel.level === 'medium' && f.risk !== 'high') f.risk = 'medium';
     } else {
       // For binary files, note that this is an unsupported binary format
       f.externalRefs.push({
@@ -106,6 +116,15 @@ class PlainTextRenderer {
         url: `Binary file rendered as hex dump (.${ext})`,
         severity: 'info'
       });
+
+      // Threat signature scan on binary (latin-1 decoded)
+      const categories = ThreatScanner.getCategories(fileName);
+      const sigMatches = ThreatScanner.scanBuffer(buffer, categories);
+      f.signatureMatches = sigMatches;
+      f.externalRefs.push(...ThreatScanner.toFindings(sigMatches));
+      const threatLevel = ThreatScanner.computeThreatLevel(sigMatches);
+      if (threatLevel.level === 'high') f.risk = 'high';
+      else if (threatLevel.level === 'medium' && f.risk !== 'high') f.risk = 'medium';
     }
 
     return f;

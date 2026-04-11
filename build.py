@@ -14,10 +14,18 @@ pdf_js     = read('vendor/pdf.min.js')
 pdf_wrk_js = read('vendor/pdf.worker.min.js')
 css        = read('src/styles.css')
 
+# Default YARA rules — injected as a JS constant
+yar_rules  = read('src/default-rules.yar')
+# Escape backticks and backslashes for JS template literal
+yar_rules_escaped = yar_rules.replace('\\', '\\\\').replace('`', '\\`').replace('${', '\\${')
+default_yara_js = f'const DEFAULT_YARA_RULES = `{yar_rules_escaped}`;\n'
+
 # JS files concatenated in dependency order
 JS_FILES = [
     'src/constants.js',
     'src/vba-utils.js',
+    'src/threat-signatures.js',
+    'src/yara-engine.js',
     'src/docx-parser.js',
     'src/style-resolver.js',
     'src/numbering-resolver.js',
@@ -32,11 +40,13 @@ JS_FILES = [
     'src/renderers/eml-renderer.js',
     'src/renderers/lnk-renderer.js',
     'src/renderers/hta-renderer.js',
+    'src/renderers/html-renderer.js',
     'src/renderers/pdf-renderer.js',
     'src/renderers/plaintext-renderer.js',
     'src/app/app-core.js',
     'src/app/app-load.js',
     'src/app/app-sidebar.js',
+    'src/app/app-yara.js',
     'src/app/app-ui.js',
 ]
 
@@ -48,7 +58,7 @@ HTML = f"""<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:;">
+        content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; frame-src blob:;">
   <title>PhishFinder</title>
   <style>{css}</style>
 </head>
@@ -63,6 +73,7 @@ HTML = f"""<!DOCTYPE html>
       <button class="tb-close hidden" id="btn-close" title="Close file">✕</button>
     </div>
     <button class="tb-btn" id="btn-security" title="Toggle security sidebar (S)">🛡 Toggle Sidebar</button>
+    <button class="tb-btn" id="btn-yara" title="YARA rule editor (Y)">📐 YARA Rules</button>
     <button class="tb-btn" id="btn-theme" title="Toggle dark mode">🌙</button>
     <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.csv,.tsv,.doc,.msg,.eml,.lnk,.hta,.pdf,.rtf,.html,.htm,.mht,.xml,.vbs,.vbe,.js,.jse,.wsf,.ps1,.bat,.cmd,.ics,.vcf,.txt,.log,.json,.ini,.cfg,.yml,.yaml" style="display:none">
   </div>
@@ -97,7 +108,7 @@ HTML = f"""<!DOCTYPE html>
       <!-- tab strip (S=toggle, 1/2/3=switch tabs) -->
       <div id="sb-tabs">
         <button class="stab active" data-tab="summary"  title="Summary (key 1)">📋 Summary</button>
-        <button class="stab"        data-tab="extracted" title="Extracted (key 2)">🔍 Extracted<span id="stab-badge-extracted" class="stab-badge hidden"></span></button>
+        <button class="stab"        data-tab="extracted" title="Signatures (key 2)">🔍 Signatures<span id="stab-badge-extracted" class="stab-badge hidden"></span></button>
         <button class="stab"        data-tab="macros"    title="Macros (key 3)">⚡ Macros<span id="stab-badge-macros" class="stab-badge hidden"></span></button>
       </div>
       <!-- pane container -->
@@ -141,6 +152,7 @@ HTML = f"""<!DOCTYPE html>
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
+{default_yara_js}
 {app_js}
   </script>
 </body>

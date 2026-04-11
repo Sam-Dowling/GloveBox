@@ -55,43 +55,34 @@ class PdfRenderer {
   async analyzeForSecurity(buffer, fileName) {
     const f = {
       risk: 'low', hasMacros: false, macroSize: 0, macroHash: '',
-      autoExec: [], modules: [], externalRefs: [], metadata: {}
+      autoExec: [], modules: [], externalRefs: [], metadata: {},
+      signatureMatches: []
     };
 
-    // ── Raw byte scanning for suspicious operators ────────────────────────
+    // ── Threat signature scanning ─────────────────────────────────────────
     const raw = this._decodeRaw(buffer);
-    const dangerousOps = [
-      { pat: /\/JavaScript\b/gi,    label: '/JavaScript action',       sev: 'high' },
-      { pat: /\/JS\s/g,             label: '/JS action (short form)',  sev: 'high' },
-      { pat: /\/OpenAction\b/gi,    label: '/OpenAction (auto-run)',   sev: 'high' },
-      { pat: /\/AA\b/g,             label: '/AA (additional actions)', sev: 'high' },
-      { pat: /\/Launch\b/gi,        label: '/Launch action',           sev: 'high' },
-      { pat: /\/SubmitForm\b/gi,    label: '/SubmitForm action',       sev: 'medium' },
-      { pat: /\/EmbeddedFile\b/gi,  label: '/EmbeddedFile',            sev: 'medium' },
-      { pat: /\/RichMedia\b/gi,     label: '/RichMedia (Flash/multimedia)', sev: 'medium' },
-      { pat: /\/XFA\b/gi,           label: '/XFA (XML Forms)',         sev: 'medium' },
-      { pat: /\/ObjStm\b/gi,        label: '/ObjStm (object stream — may hide content)', sev: 'info' },
-      { pat: /\/AcroForm\b/gi,      label: '/AcroForm (interactive form)', sev: 'info' },
-    ];
+    const categories = ThreatScanner.getCategories(fileName || 'file.pdf', 'pdf');
+    const sigMatches = ThreatScanner.scan(raw, categories);
+    f.signatureMatches = sigMatches;
 
-    for (const { pat, label, sev } of dangerousOps) {
-      const matches = raw.match(pat);
-      if (matches) {
-        f.externalRefs.push({ type: 'PDF Structure', url: `${label} — ${matches.length} occurrence(s)`, severity: sev });
-        if (sev === 'high') f.risk = 'high';
-        else if (sev === 'medium' && f.risk !== 'high') f.risk = 'medium';
-      }
-    }
+    // Convert signature matches to findings
+    const sigFindings = ThreatScanner.toFindings(sigMatches);
+    f.externalRefs.push(...sigFindings);
+
+    // Update risk level from signatures
+    const threatLevel = ThreatScanner.computeThreatLevel(sigMatches);
+    if (threatLevel.level === 'high') f.risk = 'high';
+    else if (threatLevel.level === 'medium' && f.risk !== 'high') f.risk = 'medium';
 
     // ── Extract URIs from raw stream ──────────────────────────────────────
     for (const m of raw.matchAll(/\/URI\s*\(([^)]{4,})\)/g)) {
-      f.externalRefs.push({ type: 'URI (PDF)', url: m[1], severity: 'medium' });
+      f.externalRefs.push({ type: 'URL', url: m[1], severity: 'medium' });
       if (f.risk === 'low') f.risk = 'medium';
     }
     for (const m of raw.matchAll(/\/URI\s*<([0-9A-Fa-f]+)>/g)) {
       try {
         const decoded = m[1].match(/.{2}/g).map(h => String.fromCharCode(parseInt(h, 16))).join('');
-        f.externalRefs.push({ type: 'URI (PDF hex)', url: decoded, severity: 'medium' });
+        f.externalRefs.push({ type: 'URL', url: decoded, severity: 'medium' });
         if (f.risk === 'low') f.risk = 'medium';
       } catch (_) { /* skip malformed */ }
     }
@@ -122,12 +113,12 @@ class PdfRenderer {
           for (const a of annots) {
             if (a.url && !seenUrls.has(a.url)) {
               seenUrls.add(a.url);
-              f.externalRefs.push({ type: 'URI (PDF annotation)', url: a.url, severity: 'medium' });
+              f.externalRefs.push({ type: 'URL', url: a.url, severity: 'medium' });
               if (f.risk === 'low') f.risk = 'medium';
             }
             if (a.unsafeUrl && !seenUrls.has(a.unsafeUrl)) {
               seenUrls.add(a.unsafeUrl);
-              f.externalRefs.push({ type: 'URI (PDF annotation)', url: a.unsafeUrl, severity: 'medium' });
+              f.externalRefs.push({ type: 'URL', url: a.unsafeUrl, severity: 'medium' });
               if (f.risk === 'low') f.risk = 'medium';
             }
           }
