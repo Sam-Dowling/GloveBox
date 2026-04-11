@@ -78,7 +78,6 @@ HTML = f"""<!DOCTYPE html>
   <div id="toolbar">
     <span id="app-title">🐡 PhishFinder</span>
     <button class="tb-btn" id="btn-open" title="Open file (or drag &amp; drop)">📁 Open File</button>
-    <button class="tb-btn" id="btn-paste" title="Paste from clipboard (Ctrl+V)">📋 Paste</button>
     <div id="file-info-wrap">
       <span id="file-info"></span>
       <button class="tb-close hidden" id="btn-close" title="Close file">✕</button>

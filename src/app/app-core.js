@@ -85,7 +85,6 @@ class App {
 
   _setupToolbar() {
     document.getElementById('btn-open').addEventListener('click', () => document.getElementById('file-input').click());
-    document.getElementById('btn-paste').addEventListener('click', () => this._pasteFromClipboard());
     document.getElementById('btn-security').addEventListener('click', () => this._toggleSidebar());
     document.getElementById('btn-yara').addEventListener('click', () => this._openYaraDialog());
     document.getElementById('btn-close').addEventListener('click', () => this._clearFile());
