@@ -47,10 +47,6 @@ class App {
 
   _handleFiles(files) {
     if(!files||!files.length) return;
-    const f=files[0];
-    if(!/\.(docx|docm|xlsx|xlsm|xls|ods|pptx|pptm|csv|tsv|doc|msg)$/i.test(f.name)){
-      this._toast('Unsupported file type','error'); return;
-    }
-    this._loadFile(f);
+    this._loadFile(files[0]);
   }
 }

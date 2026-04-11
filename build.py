@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build script: assembles dist/docx-viewer.html from source files."""
+"""Build script: assembles dist/phishfinder.html from source files."""
 import os
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -8,9 +8,11 @@ def read(rel):
     with open(os.path.join(BASE, rel), 'r', encoding='utf-8') as f:
         return f.read()
 
-jszip   = read('vendor/jszip.min.js')
-xlsx_js = read('vendor/xlsx.full.min.js')
-css     = read('src/styles.css')
+jszip      = read('vendor/jszip.min.js')
+xlsx_js    = read('vendor/xlsx.full.min.js')
+pdf_js     = read('vendor/pdf.min.js')
+pdf_wrk_js = read('vendor/pdf.worker.min.js')
+css        = read('src/styles.css')
 
 # JS files concatenated in dependency order
 JS_FILES = [
@@ -27,6 +29,11 @@ JS_FILES = [
     'src/renderers/csv-renderer.js',
     'src/renderers/doc-renderer.js',
     'src/renderers/msg-renderer.js',
+    'src/renderers/eml-renderer.js',
+    'src/renderers/lnk-renderer.js',
+    'src/renderers/hta-renderer.js',
+    'src/renderers/pdf-renderer.js',
+    'src/renderers/plaintext-renderer.js',
     'src/app/app-core.js',
     'src/app/app-load.js',
     'src/app/app-sidebar.js',
@@ -42,14 +49,14 @@ HTML = f"""<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
         content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:;">
-  <title>Secure DOCX Viewer</title>
+  <title>PhishFinder</title>
   <style>{css}</style>
 </head>
 <body>
 
   <!-- ── Toolbar ─────────────────────────────────────────────────────── -->
   <div id="toolbar">
-    <span id="app-title">🔒 Office Viewer</span>
+    <span id="app-title">🔒 PhishFinder</span>
     <span id="file-info"></span>
     <button class="tb-btn" id="btn-open" title="Open file (or drag &amp; drop)">📁 Open</button>
     <button class="tb-btn" id="btn-security" title="Toggle security panel">🛡 Security</button>
@@ -57,7 +64,7 @@ HTML = f"""<!DOCTYPE html>
     <span id="zoom-level">100%</span>
     <button class="tb-btn" id="btn-zoom-in" title="Zoom in">🔍+</button>
     <button class="tb-btn" id="btn-theme" title="Toggle dark mode">🌙</button>
-    <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.csv,.tsv,.doc,.msg" style="display:none">
+    <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.csv,.tsv,.doc,.msg,.eml,.lnk,.hta,.pdf,.rtf,.html,.htm,.mht,.xml,.vbs,.vbe,.js,.jse,.wsf,.ps1,.bat,.cmd,.ics,.vcf,.txt,.log,.json,.ini,.cfg,.yml,.yaml" style="display:none">
   </div>
 
   <!-- ── Main area (viewer + sidebar side-by-side) ──────────────────── -->
@@ -67,8 +74,8 @@ HTML = f"""<!DOCTYPE html>
     <div id="viewer">
       <div id="drop-zone">
         <span class="dz-icon">📄</span>
-        <div class="dz-text">Drop an Office file here to preview</div>
-        <div class="dz-sub">docx · xlsx · xls · pptx · csv · doc · msg · and more · 100% offline</div>
+        <div class="dz-text">Drop a file here to analyse</div>
+        <div class="dz-sub">docx · xlsx · pptx · pdf · doc · msg · eml · lnk · hta · csv · and any file · 100% offline</div>
       </div>
       <div id="page-container"></div>
     </div>
@@ -117,6 +124,16 @@ HTML = f"""<!DOCTYPE html>
 {xlsx_js}
   </script>
 
+  <!-- ── pdf.js worker (inlined — must load before pdf.js) ───────────── -->
+  <script>
+{pdf_wrk_js}
+  </script>
+
+  <!-- ── pdf.js (inlined) ────────────────────────────────────────────── -->
+  <script>
+{pdf_js}
+  </script>
+
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
 {app_js}
@@ -127,7 +144,7 @@ HTML = f"""<!DOCTYPE html>
 # dist/ copy
 dist = os.path.join(BASE, 'dist')
 os.makedirs(dist, exist_ok=True)
-with open(os.path.join(dist, 'docx-viewer.html'), 'w', encoding='utf-8') as _f:
+with open(os.path.join(dist, 'phishfinder.html'), 'w', encoding='utf-8') as _f:
     _f.write(HTML)
 
 # docs/index.html — served by GitHub Pages
@@ -137,7 +154,7 @@ with open(os.path.join(docs, 'index.html'), 'w', encoding='utf-8') as _f:
     _f.write(HTML)
 
 # root copy — convenient for local use
-out = os.path.join(BASE, 'docx-viewer.html')
+out = os.path.join(BASE, 'phishfinder.html')
 with open(out, 'w', encoding='utf-8') as f:
     f.write(HTML)
 

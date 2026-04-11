@@ -70,8 +70,27 @@ Object.assign(App.prototype, {
         const r=new MsgRenderer();
         this.findings=r.analyzeForSecurity(buffer);
         docEl=r.render(buffer);
+      } else if(ext==='eml'){
+        const r=new EmlRenderer();
+        this.findings=r.analyzeForSecurity(buffer);
+        docEl=r.render(buffer);
+      } else if(ext==='lnk'){
+        const r=new LnkRenderer();
+        this.findings=r.analyzeForSecurity(buffer);
+        docEl=r.render(buffer);
+      } else if(ext==='hta'){
+        const r=new HtaRenderer();
+        this.findings=r.analyzeForSecurity(buffer);
+        docEl=r.render(buffer);
+      } else if(ext==='pdf'){
+        const r=new PdfRenderer();
+        this.findings=await r.analyzeForSecurity(buffer,file.name);
+        docEl=await r.render(buffer);
       } else {
-        throw new Error(`Unsupported format: .${ext}`);
+        // Catch-all: plain text or hex dump for any unrecognised format
+        const r=new PlainTextRenderer();
+        this.findings=r.analyzeForSecurity(buffer,file.name);
+        docEl=r.render(buffer,file.name);
       }
 
       // Extract interesting strings from rendered text + VBA source
