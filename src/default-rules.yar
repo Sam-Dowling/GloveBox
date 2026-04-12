@@ -2096,21 +2096,6 @@ rule Info_Contains_DLL_Export
         $mz and any of ($export1, $export2, $export3, $export4, $export5)
 }
 
-rule Suspicious_SCR_PIF_Extension
-{
-    meta:
-        description = "File references .scr or .pif extensions — legacy executable formats used for masquerading"
-        severity    = "medium"
-
-    strings:
-        $a = ".scr" nocase fullword
-        $b = ".pif" nocase fullword
-        $c = ".com" nocase fullword
-
-    condition:
-        any of them
-}
-
 rule Info_Email_EML_Format
 {
     meta:
@@ -4084,4 +4069,164 @@ rule Standalone_LNK_Argument_Patterns
 
     condition:
         2 of them
+}
+
+rule Encoded_Base64_PE_Header
+{
+    meta:
+        description = "Base64-encoded PE executable (MZ header = TVqQ/TVpQ/TVro)"
+        severity    = "high"
+
+    strings:
+        $b64_mz1 = "TVqQ" ascii
+        $b64_mz2 = "TVpQ" ascii
+        $b64_mz3 = "TVro" ascii
+
+    condition:
+        any of them
+}
+
+rule Encoded_Base64_Gzip
+{
+    meta:
+        description = "Base64-encoded gzip data (H4sI prefix)"
+        severity    = "medium"
+
+    strings:
+        $b64_gz = "H4sI" ascii
+
+    condition:
+        $b64_gz
+}
+
+rule Encoded_Base64_OLE_Document
+{
+    meta:
+        description = "Base64-encoded OLE/CFB compound document (0M8R prefix)"
+        severity    = "medium"
+
+    strings:
+        $b64_ole = "0M8R" ascii
+
+    condition:
+        $b64_ole
+}
+
+rule Encoded_Base64_PDF
+{
+    meta:
+        description = "Base64-encoded PDF document (JVBE prefix)"
+        severity    = "medium"
+
+    strings:
+        $b64_pdf = "JVBE" ascii
+
+    condition:
+        $b64_pdf
+}
+
+rule Encoded_Base64_ZIP
+{
+    meta:
+        description = "Base64-encoded ZIP archive (UEsD prefix)"
+        severity    = "medium"
+
+    strings:
+        $b64_zip = "UEsD" ascii
+
+    condition:
+        $b64_zip
+}
+
+rule PowerShell_EncodedCommand
+{
+    meta:
+        description = "PowerShell -EncodedCommand with Base64 payload"
+        severity    = "high"
+
+    strings:
+        $enc1 = /-[Ee]nc\s+[A-Za-z0-9+\/]{20,}/
+        $enc2 = /-[Ee]ncodedcommand\s+[A-Za-z0-9+\/]{20,}/ nocase
+        $enc3 = /-[Ee][Cc]\s+[A-Za-z0-9+\/]{20,}/
+        $from = "FromBase64String" nocase fullword
+
+    condition:
+        any of them
+}
+
+rule Hex_Encoded_PE_Header
+{
+    meta:
+        description = "Hex-encoded PE executable header (4D5A9000)"
+        severity    = "high"
+
+    strings:
+        $hex_mz_lower = "4d5a9000" ascii
+        $hex_mz_upper = "4D5A9000" ascii
+        $hex_mz_mixed = "4d5a90" ascii
+
+    condition:
+        any of them
+}
+
+rule Hex_Shellcode_Pattern
+{
+    meta:
+        description = "Hex-encoded byte array pattern commonly used for shellcode"
+        severity    = "medium"
+
+    strings:
+        $ps_bytes = /0x[0-9a-fA-F]{2}(,\s*0x[0-9a-fA-F]{2}){15,}/ ascii
+        $escaped  = /(\\x[0-9a-fA-F]{2}){16,}/ ascii
+
+    condition:
+        any of them
+}
+
+rule Stacked_Encoding_Indicators
+{
+    meta:
+        description = "Indicators of multi-layer encoding/obfuscation"
+        severity    = "high"
+
+    strings:
+        $decompress   = "IO.Compression" nocase
+        $memstream    = "IO.MemoryStream" nocase
+        $deflate      = "DeflateStream" nocase
+        $gzipstream   = "GZipStream" nocase
+        $from_b64     = "FromBase64String" nocase
+        $convert      = "[Convert]::" nocase
+        $iex          = "Invoke-Expression" nocase fullword
+        $iex_short    = /\bIEX\b/
+
+    condition:
+        3 of them
+}
+
+rule Embedded_ZIP_In_Non_Archive
+{
+    meta:
+        description = "ZIP local file header (PK\\x03\\x04) found inside a non-archive file"
+        severity    = "medium"
+
+    strings:
+        $pk = { 50 4B 03 04 }
+
+    condition:
+        #pk > 1
+}
+
+rule Embedded_Compressed_Stream
+{
+    meta:
+        description = "Zlib or gzip compressed stream embedded in file"
+        severity    = "info"
+
+    strings:
+        $zlib_default = { 78 9C }
+        $zlib_best    = { 78 DA }
+        $gzip_magic   = { 1F 8B 08 }
+
+    condition:
+        any of them
 }

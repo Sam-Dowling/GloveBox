@@ -1,0 +1,7 @@
+Sample file containing Base64-encoded PE executable header.
+This simulates a malicious document with an embedded payload.
+
+The following is a Base64-encoded MZ/PE header (truncated for testing):
+TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA+AAAAA4fug4AtAnNIbgBTM0hVGhpcyBwcm9ncmFtIGNhbm5vdCBiZSBydW4gaW4gRE9TIG1vZGUuDQ0KJAAAAAAAAAA=
+
+End of sample.

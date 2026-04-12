@@ -46,7 +46,7 @@ Phishing attachments are the #1 initial access vector. SOC analysts, incident re
 | **Risk assessment** | Colour-coded risk bar (low / medium / high / critical) with finding summary |
 | **Document search** | In-toolbar search with match highlighting, match counter, and `Enter`/`Shift+Enter` navigation (`Ctrl+F` to focus) |
 | **YARA rule engine** | In-browser YARA rule parser and matcher — load/edit/save `.yar` rules, scan any loaded file with text, hex, and regex string support. Ships with default detection rules that auto-scan on file load |
-| **File hashes** | MD5 (pure-JS) · SHA-1 · SHA-256 computed in-browser, with one-click VirusTotal lookup |
+| **File hashes** | MD5 · SHA-1 · SHA-256 computed in-browser, with one-click VirusTotal lookup |
 | **IOC extraction** | URLs, email addresses, IP addresses, file paths, and UNC paths pulled from document content and VBA source |
 | **VBA / macro analysis** | Extracts and syntax-highlights VBA source; flags auto-execute entry points (`AutoOpen`, `Workbook_Open`, `Shell`, etc.) |
 | **Macro download** | Download decoded VBA as `.txt`, or the raw `vbaProject.bin` for offline analysis with olevba / oledump |
@@ -56,6 +56,7 @@ Phishing attachments are the #1 initial access vector. SOC analysts, incident re
 | **HTA analysis** | Script extraction, `<HTA:APPLICATION>` attribute parsing, obfuscation detection, 40+ suspicious pattern checks |
 | **Script scanning** | Catch-all viewer scans `.vbs`, `.ps1`, `.bat`, `.rtf` and other script types for dangerous execution patterns + YARA matching |
 | **Image analysis** | Steganography indicators, polyglot file detection, and hex header inspection for embedded payloads |
+| **Encoded content detection** | Scans for Base64, hex, Base32 encoded blobs and compressed streams (gzip/zlib/deflate); decodes, classifies payloads (PE, script, URL list, etc.), extracts IOCs, and offers "Load for analysis" to drill into decoded content |
 | **Archive drill-down** | Click entries inside ZIP/archive listings to open and analyse inner files, with Back navigation |
 | **Document metadata** | Author, title, dates, revision count extracted from `docProps/core.xml` |
 
@@ -113,6 +114,8 @@ The application code is concatenated in dependency order:
 src/constants.js                       # Namespace constants, DOM helpers, unit converters
 src/vba-utils.js                       # Shared VBA binary decoder + auto-exec pattern scanner
 src/yara-engine.js                     # YaraEngine — in-browser YARA rule parser + matcher
+src/decompressor.js                    # Decompressor — gzip/deflate/raw decompression via DecompressionStream
+src/encoded-content-detector.js        # EncodedContentDetector — Base64/hex/Base32/compressed blob scanner
 src/docx-parser.js                     # DocxParser — ZIP extraction for DOCX/DOCM
 src/style-resolver.js                  # StyleResolver — resolves run/paragraph styles
 src/numbering-resolver.js              # NumberingResolver — list counters and markers
@@ -175,6 +178,8 @@ GloveBox/
 │   ├── constants.js               # Shared constants, DOM helpers, unit converters, sanitizers
 │   ├── vba-utils.js               # Shared VBA binary decoder + auto-exec pattern scanner
 │   ├── yara-engine.js             # YaraEngine — in-browser YARA rule parser + matcher
+│   ├── decompressor.js            # Decompressor — gzip/deflate/raw via DecompressionStream
+│   ├── encoded-content-detector.js # EncodedContentDetector — encoded blob scanner
 │   ├── default-rules.yar          # Default YARA detection rules (auto-loaded)
 │   ├── docx-parser.js             # DocxParser class
 │   ├── style-resolver.js          # StyleResolver class
@@ -245,6 +250,7 @@ GloveBox/
 - **HTML rendering** — `HtmlRenderer` provides a sandboxed iframe preview (with all scripts and network disabled) and a source-code view with line numbers.
 - **Image analysis** — `ImageRenderer` renders image previews and checks for steganography indicators, polyglot file structures, and suspicious embedded data.
 - **Archive drill-down** — `ZipRenderer` lists archive contents with threat flagging, and allows clicking individual entries to extract and open them for full analysis, with Back navigation.
+- **Encoded content detection** — `EncodedContentDetector` scans file text for Base64, hex, and Base32 encoded blobs plus embedded compressed streams (gzip/deflate). High-confidence patterns (PE headers, gzip magic, PowerShell `-EncodedCommand`) are decoded eagerly; other candidates offer a manual "Decode" button. Decoded payloads are classified, IOCs are extracted, and a "Load for analysis" button feeds decoded content back through the full analysis pipeline with breadcrumb navigation.
 - **Catch-all viewer** — `PlainTextRenderer` accepts any file type. Text files get line-numbered display; binary files get a hex dump. Both paths run IOC extraction and YARA scanning.
 
 ---

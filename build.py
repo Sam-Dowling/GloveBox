@@ -25,6 +25,8 @@ JS_FILES = [
     'src/constants.js',
     'src/vba-utils.js',
     'src/yara-engine.js',
+    'src/decompressor.js',
+    'src/encoded-content-detector.js',
     'src/docx-parser.js',
     'src/style-resolver.js',
     'src/numbering-resolver.js',

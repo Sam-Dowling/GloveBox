@@ -36,7 +36,12 @@ Object.assign(App.prototype, {
       this._renderMacrosSection(body, analyzer);
     }
 
-    // 3. Signatures & IOCs (sorted by severity, open if findings exist)
+    // 3. Encoded Content (only if detected)
+    if (f.encodedContent && f.encodedContent.length) {
+      this._renderEncodedContentSection(body, f.encodedContent, fileName);
+    }
+
+    // 4. Signatures & IOCs (sorted by severity, open if findings exist)
     const allRefs = [...(f.externalRefs || []), ...(f.interestingStrings || [])];
     this._renderSignaturesSection(body, allRefs, fileName);
 
@@ -263,6 +268,212 @@ Object.assign(App.prototype, {
         pre.innerHTML = hi.highlightVBA(mod.source);
         modDet.appendChild(pre); body.appendChild(modDet);
       }
+    }
+
+    det.appendChild(body);
+    container.appendChild(det);
+  },
+
+  // ── Encoded Content section ────────────────────────────────────────────
+  _renderEncodedContentSection(container, encodedFindings, fileName) {
+    const det = document.createElement('details');
+    det.className = 'sb-details';
+    // Auto-open if any high-severity findings
+    const hasHigh = encodedFindings.some(f => f.severity === 'high' || f.severity === 'critical');
+    det.open = hasHigh;
+
+    const sum = document.createElement('summary');
+    sum.className = 'sb-details-summary';
+    sum.textContent = `🔓 Encoded Content (${encodedFindings.length})`;
+    if (hasHigh) {
+      const badge = document.createElement('span');
+      badge.className = 'badge badge-high';
+      badge.style.marginLeft = '6px';
+      badge.textContent = '⚠ payload';
+      sum.appendChild(badge);
+    }
+    det.appendChild(sum);
+
+    const body = document.createElement('div');
+    body.className = 'sb-details-body';
+
+    // Severity summary bar
+    const sevOrder = { critical: 0, high: 1, medium: 2, info: 3 };
+    const high = encodedFindings.filter(f => f.severity === 'high').length;
+    const med = encodedFindings.filter(f => f.severity === 'medium').length;
+    const inf = encodedFindings.filter(f => f.severity === 'info').length;
+    if (high || med || inf) {
+      const bar = document.createElement('div'); bar.className = 'sev-bar';
+      if (high) { const s = document.createElement('span'); s.style.color = '#721c24'; s.textContent = `🔴 ${high} high`; bar.appendChild(s); }
+      if (med) { const s = document.createElement('span'); s.style.color = '#856404'; s.textContent = `🟡 ${med} medium`; bar.appendChild(s); }
+      if (inf) { const s = document.createElement('span'); s.style.color = '#666'; s.textContent = `ℹ ${inf} info`; bar.appendChild(s); }
+      body.appendChild(bar);
+    }
+
+    // Render each finding as a card
+    const sorted = [...encodedFindings].sort((a, b) => (sevOrder[a.severity] ?? 9) - (sevOrder[b.severity] ?? 9));
+    for (const finding of sorted) {
+      const card = document.createElement('div');
+      card.className = `enc-finding-card enc-sev-${finding.severity}`;
+
+      // Header line: severity badge + encoding type
+      const header = document.createElement('div');
+      header.className = 'enc-finding-header';
+      const badge = document.createElement('span');
+      badge.className = `badge badge-${finding.severity}`;
+      badge.textContent = finding.severity;
+      header.appendChild(badge);
+      const title = document.createElement('span');
+      title.className = 'enc-finding-title';
+      title.textContent = `${finding.encoding}-encoded content`;
+      if (finding.hint) title.textContent += ` — ${finding.hint}`;
+      header.appendChild(title);
+      card.appendChild(header);
+
+      // Details
+      const details = document.createElement('div');
+      details.className = 'enc-finding-details';
+
+      // Size & offset
+      const meta = document.createElement('div');
+      meta.className = 'enc-finding-meta';
+      const sizeTxt = finding.decodedSize > 0
+        ? this._fmtBytes(finding.decodedSize)
+        : `${finding.length} chars encoded`;
+      meta.textContent = `${sizeTxt} at offset ${finding.offset.toLocaleString()}`;
+      details.appendChild(meta);
+
+      // Decoded type
+      if (finding.classification && finding.classification.type) {
+        const typeLine = document.createElement('div');
+        typeLine.className = 'enc-finding-type';
+        typeLine.textContent = `Decoded: ${finding.classification.type}`;
+        details.appendChild(typeLine);
+      }
+
+      // Decode chain
+      if (finding.chain && finding.chain.length > 1) {
+        const chainLine = document.createElement('div');
+        chainLine.className = 'enc-finding-chain';
+        chainLine.textContent = `Chain: ${finding.chain.join(' → ')}`;
+        details.appendChild(chainLine);
+      }
+
+      // Entropy
+      if (finding.entropy > 0) {
+        const entLine = document.createElement('div');
+        entLine.className = 'enc-finding-entropy';
+        let entText = `Entropy: ${finding.entropy.toFixed(2)} / 8.00`;
+        if (finding.entropy > 7.5) entText += ' ⚠ high (encrypted/packed?)';
+        entLine.textContent = entText;
+        details.appendChild(entLine);
+      }
+
+      // IOCs found in decoded content
+      if (finding.iocs && finding.iocs.length) {
+        const iocLine = document.createElement('div');
+        iocLine.className = 'enc-finding-iocs';
+        const counts = {};
+        for (const ioc of finding.iocs) counts[ioc.type] = (counts[ioc.type] || 0) + 1;
+        iocLine.textContent = 'IOCs: ' + Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(', ');
+        details.appendChild(iocLine);
+      }
+
+      // Note (e.g., depth exceeded)
+      if (finding.note) {
+        const note = document.createElement('div');
+        note.className = 'enc-finding-note';
+        note.textContent = `⚠ ${finding.note}`;
+        details.appendChild(note);
+      }
+
+      card.appendChild(details);
+
+      // Action buttons row
+      const actions = document.createElement('div');
+      actions.className = 'enc-finding-actions';
+
+      // "Decode" button for lazy-decoded candidates
+      if (!finding.autoDecoded && finding.rawCandidate) {
+        const decodeBtn = document.createElement('button');
+        decodeBtn.className = 'tb-btn enc-btn-decode';
+        decodeBtn.textContent = '🔑 Decode';
+        decodeBtn.title = 'Decode this content';
+        decodeBtn.addEventListener('click', async () => {
+          decodeBtn.disabled = true;
+          decodeBtn.textContent = '⏳ Decoding…';
+          try {
+            const detector = new EncodedContentDetector();
+            await detector.lazyDecode(finding);
+            // Re-render this section
+            this._renderSidebar(fileName, null);
+            this._toast('Content decoded successfully');
+          } catch (err) {
+            this._toast('Decode failed: ' + err.message, 'error');
+            decodeBtn.disabled = false;
+            decodeBtn.textContent = '🔑 Decode';
+          }
+        });
+        actions.appendChild(decodeBtn);
+      }
+
+      // "Load for analysis" button — always available when decoded bytes exist
+      if (finding.decodedBytes) {
+        const loadBtn = document.createElement('button');
+        loadBtn.className = 'tb-btn enc-btn-load';
+        loadBtn.textContent = '▶ Load for analysis';
+        loadBtn.title = 'Open decoded content in the analysis pipeline';
+        loadBtn.addEventListener('click', () => {
+          const ext = finding.ext || '.bin';
+          const synName = `decoded_${finding.encoding.toLowerCase().replace(/[^a-z0-9]/g, '_')}_offset${finding.offset}${ext}`;
+          const blob = new Blob([finding.decodedBytes], { type: 'application/octet-stream' });
+          const syntheticFile = new File([blob], synName, { type: 'application/octet-stream' });
+          this._pushNavState(fileName);
+          this._loadFile(syntheticFile);
+        });
+        actions.appendChild(loadBtn);
+      }
+
+      // "Load for analysis" for embedded ZIP (extract from raw bytes)
+      if (finding.embeddedZipOffset !== undefined && !finding.decodedBytes) {
+        const loadZipBtn = document.createElement('button');
+        loadZipBtn.className = 'tb-btn enc-btn-load';
+        loadZipBtn.textContent = '▶ Load embedded ZIP';
+        loadZipBtn.title = 'Extract and open the embedded ZIP archive';
+        loadZipBtn.addEventListener('click', () => {
+          const rawBytes = new Uint8Array(this._fileBuffer);
+          const zipBytes = rawBytes.subarray(finding.embeddedZipOffset);
+          const blob = new Blob([zipBytes], { type: 'application/zip' });
+          const syntheticFile = new File([blob], `embedded_zip_offset${finding.offset}.zip`, { type: 'application/zip' });
+          this._pushNavState(fileName);
+          this._loadFile(syntheticFile);
+        });
+        actions.appendChild(loadZipBtn);
+      }
+
+      if (actions.children.length > 0) card.appendChild(actions);
+
+      // Inner findings (recursive)
+      if (finding.innerFindings && finding.innerFindings.length) {
+        const innerDet = document.createElement('details');
+        innerDet.className = 'enc-inner-findings';
+        const innerSum = document.createElement('summary');
+        innerSum.style.cssText = 'cursor:pointer;font-size:10px;font-weight:600;color:#888;margin-top:6px;';
+        innerSum.textContent = `${finding.innerFindings.length} nested encoded layer${finding.innerFindings.length !== 1 ? 's' : ''} detected`;
+        innerDet.appendChild(innerSum);
+        for (const inner of finding.innerFindings) {
+          const innerCard = document.createElement('div');
+          innerCard.className = 'enc-finding-inner-card';
+          innerCard.textContent = `${inner.encoding}: ${inner.chain.join(' → ')}`;
+          if (inner.classification && inner.classification.type) {
+            innerCard.textContent += ` → ${inner.classification.type}`;
+          }
+          innerDet.appendChild(innerCard);
+        }
+        card.appendChild(innerDet);
+      }
+
+      body.appendChild(card);
     }
 
     det.appendChild(body);

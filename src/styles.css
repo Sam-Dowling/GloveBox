@@ -719,6 +719,127 @@ body.dark .badge-info {
   color: #22d3ee;
 }
 
+/* ── Encoded Content finding cards ── */
+.enc-finding-card {
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  font-size: 11px;
+  background: #fafafa;
+  transition: border-color .2s;
+}
+.enc-finding-card:hover { border-color: #bbb; }
+.enc-sev-high { border-left: 3px solid #ef4444; }
+.enc-sev-medium { border-left: 3px solid #fbbf24; }
+.enc-sev-info { border-left: 3px solid #22d3ee; }
+.enc-sev-critical { border-left: 3px solid #a855f7; }
+
+body.dark .enc-finding-card {
+  background: rgba(255,255,255,.03);
+  border-color: rgba(255,255,255,.08);
+}
+body.dark .enc-finding-card:hover { border-color: rgba(255,255,255,.15); }
+body.dark .enc-sev-high { border-left-color: #f87171; }
+body.dark .enc-sev-medium { border-left-color: #fbbf24; }
+body.dark .enc-sev-info { border-left-color: #22d3ee; }
+body.dark .enc-sev-critical { border-left-color: #c084fc; }
+
+.enc-finding-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.enc-finding-title {
+  font-weight: 600;
+  font-size: 11px;
+  color: #333;
+}
+body.dark .enc-finding-title { color: #e0e0e8; }
+
+.enc-finding-details {
+  font-size: 10px;
+  color: #666;
+  line-height: 1.6;
+}
+body.dark .enc-finding-details { color: rgba(255,255,255,.55); }
+
+.enc-finding-meta { font-family: 'Cascadia Code','Fira Code','Consolas',monospace; }
+.enc-finding-type { font-weight: 600; color: #444; }
+body.dark .enc-finding-type { color: #d4d4dc; }
+.enc-finding-chain { font-style: italic; }
+.enc-finding-note {
+  color: #856404;
+  font-weight: 600;
+  margin-top: 2px;
+}
+body.dark .enc-finding-note { color: #fbbf24; }
+.enc-finding-iocs { color: #0c5460; font-weight: 600; }
+body.dark .enc-finding-iocs { color: #22d3ee; }
+
+.enc-finding-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.enc-btn-decode, .enc-btn-load {
+  font-size: 10px !important;
+  padding: 4px 10px !important;
+}
+.enc-btn-load {
+  background: rgba(16,185,129,.1) !important;
+  border-color: rgba(16,185,129,.25) !important;
+  color: #059669 !important;
+  font-weight: 600 !important;
+}
+.enc-btn-load:hover {
+  background: rgba(16,185,129,.2) !important;
+  border-color: rgba(16,185,129,.4) !important;
+}
+body.dark .enc-btn-load {
+  background: rgba(52,211,153,.1) !important;
+  border-color: rgba(52,211,153,.2) !important;
+  color: #34d399 !important;
+}
+body.dark .enc-btn-load:hover {
+  background: rgba(52,211,153,.2) !important;
+  border-color: rgba(52,211,153,.35) !important;
+}
+
+.enc-btn-decode {
+  background: rgba(251,191,36,.08) !important;
+  border-color: rgba(251,191,36,.25) !important;
+  color: #92400e !important;
+  font-weight: 600 !important;
+}
+.enc-btn-decode:hover {
+  background: rgba(251,191,36,.18) !important;
+}
+body.dark .enc-btn-decode {
+  background: rgba(251,191,36,.1) !important;
+  border-color: rgba(251,191,36,.2) !important;
+  color: #fbbf24 !important;
+}
+body.dark .enc-btn-decode:hover {
+  background: rgba(251,191,36,.2) !important;
+}
+
+.enc-inner-findings { margin-top: 4px; }
+.enc-finding-inner-card {
+  font-size: 10px;
+  padding: 4px 8px;
+  margin: 3px 0;
+  background: rgba(0,0,0,.03);
+  border-radius: 4px;
+  color: #555;
+  font-family: 'Cascadia Code','Fira Code','Consolas',monospace;
+}
+body.dark .enc-finding-inner-card {
+  background: rgba(255,255,255,.03);
+  color: rgba(255,255,255,.5);
+}
+
 /* ── Drop zone ── */
 #drop-zone {
   border: 2px dashed rgba(255, 255, 255, .18);

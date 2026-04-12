@@ -167,6 +167,38 @@ Object.assign(App.prototype, {
       // Extract interesting strings from rendered text + VBA source
       this.findings.interestingStrings = this._extractInterestingStrings(docEl.textContent, this.findings);
 
+      // ── Encoded content detection ─────────────────────────────────────
+      try {
+        const detector = new EncodedContentDetector();
+        const encodedFindings = await detector.scan(
+          docEl.textContent,
+          new Uint8Array(buffer),
+          {
+            fileType: ext,
+            existingIOCs: this.findings.interestingStrings,
+            mimeAttachments: this.findings._mimeAttachments || null,
+          }
+        );
+        this.findings.encodedContent = encodedFindings;
+        // Store raw bytes reference on compressed findings for lazy decompression
+        for (const ef of encodedFindings) {
+          if (ef.needsDecompression) ef._rawBytes = new Uint8Array(buffer);
+          // Merge IOCs from decoded content into main findings
+          if (ef.iocs && ef.iocs.length) {
+            const existingUrls = new Set((this.findings.interestingStrings || []).map(r => r.url));
+            for (const ioc of ef.iocs) {
+              if (!existingUrls.has(ioc.url)) {
+                this.findings.interestingStrings.push(ioc);
+                existingUrls.add(ioc.url);
+              }
+            }
+          }
+        }
+      } catch (encErr) {
+        console.warn('Encoded content detection error:', encErr);
+        this.findings.encodedContent = [];
+      }
+
       const pc = document.getElementById('page-container');
       pc.innerHTML = ''; pc.appendChild(docEl);
 
