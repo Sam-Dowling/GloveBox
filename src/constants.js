@@ -66,10 +66,14 @@ const IOC = Object.freeze({
   YARA: 'YARA Match',
   PATTERN: 'Pattern',
   INFO: 'Info',
+  HASH: 'Hash',
+  COMMAND_LINE: 'Command Line',
+  PROCESS: 'Process',
+  HOSTNAME: 'Hostname',
 });
 
 /** IOC types whose values are directly copyable in the sidebar. */
-const IOC_COPYABLE = new Set([IOC.URL, IOC.EMAIL, IOC.IP, IOC.FILE_PATH, IOC.UNC_PATH]);
+const IOC_COPYABLE = new Set([IOC.URL, IOC.EMAIL, IOC.IP, IOC.FILE_PATH, IOC.UNC_PATH, IOC.HASH, IOC.COMMAND_LINE, IOC.PROCESS, IOC.HOSTNAME]);
 
 // ── String helpers ────────────────────────────────────────────────────────────
 function escHtml(s) {

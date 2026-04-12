@@ -79,6 +79,7 @@ Object.assign(App.prototype, {
       img: 'Disk Image (IMG)', zip: 'ZIP Archive', rar: 'RAR Archive',
       '7z': '7-Zip Archive', wsf: 'Windows Script File', url: 'Internet Shortcut',
       svg: 'SVG Image', iqy: 'Internet Query File', slk: 'Symbolic Link File',
+      evtx: 'Windows Event Log', sqlite: 'SQLite Database', db: 'SQLite Database',
     };
     const meta = this._fileMeta || {};
     body.appendChild(this._sec('File Properties'));
@@ -556,6 +557,7 @@ Object.assign(App.prototype, {
     const tbody = document.createElement('tbody');
     for (const ref of refs) {
       const tr = document.createElement('tr');
+      tr.className = 'ioc-clickable';
       tr.dataset.search = (ref.type + ' ' + ref.url).toLowerCase();
       const td1 = document.createElement('td'); td1.textContent = ref.type;
       const td2 = document.createElement('td'); td2.className = 'ext-val';
@@ -571,6 +573,10 @@ Object.assign(App.prototype, {
       badge.className = `badge badge-${ref.severity}`; badge.textContent = ref.severity;
       td3.appendChild(badge);
       tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
+
+      // Click-to-navigate: apply filter in EVTX view or scroll to match in content
+      tr.addEventListener('click', () => this._navigateToFinding(ref, tr));
+
       tbody.appendChild(tr);
     }
     tbl.appendChild(tbody); body.appendChild(tbl);
@@ -583,6 +589,107 @@ Object.assign(App.prototype, {
 
     det.appendChild(body);
     container.appendChild(det);
+  },
+
+  // ── Navigate to finding in content view ─────────────────────────────────
+  _navigateToFinding(ref, rowEl) {
+    // Visual feedback — flash the clicked row
+    rowEl.classList.add('ioc-flash');
+    setTimeout(() => rowEl.classList.remove('ioc-flash'), 600);
+
+    // Check if we have an EVTX view with filter controls
+    const pc = document.getElementById('page-container');
+    const evtxView = pc && pc.querySelector('.evtx-view');
+    if (evtxView && evtxView._evtxFilters) {
+      const filters = evtxView._evtxFilters;
+
+      // For IOC.PATTERN type: try to extract Event ID from the description
+      if (ref.type === IOC.PATTERN || ref.type === IOC.INFO) {
+        // Match patterns like "Event 1102:", "Sysmon Event 1:", "Defender Event 1006:", etc.
+        const eidMatch = ref.url.match(/Event\s+(\d+)\s*:/);
+        if (eidMatch) {
+          // Apply Event ID filter
+          filters.searchInput.value = '';
+          filters.eidInput.value = eidMatch[1];
+          filters.levelSelect.value = '';
+          filters.applyFilters();
+          // Auto-expand all filtered results
+          if (filters.expandAll) filters.expandAll();
+          // Scroll the EVTX table into view
+          filters.scrollContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          // Flash the filter bar to draw attention
+          const filterBar = evtxView.querySelector('.evtx-filter-bar');
+          if (filterBar) {
+            filterBar.classList.add('evtx-filter-flash');
+            setTimeout(() => filterBar.classList.remove('evtx-filter-flash'), 1000);
+          }
+          return;
+        }
+      }
+
+      // For all other IOC types: use text search filter
+      const searchVal = ref.url || '';
+      if (searchVal) {
+        // For hashes like "SHA256:ABCDEF...", just search the hash value part
+        let searchTerm = searchVal;
+        const hashMatch = searchVal.match(/^(?:SHA256|SHA1|MD5|IMPHASH):(.+)$/i);
+        if (hashMatch) searchTerm = hashMatch[1];
+        // For very long values, truncate to avoid overly specific search
+        if (searchTerm.length > 80) searchTerm = searchTerm.substring(0, 80);
+
+        filters.eidInput.value = '';
+        filters.searchInput.value = searchTerm;
+        filters.levelSelect.value = '';
+        filters.applyFilters();
+        // Auto-expand all filtered results
+        if (filters.expandAll) filters.expandAll();
+        filters.scrollContainer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        const filterBar = evtxView.querySelector('.evtx-filter-bar');
+        if (filterBar) {
+          filterBar.classList.add('evtx-filter-flash');
+          setTimeout(() => filterBar.classList.remove('evtx-filter-flash'), 1000);
+        }
+        return;
+      }
+    }
+
+    // Fallback for non-EVTX content: try to find and highlight matching text
+    if (pc && ref.url) {
+      const searchText = ref.url;
+      // Try using the browser's built-in find if the text is in the page
+      const textContent = pc.textContent || '';
+      if (textContent.includes(searchText) || textContent.toLowerCase().includes(searchText.toLowerCase())) {
+        // Use window.find() for highlighting — fallback, may not work in all contexts
+        try {
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          // Walk text nodes to find the match
+          const walker = document.createTreeWalker(pc, NodeFilter.SHOW_TEXT, null);
+          const searchLower = searchText.toLowerCase();
+          let node;
+          while ((node = walker.nextNode())) {
+            const idx = node.textContent.toLowerCase().indexOf(searchLower);
+            if (idx >= 0) {
+              const range = document.createRange();
+              range.setStart(node, idx);
+              range.setEnd(node, Math.min(idx + searchText.length, node.textContent.length));
+              sel.addRange(range);
+              node.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              // Flash highlight effect
+              const mark = document.createElement('mark');
+              mark.className = 'ioc-highlight-flash';
+              try { range.surroundContents(mark); } catch (_) { /* cross-boundary */ }
+              setTimeout(() => {
+                if (mark.parentNode) {
+                  mark.replaceWith(...mark.childNodes);
+                }
+              }, 2000);
+              return;
+            }
+          }
+        } catch (_) { /* best effort */ }
+      }
+    }
   },
 
   // ── Update overall risk from encoded content severity ──────────────────

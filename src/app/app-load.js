@@ -86,6 +86,14 @@ Object.assign(App.prototype, {
         const r = new CsvRenderer();
         this.findings = r.analyzeForSecurity(text);
         docEl = r.render(text, file.name);
+      } else if (ext === 'evtx') {
+        const r = new EvtxRenderer();
+        this.findings = r.analyzeForSecurity(buffer, file.name);
+        docEl = r.render(buffer, file.name);
+      } else if (ext === 'sqlite' || ext === 'db') {
+        const r = new SqliteRenderer();
+        this.findings = r.analyzeForSecurity(buffer, file.name);
+        docEl = r.render(buffer, file.name);
       } else if (ext === 'doc') {
         const r = new DocBinaryRenderer();
         this.findings = r.analyzeForSecurity(buffer);
@@ -302,6 +310,14 @@ Object.assign(App.prototype, {
       return { hex: h(8), label: 'Internet Shortcut (.url)' };
     if (head.startsWith('From ') || head.startsWith('Received:') || head.startsWith('MIME-Version'))
       return { hex: h(6), label: 'Email Message (RFC 5322)' };
+    // EVTX: "ElfFile\0"
+    if (bytes[0] === 0x45 && bytes[1] === 0x6C && bytes[2] === 0x66 && bytes[3] === 0x46 &&
+        bytes[4] === 0x69 && bytes[5] === 0x6C && bytes[6] === 0x65 && bytes[7] === 0x00)
+      return { hex: h(8), label: 'Windows Event Log (EVTX)' };
+    // SQLite: "SQLite format 3\000"
+    if (bytes[0] === 0x53 && bytes[1] === 0x51 && bytes[2] === 0x4C && bytes[3] === 0x69 &&
+        bytes[4] === 0x74 && bytes[5] === 0x65 && bytes[6] === 0x20)
+      return { hex: h(6), label: 'SQLite Database' };
     if (bytes.length > 32768 + 5) {
       const iso = String.fromCharCode(bytes[32769], bytes[32770], bytes[32771], bytes[32772], bytes[32773]);
       if (iso === 'CD001') return { hex: 'CD001', label: 'ISO 9660 Disk Image' };

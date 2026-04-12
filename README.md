@@ -35,6 +35,7 @@ Phishing attachments are the #1 initial access vector. SOC analysts, incident re
 | **OneNote** | `.one` — embedded object extraction + phishing detection |
 | **Windows** | `.lnk` (Shell Link) · `.hta` (HTML Application) · `.url` `.webloc` (Internet shortcuts) |
 | **Scripts** | `.wsf` `.wsc` `.wsh` (Windows Script Files — parsed) · `.vbs` `.ps1` `.bat` `.cmd` `.js` |
+| **Forensics** | `.evtx` (Windows Event Log) · `.sqlite` `.db` (SQLite — Chrome/Firefox/Edge history auto-detect) |
 | **Data** | `.csv` `.tsv` · `.iqy` (Internet Query) · `.slk` (Symbolic Link) |
 | **Images** | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` `.svg` — preview + steganography/polyglot detection |
 | **Catch-all** | *Any file* — plain-text view with line numbers, or hex dump for binary data |
@@ -56,6 +57,8 @@ Phishing attachments are the #1 initial access vector. SOC analysts, incident re
 | **HTA analysis** | Script extraction, `<HTA:APPLICATION>` attribute parsing, obfuscation detection, 40+ suspicious pattern checks |
 | **Script scanning** | Catch-all viewer scans `.vbs`, `.ps1`, `.bat`, `.rtf` and other script types for dangerous execution patterns + YARA matching |
 | **Image analysis** | Steganography indicators, polyglot file detection, and hex header inspection for embedded payloads |
+| **EVTX analysis** | Parses Windows Event Log binary format (ElfFile header, chunks, BinXml records); extracts Event ID, Level, Provider, Channel, Computer, timestamps, and EventData; flags suspicious events (4688, 4624/4625, 1102, 7045, 4104); Copy/Download as CSV |
+| **SQLite / browser history** | Reads SQLite binary format (B-tree pages, schema, cell data); auto-detects Chrome/Edge/Firefox history databases; extracts URLs, titles, visit counts, timestamps; generic table browser for non-history SQLite files; Copy/Download as CSV |
 | **Encoded content detection** | Scans for Base64, hex, Base32 encoded blobs and compressed streams (gzip/zlib/deflate); decodes, classifies payloads (PE, script, URL list, etc.), extracts IOCs, and offers "Load for analysis" to drill into decoded content |
 | **Archive drill-down** | Click entries inside ZIP/archive listings to open and analyse inner files, with Back navigation |
 | **Document metadata** | Author, title, dates, revision count extracted from `docProps/core.xml` |
@@ -201,6 +204,8 @@ GloveBox/
 │   │   ├── iqy-slk-renderer.js    # IqySlkRenderer — .iqy / .slk files
 │   │   ├── wsf-renderer.js        # WsfRenderer — Windows Script Files
 │   │   ├── csv-renderer.js        # CsvRenderer
+│   │   ├── evtx-renderer.js       # EvtxRenderer — .evtx parser
+│   │   ├── sqlite-renderer.js     # SqliteRenderer — SQLite + browser history
 │   │   ├── doc-renderer.js        # DocBinaryRenderer
 │   │   ├── msg-renderer.js        # MsgRenderer
 │   │   ├── eml-renderer.js        # EmlRenderer
