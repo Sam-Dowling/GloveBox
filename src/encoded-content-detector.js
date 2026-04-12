@@ -378,6 +378,7 @@ class EncodedContentDetector {
         note: 'High entropy suggests encryption or packing — manual analysis recommended',
         autoDecoded: candidate.autoDecoded,
         canLoad: false,
+        snippet: candidate.raw ? candidate.raw.substring(0, 120) : '',
       };
     }
 
@@ -443,6 +444,7 @@ class EncodedContentDetector {
       autoDecoded: candidate.autoDecoded,
       canLoad: !!(classification.type || this._isValidUTF8(decoded)),
       ext,
+      snippet: candidate.raw ? candidate.raw.substring(0, 120) : '',
     };
 
     return finding;

@@ -347,6 +347,7 @@ Object.assign(App.prototype, {
   _pushNavState(parentName) {
     if (!this._navStack) this._navStack = [];
     const pc = document.getElementById('page-container');
+    const docEl = pc && pc.firstElementChild;
     this._navStack.push({
       findings: this.findings,
       fileHashes: this.fileHashes,
@@ -354,6 +355,7 @@ Object.assign(App.prototype, {
       fileBuffer: this._fileBuffer,
       yaraResults: this._yaraResults,
       pageHTML: pc.innerHTML,
+      rawText: (docEl && docEl._rawText) || null,
       fileInfoText: document.getElementById('file-info').textContent,
       parentName,
     });
@@ -370,6 +372,10 @@ Object.assign(App.prototype, {
 
     const pc = document.getElementById('page-container');
     pc.innerHTML = state.pageHTML;
+    // Re-attach _rawText (JS property lost during innerHTML serialisation)
+    if (state.rawText && pc.firstElementChild) {
+      pc.firstElementChild._rawText = state.rawText;
+    }
     document.getElementById('file-info').textContent = state.fileInfoText;
 
     // Re-attach click handlers on ZIP rows (innerHTML loses event listeners)

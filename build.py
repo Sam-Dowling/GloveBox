@@ -2,7 +2,7 @@
 """Build script: assembles dist/glovebox.html from source files."""
 import os
 
-VERSION = '1.0.1'
+VERSION = '1.0.2'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 

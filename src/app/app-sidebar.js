@@ -4,6 +4,9 @@
 Object.assign(App.prototype, {
 
   _renderSidebar(fileName, analyzer) {
+    // Clear any lingering encoded-content highlights from previous view
+    this._clearEncodedHighlight();
+
     const f = this.findings;
     const yaraCount = (this._yaraResults || []).length;
 
@@ -277,6 +280,12 @@ Object.assign(App.prototype, {
 
   // ── Encoded Content section ────────────────────────────────────────────
   _renderEncodedContentSection(container, encodedFindings, fileName) {
+    // Determine if we have a plaintext view with accessible source text for highlighting
+    const _pc = document.getElementById('page-container');
+    const _docEl = _pc && _pc.firstElementChild;
+    const _sourceText = _docEl && _docEl._rawText;
+    const _isPlaintextView = !!(_pc && _pc.querySelector('.plaintext-table'));
+
     const det = document.createElement('details');
     det.className = 'sb-details';
     // Auto-open if any high-severity findings or any decoded content
@@ -341,9 +350,55 @@ Object.assign(App.prototype, {
       meta.className = 'enc-finding-meta';
       const sizeTxt = finding.decodedSize > 0
         ? this._fmtBytes(finding.decodedSize)
-        : `${finding.length} chars encoded`;
-      meta.textContent = `${sizeTxt} at offset ${finding.offset.toLocaleString()}`;
+        : (finding.length ? `${finding.length} chars encoded` : `offset ${finding.offset.toLocaleString()}`);
+
+      // Convert offset to line numbers for plaintext views
+      let _canLocate = false;
+      if (_isPlaintextView && _sourceText && finding.length) {
+        const beforeText = _sourceText.substring(0, finding.offset);
+        const startLine = (beforeText.match(/\n/g) || []).length + 1;
+        const encodedSpan = _sourceText.substring(finding.offset, finding.offset + finding.length);
+        const lineSpan = (encodedSpan.match(/\n/g) || []).length;
+        const endLine = startLine + lineSpan;
+        finding._startLine = startLine;
+        finding._endLine = endLine;
+        meta.textContent = startLine === endLine
+          ? `${sizeTxt} · line ${startLine}`
+          : `${sizeTxt} · lines ${startLine}\u2013${endLine}`;
+        _canLocate = true;
+      } else {
+        meta.textContent = `${sizeTxt} at offset ${finding.offset.toLocaleString()}`;
+      }
+
+      // Clickable locate icon for plaintext views
+      if (_canLocate) {
+        const locateBtn = document.createElement('span');
+        locateBtn.className = 'enc-locate-btn';
+        locateBtn.textContent = ' \uD83D\uDD0D';
+        locateBtn.title = 'Scroll to and highlight in view';
+        meta.appendChild(locateBtn);
+        meta.classList.add('enc-meta-clickable');
+        meta.addEventListener('click', (e) => { e.stopPropagation(); this._highlightEncodedInView(finding, true); });
+      }
       details.appendChild(meta);
+
+      // Snippet preview of the raw encoded content
+      const _snippetText = finding.snippet || (_sourceText && finding.length
+        ? _sourceText.substring(finding.offset, finding.offset + Math.min(finding.length, 120))
+        : null);
+      if (_snippetText) {
+        const snippetEl = document.createElement('div');
+        snippetEl.className = 'enc-snippet';
+        snippetEl.textContent = _snippetText.length < (finding.length || Infinity)
+          ? _snippetText + '\u2026'
+          : _snippetText;
+        if (_canLocate) {
+          snippetEl.title = 'Click to locate in view';
+          snippetEl.style.cursor = 'pointer';
+          snippetEl.addEventListener('click', () => this._highlightEncodedInView(finding, true));
+        }
+        details.appendChild(snippetEl);
+      }
 
       // Decoded type
       if (finding.classification && finding.classification.type) {
@@ -482,6 +537,13 @@ Object.assign(App.prototype, {
           innerDet.appendChild(innerCard);
         }
         card.appendChild(innerDet);
+      }
+
+      // Hover-to-highlight in view pane
+      if (_canLocate) {
+        card.setAttribute('data-locatable', '');
+        card.addEventListener('mouseenter', () => this._highlightEncodedInView(finding, false));
+        card.addEventListener('mouseleave', () => this._clearEncodedHighlight());
       }
 
       body.appendChild(card);
@@ -748,6 +810,45 @@ Object.assign(App.prototype, {
     }
     if (maxRisk && (riskRank[maxRisk] || 0) > currentRank) {
       this.findings.risk = maxRisk;
+    }
+  },
+
+  // ── Highlight encoded content in the view pane ──────────────────────────
+  _highlightEncodedInView(finding, flash) {
+    this._clearEncodedHighlight();
+    const pc = document.getElementById('page-container');
+    if (!pc) return;
+    const table = pc.querySelector('.plaintext-table');
+    if (!table || !finding._startLine) return;
+
+    const rows = table.rows;
+    const start = finding._startLine - 1;
+    const end = finding._endLine - 1;
+
+    for (let i = start; i <= end && i < rows.length; i++) {
+      rows[i].classList.add('enc-highlight-line');
+      if (flash) rows[i].classList.add('enc-highlight-flash');
+    }
+
+    if (flash && start < rows.length) {
+      rows[start].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    if (flash) {
+      setTimeout(() => {
+        for (let i = start; i <= end && i < rows.length; i++) {
+          rows[i].classList.remove('enc-highlight-flash');
+        }
+      }, 2000);
+    }
+  },
+
+  _clearEncodedHighlight() {
+    const pc = document.getElementById('page-container');
+    if (!pc) return;
+    const highlighted = pc.querySelectorAll('.enc-highlight-line');
+    for (const el of highlighted) {
+      el.classList.remove('enc-highlight-line', 'enc-highlight-flash');
     }
   },
 
