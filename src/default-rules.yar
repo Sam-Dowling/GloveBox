@@ -2287,19 +2287,6 @@ rule Info_Image_Only_HTML_Email
         $html and ($img1 or $img2) and not $no_p and not $no_span
 }
 
-rule Info_BMP_File
-{
-    meta:
-        description = "File contains a BMP bitmap image — sometimes used to smuggle data"
-        severity    = "info"
-
-    strings:
-        $bmp = { 42 4D }
-
-    condition:
-        $bmp at 0
-}
-
 rule Info_SVG_Image_Present
 {
     meta:

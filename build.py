@@ -84,9 +84,10 @@ HTML = f"""<!DOCTYPE html>
       <span id="file-info"></span>
       <button class="tb-close hidden" id="btn-close" title="Close file">✕</button>
     </div>
-    <button class="tb-btn" id="btn-security" title="Toggle security sidebar (S)">🛡 Toggle Sidebar</button>
     <button class="tb-btn" id="btn-yara" title="YARA rule editor (Y)">📐 YARA Rules</button>
-    <button class="tb-btn" id="btn-theme" title="Toggle dark mode">🌙</button>
+    <div class="tb-separator"></div>
+    <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>
+    <button class="tb-btn tb-icon-btn" id="btn-theme" title="Toggle dark mode">🌙</button>
     <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.ppt,.odt,.odp,.csv,.tsv,.doc,.msg,.eml,.lnk,.hta,.rtf,.pdf,.zip,.rar,.7z,.cab,.iso,.img,.one,.url,.webloc,.iqy,.slk,.wsf,.wsc,.wsh,.html,.htm,.mht,.xml,.vbs,.vbe,.js,.jse,.ps1,.bat,.cmd,.ics,.vcf,.txt,.log,.json,.ini,.cfg,.yml,.yaml,.jpg,.jpeg,.png,.gif,.bmp,.webp,.ico,.tif,.tiff,.avif,.svg" style="display:none">
   </div>
 
@@ -95,19 +96,26 @@ HTML = f"""<!DOCTYPE html>
 
     <!-- viewer -->
     <div id="viewer">
-      <div class="zoom-fab">
-        <button class="tb-btn" id="btn-zoom-out" title="Zoom out">−</button>
-        <span id="zoom-level">100%</span>
-        <button class="tb-btn" id="btn-zoom-in" title="Zoom in">+</button>
+      <div id="viewer-toolbar" class="hidden">
+        <div class="vt-group">
+          <button class="tb-btn tb-action-btn" id="btn-save" title="Save source content">💾 Save</button>
+          <button class="tb-btn tb-action-btn" id="btn-copy" title="Copy source content">📋 Copy</button>
+        </div>
+        <div class="vt-search">
+          <input type="text" id="doc-search" placeholder="Search content…" spellcheck="false">
+          <span id="doc-search-count"></span>
+        </div>
+        <div class="vt-spacer"></div>
+        <div class="vt-zoom">
+          <button class="tb-btn vt-zoom-btn" id="btn-zoom-out" title="Zoom out">−</button>
+          <span id="zoom-level">100%</span>
+          <button class="tb-btn vt-zoom-btn" id="btn-zoom-in" title="Zoom in">+</button>
+        </div>
       </div>
       <div id="drop-zone">
         <span class="dz-icon">📄</span>
         <div class="dz-text">Drop a file here to analyse</div>
         <div class="dz-sub">docx · xlsx · pptx · pdf · doc · eml · rtf · zip · iso · odt · one · lnk · hta · and any file · 100% offline</div>
-      </div>
-      <div id="doc-search-wrap" class="hidden">
-        <input type="text" id="doc-search" placeholder="Search content…" spellcheck="false">
-        <span id="doc-search-count"></span>
       </div>
       <div id="page-container"></div>
     </div>

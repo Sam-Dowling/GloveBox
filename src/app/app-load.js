@@ -165,13 +165,16 @@ Object.assign(App.prototype, {
       }
 
       // Extract interesting strings from rendered text + VBA source
-      this.findings.interestingStrings = this._extractInterestingStrings(docEl.textContent, this.findings);
+      // Use ._rawText if available (PlainTextRenderer provides clean decoded text
+      // instead of hex dump output that would break IOC extraction)
+      const analysisText = docEl._rawText || docEl.textContent;
+      this.findings.interestingStrings = this._extractInterestingStrings(analysisText, this.findings);
 
       // ── Encoded content detection ─────────────────────────────────────
       try {
         const detector = new EncodedContentDetector();
         const encodedFindings = await detector.scan(
-          docEl.textContent,
+          analysisText,
           new Uint8Array(buffer),
           {
             fileType: ext,
@@ -199,6 +202,9 @@ Object.assign(App.prototype, {
         this.findings.encodedContent = [];
       }
 
+      // Bump overall risk if encoded content findings have high severity
+      this._updateRiskFromEncodedContent();
+
       const pc = document.getElementById('page-container');
       pc.innerHTML = ''; pc.appendChild(docEl);
 
@@ -209,16 +215,23 @@ Object.assign(App.prototype, {
       const pi = pages > 0 ? `  ·  ${pages} page${pages !== 1 ? 's' : ''}` : '';
       document.getElementById('file-info').textContent = `${file.name}${pi}  ·  ${this._fmtBytes(file.size)}`;
       document.getElementById('btn-close').classList.remove('hidden');
+      document.getElementById('viewer-toolbar').classList.remove('hidden');
 
-      // Enable grab-to-pan on non-plaintext views; show search bar
+      // Enable grab-to-pan on non-plaintext views
       const viewer = document.getElementById('viewer');
       const isPlaintext = !!pc.querySelector('.plaintext-view, .hex-view');
-      document.getElementById('doc-search-wrap').classList.remove('hidden');
       viewer.classList.toggle('pannable', !isPlaintext);
 
       // Await hashes and render sidebar
       this.fileHashes = await hashPromise;
       this._renderSidebar(file.name, analyzer);
+
+      // If the renderer decoded non-UTF-8 content (e.g. UTF-16LE PowerShell),
+      // re-encode as UTF-8 for YARA scanning so text-based rules can match.
+      // Hashes are already computed from the original raw bytes above.
+      if (docEl._rawText) {
+        this._fileBuffer = new TextEncoder().encode(docEl._rawText).buffer;
+      }
 
       // Auto-run YARA scan against loaded file
       this._autoYaraScan();

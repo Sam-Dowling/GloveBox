@@ -203,6 +203,169 @@ body.dark .tb-btn:active {
   transform: scale(.97);
 }
 
+/* Icon-only toolbar buttons (sidebar toggle, theme) */
+.tb-icon-btn {
+  padding: 6px 8px;
+  font-size: 14px;
+  min-width: 32px;
+  text-align: center;
+  line-height: 1;
+}
+
+/* Toolbar separator — vertical gap between YARA and icon buttons */
+.tb-separator {
+  width: 1px;
+  height: 22px;
+  background: #ddd;
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+body.dark .tb-separator {
+  background: rgba(255, 255, 255, .1);
+}
+
+/* Toolbar button group (Save/Copy pair) */
+.tb-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tb-group.hidden {
+  display: none;
+}
+
+.tb-action-btn {
+  padding: 5px 10px;
+  font-size: 11px;
+}
+
+/* ── Viewer Toolbar (Save/Copy + Search + Zoom, inline above content) ── */
+#viewer-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 12px;
+  background: #f4f4f4;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  margin-bottom: 12px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, .08);
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+
+#viewer-toolbar.hidden {
+  display: none;
+}
+
+body.dark #viewer-toolbar {
+  background: rgba(18, 19, 28, .85);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-color: rgba(255, 255, 255, .07);
+  box-shadow: 0 2px 16px rgba(0, 0, 0, .35);
+}
+
+.vt-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.vt-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+
+.vt-search input {
+  width: 100%;
+  max-width: 260px;
+  padding: 5px 10px;
+  font-size: 12px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  background: white;
+  color: #333;
+  transition: all .2s ease;
+}
+
+body.dark .vt-search input {
+  background: rgba(255, 255, 255, .06);
+  border-color: rgba(255, 255, 255, .1);
+  color: #ddd;
+}
+
+.vt-search input:focus {
+  outline: none;
+  border-color: #22d3ee;
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, .12);
+}
+
+#doc-search-count {
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+  min-width: 55px;
+  font-variant-numeric: tabular-nums;
+}
+
+body.dark #doc-search-count {
+  color: rgba(255, 255, 255, .45);
+}
+
+.vt-spacer {
+  flex: 1;
+}
+
+.vt-zoom {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.vt-zoom-btn {
+  padding: 4px 10px !important;
+  font-size: 11px !important;
+  border: none !important;
+  border-radius: 7px !important;
+  min-width: 32px;
+  text-align: center;
+}
+
+body.dark .vt-zoom-btn {
+  background: transparent !important;
+  border: none !important;
+  color: rgba(255, 255, 255, .55) !important;
+}
+
+body.dark .vt-zoom-btn:hover {
+  background: rgba(34, 211, 238, .12) !important;
+  color: #22d3ee !important;
+  box-shadow: none !important;
+}
+
+#zoom-level {
+  font-size: 11px;
+  min-width: 38px;
+  text-align: center;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+body.dark #zoom-level {
+  color: rgba(255, 255, 255, .45);
+}
+
 /* Nav back button for archive drill-down */
 .nav-back-btn {
   background: rgba(59, 130, 246, .1) !important;
@@ -225,62 +388,6 @@ body.dark .nav-back-btn:hover {
 }
 .nav-back-btn.hidden { display: none; }
 
-/* ── Floating Zoom Controls ── */
-.zoom-fab {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  background: #f4f4f4;
-  border: 1px solid #ddd;
-  border-radius: 10px;
-  padding: 3px 4px;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, .1);
-}
-
-body.dark .zoom-fab {
-  background: rgba(18, 19, 28, .78);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border-color: rgba(255, 255, 255, .07);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, .4);
-}
-
-.zoom-fab .tb-btn {
-  padding: 4px 10px;
-  font-size: 11px;
-  border: none;
-  border-radius: 7px;
-  min-width: 32px;
-  text-align: center;
-}
-
-body.dark .zoom-fab .tb-btn {
-  background: transparent;
-  border: none;
-  color: rgba(255, 255, 255, .55);
-}
-
-body.dark .zoom-fab .tb-btn:hover {
-  background: rgba(34, 211, 238, .12);
-  color: #22d3ee;
-  box-shadow: none;
-}
-
-#zoom-level {
-  font-size: 11px;
-  min-width: 38px;
-  text-align: center;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-body.dark #zoom-level {
-  color: rgba(255, 255, 255, .45);
-}
 
 /* ── Main layout ── */
 #main-area {
@@ -1824,7 +1931,10 @@ body.dark .hta-script-label {
 }
 
 .plaintext-info {
-  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
   font-size: 12px;
   color: #666;
   border-bottom: 1px solid #e0e0e0;
@@ -1835,6 +1945,82 @@ body.dark .plaintext-info {
   color: rgba(255, 255, 255, .4);
   background: rgba(255, 255, 255, .02);
   border-color: rgba(255, 255, 255, .05);
+}
+
+.plaintext-info-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.plaintext-enc-label {
+  font-size: 11px;
+  white-space: nowrap;
+  color: #888;
+}
+
+body.dark .plaintext-enc-label {
+  color: rgba(255, 255, 255, .35);
+}
+
+.plaintext-enc-select {
+  font-size: 11px;
+  padding: 2px 6px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+  outline: none;
+}
+
+.plaintext-enc-select:focus {
+  border-color: #0078d7;
+  box-shadow: 0 0 0 2px rgba(0, 120, 215, .15);
+}
+
+body.dark .plaintext-enc-select {
+  background: rgba(255, 255, 255, .06);
+  color: #d4d4dc;
+  border-color: rgba(255, 255, 255, .12);
+}
+
+body.dark .plaintext-enc-select:focus {
+  border-color: rgba(34, 211, 238, .5);
+  box-shadow: 0 0 0 2px rgba(34, 211, 238, .12);
+}
+
+.plaintext-toggle-btn {
+  font-size: 11px;
+  padding: 3px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  color: #333;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+
+.plaintext-toggle-btn:hover {
+  background: #e8f0fe;
+  border-color: #0078d7;
+}
+
+body.dark .plaintext-toggle-btn {
+  background: rgba(255, 255, 255, .06);
+  color: #d4d4dc;
+  border-color: rgba(255, 255, 255, .12);
+}
+
+body.dark .plaintext-toggle-btn:hover {
+  background: rgba(34, 211, 238, .1);
+  border-color: rgba(34, 211, 238, .4);
+  color: #22d3ee;
+}
+
+.plaintext-content-area {
+  display: contents;
 }
 
 .plaintext-scroll {
@@ -2343,70 +2529,8 @@ body.dark .yara-match-offsets {
 }
 
 /* ══════════════════════════════════════════════════════
-   DOCUMENT SEARCH
+   DOCUMENT SEARCH (now inside #viewer-toolbar)
    ══════════════════════════════════════════════════════ */
-#doc-search-wrap {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  align-self: flex-start;
-  margin-bottom: 8px;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  background: rgba(244, 244, 244, .95);
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  padding: 4px 10px;
-  box-shadow: 0 1px 6px rgba(0, 0, 0, .08);
-}
-
-body.dark #doc-search-wrap {
-  background: rgba(18, 19, 28, .88);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  border-color: rgba(255, 255, 255, .08);
-  box-shadow: 0 2px 12px rgba(0, 0, 0, .3);
-}
-
-#doc-search-wrap.hidden {
-  display: none;
-}
-
-#doc-search {
-  width: 220px;
-  padding: 5px 10px;
-  font-size: 12px;
-  border: 1px solid #ccc;
-  border-radius: 6px;
-  background: white;
-  color: #333;
-  transition: all .2s ease;
-}
-
-body.dark #doc-search {
-  background: rgba(255, 255, 255, .06);
-  border-color: rgba(255, 255, 255, .1);
-  color: #ddd;
-}
-
-#doc-search:focus {
-  outline: none;
-  border-color: #22d3ee;
-  box-shadow: 0 0 0 3px rgba(34, 211, 238, .12);
-}
-
-#doc-search-count {
-  font-size: 11px;
-  color: #888;
-  white-space: nowrap;
-  min-width: 55px;
-  font-variant-numeric: tabular-nums;
-}
-
-body.dark #doc-search-count {
-  color: rgba(255, 255, 255, .45);
-}
 
 /* Search highlights in document */
 mark.search-hl {
@@ -2880,9 +3004,10 @@ body.dark .image-hex-header {
       <span id="file-info"></span>
       <button class="tb-close hidden" id="btn-close" title="Close file">✕</button>
     </div>
-    <button class="tb-btn" id="btn-security" title="Toggle security sidebar (S)">🛡 Toggle Sidebar</button>
     <button class="tb-btn" id="btn-yara" title="YARA rule editor (Y)">📐 YARA Rules</button>
-    <button class="tb-btn" id="btn-theme" title="Toggle dark mode">🌙</button>
+    <div class="tb-separator"></div>
+    <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>
+    <button class="tb-btn tb-icon-btn" id="btn-theme" title="Toggle dark mode">🌙</button>
     <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.ppt,.odt,.odp,.csv,.tsv,.doc,.msg,.eml,.lnk,.hta,.rtf,.pdf,.zip,.rar,.7z,.cab,.iso,.img,.one,.url,.webloc,.iqy,.slk,.wsf,.wsc,.wsh,.html,.htm,.mht,.xml,.vbs,.vbe,.js,.jse,.ps1,.bat,.cmd,.ics,.vcf,.txt,.log,.json,.ini,.cfg,.yml,.yaml,.jpg,.jpeg,.png,.gif,.bmp,.webp,.ico,.tif,.tiff,.avif,.svg" style="display:none">
   </div>
 
@@ -2891,19 +3016,26 @@ body.dark .image-hex-header {
 
     <!-- viewer -->
     <div id="viewer">
-      <div class="zoom-fab">
-        <button class="tb-btn" id="btn-zoom-out" title="Zoom out">−</button>
-        <span id="zoom-level">100%</span>
-        <button class="tb-btn" id="btn-zoom-in" title="Zoom in">+</button>
+      <div id="viewer-toolbar" class="hidden">
+        <div class="vt-group">
+          <button class="tb-btn tb-action-btn" id="btn-save" title="Save source content">💾 Save</button>
+          <button class="tb-btn tb-action-btn" id="btn-copy" title="Copy source content">📋 Copy</button>
+        </div>
+        <div class="vt-search">
+          <input type="text" id="doc-search" placeholder="Search content…" spellcheck="false">
+          <span id="doc-search-count"></span>
+        </div>
+        <div class="vt-spacer"></div>
+        <div class="vt-zoom">
+          <button class="tb-btn vt-zoom-btn" id="btn-zoom-out" title="Zoom out">−</button>
+          <span id="zoom-level">100%</span>
+          <button class="tb-btn vt-zoom-btn" id="btn-zoom-in" title="Zoom in">+</button>
+        </div>
       </div>
       <div id="drop-zone">
         <span class="dz-icon">📄</span>
         <div class="dz-text">Drop a file here to analyse</div>
         <div class="dz-sub">docx · xlsx · pptx · pdf · doc · eml · rtf · zip · iso · odt · one · lnk · hta · and any file · 100% offline</div>
-      </div>
-      <div id="doc-search-wrap" class="hidden">
-        <input type="text" id="doc-search" placeholder="Search content…" spellcheck="false">
-        <span id="doc-search-count"></span>
       </div>
       <div id="page-container"></div>
     </div>
@@ -7963,7 +8095,7 @@ class EncodedContentDetector {
       if (result) findings.push(result);
     }
     for (const cand of compressedCandidates) {
-      const result = await this._processCompressedCandidate(cand);
+      const result = await this._processCompressedCandidate(cand, rawBytes);
       if (result) findings.push(result);
     }
 
@@ -8140,8 +8272,15 @@ class EncodedContentDetector {
     const candidates = [];
     const fileType = context.fileType || '';
 
-    // Skip scanning inside files whose compression is already handled
-    if (['zip', 'rar', '7z', 'cab', 'gz', 'tar', 'iso', 'img'].includes(fileType)) return [];
+    // Skip scanning inside files whose compression is already handled,
+    // including ZIP-based container formats (OOXML, ODF, etc.) whose internal
+    // PK\x03\x04 local file headers are structure, not embedded payloads
+    const zipContainers = [
+      'zip', 'rar', '7z', 'cab', 'gz', 'tar', 'iso', 'img',
+      'docx', 'docm', 'xlsx', 'xlsm', 'pptx', 'pptm',
+      'odt', 'ods', 'odp', 'jar', 'apk', 'xpi', 'epub',
+    ];
+    if (zipContainers.includes(fileType)) return [];
 
     // Scan for magic bytes at each offset
     const magics = [
@@ -8253,7 +8392,7 @@ class EncodedContentDetector {
 
     // Run YARA if available (will be done by caller)
     // Determine severity
-    const severity = this._assessSeverity(classification, iocs, decoded);
+    let severity = this._assessSeverity(classification, iocs, decoded);
 
     // Recursive scan: check if decoded content contains more encoding layers
     let innerFindings = [];
@@ -8269,6 +8408,17 @@ class EncodedContentDetector {
         for (const f of innerFindings) {
           f.chain = [...chain, ...f.chain];
           f.depth = (f.depth || 0) + 1;
+        }
+      }
+    }
+
+    // Propagate severity from inner findings — if nested content is more dangerous,
+    // the parent finding should reflect that
+    if (innerFindings.length > 0) {
+      const sevRank = { critical: 4, high: 3, medium: 2, info: 1 };
+      for (const inner of innerFindings) {
+        if ((sevRank[inner.severity] || 0) > (sevRank[severity] || 0)) {
+          severity = inner.severity;
         }
       }
     }
@@ -8306,8 +8456,10 @@ class EncodedContentDetector {
 
   /**
    * Process a compressed blob candidate found via binary scan.
+   * @param {object}     candidate  Candidate info from _findCompressedBlobCandidates.
+   * @param {Uint8Array} rawBytes   Full file raw bytes (for ZIP validation).
    */
-  async _processCompressedCandidate(candidate) {
+  async _processCompressedCandidate(candidate, rawBytes) {
     // Always auto-decode compressed blobs
     const findingBase = {
       type: 'encoded-content',
@@ -8317,6 +8469,19 @@ class EncodedContentDetector {
     };
 
     if (candidate.format === 'zip') {
+      // Validate the embedded ZIP by trying to parse it with JSZip.
+      // Prune false positives (partial PK headers, container entry headers, etc.)
+      if (rawBytes && typeof JSZip !== 'undefined') {
+        try {
+          const zipBytes = rawBytes.subarray(candidate.offset);
+          const zip = await JSZip.loadAsync(zipBytes);
+          const entries = Object.keys(zip.files);
+          if (entries.length === 0) return null; // No valid entries — not a real ZIP
+        } catch (_) {
+          return null; // JSZip couldn't parse it — prune this false positive
+        }
+      }
+
       // Embedded ZIP — don't decompress, just flag it
       return {
         ...findingBase,
@@ -8376,6 +8541,15 @@ class EncodedContentDetector {
         finding.canLoad = true;
         finding.chain.push(finding.classification.type || 'binary data');
         finding.severity = this._assessSeverity(finding.classification, finding.iocs, result.data);
+        // Propagate severity from existing inner findings
+        if (finding.innerFindings && finding.innerFindings.length) {
+          const sevRank = { critical: 4, high: 3, medium: 2, info: 1 };
+          for (const inner of finding.innerFindings) {
+            if ((sevRank[inner.severity] || 0) > (sevRank[finding.severity] || 0)) {
+              finding.severity = inner.severity;
+            }
+          }
+        }
       }
       return finding;
     }
@@ -8403,6 +8577,15 @@ class EncodedContentDetector {
         else chain.push('binary data');
         finding.chain = chain;
         finding.severity = this._assessSeverity(finding.classification, finding.iocs, decoded);
+        // Propagate severity from existing inner findings
+        if (finding.innerFindings && finding.innerFindings.length) {
+          const sevRank = { critical: 4, high: 3, medium: 2, info: 1 };
+          for (const inner of finding.innerFindings) {
+            if ((sevRank[inner.severity] || 0) > (sevRank[finding.severity] || 0)) {
+              finding.severity = inner.severity;
+            }
+          }
+        }
         finding.ext = finding.classification.ext || (this._isValidUTF8(decoded) ? '.txt' : '.bin');
         finding.autoDecoded = true;
         finding.rawCandidate = null;
@@ -15261,6 +15444,8 @@ class ImageRenderer {
 // ════════════════════════════════════════════════════════════════════════════
 // plaintext-renderer.js — Catch-all viewer for unsupported file types
 // Shows plain text (with line numbers) or hex dump depending on content.
+// Supports encoding auto-detection (UTF-8, UTF-16LE, UTF-16BE, Latin-1)
+// and a toggle between text / hex views.
 // ════════════════════════════════════════════════════════════════════════════
 class PlainTextRenderer {
 
@@ -15276,13 +15461,130 @@ class PlainTextRenderer {
     'txt', 'log', 'md', 'csv', 'tsv',
   ]);
 
+  // Supported encodings for the selector
+  static ENCODINGS = [
+    { value: 'utf-8',     label: 'UTF-8' },
+    { value: 'utf-16le',  label: 'UTF-16LE' },
+    { value: 'utf-16be',  label: 'UTF-16BE' },
+    { value: 'latin1',    label: 'Latin-1 (ISO 8859-1)' },
+  ];
+
   // ── Render ──────────────────────────────────────────────────────────────
 
   render(buffer, fileName) {
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
-    const isText = this._isTextContent(bytes);
-    if (isText) return this._renderText(bytes, fileName);
-    return this._renderHex(bytes, fileName);
+    const detected = this._detectEncoding(bytes);
+    const isTextByDefault = detected.isText;
+
+    // Build wrapper that holds both views + controls
+    const wrap = document.createElement('div');
+    wrap.className = isTextByDefault ? 'plaintext-view' : 'hex-view';
+
+    // Decode text using detected encoding
+    const decodedText = this._decodeAs(bytes, detected.encoding);
+
+    // ── Info bar with toggle + encoding selector ──────────────────────
+    const info = document.createElement('div');
+    info.className = 'plaintext-info';
+
+    const infoText = document.createElement('span');
+    infoText.className = 'plaintext-info-text';
+    if (isTextByDefault) {
+      const lines = decodedText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+      infoText.textContent = `${lines.length} line${lines.length !== 1 ? 's' : ''}  ·  ${this._fmtBytes(bytes.length)}  ·  Plain text view`;
+    } else {
+      infoText.textContent = `${this._fmtBytes(bytes.length)}  ·  Binary file  ·  Hex dump view`;
+    }
+    info.appendChild(infoText);
+
+    // Spacer
+    const spacer = document.createElement('span');
+    spacer.style.flex = '1';
+    info.appendChild(spacer);
+
+    // Encoding selector
+    const encLabel = document.createElement('label');
+    encLabel.className = 'plaintext-enc-label';
+    encLabel.textContent = 'Encoding:';
+    info.appendChild(encLabel);
+
+    const encSelect = document.createElement('select');
+    encSelect.className = 'plaintext-enc-select';
+    encSelect.title = 'Change text encoding';
+    for (const enc of PlainTextRenderer.ENCODINGS) {
+      const opt = document.createElement('option');
+      opt.value = enc.value;
+      opt.textContent = enc.label;
+      if (enc.value === detected.encoding) opt.selected = true;
+      encSelect.appendChild(opt);
+    }
+    info.appendChild(encSelect);
+
+    // Toggle button
+    const toggleBtn = document.createElement('button');
+    toggleBtn.className = 'plaintext-toggle-btn';
+    toggleBtn.textContent = isTextByDefault ? '⬡ Hex' : '🔡 Text';
+    toggleBtn.title = isTextByDefault ? 'Switch to hex dump view' : 'Switch to plain text view';
+    info.appendChild(toggleBtn);
+
+    wrap.appendChild(info);
+
+    // ── Content area ─────────────────────────────────────────────────────
+    const contentArea = document.createElement('div');
+    contentArea.className = 'plaintext-content-area';
+
+    // Build both views
+    const textPane = this._buildTextPane(decodedText, fileName);
+    const hexPane = this._buildHexPane(bytes, fileName);
+
+    // Show the correct one by default
+    textPane.style.display = isTextByDefault ? '' : 'none';
+    hexPane.style.display = isTextByDefault ? 'none' : '';
+
+    contentArea.appendChild(textPane);
+    contentArea.appendChild(hexPane);
+    wrap.appendChild(contentArea);
+
+    // ── State tracking ───────────────────────────────────────────────────
+    let showingText = isTextByDefault;
+    let currentEncoding = detected.encoding;
+
+    // Store raw decoded text for analysis pipeline (IOC extraction, encoded content detection)
+    wrap._rawText = decodedText;
+    wrap._rawBytes = bytes;
+
+    // Mutable reference to the current text pane (may be replaced on encoding change)
+    contentArea._textPane = textPane;
+
+    // ── Toggle handler ───────────────────────────────────────────────────
+    toggleBtn.addEventListener('click', () => {
+      showingText = !showingText;
+      const currentTextPane = contentArea._textPane;
+      currentTextPane.style.display = showingText ? '' : 'none';
+      hexPane.style.display = showingText ? 'none' : '';
+      toggleBtn.textContent = showingText ? '⬡ Hex' : '🔡 Text';
+      toggleBtn.title = showingText ? 'Switch to hex dump view' : 'Switch to plain text view';
+      wrap.className = showingText ? 'plaintext-view' : 'hex-view';
+      // Show/hide encoding selector (only relevant for text view)
+      encLabel.style.display = showingText ? '' : 'none';
+      encSelect.style.display = showingText ? '' : 'none';
+      this._updateInfoText(infoText, showingText, bytes, currentEncoding);
+    });
+
+    // ── Encoding change handler ──────────────────────────────────────────
+    encSelect.addEventListener('change', () => {
+      currentEncoding = encSelect.value;
+      const newText = this._decodeAs(bytes, currentEncoding);
+      const oldTextPane = contentArea._textPane;
+      const newTextPane = this._buildTextPane(newText, fileName);
+      newTextPane.style.display = oldTextPane.style.display;
+      contentArea.replaceChild(newTextPane, oldTextPane);
+      contentArea._textPane = newTextPane;
+      wrap._rawText = newText;
+      this._updateInfoText(infoText, showingText, bytes, currentEncoding);
+    });
+
+    return wrap;
   }
 
   // ── Security analysis ───────────────────────────────────────────────────
@@ -15296,9 +15598,9 @@ class PlainTextRenderer {
     };
 
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
-    const isText = this._isTextContent(bytes);
+    const detected = this._detectEncoding(bytes);
 
-    if (!isText) {
+    if (!detected.isText) {
       // For binary files, note that this is an unsupported binary format
       f.externalRefs.push({
         type: IOC.INFO,
@@ -15311,23 +15613,81 @@ class PlainTextRenderer {
     return f;
   }
 
-  // ── Text rendering with line numbers ────────────────────────────────────
+  // ── Encoding auto-detection ─────────────────────────────────────────────
 
-  _renderText(bytes, fileName) {
-    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  /**
+   * Detect the most likely text encoding for the given bytes.
+   * Returns { encoding: string, isText: boolean }
+   */
+  _detectEncoding(bytes) {
+    if (bytes.length < 2) return { encoding: 'utf-8', isText: this._isTextContent(bytes, 'utf-8') };
+
+    // Check for BOM markers
+    if (bytes[0] === 0xFF && bytes[1] === 0xFE) {
+      return { encoding: 'utf-16le', isText: true };
+    }
+    if (bytes[0] === 0xFE && bytes[1] === 0xFF) {
+      return { encoding: 'utf-16be', isText: true };
+    }
+    if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+      return { encoding: 'utf-8', isText: true };
+    }
+
+    // Heuristic: check for UTF-16LE pattern (every other byte is 0x00 for ASCII text)
+    if (bytes.length >= 8) {
+      const sampleLen = Math.min(64, bytes.length);
+      // Must be even length for UTF-16
+      if (sampleLen % 2 === 0 || bytes.length % 2 === 0) {
+        let nullHighCount = 0;
+        let nullLowCount = 0;
+        const checkLen = Math.min(sampleLen, bytes.length) & ~1; // ensure even
+        for (let i = 0; i < checkLen; i += 2) {
+          if (bytes[i + 1] === 0x00 && bytes[i] >= 0x20 && bytes[i] <= 0x7E) nullHighCount++;
+          if (bytes[i] === 0x00 && bytes[i + 1] >= 0x20 && bytes[i + 1] <= 0x7E) nullLowCount++;
+        }
+        const pairs = checkLen / 2;
+        if (pairs > 0 && nullHighCount / pairs >= 0.6) {
+          return { encoding: 'utf-16le', isText: true };
+        }
+        if (pairs > 0 && nullLowCount / pairs >= 0.6) {
+          return { encoding: 'utf-16be', isText: true };
+        }
+      }
+    }
+
+    // Standard UTF-8 text check
+    if (this._isTextContent(bytes, 'utf-8')) {
+      return { encoding: 'utf-8', isText: true };
+    }
+
+    // Not clearly text — default to UTF-8 but mark as non-text (hex dump default)
+    return { encoding: 'utf-8', isText: false };
+  }
+
+  // ── Text decoding ───────────────────────────────────────────────────────
+
+  /**
+   * Decode bytes using the given encoding.
+   * Falls back gracefully to replacement characters on errors.
+   */
+  _decodeAs(bytes, encoding) {
+    try {
+      if (encoding === 'latin1') {
+        // TextDecoder doesn't always support 'latin1', use 'iso-8859-1'
+        return new TextDecoder('iso-8859-1', { fatal: false }).decode(bytes);
+      }
+      return new TextDecoder(encoding, { fatal: false }).decode(bytes);
+    } catch (_) {
+      // Ultimate fallback
+      return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    }
+  }
+
+  // ── Build text pane (line-numbered view) ────────────────────────────────
+
+  _buildTextPane(text, fileName) {
     const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-    const ext = (fileName || '').split('.').pop().toLowerCase();
 
-    const wrap = document.createElement('div');
-    wrap.className = 'plaintext-view';
-
-    // Info bar
-    const info = document.createElement('div');
-    info.className = 'plaintext-info';
-    info.textContent = `${lines.length} line${lines.length !== 1 ? 's' : ''}  ·  ${this._fmtBytes(bytes.length)}  ·  Plain text view`;
-    wrap.appendChild(info);
-
-    // Code block with line numbers
     const scr = document.createElement('div');
     scr.className = 'plaintext-scroll';
 
@@ -15359,21 +15719,12 @@ class PlainTextRenderer {
     }
 
     scr.appendChild(table);
-    wrap.appendChild(scr);
-    return wrap;
+    return scr;
   }
 
-  // ── Hex dump rendering ──────────────────────────────────────────────────
+  // ── Build hex pane ──────────────────────────────────────────────────────
 
-  _renderHex(bytes, fileName) {
-    const wrap = document.createElement('div');
-    wrap.className = 'hex-view';
-
-    const info = document.createElement('div');
-    info.className = 'plaintext-info';
-    info.textContent = `${this._fmtBytes(bytes.length)}  ·  Binary file  ·  Hex dump view`;
-    wrap.appendChild(info);
-
+  _buildHexPane(bytes, fileName) {
     const scr = document.createElement('div');
     scr.className = 'plaintext-scroll';
 
@@ -15406,24 +15757,50 @@ class PlainTextRenderer {
 
     pre.textContent = lines.join('\n');
     scr.appendChild(pre);
-    wrap.appendChild(scr);
-    return wrap;
+    return scr;
+  }
+
+  // ── Update info text helper ─────────────────────────────────────────────
+
+  _updateInfoText(infoText, showingText, bytes, encoding) {
+    if (showingText) {
+      const text = this._decodeAs(bytes, encoding);
+      const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+      const encLabel = PlainTextRenderer.ENCODINGS.find(e => e.value === encoding);
+      const encName = encLabel ? encLabel.label : encoding;
+      infoText.textContent = `${lines.length} line${lines.length !== 1 ? 's' : ''}  ·  ${this._fmtBytes(bytes.length)}  ·  Plain text view  ·  ${encName}`;
+    } else {
+      infoText.textContent = `${this._fmtBytes(bytes.length)}  ·  Binary file  ·  Hex dump view`;
+    }
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────
 
-  /** Heuristic: check if the first 8 KB is mostly printable UTF-8. */
-  _isTextContent(bytes) {
-    const sample = bytes.subarray(0, 8192);
-    let printable = 0;
-    for (let i = 0; i < sample.length; i++) {
-      const b = sample[i];
-      // Printable ASCII, common whitespace, or high bytes (UTF-8 continuation)
-      if ((b >= 0x20 && b <= 0x7e) || b === 0x09 || b === 0x0a || b === 0x0d || b >= 0x80) {
-        printable++;
+  /** Heuristic: check if the first 8 KB is mostly printable in the given encoding. */
+  _isTextContent(bytes, encoding) {
+    if (!encoding || encoding === 'utf-8') {
+      const sample = bytes.subarray(0, 8192);
+      let printable = 0;
+      for (let i = 0; i < sample.length; i++) {
+        const b = sample[i];
+        // Printable ASCII, common whitespace, or high bytes (UTF-8 continuation)
+        if ((b >= 0x20 && b <= 0x7e) || b === 0x09 || b === 0x0a || b === 0x0d || b >= 0x80) {
+          printable++;
+        }
       }
+      return sample.length > 0 && (printable / sample.length) >= 0.90;
     }
-    return sample.length > 0 && (printable / sample.length) >= 0.90;
+    // For other encodings, try decoding and check for control chars
+    try {
+      const text = this._decodeAs(bytes.subarray(0, 8192), encoding);
+      const controlCount = [...text].filter(c => {
+        const cp = c.codePointAt(0);
+        return cp < 32 && cp !== 9 && cp !== 10 && cp !== 13;
+      }).length;
+      return text.length > 0 && (controlCount / text.length) < 0.10;
+    } catch (_) {
+      return false;
+    }
   }
 
   _fmtBytes(n) {
@@ -15523,6 +15900,8 @@ class App {
     document.getElementById('btn-security').addEventListener('click', () => this._toggleSidebar());
     document.getElementById('btn-yara').addEventListener('click', () => this._openYaraDialog());
     document.getElementById('btn-close').addEventListener('click', () => this._clearFile());
+    document.getElementById('btn-save').addEventListener('click', () => this._saveContent());
+    document.getElementById('btn-copy').addEventListener('click', () => this._copyContent());
     document.getElementById('btn-zoom-out').addEventListener('click', () => this._setZoom(this.zoom - 10));
     document.getElementById('btn-zoom-in').addEventListener('click', () => this._setZoom(this.zoom + 10));
     document.getElementById('btn-theme').addEventListener('click', () => this._toggleTheme());
@@ -15801,13 +16180,16 @@ Object.assign(App.prototype, {
       }
 
       // Extract interesting strings from rendered text + VBA source
-      this.findings.interestingStrings = this._extractInterestingStrings(docEl.textContent, this.findings);
+      // Use ._rawText if available (PlainTextRenderer provides clean decoded text
+      // instead of hex dump output that would break IOC extraction)
+      const analysisText = docEl._rawText || docEl.textContent;
+      this.findings.interestingStrings = this._extractInterestingStrings(analysisText, this.findings);
 
       // ── Encoded content detection ─────────────────────────────────────
       try {
         const detector = new EncodedContentDetector();
         const encodedFindings = await detector.scan(
-          docEl.textContent,
+          analysisText,
           new Uint8Array(buffer),
           {
             fileType: ext,
@@ -15835,6 +16217,9 @@ Object.assign(App.prototype, {
         this.findings.encodedContent = [];
       }
 
+      // Bump overall risk if encoded content findings have high severity
+      this._updateRiskFromEncodedContent();
+
       const pc = document.getElementById('page-container');
       pc.innerHTML = ''; pc.appendChild(docEl);
 
@@ -15845,16 +16230,23 @@ Object.assign(App.prototype, {
       const pi = pages > 0 ? `  ·  ${pages} page${pages !== 1 ? 's' : ''}` : '';
       document.getElementById('file-info').textContent = `${file.name}${pi}  ·  ${this._fmtBytes(file.size)}`;
       document.getElementById('btn-close').classList.remove('hidden');
+      document.getElementById('viewer-toolbar').classList.remove('hidden');
 
-      // Enable grab-to-pan on non-plaintext views; show search bar
+      // Enable grab-to-pan on non-plaintext views
       const viewer = document.getElementById('viewer');
       const isPlaintext = !!pc.querySelector('.plaintext-view, .hex-view');
-      document.getElementById('doc-search-wrap').classList.remove('hidden');
       viewer.classList.toggle('pannable', !isPlaintext);
 
       // Await hashes and render sidebar
       this.fileHashes = await hashPromise;
       this._renderSidebar(file.name, analyzer);
+
+      // If the renderer decoded non-UTF-8 content (e.g. UTF-16LE PowerShell),
+      // re-encode as UTF-8 for YARA scanning so text-based rules can match.
+      // Hashes are already computed from the original raw bytes above.
+      if (docEl._rawText) {
+        this._fileBuffer = new TextEncoder().encode(docEl._rawText).buffer;
+      }
 
       // Auto-run YARA scan against loaded file
       this._autoYaraScan();
@@ -16344,9 +16736,10 @@ Object.assign(App.prototype, {
   _renderEncodedContentSection(container, encodedFindings, fileName) {
     const det = document.createElement('details');
     det.className = 'sb-details';
-    // Auto-open if any high-severity findings
+    // Auto-open if any high-severity findings or any decoded content
     const hasHigh = encodedFindings.some(f => f.severity === 'high' || f.severity === 'critical');
-    det.open = hasHigh;
+    const hasDecoded = encodedFindings.some(f => f.decodedBytes);
+    det.open = hasHigh || hasDecoded;
 
     const sum = document.createElement('summary');
     sum.className = 'sb-details-summary';
@@ -16459,32 +16852,41 @@ Object.assign(App.prototype, {
       const actions = document.createElement('div');
       actions.className = 'enc-finding-actions';
 
-      // "Decode" button for lazy-decoded candidates
-      if (!finding.autoDecoded && finding.rawCandidate) {
-        const decodeBtn = document.createElement('button');
-        decodeBtn.className = 'tb-btn enc-btn-decode';
-        decodeBtn.textContent = '🔑 Decode';
-        decodeBtn.title = 'Decode this content';
-        decodeBtn.addEventListener('click', async () => {
-          decodeBtn.disabled = true;
-          decodeBtn.textContent = '⏳ Decoding…';
+      // Combined "Decode & Analyse" button for lazy candidates, or "Load for analysis" if already decoded
+      if (!finding.autoDecoded && finding.rawCandidate && !finding.decodedBytes) {
+        // Needs decoding first, then load
+        const decodeLoadBtn = document.createElement('button');
+        decodeLoadBtn.className = 'tb-btn enc-btn-load';
+        decodeLoadBtn.textContent = '▶ Decode & Analyse';
+        decodeLoadBtn.title = 'Decode and open in the analysis pipeline';
+        decodeLoadBtn.addEventListener('click', async () => {
+          decodeLoadBtn.disabled = true;
+          decodeLoadBtn.textContent = '⏳ Decoding…';
           try {
             const detector = new EncodedContentDetector();
             await detector.lazyDecode(finding);
-            // Re-render this section
-            this._renderSidebar(fileName, null);
-            this._toast('Content decoded successfully');
+            this._updateRiskFromEncodedContent();
+            if (finding.decodedBytes) {
+              const ext = finding.ext || '.bin';
+              const synName = `decoded_${finding.encoding.toLowerCase().replace(/[^a-z0-9]/g, '_')}_offset${finding.offset}${ext}`;
+              const blob = new Blob([finding.decodedBytes], { type: 'application/octet-stream' });
+              const syntheticFile = new File([blob], synName, { type: 'application/octet-stream' });
+              this._pushNavState(fileName);
+              this._loadFile(syntheticFile);
+            } else {
+              this._toast('Decoded but no bytes produced', 'error');
+              decodeLoadBtn.disabled = false;
+              decodeLoadBtn.textContent = '▶ Decode & Analyse';
+            }
           } catch (err) {
             this._toast('Decode failed: ' + err.message, 'error');
-            decodeBtn.disabled = false;
-            decodeBtn.textContent = '🔑 Decode';
+            decodeLoadBtn.disabled = false;
+            decodeLoadBtn.textContent = '▶ Decode & Analyse';
           }
         });
-        actions.appendChild(decodeBtn);
-      }
-
-      // "Load for analysis" button — always available when decoded bytes exist
-      if (finding.decodedBytes) {
+        actions.appendChild(decodeLoadBtn);
+      } else if (finding.decodedBytes) {
+        // Already decoded — load directly
         const loadBtn = document.createElement('button');
         loadBtn.className = 'tb-btn enc-btn-load';
         loadBtn.textContent = '▶ Load for analysis';
@@ -16639,6 +17041,24 @@ Object.assign(App.prototype, {
 
     det.appendChild(body);
     container.appendChild(det);
+  },
+
+  // ── Update overall risk from encoded content severity ──────────────────
+  _updateRiskFromEncodedContent() {
+    if (!this.findings || !this.findings.encodedContent) return;
+    const riskRank = { critical: 4, high: 3, medium: 2, low: 1 };
+    const sevToRisk = { critical: 'critical', high: 'high', medium: 'medium' };
+    const currentRank = riskRank[this.findings.risk] || 1;
+    let maxRisk = null;
+    for (const ef of this.findings.encodedContent) {
+      const mapped = sevToRisk[ef.severity];
+      if (mapped && (riskRank[mapped] || 0) > (riskRank[maxRisk] || 0)) {
+        maxRisk = mapped;
+      }
+    }
+    if (maxRisk && (riskRank[maxRisk] || 0) > currentRank) {
+      this.findings.risk = maxRisk;
+    }
   },
 
 });
@@ -17053,6 +17473,34 @@ Object.assign(App.prototype, {
     });
   },
 
+  // ── Save / Copy current content ─────────────────────────────────────────
+  _saveContent() {
+    if (!this._fileBuffer) { this._toast('No file loaded', 'error'); return; }
+    const info = document.getElementById('file-info').textContent;
+    const name = (info.split('·')[0] || 'file').trim() || 'file';
+    const blob = new Blob([this._fileBuffer], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
+    this._toast('File saved');
+  },
+
+  _copyContent() {
+    if (!this._fileBuffer) { this._toast('No file loaded', 'error'); return; }
+    try {
+      const bytes = new Uint8Array(this._fileBuffer);
+      // Try to decode as text; if it looks binary, fall back to hex
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      this._copyToClipboard(text);
+    } catch (_) {
+      // Binary file — copy hex representation
+      const bytes = new Uint8Array(this._fileBuffer);
+      const hex = Array.from(bytes.slice(0, 65536)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      const suffix = bytes.length > 65536 ? '\n… (truncated)' : '';
+      this._copyToClipboard(hex + suffix);
+    }
+  },
+
   // ── Downloads ────────────────────────────────────────────────────────────
   _downloadMacros() {
     const f = this.findings;
@@ -17107,14 +17555,17 @@ Object.assign(App.prototype, {
     const icon = document.createElement('span'); icon.className = 'dz-icon'; icon.textContent = '📄'; dz.appendChild(icon);
     const txt = document.createElement('div'); txt.className = 'dz-text'; txt.textContent = 'Drop a file here to analyse'; dz.appendChild(txt);
     const sub = document.createElement('div'); sub.className = 'dz-sub'; sub.textContent = 'docx · xlsx · pptx · pdf · doc · msg · eml · lnk · hta · csv · and any file · 100% offline'; dz.appendChild(sub);
-    // Hide file info + close button + search
+    // Hide file info + close button + viewer toolbar
     document.getElementById('file-info').textContent = '';
     document.getElementById('btn-close').classList.add('hidden');
-    document.getElementById('doc-search-wrap').classList.add('hidden');
+    document.getElementById('viewer-toolbar').classList.add('hidden');
     document.getElementById('doc-search').value = '';
     if (this._clearSearch) this._clearSearch();
-    // Close sidebar
+    // Close sidebar and clear its content
     if (this.sidebarOpen) this._toggleSidebar();
+    document.getElementById('sb-body').innerHTML = '';
+    document.getElementById('sb-risk').className = 'sb-risk risk-low';
+    document.getElementById('sb-risk-title').textContent = 'No threats detected';
     // Reset state
     this.findings = null; this.fileHashes = null;
     this._fileBuffer = null; this._yaraResults = null;

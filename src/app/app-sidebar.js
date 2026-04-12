@@ -278,9 +278,10 @@ Object.assign(App.prototype, {
   _renderEncodedContentSection(container, encodedFindings, fileName) {
     const det = document.createElement('details');
     det.className = 'sb-details';
-    // Auto-open if any high-severity findings
+    // Auto-open if any high-severity findings or any decoded content
     const hasHigh = encodedFindings.some(f => f.severity === 'high' || f.severity === 'critical');
-    det.open = hasHigh;
+    const hasDecoded = encodedFindings.some(f => f.decodedBytes);
+    det.open = hasHigh || hasDecoded;
 
     const sum = document.createElement('summary');
     sum.className = 'sb-details-summary';
@@ -393,32 +394,41 @@ Object.assign(App.prototype, {
       const actions = document.createElement('div');
       actions.className = 'enc-finding-actions';
 
-      // "Decode" button for lazy-decoded candidates
-      if (!finding.autoDecoded && finding.rawCandidate) {
-        const decodeBtn = document.createElement('button');
-        decodeBtn.className = 'tb-btn enc-btn-decode';
-        decodeBtn.textContent = '🔑 Decode';
-        decodeBtn.title = 'Decode this content';
-        decodeBtn.addEventListener('click', async () => {
-          decodeBtn.disabled = true;
-          decodeBtn.textContent = '⏳ Decoding…';
+      // Combined "Decode & Analyse" button for lazy candidates, or "Load for analysis" if already decoded
+      if (!finding.autoDecoded && finding.rawCandidate && !finding.decodedBytes) {
+        // Needs decoding first, then load
+        const decodeLoadBtn = document.createElement('button');
+        decodeLoadBtn.className = 'tb-btn enc-btn-load';
+        decodeLoadBtn.textContent = '▶ Decode & Analyse';
+        decodeLoadBtn.title = 'Decode and open in the analysis pipeline';
+        decodeLoadBtn.addEventListener('click', async () => {
+          decodeLoadBtn.disabled = true;
+          decodeLoadBtn.textContent = '⏳ Decoding…';
           try {
             const detector = new EncodedContentDetector();
             await detector.lazyDecode(finding);
-            // Re-render this section
-            this._renderSidebar(fileName, null);
-            this._toast('Content decoded successfully');
+            this._updateRiskFromEncodedContent();
+            if (finding.decodedBytes) {
+              const ext = finding.ext || '.bin';
+              const synName = `decoded_${finding.encoding.toLowerCase().replace(/[^a-z0-9]/g, '_')}_offset${finding.offset}${ext}`;
+              const blob = new Blob([finding.decodedBytes], { type: 'application/octet-stream' });
+              const syntheticFile = new File([blob], synName, { type: 'application/octet-stream' });
+              this._pushNavState(fileName);
+              this._loadFile(syntheticFile);
+            } else {
+              this._toast('Decoded but no bytes produced', 'error');
+              decodeLoadBtn.disabled = false;
+              decodeLoadBtn.textContent = '▶ Decode & Analyse';
+            }
           } catch (err) {
             this._toast('Decode failed: ' + err.message, 'error');
-            decodeBtn.disabled = false;
-            decodeBtn.textContent = '🔑 Decode';
+            decodeLoadBtn.disabled = false;
+            decodeLoadBtn.textContent = '▶ Decode & Analyse';
           }
         });
-        actions.appendChild(decodeBtn);
-      }
-
-      // "Load for analysis" button — always available when decoded bytes exist
-      if (finding.decodedBytes) {
+        actions.appendChild(decodeLoadBtn);
+      } else if (finding.decodedBytes) {
+        // Already decoded — load directly
         const loadBtn = document.createElement('button');
         loadBtn.className = 'tb-btn enc-btn-load';
         loadBtn.textContent = '▶ Load for analysis';
@@ -573,6 +583,24 @@ Object.assign(App.prototype, {
 
     det.appendChild(body);
     container.appendChild(det);
+  },
+
+  // ── Update overall risk from encoded content severity ──────────────────
+  _updateRiskFromEncodedContent() {
+    if (!this.findings || !this.findings.encodedContent) return;
+    const riskRank = { critical: 4, high: 3, medium: 2, low: 1 };
+    const sevToRisk = { critical: 'critical', high: 'high', medium: 'medium' };
+    const currentRank = riskRank[this.findings.risk] || 1;
+    let maxRisk = null;
+    for (const ef of this.findings.encodedContent) {
+      const mapped = sevToRisk[ef.severity];
+      if (mapped && (riskRank[mapped] || 0) > (riskRank[maxRisk] || 0)) {
+        maxRisk = mapped;
+      }
+    }
+    if (maxRisk && (riskRank[maxRisk] || 0) > currentRank) {
+      this.findings.risk = maxRisk;
+    }
   },
 
 });

@@ -89,7 +89,7 @@ class EncodedContentDetector {
       if (result) findings.push(result);
     }
     for (const cand of compressedCandidates) {
-      const result = await this._processCompressedCandidate(cand);
+      const result = await this._processCompressedCandidate(cand, rawBytes);
       if (result) findings.push(result);
     }
 
@@ -266,8 +266,15 @@ class EncodedContentDetector {
     const candidates = [];
     const fileType = context.fileType || '';
 
-    // Skip scanning inside files whose compression is already handled
-    if (['zip', 'rar', '7z', 'cab', 'gz', 'tar', 'iso', 'img'].includes(fileType)) return [];
+    // Skip scanning inside files whose compression is already handled,
+    // including ZIP-based container formats (OOXML, ODF, etc.) whose internal
+    // PK\x03\x04 local file headers are structure, not embedded payloads
+    const zipContainers = [
+      'zip', 'rar', '7z', 'cab', 'gz', 'tar', 'iso', 'img',
+      'docx', 'docm', 'xlsx', 'xlsm', 'pptx', 'pptm',
+      'odt', 'ods', 'odp', 'jar', 'apk', 'xpi', 'epub',
+    ];
+    if (zipContainers.includes(fileType)) return [];
 
     // Scan for magic bytes at each offset
     const magics = [
@@ -379,7 +386,7 @@ class EncodedContentDetector {
 
     // Run YARA if available (will be done by caller)
     // Determine severity
-    const severity = this._assessSeverity(classification, iocs, decoded);
+    let severity = this._assessSeverity(classification, iocs, decoded);
 
     // Recursive scan: check if decoded content contains more encoding layers
     let innerFindings = [];
@@ -395,6 +402,17 @@ class EncodedContentDetector {
         for (const f of innerFindings) {
           f.chain = [...chain, ...f.chain];
           f.depth = (f.depth || 0) + 1;
+        }
+      }
+    }
+
+    // Propagate severity from inner findings — if nested content is more dangerous,
+    // the parent finding should reflect that
+    if (innerFindings.length > 0) {
+      const sevRank = { critical: 4, high: 3, medium: 2, info: 1 };
+      for (const inner of innerFindings) {
+        if ((sevRank[inner.severity] || 0) > (sevRank[severity] || 0)) {
+          severity = inner.severity;
         }
       }
     }
@@ -432,8 +450,10 @@ class EncodedContentDetector {
 
   /**
    * Process a compressed blob candidate found via binary scan.
+   * @param {object}     candidate  Candidate info from _findCompressedBlobCandidates.
+   * @param {Uint8Array} rawBytes   Full file raw bytes (for ZIP validation).
    */
-  async _processCompressedCandidate(candidate) {
+  async _processCompressedCandidate(candidate, rawBytes) {
     // Always auto-decode compressed blobs
     const findingBase = {
       type: 'encoded-content',
@@ -443,6 +463,19 @@ class EncodedContentDetector {
     };
 
     if (candidate.format === 'zip') {
+      // Validate the embedded ZIP by trying to parse it with JSZip.
+      // Prune false positives (partial PK headers, container entry headers, etc.)
+      if (rawBytes && typeof JSZip !== 'undefined') {
+        try {
+          const zipBytes = rawBytes.subarray(candidate.offset);
+          const zip = await JSZip.loadAsync(zipBytes);
+          const entries = Object.keys(zip.files);
+          if (entries.length === 0) return null; // No valid entries — not a real ZIP
+        } catch (_) {
+          return null; // JSZip couldn't parse it — prune this false positive
+        }
+      }
+
       // Embedded ZIP — don't decompress, just flag it
       return {
         ...findingBase,
@@ -502,6 +535,15 @@ class EncodedContentDetector {
         finding.canLoad = true;
         finding.chain.push(finding.classification.type || 'binary data');
         finding.severity = this._assessSeverity(finding.classification, finding.iocs, result.data);
+        // Propagate severity from existing inner findings
+        if (finding.innerFindings && finding.innerFindings.length) {
+          const sevRank = { critical: 4, high: 3, medium: 2, info: 1 };
+          for (const inner of finding.innerFindings) {
+            if ((sevRank[inner.severity] || 0) > (sevRank[finding.severity] || 0)) {
+              finding.severity = inner.severity;
+            }
+          }
+        }
       }
       return finding;
     }
@@ -529,6 +571,15 @@ class EncodedContentDetector {
         else chain.push('binary data');
         finding.chain = chain;
         finding.severity = this._assessSeverity(finding.classification, finding.iocs, decoded);
+        // Propagate severity from existing inner findings
+        if (finding.innerFindings && finding.innerFindings.length) {
+          const sevRank = { critical: 4, high: 3, medium: 2, info: 1 };
+          for (const inner of finding.innerFindings) {
+            if ((sevRank[inner.severity] || 0) > (sevRank[finding.severity] || 0)) {
+              finding.severity = inner.severity;
+            }
+          }
+        }
         finding.ext = finding.classification.ext || (this._isValidUTF8(decoded) ? '.txt' : '.bin');
         finding.autoDecoded = true;
         finding.rawCandidate = null;

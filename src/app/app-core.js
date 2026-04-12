@@ -88,6 +88,8 @@ class App {
     document.getElementById('btn-security').addEventListener('click', () => this._toggleSidebar());
     document.getElementById('btn-yara').addEventListener('click', () => this._openYaraDialog());
     document.getElementById('btn-close').addEventListener('click', () => this._clearFile());
+    document.getElementById('btn-save').addEventListener('click', () => this._saveContent());
+    document.getElementById('btn-copy').addEventListener('click', () => this._copyContent());
     document.getElementById('btn-zoom-out').addEventListener('click', () => this._setZoom(this.zoom - 10));
     document.getElementById('btn-zoom-in').addEventListener('click', () => this._setZoom(this.zoom + 10));
     document.getElementById('btn-theme').addEventListener('click', () => this._toggleTheme());

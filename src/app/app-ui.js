@@ -39,6 +39,34 @@ Object.assign(App.prototype, {
     });
   },
 
+  // ── Save / Copy current content ─────────────────────────────────────────
+  _saveContent() {
+    if (!this._fileBuffer) { this._toast('No file loaded', 'error'); return; }
+    const info = document.getElementById('file-info').textContent;
+    const name = (info.split('·')[0] || 'file').trim() || 'file';
+    const blob = new Blob([this._fileBuffer], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = name; a.click();
+    URL.revokeObjectURL(url);
+    this._toast('File saved');
+  },
+
+  _copyContent() {
+    if (!this._fileBuffer) { this._toast('No file loaded', 'error'); return; }
+    try {
+      const bytes = new Uint8Array(this._fileBuffer);
+      // Try to decode as text; if it looks binary, fall back to hex
+      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      this._copyToClipboard(text);
+    } catch (_) {
+      // Binary file — copy hex representation
+      const bytes = new Uint8Array(this._fileBuffer);
+      const hex = Array.from(bytes.slice(0, 65536)).map(b => b.toString(16).padStart(2, '0')).join(' ');
+      const suffix = bytes.length > 65536 ? '\n… (truncated)' : '';
+      this._copyToClipboard(hex + suffix);
+    }
+  },
+
   // ── Downloads ────────────────────────────────────────────────────────────
   _downloadMacros() {
     const f = this.findings;
@@ -93,14 +121,17 @@ Object.assign(App.prototype, {
     const icon = document.createElement('span'); icon.className = 'dz-icon'; icon.textContent = '📄'; dz.appendChild(icon);
     const txt = document.createElement('div'); txt.className = 'dz-text'; txt.textContent = 'Drop a file here to analyse'; dz.appendChild(txt);
     const sub = document.createElement('div'); sub.className = 'dz-sub'; sub.textContent = 'docx · xlsx · pptx · pdf · doc · msg · eml · lnk · hta · csv · and any file · 100% offline'; dz.appendChild(sub);
-    // Hide file info + close button + search
+    // Hide file info + close button + viewer toolbar
     document.getElementById('file-info').textContent = '';
     document.getElementById('btn-close').classList.add('hidden');
-    document.getElementById('doc-search-wrap').classList.add('hidden');
+    document.getElementById('viewer-toolbar').classList.add('hidden');
     document.getElementById('doc-search').value = '';
     if (this._clearSearch) this._clearSearch();
-    // Close sidebar
+    // Close sidebar and clear its content
     if (this.sidebarOpen) this._toggleSidebar();
+    document.getElementById('sb-body').innerHTML = '';
+    document.getElementById('sb-risk').className = 'sb-risk risk-low';
+    document.getElementById('sb-risk-title').textContent = 'No threats detected';
     // Reset state
     this.findings = null; this.fileHashes = null;
     this._fileBuffer = null; this._yaraResults = null;
