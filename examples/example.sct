@@ -1,0 +1,44 @@
+<?XML version="1.0"?>
+<!-- GloveBox sample SCT (Script Component) file -->
+<!-- This is a benign example for testing the InfSctRenderer -->
+<scriptlet>
+  <registration
+    description="GloveBox Sample Component"
+    progid="GloveBox.SampleComponent"
+    version="1.0"
+    classid="{AAAABBBB-CCCC-DDDD-EEEE-FFFFFFFFFFFF}"
+    remotable="false">
+  </registration>
+
+  <public>
+    <method name="GetVersion"/>
+    <method name="AnalyzeFile">
+      <parameter name="filePath"/>
+    </method>
+    <property name="AppName">
+      <get/>
+    </property>
+  </public>
+
+  <script language="JScript">
+  <![CDATA[
+    function GetVersion() {
+      return "1.0.2";
+    }
+
+    function get_AppName() {
+      return "GloveBox";
+    }
+
+    function AnalyzeFile(filePath) {
+      // Example analysis function
+      var fso = new ActiveXObject("Scripting.FileSystemObject");
+      if (fso.FileExists(filePath)) {
+        var file = fso.GetFile(filePath);
+        return "File size: " + file.Size + " bytes";
+      }
+      return "File not found";
+    }
+  ]]>
+  </script>
+</scriptlet>

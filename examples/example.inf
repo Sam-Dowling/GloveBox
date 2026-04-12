@@ -1,0 +1,51 @@
+; GloveBox sample INF file
+; Setup Information file for testing the InfSctRenderer
+
+[Version]
+Signature="$Chicago$"
+AdvancedINF=2.5,"You need a newer version of advpack.dll"
+Class=GloveBox
+ClassGUID={DEADBEEF-0000-1111-2222-333344445555}
+Provider=%MfgName%
+DriverVer=01/15/2025,1.0.2.0
+
+[DefaultInstall]
+CopyFiles=GloveBox.Files
+AddReg=GloveBox.Reg
+RunPreSetupCommands=GloveBox.PreSetup
+
+[DefaultInstall.Services]
+AddService=GloveBoxSvc,,GloveBox.Service
+
+[GloveBox.PreSetup]
+echo "GloveBox setup starting..."
+
+[GloveBox.Files]
+glovebox.exe,,,0x00000004
+glovebox.dll,,,0x00000004
+
+[GloveBox.Reg]
+HKLM,SOFTWARE\GloveBox,Version,,"1.0.2"
+HKLM,SOFTWARE\GloveBox,InstallPath,,"%01%\GloveBox"
+HKCU,Software\GloveBox,Enabled,0x10001,1
+
+[GloveBox.Service]
+DisplayName="GloveBox Service"
+ServiceType=0x10
+StartType=2
+ErrorControl=1
+ServiceBinary=%01%\glovebox.exe
+
+[SourceDisksNames]
+1=%DiskName%,"",0
+
+[SourceDisksFiles]
+glovebox.exe=1
+glovebox.dll=1
+
+[DestinationDirs]
+GloveBox.Files=11
+
+[Strings]
+MfgName="GloveBox Project"
+DiskName="GloveBox Installation Disk"

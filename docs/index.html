@@ -4090,7 +4090,7 @@ body.dark .help-tagline {
     <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>
     <button class="tb-btn tb-icon-btn" id="btn-help" title="Help &amp; About (?)">?</button>
     <button class="tb-btn tb-icon-btn" id="btn-theme" title="Toggle dark mode">🌙</button>
-    <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.ppt,.odt,.odp,.csv,.tsv,.doc,.msg,.eml,.lnk,.hta,.rtf,.pdf,.zip,.rar,.7z,.cab,.iso,.img,.one,.url,.webloc,.iqy,.slk,.wsf,.wsc,.wsh,.html,.htm,.mht,.xml,.vbs,.vbe,.js,.jse,.ps1,.bat,.cmd,.ics,.vcf,.txt,.log,.json,.ini,.cfg,.yml,.yaml,.jpg,.jpeg,.png,.gif,.bmp,.webp,.ico,.tif,.tiff,.avif,.svg,.evtx,.sqlite,.db" style="display:none">
+    <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.ppt,.odt,.odp,.csv,.tsv,.doc,.msg,.eml,.lnk,.hta,.rtf,.pdf,.zip,.rar,.7z,.cab,.iso,.img,.one,.url,.webloc,.iqy,.slk,.wsf,.wsc,.wsh,.reg,.inf,.sct,.msi,.html,.htm,.mht,.xml,.vbs,.vbe,.js,.jse,.ps1,.bat,.cmd,.ics,.vcf,.txt,.log,.json,.ini,.cfg,.yml,.yaml,.jpg,.jpeg,.png,.gif,.bmp,.webp,.ico,.tif,.tiff,.avif,.svg,.evtx,.sqlite,.db" style="display:none">
   </div>
 
   <!-- ── Main area (viewer + sidebar side-by-side) ──────────────────── -->
@@ -4250,7 +4250,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
-const GLOVEBOX_VERSION = '1.0.2';
+const GLOVEBOX_VERSION = '1.0.3';
 const DEFAULT_YARA_RULES = `// ─── Default YARA Rules ───────────────────────────────────
 // Edit or replace these rules, then click "Run Scan"
 // Supports: text strings, hex strings {AA BB}, regex /pattern/
@@ -8469,6 +8469,546 @@ rule Embedded_Compressed_Stream
 
     condition:
         any of them
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// REG — Windows Registry File rules
+// ════════════════════════════════════════════════════════════════════════
+
+rule REG_Persistence_Run_Key
+{
+    meta:
+        description = "Registry file modifies Run/RunOnce autostart keys (persistence)"
+        severity    = "critical"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $run1 = "CurrentVersion\\\\Run]" nocase
+        $run2 = "CurrentVersion\\\\RunOnce]" nocase
+        $run3 = "CurrentVersion\\\\RunOnceEx]" nocase
+        $run4 = "CurrentVersion\\\\RunServices]" nocase
+
+    condition:
+        ($header1 or $header2) and any of ($run*)
+}
+
+rule REG_Persistence_Winlogon
+{
+    meta:
+        description = "Registry file modifies Winlogon keys (persistence/credential theft)"
+        severity    = "critical"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $wl1 = "CurrentVersion\\\\Winlogon" nocase
+        $wl2 = "\\"Userinit\\"" nocase
+        $wl3 = "\\"Shell\\"" nocase
+
+    condition:
+        ($header1 or $header2) and $wl1 and any of ($wl2, $wl3)
+}
+
+rule REG_Security_Disable
+{
+    meta:
+        description = "Registry file disables Windows security features"
+        severity    = "critical"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $dis1 = "DisableAntiSpyware" nocase
+        $dis2 = "DisableRealtimeMonitoring" nocase
+        $dis3 = "DisableBehaviorMonitoring" nocase
+        $dis4 = "DisableOnAccessProtection" nocase
+        $dis5 = "DisableScanOnRealtimeEnable" nocase
+        $dis6 = "DisableAntiVirus" nocase
+        $dis7 = "Windows Defender" nocase
+
+    condition:
+        ($header1 or $header2) and any of ($dis*)
+}
+
+rule REG_IFEO_Debugger
+{
+    meta:
+        description = "Registry file sets Image File Execution Options debugger (process hijack)"
+        severity    = "critical"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $ifeo = "Image File Execution Options" nocase
+        $dbg = "\\"Debugger\\"" nocase
+
+    condition:
+        ($header1 or $header2) and $ifeo and $dbg
+}
+
+rule REG_Service_Creation
+{
+    meta:
+        description = "Registry file creates or modifies Windows services"
+        severity    = "high"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $svc1 = "\\\\Services\\\\" nocase
+        $svc2 = "\\"ImagePath\\"" nocase
+        $svc3 = "\\"Start\\"=dword:" nocase
+
+    condition:
+        ($header1 or $header2) and $svc1 and any of ($svc2, $svc3)
+}
+
+rule REG_UAC_Disable
+{
+    meta:
+        description = "Registry file disables User Account Control"
+        severity    = "critical"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $uac1 = "EnableLUA" nocase
+        $uac2 = "ConsentPromptBehaviorAdmin" nocase
+        $uac3 = "PromptOnSecureDesktop" nocase
+
+    condition:
+        ($header1 or $header2) and any of ($uac*)
+}
+
+rule REG_COM_Hijack
+{
+    meta:
+        description = "Registry file modifies COM class registration (COM hijacking)"
+        severity    = "high"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $com1 = "\\\\Classes\\\\CLSID\\\\" nocase
+        $com2 = "InprocServer32" nocase
+        $com3 = "\\\\Classes\\\\*\\\\shell" nocase
+
+    condition:
+        ($header1 or $header2) and any of ($com*)
+}
+
+rule REG_Suspicious_Values
+{
+    meta:
+        description = "Registry file contains suspicious executable references in values"
+        severity    = "high"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $v1 = "powershell" nocase
+        $v2 = "cmd.exe" nocase
+        $v3 = "mshta" nocase
+        $v4 = "regsvr32" nocase
+        $v5 = "rundll32" nocase
+        $v6 = "certutil" nocase
+        $v7 = "bitsadmin" nocase
+        $v8 = "wscript" nocase
+        $v9 = "cscript" nocase
+        $v10 = "-EncodedCommand" nocase
+        $v11 = "FromBase64String" nocase
+        $v12 = "DownloadString" nocase
+        $v13 = "DownloadFile" nocase
+
+    condition:
+        ($header1 or $header2) and 2 of ($v*)
+}
+
+rule REG_File_Association_Hijack
+{
+    meta:
+        description = "Registry file modifies file associations or shell handlers"
+        severity    = "high"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $fa1 = "\\\\Classes\\\\.exe\\\\" nocase
+        $fa2 = "\\\\Classes\\\\exefile\\\\" nocase
+        $fa3 = "\\\\Classes\\\\htmlfile\\\\" nocase
+        $fa4 = "\\\\Classes\\\\http\\\\" nocase
+        $fa5 = "\\\\shell\\\\open\\\\command" nocase
+
+    condition:
+        ($header1 or $header2) and any of ($fa*)
+}
+
+rule REG_Any_Presence
+{
+    meta:
+        description = "Windows Registry import file detected"
+        severity    = "info"
+
+    strings:
+        $header1 = "Windows Registry Editor Version 5.00"
+        $header2 = "REGEDIT4"
+
+    condition:
+        any of them
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// INF — Windows Setup Information File rules
+// ════════════════════════════════════════════════════════════════════════
+
+rule INF_Command_Execution
+{
+    meta:
+        description = "INF file with RunPreSetupCommands or RunPostSetupCommands (command execution)"
+        severity    = "critical"
+
+    strings:
+        $sec1 = "[RunPreSetupCommands]" nocase
+        $sec2 = "[RunPostSetupCommands]" nocase
+        $cmd1 = "RunPreSetupCommands" nocase
+        $cmd2 = "RunPostSetupCommands" nocase
+
+    condition:
+        any of them
+}
+
+rule INF_CMSTP_Bypass
+{
+    meta:
+        description = "INF file references CMSTP (UAC bypass technique T1218.003)"
+        severity    = "critical"
+
+    strings:
+        $cmstp1 = "cmstp" nocase
+        $cmstp2 = "CMSTP.EXE" nocase
+        $inf1 = "[DefaultInstall" nocase
+
+    condition:
+        any of ($cmstp*) and $inf1
+}
+
+rule INF_LOLBin_Reference
+{
+    meta:
+        description = "INF file references LOLBins (Living-off-the-Land binaries)"
+        severity    = "high"
+
+    strings:
+        $inf = "[DefaultInstall" nocase
+        $lol1 = "rundll32" nocase
+        $lol2 = "regsvr32" nocase
+        $lol3 = "mshta" nocase
+        $lol4 = "certutil" nocase
+        $lol5 = "bitsadmin" nocase
+        $lol6 = "scrobj.dll" nocase
+        $lol7 = "msiexec" nocase
+
+    condition:
+        $inf and any of ($lol*)
+}
+
+rule INF_Script_Execution
+{
+    meta:
+        description = "INF file references script interpreters"
+        severity    = "high"
+
+    strings:
+        $inf = "[DefaultInstall" nocase
+        $sc1 = "powershell" nocase
+        $sc2 = "cmd.exe" nocase
+        $sc3 = "wscript" nocase
+        $sc4 = "cscript" nocase
+        $sc5 = "cmd /c" nocase
+        $sc6 = "cmd /k" nocase
+
+    condition:
+        $inf and any of ($sc*)
+}
+
+rule INF_Registry_Modification
+{
+    meta:
+        description = "INF file with AddReg/DelReg directives (registry modification)"
+        severity    = "medium"
+
+    strings:
+        $addreg = "AddReg" nocase
+        $delreg = "DelReg" nocase
+        $hklm = "HKLM" nocase
+        $hkcu = "HKCU" nocase
+
+    condition:
+        any of ($addreg, $delreg) and any of ($hklm, $hkcu)
+}
+
+rule INF_DLL_Registration
+{
+    meta:
+        description = "INF file registers DLLs or OCX components"
+        severity    = "high"
+
+    strings:
+        $reg1 = "RegisterDlls" nocase
+        $reg2 = "UnRegisterDlls" nocase
+        $reg3 = "RegisterOCXs" nocase
+        $reg4 = "UnRegisterOCXs" nocase
+
+    condition:
+        any of them
+}
+
+rule INF_URL_Reference
+{
+    meta:
+        description = "INF file contains URL references"
+        severity    = "medium"
+
+    strings:
+        $url1 = "http://" nocase
+        $url2 = "https://" nocase
+        $inf = "[Version]" nocase
+
+    condition:
+        $inf and any of ($url*)
+}
+
+rule INF_Any_Presence
+{
+    meta:
+        description = "Windows Setup Information file detected"
+        severity    = "info"
+
+    strings:
+        $ver = "[Version]" nocase
+        $sig1 = "Signature=" nocase
+        $sig2 = "$Chicago$"
+        $sig3 = "$Windows NT$"
+
+    condition:
+        $ver and any of ($sig*)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// SCT — Windows Script Component (COM Scriptlet) rules
+// ════════════════════════════════════════════════════════════════════════
+
+rule SCT_Squiblydoo
+{
+    meta:
+        description = "SCT scriptlet with regsvr32 references (Squiblydoo attack T1218.010)"
+        severity    = "critical"
+
+    strings:
+        $sct1 = "<scriptlet" nocase
+        $sct2 = "<registration" nocase
+        $reg1 = "regsvr32" nocase
+        $reg2 = "scrobj.dll" nocase
+
+    condition:
+        any of ($sct*) and any of ($reg*)
+}
+
+rule SCT_Script_Execution
+{
+    meta:
+        description = "SCT scriptlet with embedded script code"
+        severity    = "high"
+
+    strings:
+        $sct = "<scriptlet" nocase
+        $sc1 = "<script" nocase
+        $lang1 = "JScript" nocase
+        $lang2 = "VBScript" nocase
+
+    condition:
+        $sct and $sc1 and any of ($lang*)
+}
+
+rule SCT_COM_Object_Creation
+{
+    meta:
+        description = "SCT scriptlet creates COM objects (code execution)"
+        severity    = "high"
+
+    strings:
+        $sct = "<scriptlet" nocase
+        $com1 = "CreateObject" nocase
+        $com2 = "GetObject" nocase
+        $com3 = "WScript.Shell" nocase
+        $com4 = "Shell.Application" nocase
+        $com5 = "Scripting.FileSystemObject" nocase
+
+    condition:
+        $sct and any of ($com*)
+}
+
+rule SCT_Network_Access
+{
+    meta:
+        description = "SCT scriptlet with network access capabilities"
+        severity    = "high"
+
+    strings:
+        $sct = "<scriptlet" nocase
+        $net1 = "XMLHTTP" nocase
+        $net2 = "MSXML2" nocase
+        $net3 = "WinHttp" nocase
+        $net4 = "ADODB.Stream" nocase
+        $net5 = "DownloadFile" nocase
+        $net6 = "DownloadString" nocase
+
+    condition:
+        $sct and any of ($net*)
+}
+
+rule SCT_Shell_Command
+{
+    meta:
+        description = "SCT scriptlet executes shell commands"
+        severity    = "critical"
+
+    strings:
+        $sct = "<scriptlet" nocase
+        $cmd1 = "powershell" nocase
+        $cmd2 = "cmd.exe" nocase
+        $cmd3 = "cmd /c" nocase
+        $cmd4 = ".Run" nocase
+        $cmd5 = ".Exec" nocase
+        $cmd6 = "mshta" nocase
+
+    condition:
+        $sct and 2 of ($cmd*)
+}
+
+rule SCT_Any_Presence
+{
+    meta:
+        description = "Windows Script Component (SCT/WSC scriptlet) detected"
+        severity    = "medium"
+
+    strings:
+        $sct1 = "<scriptlet" nocase
+        $sct2 = "<registration" nocase
+        $sct3 = "classid=" nocase
+
+    condition:
+        $sct1 and any of ($sct2, $sct3)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// MSI — Windows Installer Package rules
+// ════════════════════════════════════════════════════════════════════════
+
+rule MSI_Embedded_PE
+{
+    meta:
+        description = "MSI installer contains embedded PE executable"
+        severity    = "critical"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $mz1 = { 4D 5A 90 00 }
+        $mz2 = { 4D 5A 50 45 }
+        $pe  = "This program cannot be run in DOS mode"
+
+    condition:
+        $ole at 0 and (any of ($mz*) or $pe)
+}
+
+rule MSI_Embedded_Script
+{
+    meta:
+        description = "MSI installer contains embedded script content"
+        severity    = "high"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $sc1 = "WScript.Shell" nocase
+        $sc2 = "Scripting.FileSystemObject" nocase
+        $sc3 = "CreateObject" nocase
+        $sc4 = "powershell" nocase
+        $sc5 = "cmd.exe /c" nocase
+        $sc6 = "Shell.Application" nocase
+
+    condition:
+        $ole at 0 and 2 of ($sc*)
+}
+
+rule MSI_Suspicious_CustomAction
+{
+    meta:
+        description = "MSI installer references CustomAction execution patterns"
+        severity    = "high"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $ca = "CustomAction" nocase
+        $cmd1 = "powershell" nocase
+        $cmd2 = "cmd.exe" nocase
+        $cmd3 = "mshta" nocase
+        $cmd4 = "wscript" nocase
+        $cmd5 = "cscript" nocase
+        $cmd6 = "certutil" nocase
+        $cmd7 = "bitsadmin" nocase
+        $cmd8 = "rundll32" nocase
+
+    condition:
+        $ole at 0 and $ca and any of ($cmd*)
+}
+
+rule MSI_Network_Indicators
+{
+    meta:
+        description = "MSI installer contains network URL references"
+        severity    = "medium"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $url1 = "http://" nocase
+        $url2 = "https://" nocase
+        $url3 = "ftp://" nocase
+
+    condition:
+        $ole at 0 and any of ($url*)
+}
+
+rule MSI_Encoded_Content
+{
+    meta:
+        description = "MSI installer contains Base64 or encoded command indicators"
+        severity    = "high"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $enc1 = "-EncodedCommand" nocase
+        $enc2 = "-enc " nocase
+        $enc3 = "FromBase64String" nocase
+        $enc4 = "Convert]::FromBase64" nocase
+
+    condition:
+        $ole at 0 and any of ($enc*)
+}
+
+rule MSI_Service_Install
+{
+    meta:
+        description = "MSI installer creates Windows services"
+        severity    = "medium"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $svc1 = "ServiceInstall" nocase
+        $svc2 = "ServiceControl" nocase
+
+    condition:
+        $ole at 0 and any of ($svc*)
 }
 `;
 
@@ -14733,6 +15273,1404 @@ class WsfRenderer {
 
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
+// reg-renderer.js — Windows Registry File (.reg) analysis
+// Parses registry entries, highlights dangerous keys/values, security scanning.
+// Depends on: constants.js (IOC, escHtml)
+// ════════════════════════════════════════════════════════════════════════════
+class RegRenderer {
+
+  render(buffer, fileName) {
+    const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
+    const text = this._decodeText(bytes);
+    const wrap = document.createElement('div'); wrap.className = 'reg-view';
+
+    // Banner
+    const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
+    banner.innerHTML = '<strong>⚠ Windows Registry File (.reg)</strong> — Importing this file will modify the Windows registry. Registry changes can alter system behaviour, disable security features, install persistence mechanisms, and enable malware execution.';
+    wrap.appendChild(banner);
+
+    // Detect version header
+    const version = text.trimStart().startsWith('Windows Registry Editor Version 5.00')
+      ? 'Windows Registry Editor Version 5.00 (Unicode/Win2K+)'
+      : text.trimStart().startsWith('REGEDIT4')
+        ? 'REGEDIT4 (ANSI/Win9x legacy)'
+        : 'Unknown format';
+
+    // Parse entries
+    const analysis = this._analyze(text);
+
+    // Summary info
+    const infoDiv = document.createElement('div'); infoDiv.className = 'plaintext-info';
+    infoDiv.textContent = `${version}  ·  ${analysis.keys.length} key(s)  ·  ${analysis.values.length} value(s)  ·  ${analysis.deletions.length} deletion(s)`;
+    wrap.appendChild(infoDiv);
+
+    // Warnings
+    if (analysis.warnings.length) {
+      const warnDiv = document.createElement('div'); warnDiv.className = 'zip-warnings';
+      for (const w of analysis.warnings) {
+        const d = document.createElement('div');
+        d.className = `zip-warning zip-warning-${w.sev}`;
+        d.textContent = `⚠ ${w.label}`;
+        warnDiv.appendChild(d);
+      }
+      wrap.appendChild(warnDiv);
+    }
+
+    // Registry key/value table
+    if (analysis.keys.length) {
+      const secH = document.createElement('div'); secH.className = 'hta-section-hdr';
+      secH.textContent = `Registry Keys (${analysis.keys.length})`;
+      wrap.appendChild(secH);
+
+      for (const key of analysis.keys) {
+        const keyDiv = document.createElement('div');
+        keyDiv.style.cssText = 'margin:8px 0 2px 0;';
+
+        const keyLabel = document.createElement('div');
+        keyLabel.style.cssText = `padding:4px 8px;font-family:monospace;font-size:13px;border-left:3px solid ${key.isDeletion ? '#f44' : key.isSuspicious ? '#f88' : '#4af'};background:${key.isDeletion ? 'rgba(255,68,68,0.08)' : key.isSuspicious ? 'rgba(255,136,136,0.08)' : 'rgba(68,170,255,0.05)'};`;
+        keyLabel.textContent = (key.isDeletion ? '🗑 DELETE: ' : '📁 ') + key.path;
+        keyDiv.appendChild(keyLabel);
+
+        // Values under this key
+        const keyValues = analysis.values.filter(v => v.keyPath === key.path);
+        if (keyValues.length) {
+          const tbl = document.createElement('table'); tbl.className = 'lnk-info-table';
+          tbl.style.cssText = 'margin:0 0 0 16px;';
+          for (const v of keyValues) {
+            const tr = document.createElement('tr');
+            const tdN = document.createElement('td'); tdN.className = 'lnk-lbl';
+            tdN.textContent = v.name || '(Default)';
+            tdN.style.cssText += v.isSuspicious ? 'color:#f88;' : '';
+            const tdT = document.createElement('td'); tdT.className = 'lnk-lbl';
+            tdT.textContent = v.type;
+            tdT.style.cssText = 'opacity:0.6;min-width:80px;';
+            const tdV = document.createElement('td'); tdV.className = 'lnk-val';
+            tdV.textContent = v.isDeletion ? '(DELETED)' : v.data;
+            tdV.style.cssText += v.isSuspicious ? 'color:#f88;' : '';
+            tdV.style.cssText += v.isDeletion ? 'color:#f44;font-style:italic;' : '';
+            tr.appendChild(tdN); tr.appendChild(tdT); tr.appendChild(tdV);
+            tbl.appendChild(tr);
+          }
+          keyDiv.appendChild(tbl);
+        }
+
+        wrap.appendChild(keyDiv);
+      }
+    }
+
+    // Full source with line numbers
+    const srcH = document.createElement('div'); srcH.className = 'hta-section-hdr';
+    srcH.textContent = 'Full Source';
+    wrap.appendChild(srcH);
+
+    const lines = text.split('\n');
+    const srcInfo = document.createElement('div'); srcInfo.className = 'plaintext-info';
+    srcInfo.textContent = `${lines.length} line${lines.length !== 1 ? 's' : ''}  ·  ${this._fmtBytes(bytes.length)}`;
+    wrap.appendChild(srcInfo);
+
+    const scr = document.createElement('div'); scr.className = 'plaintext-scroll';
+    const table = document.createElement('table'); table.className = 'plaintext-table';
+    const maxLines = 50000;
+    const count = Math.min(lines.length, maxLines);
+    for (let i = 0; i < count; i++) {
+      const tr = document.createElement('tr');
+      const tdNum = document.createElement('td'); tdNum.className = 'plaintext-ln'; tdNum.textContent = i + 1;
+      const tdCode = document.createElement('td'); tdCode.className = 'plaintext-code'; tdCode.textContent = lines[i];
+      tr.appendChild(tdNum); tr.appendChild(tdCode); table.appendChild(tr);
+    }
+    scr.appendChild(table); wrap.appendChild(scr);
+
+    return wrap;
+  }
+
+  analyzeForSecurity(buffer, fileName) {
+    const f = {
+      risk: 'high', hasMacros: false, macroSize: 0, macroHash: '',
+      autoExec: [], modules: [], externalRefs: [], metadata: {},
+      signatureMatches: []
+    };
+
+    const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
+    const text = this._decodeText(bytes);
+
+    f.externalRefs.push({
+      type: IOC.INFO,
+      url: 'Windows Registry File (.reg) — imports registry changes when double-clicked or merged',
+      severity: 'high'
+    });
+
+    const analysis = this._analyze(text);
+
+    // Report key/value counts
+    f.externalRefs.push({
+      type: IOC.PATTERN,
+      url: `${analysis.keys.length} registry key(s), ${analysis.values.length} value(s), ${analysis.deletions.length} deletion(s)`,
+      severity: 'info'
+    });
+
+    // Report warnings as findings
+    for (const w of analysis.warnings) {
+      f.externalRefs.push({ type: IOC.PATTERN, url: w.label, severity: w.sev });
+    }
+
+    // Bump risk to critical if we have many high-severity warnings
+    const highCount = analysis.warnings.filter(w => w.sev === 'high' || w.sev === 'critical').length;
+    if (highCount >= 3) f.risk = 'critical';
+
+    return f;
+  }
+
+  // ── Registry file analysis ──────────────────────────────────────────────
+
+  _analyze(text) {
+    const result = { keys: [], values: [], deletions: [], warnings: [] };
+    const lines = text.split(/\r?\n/);
+    let currentKey = null;
+    let continuedLine = '';
+
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i];
+
+      // Handle line continuations (backslash at end)
+      if (continuedLine) {
+        line = continuedLine + line.trim();
+        continuedLine = '';
+      }
+      if (line.endsWith('\\')) {
+        continuedLine = line.slice(0, -1);
+        continue;
+      }
+
+      // Skip comments and blank lines
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith(';')) continue;
+
+      // Version header
+      if (trimmed.startsWith('Windows Registry Editor') || trimmed === 'REGEDIT4') continue;
+
+      // Registry key line: [HKEY_...]  or  [-HKEY_...] for deletion
+      const keyMatch = trimmed.match(/^\[(-?)(HKEY_[^\]]+)\]\s*$/);
+      if (keyMatch) {
+        const isDeletion = keyMatch[1] === '-';
+        const path = keyMatch[2];
+        const isSuspicious = this._isSuspiciousKey(path);
+        currentKey = { path, isDeletion, isSuspicious };
+        result.keys.push(currentKey);
+        if (isDeletion) result.deletions.push(path);
+
+        if (isSuspicious) {
+          result.warnings.push({
+            label: `Suspicious registry key: ${path}`,
+            sev: 'high'
+          });
+        }
+        if (isDeletion) {
+          result.warnings.push({
+            label: `Key deletion: ${path}`,
+            sev: this._isSuspiciousKey(path) ? 'high' : 'medium'
+          });
+        }
+        continue;
+      }
+
+      // Value line: "name"=type:data  or  @=data (default value)  or  "name"=-  (delete value)
+      if (currentKey) {
+        const valMatch = trimmed.match(/^(?:"([^"]*)"|([@]))=(.*)$/);
+        if (valMatch) {
+          const name = valMatch[1] !== undefined ? valMatch[1] : valMatch[2] === '@' ? '' : valMatch[2];
+          const rawData = valMatch[3];
+          const isDeletion = rawData === '-';
+
+          let type = 'REG_SZ';
+          let data = rawData;
+
+          if (!isDeletion) {
+            if (rawData.startsWith('"')) {
+              type = 'REG_SZ';
+              data = rawData.slice(1, rawData.lastIndexOf('"'));
+            } else if (rawData.startsWith('dword:')) {
+              type = 'REG_DWORD';
+              data = rawData.slice(6);
+            } else if (rawData.startsWith('hex(b):')) {
+              type = 'REG_QWORD';
+              data = rawData.slice(7);
+            } else if (rawData.startsWith('hex(7):')) {
+              type = 'REG_MULTI_SZ';
+              data = rawData.slice(7);
+            } else if (rawData.startsWith('hex(2):')) {
+              type = 'REG_EXPAND_SZ';
+              data = rawData.slice(7);
+            } else if (rawData.startsWith('hex(0):')) {
+              type = 'REG_NONE';
+              data = rawData.slice(7);
+            } else if (rawData.startsWith('hex:')) {
+              type = 'REG_BINARY';
+              data = rawData.slice(4);
+            }
+          }
+
+          const isSuspicious = this._isSuspiciousValue(name, data, currentKey.path);
+
+          result.values.push({
+            keyPath: currentKey.path,
+            name, type, data, isDeletion, isSuspicious
+          });
+
+          if (isDeletion) {
+            result.deletions.push(`${currentKey.path}\\${name || '(Default)'}`);
+          }
+
+          if (isSuspicious) {
+            result.warnings.push({
+              label: `Suspicious value: "${name || '(Default)'}" = ${data.length > 80 ? data.slice(0, 80) + '…' : data}`,
+              sev: 'high'
+            });
+          }
+        }
+      }
+    }
+
+    // Additional pattern checks
+    if (/\\currentversion\\run\b/i.test(text)) {
+      result.warnings.push({ label: 'Persistence: Modifies Run/RunOnce autostart registry keys', sev: 'critical' });
+    }
+    if (/\\services\\/i.test(text)) {
+      result.warnings.push({ label: 'Service modification: Targets Windows Services registry keys', sev: 'high' });
+    }
+    if (/\\image file execution options\\/i.test(text)) {
+      result.warnings.push({ label: 'IFEO hijack: Modifies Image File Execution Options (debugger trap)', sev: 'critical' });
+    }
+    if (/\\policies\\microsoft\\windows defender/i.test(text)) {
+      result.warnings.push({ label: 'Security tampering: Targets Windows Defender policy settings', sev: 'critical' });
+    }
+    if (/\\policies\\microsoft\\windows\\windowsupdate/i.test(text)) {
+      result.warnings.push({ label: 'Security tampering: Targets Windows Update policy settings', sev: 'high' });
+    }
+    if (/disableantispyware|disablerealtimemonitoring|disablebehaviormonitoring/i.test(text)) {
+      result.warnings.push({ label: 'Security disable: Attempts to disable antimalware protection', sev: 'critical' });
+    }
+    if (/\\currentversion\\explorer\\shell folders/i.test(text) || /\\currentversion\\explorer\\user shell folders/i.test(text)) {
+      result.warnings.push({ label: 'Shell folder redirect: Modifies special folder paths', sev: 'high' });
+    }
+
+    // Deduplicate warnings
+    const seen = new Set();
+    result.warnings = result.warnings.filter(w => {
+      if (seen.has(w.label)) return false;
+      seen.add(w.label); return true;
+    });
+
+    return result;
+  }
+
+  _isSuspiciousKey(path) {
+    const lp = path.toLowerCase();
+    const patterns = [
+      'currentversion\\run', 'currentversion\\runonce', 'currentversion\\runonceex',
+      'currentversion\\runservices', 'currentversion\\runservicesonce',
+      'currentversion\\explorer\\shell', 'currentversion\\explorer\\shellexecutehooks',
+      'currentversion\\policies', 'currentversion\\windows\\load', 'currentversion\\windows\\run',
+      'currentversion\\winlogon', 'currentversion\\image file execution options',
+      'currentversion\\app paths', 'currentversion\\uninstall',
+      '\\services\\', '\\control\\safeboot',
+      '\\appinit_dlls', '\\lsa\\', '\\security\\',
+      '\\currentversion\\explorer\\browser helper objects',
+      '\\classes\\clsid\\', '\\classes\\*\\shell',
+      '\\classes\\exefile\\', '\\classes\\.exe\\',
+      '\\classes\\htmlfile\\', '\\classes\\http\\',
+      '\\environment\\', 'currentversion\\explorer\\startup',
+      'microsoft\\windows nt\\currentversion\\windows',
+      'microsoft\\windows defender', 'microsoft\\windows\\windowsupdate',
+      '\\scheduleagents\\', '\\installedcomponents\\',
+      'currentversion\\authentication\\', 'currentversion\\credential',
+      '\\system\\currentcontrolset\\control\\session manager',
+    ];
+    return patterns.some(p => lp.includes(p));
+  }
+
+  _isSuspiciousValue(name, data, keyPath) {
+    const ld = (data || '').toLowerCase();
+    const ln = (name || '').toLowerCase();
+    const lk = (keyPath || '').toLowerCase();
+
+    // Known dangerous value names
+    const dangerousNames = [
+      'debugger', 'appinit_dlls', 'loadappinit_dlls', 'userinit',
+      'shell', 'taskbar', 'load', 'run', 'autorun',
+      'disableantispyware', 'disablerealtimemonitoring', 'disablebehaviormonitoring',
+      'disableonaccessprotection', 'disablescanonrealtimeenable',
+      'enablelua', 'consentpromptbehavioradmin', 'promptonsecuredesktop',
+      'noautorun', 'nodrivetypeautorun',
+    ];
+    if (dangerousNames.includes(ln)) return true;
+
+    // Suspicious data patterns
+    const suspiciousData = [
+      'powershell', 'cmd.exe', 'cmd /c', 'wscript', 'cscript', 'mshta',
+      'regsvr32', 'rundll32', 'certutil', 'bitsadmin', 'msiexec',
+      'http://', 'https://', 'ftp://', '\\\\',
+      'frombase64string', '-enc ', '-encodedcommand',
+      'downloadstring', 'downloadfile', 'invoke-expression', 'iex ',
+      'new-object system.net',
+    ];
+    if (suspiciousData.some(p => ld.includes(p))) return true;
+
+    // Large hex binary data could hide embedded payloads
+    if (data && data.length > 500 && /^[0-9a-f,\s]+$/.test(data)) return true;
+
+    return false;
+  }
+
+  _decodeText(bytes) {
+    // .reg files can be UTF-16LE (Version 5.00) or ANSI (REGEDIT4)
+    // Check for BOM
+    if (bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE) {
+      return new TextDecoder('utf-16le', { fatal: false }).decode(bytes);
+    }
+    // Check for UTF-16LE without BOM (look for null bytes interleaved)
+    if (bytes.length >= 4 && bytes[1] === 0x00 && bytes[3] === 0x00) {
+      return new TextDecoder('utf-16le', { fatal: false }).decode(bytes);
+    }
+    return new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  }
+
+  _fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+}
+
+'use strict';
+// ════════════════════════════════════════════════════════════════════════════
+// inf-renderer.js — Windows Setup Information File (.inf) and
+//                    Windows Script Component (.sct) analysis
+// Parses INI sections, flags dangerous directives. SCT files get XML analysis
+// similar to WSC scriptlets (Squiblydoo attack vector).
+// Depends on: constants.js (IOC, escHtml)
+// ════════════════════════════════════════════════════════════════════════════
+class InfSctRenderer {
+
+  render(buffer, fileName) {
+    const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    const ext = (fileName || '').split('.').pop().toLowerCase();
+    const wrap = document.createElement('div'); wrap.className = 'inf-view';
+
+    if (ext === 'sct') return this._renderSct(wrap, text, bytes, fileName);
+    return this._renderInf(wrap, text, bytes, fileName);
+  }
+
+  // ── INF rendering ────────────────────────────────────────────────────────
+
+  _renderInf(wrap, text, bytes, fileName) {
+    // Banner
+    const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
+    banner.innerHTML = '<strong>⚠ Windows Setup Information File (.inf)</strong> — INF files configure driver and software installation. They can execute arbitrary commands via right-click "Install" and are abused for <code>CMSTP</code> UAC bypass, DLL side-loading, and malware persistence.';
+    wrap.appendChild(banner);
+
+    const analysis = this._analyzeInf(text);
+
+    // Summary
+    const infoDiv = document.createElement('div'); infoDiv.className = 'plaintext-info';
+    infoDiv.textContent = `${analysis.sections.length} section(s)  ·  ${analysis.directives.length} directive(s)  ·  Setup Information File`;
+    wrap.appendChild(infoDiv);
+
+    // Warnings
+    if (analysis.warnings.length) {
+      const warnDiv = document.createElement('div'); warnDiv.className = 'zip-warnings';
+      for (const w of analysis.warnings) {
+        const d = document.createElement('div');
+        d.className = `zip-warning zip-warning-${w.sev}`;
+        d.textContent = `⚠ ${w.label}`;
+        warnDiv.appendChild(d);
+      }
+      wrap.appendChild(warnDiv);
+    }
+
+    // Sections display
+    if (analysis.sections.length) {
+      const secH = document.createElement('div'); secH.className = 'hta-section-hdr';
+      secH.textContent = `INF Sections (${analysis.sections.length})`;
+      wrap.appendChild(secH);
+
+      for (const sec of analysis.sections) {
+        const secDiv = document.createElement('div'); secDiv.style.cssText = 'margin:8px 0 2px 0;';
+
+        const secLabel = document.createElement('div');
+        secLabel.style.cssText = `padding:4px 8px;font-family:monospace;font-size:13px;font-weight:bold;border-left:3px solid ${sec.isSuspicious ? '#f88' : '#4af'};background:${sec.isSuspicious ? 'rgba(255,136,136,0.08)' : 'rgba(68,170,255,0.05)'};`;
+        secLabel.textContent = `[${sec.name}]`;
+        secDiv.appendChild(secLabel);
+
+        if (sec.entries.length) {
+          const tbl = document.createElement('table'); tbl.className = 'lnk-info-table';
+          tbl.style.cssText = 'margin:0 0 0 16px;';
+          for (const entry of sec.entries) {
+            const tr = document.createElement('tr');
+            const tdK = document.createElement('td'); tdK.className = 'lnk-lbl';
+            tdK.textContent = entry.key || '';
+            tdK.style.cssText += entry.isSuspicious ? 'color:#f88;' : '';
+            const tdV = document.createElement('td'); tdV.className = 'lnk-val';
+            tdV.textContent = entry.value || entry.line;
+            tdV.style.cssText += entry.isSuspicious ? 'color:#f88;' : '';
+            tr.appendChild(tdK); tr.appendChild(tdV);
+            tbl.appendChild(tr);
+          }
+          secDiv.appendChild(tbl);
+        }
+        wrap.appendChild(secDiv);
+      }
+    }
+
+    // Full source
+    this._appendSource(wrap, text, bytes);
+    return wrap;
+  }
+
+  // ── SCT rendering ────────────────────────────────────────────────────────
+
+  _renderSct(wrap, text, bytes, fileName) {
+    const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
+    banner.innerHTML = '<strong>⚠ Windows Script Component (.sct)</strong> — COM scriptlet that executes via <code>regsvr32 /s /n /u /i:file.sct scrobj.dll</code> (Squiblydoo attack). Can run VBScript/JScript with full system access and download remote payloads.';
+    wrap.appendChild(banner);
+
+    const analysis = this._analyzeSct(text);
+
+    // Script blocks
+    if (analysis.scripts.length) {
+      const warnDiv = document.createElement('div'); warnDiv.className = 'zip-warnings';
+      const w = document.createElement('div'); w.className = 'zip-warning zip-warning-high';
+      w.textContent = `⚠ ${analysis.scripts.length} script block(s) found — ${analysis.scripts.map(s => s.language).join(', ')}`;
+      warnDiv.appendChild(w);
+      wrap.appendChild(warnDiv);
+
+      for (let i = 0; i < analysis.scripts.length; i++) {
+        const s = analysis.scripts[i];
+        const sec = document.createElement('div'); sec.className = 'wsf-script-block';
+        const h = document.createElement('h3');
+        h.textContent = `Script ${i + 1}: ${s.language}`;
+        h.style.cssText = 'margin:12px 0 4px 0;padding:4px 8px;background:#332;border-left:3px solid #f88;';
+        sec.appendChild(h);
+
+        if (s.code) {
+          const pre = document.createElement('pre'); pre.className = 'rtf-raw-source';
+          pre.style.cssText += 'max-height:300px;overflow:auto;';
+          pre.textContent = s.code.length > 50000 ? s.code.slice(0, 50000) + '\n… truncated' : s.code;
+          sec.appendChild(pre);
+        }
+        wrap.appendChild(sec);
+      }
+    }
+
+    // Warnings
+    if (analysis.warnings.length) {
+      const pSec = document.createElement('div'); pSec.style.cssText = 'padding:0 8px;';
+      const h = document.createElement('h3');
+      h.textContent = `${analysis.warnings.length} Suspicious Pattern(s)`;
+      h.style.cssText = 'margin:12px 0 4px 0;color:#f88;';
+      pSec.appendChild(h);
+      for (const p of analysis.warnings) {
+        const d = document.createElement('div'); d.className = `zip-warning zip-warning-${p.sev}`;
+        d.textContent = p.label; pSec.appendChild(d);
+      }
+      wrap.appendChild(pSec);
+    }
+
+    // Registration info
+    if (analysis.registration.length) {
+      const rSec = document.createElement('div'); rSec.style.cssText = 'padding:0 8px;';
+      const h = document.createElement('h3'); h.textContent = 'COM Registration';
+      h.style.cssText = 'margin:12px 0 4px 0;';
+      rSec.appendChild(h);
+      const tbl = document.createElement('table'); tbl.className = 'lnk-info-table';
+      for (const r of analysis.registration) {
+        const tr = document.createElement('tr');
+        const tdL = document.createElement('td'); tdL.className = 'lnk-lbl'; tdL.textContent = r.type;
+        const tdV = document.createElement('td'); tdV.className = 'lnk-val'; tdV.textContent = r.value;
+        tr.appendChild(tdL); tr.appendChild(tdV); tbl.appendChild(tr);
+      }
+      rSec.appendChild(tbl); wrap.appendChild(rSec);
+    }
+
+    // Full source
+    this._appendSource(wrap, text, bytes);
+    return wrap;
+  }
+
+  // ── Security analysis ────────────────────────────────────────────────────
+
+  analyzeForSecurity(buffer, fileName) {
+    const f = {
+      risk: 'high', hasMacros: false, macroSize: 0, macroHash: '',
+      autoExec: [], modules: [], externalRefs: [], metadata: {},
+      signatureMatches: []
+    };
+
+    const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+    const ext = (fileName || '').split('.').pop().toLowerCase();
+
+    if (ext === 'sct') {
+      f.externalRefs.push({
+        type: IOC.INFO,
+        url: 'Windows Script Component (.sct) — COM scriptlet, Squiblydoo attack vector via regsvr32',
+        severity: 'high'
+      });
+      const analysis = this._analyzeSct(text);
+      for (const s of analysis.scripts) {
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: `Script block: ${s.language} — ${s.code ? s.code.length + ' chars' : 'empty'}`,
+          severity: 'high'
+        });
+        if (s.code) f.modules.push({ name: `sct_script_${s.language}`, source: s.code });
+      }
+      for (const w of analysis.warnings) {
+        f.externalRefs.push({ type: IOC.PATTERN, url: w.label, severity: w.sev });
+      }
+      for (const r of analysis.registration) {
+        f.externalRefs.push({ type: IOC.PATTERN, url: `${r.type}: ${r.value}`, severity: 'medium' });
+      }
+    } else {
+      f.externalRefs.push({
+        type: IOC.INFO,
+        url: 'Windows Setup Information File (.inf) — can execute commands via right-click Install or CMSTP',
+        severity: 'high'
+      });
+      const analysis = this._analyzeInf(text);
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `${analysis.sections.length} section(s), ${analysis.directives.length} directive(s)`,
+        severity: 'info'
+      });
+      for (const w of analysis.warnings) {
+        f.externalRefs.push({ type: IOC.PATTERN, url: w.label, severity: w.sev });
+      }
+      const highCount = analysis.warnings.filter(w => w.sev === 'high' || w.sev === 'critical').length;
+      if (highCount >= 3) f.risk = 'critical';
+    }
+
+    return f;
+  }
+
+  // ── INF analysis ─────────────────────────────────────────────────────────
+
+  _analyzeInf(text) {
+    const result = { sections: [], directives: [], warnings: [] };
+    const lines = text.split(/\r?\n/);
+    let currentSection = null;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith(';')) continue;
+
+      // Section header: [SectionName]
+      const secMatch = trimmed.match(/^\[([^\]]+)\]$/);
+      if (secMatch) {
+        currentSection = { name: secMatch[1], entries: [], isSuspicious: false };
+        result.sections.push(currentSection);
+
+        // Check if section name is suspicious
+        const ln = secMatch[1].toLowerCase();
+        const dangerousSections = [
+          'defaultinstall', 'defaultinstall.nt', 'defaultuninstall',
+          'runpresetupcommands', 'runpostsetupcommands',
+          'registerocxs', 'unregisterocxs',
+        ];
+        if (dangerousSections.some(s => ln === s || ln.startsWith(s + '.'))) {
+          currentSection.isSuspicious = true;
+          result.warnings.push({
+            label: `Dangerous section: [${secMatch[1]}] — can execute commands during installation`,
+            sev: 'high'
+          });
+        }
+        continue;
+      }
+
+      if (currentSection) {
+        const kvMatch = trimmed.match(/^([^=]+?)\s*=\s*(.*)$/);
+        if (kvMatch) {
+          const key = kvMatch[1].trim();
+          const value = kvMatch[2].trim();
+          const isSuspicious = this._isSuspiciousInfDirective(key, value, currentSection.name);
+
+          result.directives.push({ section: currentSection.name, key, value });
+          currentSection.entries.push({ key, value, isSuspicious });
+
+          if (isSuspicious) {
+            result.warnings.push({
+              label: `Suspicious directive: ${key} = ${value.length > 60 ? value.slice(0, 60) + '…' : value}`,
+              sev: 'high'
+            });
+          }
+        } else {
+          // Bare line (e.g., file list entry or command)
+          const isSuspicious = this._isSuspiciousInfLine(trimmed, currentSection.name);
+          currentSection.entries.push({ key: '', value: '', line: trimmed, isSuspicious });
+          if (isSuspicious) {
+            result.warnings.push({
+              label: `Suspicious entry in [${currentSection.name}]: ${trimmed.length > 60 ? trimmed.slice(0, 60) + '…' : trimmed}`,
+              sev: 'high'
+            });
+          }
+        }
+      }
+    }
+
+    // Pattern-level checks
+    const lt = text.toLowerCase();
+    if (/runpresetupcommands/i.test(text)) {
+      result.warnings.push({ label: 'Command execution: RunPreSetupCommands section present', sev: 'critical' });
+    }
+    if (/runpostsetupcommands/i.test(text)) {
+      result.warnings.push({ label: 'Command execution: RunPostSetupCommands section present', sev: 'critical' });
+    }
+    if (/cmstp/i.test(text)) {
+      result.warnings.push({ label: 'CMSTP abuse: References CMSTP (UAC bypass technique)', sev: 'critical' });
+    }
+    if (/scrobj\.dll/i.test(text)) {
+      result.warnings.push({ label: 'Scriptlet reference: scrobj.dll (COM scriptlet host)', sev: 'high' });
+    }
+    if (/rundll32|regsvr32/i.test(text)) {
+      result.warnings.push({ label: 'LOLBin reference: rundll32/regsvr32 in INF directives', sev: 'high' });
+    }
+    if (/powershell|cmd\.exe|wscript|cscript|mshta/i.test(text)) {
+      result.warnings.push({ label: 'Script interpreter: References command/script execution tool', sev: 'high' });
+    }
+    if (/https?:\/\//i.test(text)) {
+      result.warnings.push({ label: 'URL reference: INF contains HTTP/HTTPS URL(s)', sev: 'medium' });
+    }
+
+    // Deduplicate
+    const seen = new Set();
+    result.warnings = result.warnings.filter(w => {
+      if (seen.has(w.label)) return false;
+      seen.add(w.label); return true;
+    });
+
+    return result;
+  }
+
+  _isSuspiciousInfDirective(key, value, section) {
+    const lk = key.toLowerCase();
+    const lv = value.toLowerCase();
+    const ls = section.toLowerCase();
+
+    // Dangerous directive keys
+    const dangerousKeys = [
+      'runpresetupcommands', 'runpostsetupcommands', 'registerocxs', 'unregisterocxs',
+      'registerdlls', 'unregisterdlls', 'profileitems', 'addreg', 'delreg',
+      'taskname', 'servicename',
+    ];
+    if (dangerousKeys.includes(lk)) return true;
+
+    // Commands in values
+    const cmdPatterns = [
+      'powershell', 'cmd.exe', 'cmd /c', 'cmd /k', 'wscript', 'cscript',
+      'mshta', 'regsvr32', 'rundll32', 'certutil', 'bitsadmin', 'msiexec',
+      'cmstp', 'scrobj.dll',
+      'http://', 'https://', '\\\\',
+    ];
+    if (cmdPatterns.some(p => lv.includes(p))) return true;
+
+    // Executable extensions in values
+    if (/\.(exe|dll|bat|cmd|vbs|js|ps1|hta|scr|com|pif)\b/i.test(value)) return true;
+
+    return false;
+  }
+
+  _isSuspiciousInfLine(line, section) {
+    const ll = line.toLowerCase();
+    const ls = section.toLowerCase();
+
+    // Commands in command sections
+    if ((ls.includes('presetup') || ls.includes('postsetup') || ls.includes('command')) &&
+        (ll.includes('cmd') || ll.includes('powershell') || ll.includes('wscript') ||
+         ll.includes('cscript') || ll.includes('mshta') || ll.includes('regsvr32') ||
+         ll.includes('rundll32') || ll.includes('certutil') || ll.includes('cmstp'))) {
+      return true;
+    }
+
+    // Executables referenced in file copy sections
+    if (/\.(exe|dll|bat|cmd|vbs|js|ps1|hta|scr)\s*$/i.test(line)) return true;
+
+    return false;
+  }
+
+  // ── SCT analysis ─────────────────────────────────────────────────────────
+
+  _analyzeSct(text) {
+    const result = { scripts: [], warnings: [], registration: [] };
+
+    // Try XML parsing
+    try {
+      const doc = new DOMParser().parseFromString(text, 'text/xml');
+      if (!doc.getElementsByTagName('parsererror').length) {
+        // Extract <script> blocks
+        const scripts = doc.getElementsByTagName('script');
+        for (const s of Array.from(scripts)) {
+          result.scripts.push({
+            language: s.getAttribute('language') || 'JScript',
+            code: s.textContent.trim(),
+          });
+        }
+
+        // Extract <registration> elements
+        const regs = doc.getElementsByTagName('registration');
+        for (const r of Array.from(regs)) {
+          const progid = r.getAttribute('progid');
+          const classid = r.getAttribute('classid');
+          const desc = r.getAttribute('description');
+          if (progid) result.registration.push({ type: 'ProgID', value: progid });
+          if (classid) result.registration.push({ type: 'ClassID', value: classid });
+          if (desc) result.registration.push({ type: 'Description', value: desc });
+        }
+
+        // Extract <object> elements
+        const objs = doc.getElementsByTagName('object');
+        for (const o of Array.from(objs)) {
+          const progid = o.getAttribute('progid');
+          const classid = o.getAttribute('classid');
+          const id = o.getAttribute('id');
+          if (progid) result.registration.push({ type: 'Object ProgID', value: progid });
+          if (classid) result.registration.push({ type: 'Object ClassID', value: classid });
+          if (id) result.registration.push({ type: 'Object ID', value: id });
+        }
+      }
+    } catch (e) { }
+
+    // Fallback regex for scripts
+    if (result.scripts.length === 0) {
+      const rx = /<script[^>]*language\s*=\s*["']?([^"'\s>]+)["']?[^>]*>([\s\S]*?)<\/script>/gi;
+      let m;
+      while ((m = rx.exec(text)) !== null) {
+        result.scripts.push({ language: m[1], code: m[2].trim() });
+      }
+    }
+
+    // Pattern warnings
+    const lt = text.toLowerCase();
+    if (/regsvr32/i.test(text)) {
+      result.warnings.push({ label: 'Squiblydoo: References regsvr32 (COM registration abuse)', sev: 'critical' });
+    }
+    if (/scrobj\.dll/i.test(text)) {
+      result.warnings.push({ label: 'Scriptlet host: References scrobj.dll', sev: 'high' });
+    }
+    if (/createobject|getobject/i.test(text)) {
+      result.warnings.push({ label: 'COM instantiation: CreateObject/GetObject calls detected', sev: 'high' });
+    }
+    if (/wscript\.shell|shell\.application/i.test(text)) {
+      result.warnings.push({ label: 'Shell access: WScript.Shell or Shell.Application usage', sev: 'high' });
+    }
+    if (/xmlhttp|msxml2|winhttp/i.test(text)) {
+      result.warnings.push({ label: 'Network access: HTTP object instantiation', sev: 'high' });
+    }
+    if (/adodb\.stream|scripting\.filesystemobject/i.test(text)) {
+      result.warnings.push({ label: 'File system access: ADODB.Stream or FileSystemObject', sev: 'high' });
+    }
+    if (/powershell|cmd\.exe|wscript|cscript|mshta/i.test(text)) {
+      result.warnings.push({ label: 'Script interpreter: References command execution tool', sev: 'high' });
+    }
+    if (/https?:\/\//i.test(text)) {
+      result.warnings.push({ label: 'URL reference: SCT contains HTTP/HTTPS URL(s)', sev: 'medium' });
+    }
+    if (/frombase64string|atob|base64/i.test(text)) {
+      result.warnings.push({ label: 'Encoding: Base64 decode operations detected', sev: 'medium' });
+    }
+
+    // Deduplicate
+    const seen = new Set();
+    result.warnings = result.warnings.filter(w => {
+      if (seen.has(w.label)) return false;
+      seen.add(w.label); return true;
+    });
+
+    return result;
+  }
+
+  // ── Shared helpers ───────────────────────────────────────────────────────
+
+  _appendSource(wrap, text, bytes) {
+    const srcH = document.createElement('div'); srcH.className = 'hta-section-hdr';
+    srcH.textContent = 'Full Source';
+    wrap.appendChild(srcH);
+
+    const lines = text.split('\n');
+    const info = document.createElement('div'); info.className = 'plaintext-info';
+    info.textContent = `${lines.length} line${lines.length !== 1 ? 's' : ''}  ·  ${this._fmtBytes(bytes.length)}`;
+    wrap.appendChild(info);
+
+    const scr = document.createElement('div'); scr.className = 'plaintext-scroll';
+    const table = document.createElement('table'); table.className = 'plaintext-table';
+    const maxLines = 50000;
+    const count = Math.min(lines.length, maxLines);
+    for (let i = 0; i < count; i++) {
+      const tr = document.createElement('tr');
+      const tdNum = document.createElement('td'); tdNum.className = 'plaintext-ln'; tdNum.textContent = i + 1;
+      const tdCode = document.createElement('td'); tdCode.className = 'plaintext-code'; tdCode.textContent = lines[i];
+      tr.appendChild(tdNum); tr.appendChild(tdCode); table.appendChild(tr);
+    }
+    scr.appendChild(table); wrap.appendChild(scr);
+  }
+
+  _fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+}
+
+'use strict';
+// ════════════════════════════════════════════════════════════════════════════
+// msi-renderer.js — Windows Installer (.msi) analysis
+// Uses OleCfbParser to read the OLE compound file structure, lists streams,
+// extracts summary information, and flags suspicious content.
+// Depends on: ole-cfb-parser.js, constants.js (IOC, escHtml)
+// ════════════════════════════════════════════════════════════════════════════
+class MsiRenderer {
+
+  render(buffer, fileName) {
+    const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
+    const wrap = document.createElement('div'); wrap.className = 'msi-view';
+
+    // Banner
+    const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
+    banner.innerHTML = '<strong>⚠ Windows Installer Package (.msi)</strong> — MSI files execute with elevated privileges during installation. They can run custom actions (scripts, executables), modify the registry, install services, and alter system files.';
+    wrap.appendChild(banner);
+
+    let analysis;
+    try {
+      analysis = this._analyze(bytes);
+    } catch (e) {
+      const err = document.createElement('div'); err.className = 'error-box';
+      err.textContent = `Failed to parse MSI: ${e.message}`;
+      wrap.appendChild(err);
+      return wrap;
+    }
+
+    // Summary info
+    const infoDiv = document.createElement('div'); infoDiv.className = 'plaintext-info';
+    infoDiv.textContent = `${analysis.streams.length} stream(s)  ·  ${this._fmtBytes(bytes.length)}  ·  Windows Installer Package`;
+    wrap.appendChild(infoDiv);
+
+    // Warnings
+    if (analysis.warnings.length) {
+      const warnDiv = document.createElement('div'); warnDiv.className = 'zip-warnings';
+      for (const w of analysis.warnings) {
+        const d = document.createElement('div');
+        d.className = `zip-warning zip-warning-${w.sev}`;
+        d.textContent = `⚠ ${w.label}`;
+        warnDiv.appendChild(d);
+      }
+      wrap.appendChild(warnDiv);
+    }
+
+    // Summary Information (document properties)
+    if (analysis.summaryInfo && Object.keys(analysis.summaryInfo).length) {
+      const siH = document.createElement('div'); siH.className = 'hta-section-hdr';
+      siH.textContent = 'Summary Information';
+      wrap.appendChild(siH);
+
+      const tbl = document.createElement('table'); tbl.className = 'lnk-info-table';
+      for (const [key, val] of Object.entries(analysis.summaryInfo)) {
+        const tr = document.createElement('tr');
+        const tdL = document.createElement('td'); tdL.className = 'lnk-lbl'; tdL.textContent = key;
+        const tdV = document.createElement('td'); tdV.className = 'lnk-val'; tdV.textContent = val;
+        tr.appendChild(tdL); tr.appendChild(tdV); tbl.appendChild(tr);
+      }
+      wrap.appendChild(tbl);
+    }
+
+    // MSI tables detected
+    if (analysis.tables.length) {
+      const tH = document.createElement('div'); tH.className = 'hta-section-hdr';
+      tH.textContent = `MSI Database Tables (${analysis.tables.length})`;
+      wrap.appendChild(tH);
+
+      const tblDiv = document.createElement('div'); tblDiv.style.cssText = 'padding:4px 8px;';
+      const chips = document.createElement('div');
+      chips.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px;';
+      for (const t of analysis.tables) {
+        const chip = document.createElement('span');
+        chip.style.cssText = `display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-family:monospace;${t.isSuspicious ? 'background:rgba(255,136,136,0.15);color:#f88;border:1px solid rgba(255,136,136,0.3);' : 'background:rgba(68,170,255,0.08);color:#8cf;border:1px solid rgba(68,170,255,0.15);'}`;
+        chip.textContent = t.name;
+        chip.title = t.isSuspicious ? 'Potentially dangerous table' : '';
+        chips.appendChild(chip);
+      }
+      tblDiv.appendChild(chips); wrap.appendChild(tblDiv);
+    }
+
+    // Custom Actions
+    if (analysis.customActions.length) {
+      const caH = document.createElement('div'); caH.className = 'hta-section-hdr';
+      caH.textContent = `Custom Actions (${analysis.customActions.length})`;
+      wrap.appendChild(caH);
+
+      const caDiv = document.createElement('div'); caDiv.style.cssText = 'padding:0 8px;';
+      for (const ca of analysis.customActions) {
+        const d = document.createElement('div');
+        d.className = `zip-warning zip-warning-${ca.sev}`;
+        d.textContent = ca.label;
+        caDiv.appendChild(d);
+      }
+      wrap.appendChild(caDiv);
+    }
+
+    // OLE Streams
+    if (analysis.streams.length) {
+      const stH = document.createElement('div'); stH.className = 'hta-section-hdr';
+      stH.textContent = `OLE Streams (${analysis.streams.length})`;
+      wrap.appendChild(stH);
+
+      const stTbl = document.createElement('table'); stTbl.className = 'lnk-info-table';
+      // Header
+      const hdr = document.createElement('tr');
+      for (const h of ['Stream Name', 'Size', 'Flags']) {
+        const th = document.createElement('td'); th.className = 'lnk-lbl';
+        th.style.cssText = 'font-weight:bold;'; th.textContent = h;
+        hdr.appendChild(th);
+      }
+      stTbl.appendChild(hdr);
+
+      for (const s of analysis.streams) {
+        const tr = document.createElement('tr');
+        const tdN = document.createElement('td'); tdN.className = 'lnk-val';
+        tdN.textContent = s.name;
+        tdN.style.cssText = `font-family:monospace;font-size:12px;${s.isSuspicious ? 'color:#f88;' : ''}`;
+        const tdS = document.createElement('td'); tdS.className = 'lnk-val';
+        tdS.textContent = this._fmtBytes(s.size);
+        tdS.style.cssText = 'min-width:80px;';
+        const tdF = document.createElement('td'); tdF.className = 'lnk-val';
+        tdF.textContent = s.flags.join(', ') || '—';
+        tdF.style.cssText = s.flags.length ? 'color:#f88;' : 'opacity:0.5;';
+        tr.appendChild(tdN); tr.appendChild(tdS); tr.appendChild(tdF);
+        stTbl.appendChild(tr);
+      }
+      wrap.appendChild(stTbl);
+    }
+
+    // Embedded binary data preview (for large Binary streams)
+    if (analysis.embeddedBinaries.length) {
+      const ebH = document.createElement('div'); ebH.className = 'hta-section-hdr';
+      ebH.textContent = `Embedded Binaries (${analysis.embeddedBinaries.length})`;
+      wrap.appendChild(ebH);
+
+      for (const eb of analysis.embeddedBinaries) {
+        const d = document.createElement('div');
+        d.style.cssText = 'padding:4px 8px;margin:4px 0;';
+        const label = document.createElement('div');
+        label.style.cssText = 'font-family:monospace;font-size:12px;margin-bottom:4px;';
+        label.textContent = `${eb.name} — ${this._fmtBytes(eb.size)} — ${eb.magic}`;
+        label.style.cssText += eb.isPE ? 'color:#f44;font-weight:bold;' : '';
+        d.appendChild(label);
+
+        // Hex preview of first 64 bytes
+        const pre = document.createElement('pre'); pre.className = 'rtf-raw-source';
+        pre.style.cssText += 'max-height:60px;overflow:auto;font-size:11px;';
+        pre.textContent = eb.hexPreview;
+        d.appendChild(pre);
+        wrap.appendChild(d);
+      }
+    }
+
+    return wrap;
+  }
+
+  analyzeForSecurity(buffer, fileName) {
+    const f = {
+      risk: 'medium', hasMacros: false, macroSize: 0, macroHash: '',
+      autoExec: [], modules: [], externalRefs: [], metadata: {},
+      signatureMatches: []
+    };
+
+    const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
+
+    f.externalRefs.push({
+      type: IOC.INFO,
+      url: 'Windows Installer Package (.msi) — executes with elevated privileges during installation',
+      severity: 'high'
+    });
+
+    try {
+      const analysis = this._analyze(bytes);
+
+      // Summary info as metadata
+      f.metadata = analysis.summaryInfo;
+
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `${analysis.streams.length} OLE stream(s), ${analysis.tables.length} MSI table(s)`,
+        severity: 'info'
+      });
+
+      // Report warnings
+      for (const w of analysis.warnings) {
+        f.externalRefs.push({ type: IOC.PATTERN, url: w.label, severity: w.sev });
+      }
+
+      // Report custom actions
+      for (const ca of analysis.customActions) {
+        f.externalRefs.push({ type: IOC.PATTERN, url: ca.label, severity: ca.sev });
+      }
+
+      // Escalate risk
+      const hasCustomActions = analysis.customActions.length > 0;
+      const hasEmbeddedPE = analysis.embeddedBinaries.some(b => b.isPE);
+      const highWarnings = analysis.warnings.filter(w => w.sev === 'high' || w.sev === 'critical').length;
+
+      if (hasEmbeddedPE) {
+        f.risk = 'critical';
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: `Embedded PE executable(s) detected in MSI binary streams`,
+          severity: 'critical'
+        });
+      } else if (hasCustomActions || highWarnings >= 2) {
+        f.risk = 'high';
+      }
+    } catch (e) {
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `MSI parse error: ${e.message}`,
+        severity: 'info'
+      });
+    }
+
+    return f;
+  }
+
+  // ── MSI analysis ─────────────────────────────────────────────────────────
+
+  _analyze(bytes) {
+    const result = {
+      streams: [],
+      tables: [],
+      summaryInfo: {},
+      warnings: [],
+      customActions: [],
+      embeddedBinaries: [],
+    };
+
+    // Parse OLE structure
+    const ole = new OleCfbParser(bytes.buffer).parse();
+
+    // Enumerate streams
+    for (const [name, data] of ole.streams) {
+      const flags = [];
+      const ln = name.toLowerCase();
+      let isSuspicious = false;
+
+      // Detect PE headers in stream data
+      const isPE = data.length >= 2 && data[0] === 0x4D && data[1] === 0x5A;
+      if (isPE) { flags.push('PE executable'); isSuspicious = true; }
+
+      // Detect script content
+      if (data.length > 10) {
+        const head = this._peekString(data, 200);
+        if (/^\s*<script|^\s*function\s|^\s*sub\s|^\s*dim\s/i.test(head)) {
+          flags.push('Script content'); isSuspicious = true;
+        }
+        if (/powershell|cmd\.exe|wscript|cscript/i.test(head)) {
+          flags.push('Command execution'); isSuspicious = true;
+        }
+      }
+
+      // Large binary streams
+      if (data.length > 100000) flags.push('Large binary');
+
+      // Known suspicious stream name patterns
+      if (ln.includes('customaction') || ln.includes('binary')) {
+        isSuspicious = true;
+      }
+
+      result.streams.push({ name, size: data.length, flags, isSuspicious });
+
+      // Collect embedded binaries for detailed view
+      if ((isPE || data.length > 50000) && (ln.includes('binary') || isPE)) {
+        result.embeddedBinaries.push({
+          name,
+          size: data.length,
+          isPE,
+          magic: this._detectStreamMagic(data),
+          hexPreview: this._hexPreview(data, 64),
+        });
+      }
+    }
+
+    // Identify MSI database tables from stream names
+    // MSI encodes table names with a specific prefix pattern
+    for (const [name] of ole.streams) {
+      const tableName = this._decodeMsiTableName(name);
+      if (tableName) {
+        const isSuspicious = this._isSuspiciousTable(tableName);
+        result.tables.push({ name: tableName, isSuspicious });
+
+        if (isSuspicious) {
+          result.warnings.push({
+            label: `Suspicious MSI table: ${tableName}`,
+            sev: 'medium'
+          });
+        }
+      }
+    }
+
+    // Detect CustomAction table presence
+    if (result.tables.some(t => t.name === 'CustomAction')) {
+      result.customActions.push({
+        label: 'CustomAction table present — installer can execute arbitrary code',
+        sev: 'high'
+      });
+    }
+
+    // Detect Binary table
+    if (result.tables.some(t => t.name === 'Binary')) {
+      result.customActions.push({
+        label: 'Binary table present — contains embedded executables, DLLs, or scripts',
+        sev: 'medium'
+      });
+    }
+
+    // Check for specific dangerous tables
+    if (result.tables.some(t => t.name === 'ServiceInstall')) {
+      result.warnings.push({
+        label: 'Service installation: MSI will install Windows service(s)',
+        sev: 'high'
+      });
+    }
+    if (result.tables.some(t => t.name === 'ServiceControl')) {
+      result.warnings.push({
+        label: 'Service control: MSI modifies Windows service state',
+        sev: 'medium'
+      });
+    }
+    if (result.tables.some(t => t.name === 'Registry')) {
+      result.warnings.push({
+        label: 'Registry modification: MSI writes to Windows registry',
+        sev: 'medium'
+      });
+    }
+    if (result.tables.some(t => t.name === 'LaunchCondition')) {
+      result.warnings.push({
+        label: 'Launch conditions: MSI checks system conditions before install',
+        sev: 'info'
+      });
+    }
+    if (result.tables.some(t => t.name === 'AppSearch')) {
+      result.warnings.push({
+        label: 'Application search: MSI searches for installed applications',
+        sev: 'info'
+      });
+    }
+
+    // Detect embedded PE files across all streams
+    const peStreams = result.streams.filter(s => s.flags.includes('PE executable'));
+    if (peStreams.length) {
+      result.warnings.push({
+        label: `${peStreams.length} stream(s) contain embedded PE executable(s): ${peStreams.map(s => s.name).join(', ')}`,
+        sev: 'critical'
+      });
+    }
+
+    // Detect script content
+    const scriptStreams = result.streams.filter(s => s.flags.includes('Script content'));
+    if (scriptStreams.length) {
+      result.warnings.push({
+        label: `${scriptStreams.length} stream(s) contain script content`,
+        sev: 'high'
+      });
+    }
+
+    // Extract Summary Information
+    this._extractSummaryInfo(ole, result);
+
+    // Deduplicate warnings
+    const seen = new Set();
+    result.warnings = result.warnings.filter(w => {
+      if (seen.has(w.label)) return false;
+      seen.add(w.label); return true;
+    });
+
+    return result;
+  }
+
+  // ── MSI table name decoding ──────────────────────────────────────────────
+  // MSI stores table/column names in OLE stream names with a specific encoding:
+  // Characters 0-9, A-Z, a-z, _, . are valid; encoded with a base-62 scheme.
+  // Stream names prefixed with special chars indicate system tables.
+
+  _decodeMsiTableName(streamName) {
+    // MSI table streams have names that start with certain patterns
+    // Skip known non-table streams
+    const skip = [
+      '\x05summaryinformation', '\x05documentsummaryinformation',
+      '\x01comptobj', '\x05digital signature',
+    ];
+    if (skip.includes(streamName.toLowerCase())) return null;
+    if (streamName.startsWith('\x05') || streamName.startsWith('\x01')) return null;
+
+    // Known MSI table names — if the stream name matches directly
+    const knownTables = [
+      'ActionText', 'AdminExecuteSequence', 'AdminUISequence', 'AdvtExecuteSequence',
+      'AdvtUISequence', 'AppId', 'AppSearch', 'BBControl', 'Billboard', 'Binary',
+      'BindImage', 'CCPSearch', 'CheckBox', 'Class', 'ComboBox', 'CompLocator',
+      'Complus', 'Component', 'Condition', 'Control', 'ControlCondition',
+      'ControlEvent', 'CreateFolder', 'CustomAction', 'Dialog', 'Directory',
+      'DrLocator', 'DuplicateFile', 'Environment', 'Error', 'EventMapping',
+      'Extension', 'Feature', 'FeatureComponents', 'File', 'FileSFPCatalog',
+      'Font', 'Icon', 'IniFile', 'IniLocator', 'InstallExecuteSequence',
+      'InstallUISequence', 'IsolatedComponent', 'LaunchCondition', 'ListBox',
+      'ListView', 'LockPermissions', 'Media', 'MIME', 'MoveFile',
+      'MsiAssembly', 'MsiAssemblyName', 'MsiDigitalCertificate',
+      'MsiDigitalSignature', 'MsiEmbeddedChainer', 'MsiEmbeddedUI',
+      'MsiFileHash', 'MsiLockPermissionsEx', 'MsiPackageCertificate',
+      'MsiPatchCertificate', 'MsiPatchHeaders', 'MsiPatchMetadata',
+      'MsiPatchOldAssemblyFile', 'MsiPatchOldAssemblyName',
+      'MsiPatchSequence', 'MsiServiceConfig', 'MsiServiceConfigFailureActions',
+      'MsiShortcutProperty', 'ODBCAttribute', 'ODBCDataSource', 'ODBCDriver',
+      'ODBCSourceAttribute', 'ODBCTranslator', 'Patch', 'PatchPackage',
+      'ProgId', 'Property', 'PublishComponent', 'RadioButton', 'Registry',
+      'RegLocator', 'RemoveFile', 'RemoveIniFile', 'RemoveRegistry',
+      'ReserveCost', 'SelfReg', 'ServiceControl', 'ServiceInstall',
+      'SFPCatalog', 'Shortcut', 'Signature', 'TextStyle', 'TypeLib',
+      'UIText', 'Upgrade', 'Verb', '_Validation', '_Columns', '_Tables',
+      '_StringData', '_StringPool',
+    ];
+
+    // Check if stream name matches a known table or looks like a valid table name
+    if (knownTables.includes(streamName)) return streamName;
+
+    // Check if it looks like a valid MSI identifier (alphanumeric + underscore)
+    if (/^[A-Za-z_][A-Za-z0-9_.]*$/.test(streamName) && streamName.length <= 64) {
+      return streamName;
+    }
+
+    return null;
+  }
+
+  _isSuspiciousTable(tableName) {
+    const suspicious = [
+      'CustomAction', 'Binary', 'ServiceInstall', 'ServiceControl',
+      'Registry', 'RemoveRegistry', 'Environment', 'SelfReg',
+      'MsiEmbeddedChainer', 'MsiEmbeddedUI',
+    ];
+    return suspicious.includes(tableName);
+  }
+
+  // ── Summary Information extraction ───────────────────────────────────────
+
+  _extractSummaryInfo(ole, result) {
+    // Try to read the \x05SummaryInformation stream
+    const siStream = ole.streams.get('\x05summaryinformation') || ole.streams.get('\u0005summaryinformation');
+    if (!siStream || siStream.length < 48) return;
+
+    try {
+      const dv = new DataView(siStream.buffer, siStream.byteOffset, siStream.byteLength);
+
+      // Property Set Header
+      // Byte order, version, OS, CLSID, num property sets
+      const numSets = dv.getUint32(24, true);
+      if (numSets < 1) return;
+
+      // First property set offset
+      const setOffset = dv.getUint32(44, true);
+      if (setOffset >= siStream.length) return;
+
+      const setSize = dv.getUint32(setOffset, true);
+      const numProps = dv.getUint32(setOffset + 4, true);
+
+      const propNames = {
+        2: 'Title', 3: 'Subject', 4: 'Author', 5: 'Keywords',
+        6: 'Comments', 7: 'Template', 8: 'Last Author',
+        9: 'Revision Number', 12: 'Create Time', 13: 'Last Save Time',
+        14: 'Page Count', 15: 'Word Count', 16: 'Character Count',
+        18: 'Application', 19: 'Security',
+      };
+
+      for (let i = 0; i < Math.min(numProps, 30); i++) {
+        const pidOff = setOffset + 8 + i * 8;
+        if (pidOff + 8 > siStream.length) break;
+
+        const pid = dv.getUint32(pidOff, true);
+        const valOff = setOffset + dv.getUint32(pidOff + 4, true);
+        if (valOff + 4 > siStream.length) continue;
+
+        const propName = propNames[pid];
+        if (!propName) continue;
+
+        const vType = dv.getUint32(valOff, true);
+
+        if (vType === 30) { // VT_LPSTR
+          const len = dv.getUint32(valOff + 4, true);
+          if (valOff + 8 + len <= siStream.length) {
+            const str = new TextDecoder('utf-8', { fatal: false })
+              .decode(siStream.subarray(valOff + 8, valOff + 8 + len - 1));
+            if (str.trim()) result.summaryInfo[propName] = str.trim();
+          }
+        } else if (vType === 3) { // VT_I4
+          result.summaryInfo[propName] = dv.getInt32(valOff + 4, true).toString();
+        } else if (vType === 64) { // VT_FILETIME
+          try {
+            const lo = dv.getUint32(valOff + 4, true);
+            const hi = dv.getUint32(valOff + 8, true);
+            const ft = (BigInt(hi) << 32n) | BigInt(lo);
+            const ms = Number(ft / 10000n) - 11644473600000;
+            if (ms > 0 && ms < 4102444800000) {
+              result.summaryInfo[propName] = new Date(ms).toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
+            }
+          } catch (e) { }
+        }
+      }
+    } catch (e) {
+      // Silently fail — summary info is optional
+    }
+  }
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  _peekString(data, maxLen) {
+    const len = Math.min(data.length, maxLen);
+    return new TextDecoder('utf-8', { fatal: false }).decode(data.subarray(0, len));
+  }
+
+  _detectStreamMagic(data) {
+    if (data.length < 4) return 'Unknown';
+    if (data[0] === 0x4D && data[1] === 0x5A) return 'PE Executable (MZ)';
+    if (data[0] === 0x50 && data[1] === 0x4B) return 'ZIP / Cabinet';
+    if (data[0] === 0xD0 && data[1] === 0xCF) return 'Nested OLE/CFB';
+    if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4E && data[3] === 0x47) return 'PNG Image';
+    if (data[0] === 0xFF && data[1] === 0xD8) return 'JPEG Image';
+    if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) return 'GIF Image';
+    const head = this._peekString(data, 50);
+    if (head.includes('<?xml') || head.includes('<html') || head.includes('<script')) return 'XML/HTML/Script';
+    return 'Binary data';
+  }
+
+  _hexPreview(data, maxBytes) {
+    const len = Math.min(data.length, maxBytes);
+    const parts = [];
+    for (let i = 0; i < len; i++) {
+      parts.push(data[i].toString(16).padStart(2, '0').toUpperCase());
+    }
+    // Format as rows of 16 bytes
+    const rows = [];
+    for (let i = 0; i < parts.length; i += 16) {
+      const hex = parts.slice(i, i + 16).join(' ');
+      const ascii = Array.from(data.subarray(i, Math.min(i + 16, len)))
+        .map(b => b >= 32 && b < 127 ? String.fromCharCode(b) : '.').join('');
+      rows.push(`${i.toString(16).padStart(6, '0')}  ${hex.padEnd(47)}  ${ascii}`);
+    }
+    return rows.join('\n');
+  }
+
+  _fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+}
+
+'use strict';
+// ════════════════════════════════════════════════════════════════════════════
 // csv-renderer.js — Renders .csv and .tsv files as styled tables
 // No external dependencies beyond the browser DOM.
 // ════════════════════════════════════════════════════════════════════════════
@@ -20604,6 +22542,18 @@ Object.assign(App.prototype, {
         const r = new WsfRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
         docEl = r.render(buffer, file.name);
+      } else if (ext === 'reg') {
+        const r = new RegRenderer();
+        this.findings = r.analyzeForSecurity(buffer, file.name);
+        docEl = r.render(buffer, file.name);
+      } else if (['inf', 'sct'].includes(ext)) {
+        const r = new InfSctRenderer();
+        this.findings = r.analyzeForSecurity(buffer, file.name);
+        docEl = r.render(buffer, file.name);
+      } else if (ext === 'msi') {
+        const r = new MsiRenderer();
+        this.findings = r.analyzeForSecurity(buffer, file.name);
+        docEl = r.render(buffer, file.name);
       } else if (['html', 'htm', 'mht', 'mhtml', 'xhtml', 'svg'].includes(ext)) {
         const r = new HtmlRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
@@ -20762,6 +22712,17 @@ Object.assign(App.prototype, {
       return { hex: h(5), label: 'XML Document' };
     if (head.startsWith('[InternetShortcut]'))
       return { hex: h(8), label: 'Internet Shortcut (.url)' };
+    // Registry files: REGEDIT4 or "Windows Registry Editor Version 5.00" (may have UTF-16LE BOM FF FE)
+    if (head.startsWith('REGEDIT4') || head.startsWith('Windows Registry'))
+      return { hex: h(8), label: 'Windows Registry File (.reg)' };
+    if (bytes.length >= 4 && bytes[0] === 0xFF && bytes[1] === 0xFE) {
+      const u16 = new TextDecoder('utf-16le', { fatal: false }).decode(bytes.subarray(0, Math.min(80, bytes.length)));
+      if (u16.startsWith('Windows Registry'))
+        return { hex: 'FF FE', label: 'Windows Registry File (.reg, UTF-16LE)' };
+    }
+    // INF: Setup Information files start with [Version] section
+    if (head.startsWith('[Version]') || head.startsWith('[version]'))
+      return { hex: h(9), label: 'Setup Information File (.inf)' };
     if (head.startsWith('From ') || head.startsWith('Received:') || head.startsWith('MIME-Version'))
       return { hex: h(6), label: 'Email Message (RFC 5322)' };
     // EVTX: "ElfFile\0"

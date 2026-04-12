@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- GloveBox sample Windows Script File -->
+<package>
+  <job id="GloveBoxInfo">
+    <comment>Display system information for GloveBox testing</comment>
+    <runtime>
+      <description>GloveBox sample WSF script</description>
+      <named name="verbose" helpstring="Enable verbose output" type="boolean" required="false"/>
+    </runtime>
+    <object id="shell" progid="WScript.Shell"/>
+    <object id="fso" progid="Scripting.FileSystemObject"/>
+    <script language="VBScript">
+      <![CDATA[
+        Function GetSystemInfo()
+          Dim info
+          info = "Computer: " & shell.ExpandEnvironmentStrings("%COMPUTERNAME%") & vbCrLf
+          info = info & "User: " & shell.ExpandEnvironmentStrings("%USERNAME%") & vbCrLf
+          info = info & "OS: " & shell.ExpandEnvironmentStrings("%OS%") & vbCrLf
+          GetSystemInfo = info
+        End Function
+      ]]>
+    </script>
+    <script language="JScript">
+      <![CDATA[
+        // Main entry point
+        var verbose = WScript.Arguments.Named.Exists("verbose");
+        WScript.Echo("GloveBox WSF Sample v1.0");
+        WScript.Echo("========================");
+        if (verbose) {
+          WScript.Echo(GetSystemInfo());
+        }
+        WScript.Echo("Done.");
+      ]]>
+    </script>
+  </job>
+</package>

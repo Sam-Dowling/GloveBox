@@ -1,0 +1,15 @@
+ID;PGLOVEBOX
+B;Y4;X3
+C;Y1;X1;K"Product"
+C;Y1;X2;K"Units"
+C;Y1;X3;K"Revenue"
+C;Y2;X1;K"Widget A"
+C;Y2;X2;K150
+C;Y2;X3;K4500
+C;Y3;X1;K"Widget B"
+C;Y3;X2;K230
+C;Y3;X3;K6900
+C;Y4;X1;K"Total"
+C;Y4;X2;K380
+C;Y4;X3;K11400
+E

@@ -1,0 +1,31 @@
+# Auto-detect text files and normalise line endings to LF
+* text=auto eol=lf
+
+# Source
+*.html text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.yar text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+
+# Binary example/test files — do not diff or convert
+*.doc binary
+*.docx binary
+*.xls binary
+*.xlsx binary
+*.xlsm binary
+*.ppt binary
+*.pptx binary
+*.pdf binary
+*.evtx binary
+*.sqlite binary
+*.msi binary
+*.lnk binary
+*.zip binary
+*.odt binary
+*.odp binary
+*.ods binary
+*.rtf binary

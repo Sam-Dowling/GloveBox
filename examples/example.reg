@@ -1,0 +1,44 @@
+Windows Registry Editor Version 5.00
+
+; GloveBox sample registry file
+; This contains benign example entries for testing the RegRenderer
+
+[HKEY_CURRENT_USER\Software\GloveBox\Settings]
+"Version"="1.0.2"
+"InstallDate"="2025-01-15"
+"EnableAnalysis"=dword:00000001
+"MaxFileSize"=dword:00100000
+"Theme"="dark"
+
+[HKEY_CURRENT_USER\Software\GloveBox\RecentFiles]
+"File1"="C:\\Documents\\report.docx"
+"File2"="C:\\Downloads\\invoice.pdf"
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Run]
+"GloveBoxUpdater"="C:\\Program Files\\GloveBox\\updater.exe /silent"
+
+[HKEY_CURRENT_USER\Software\Classes\CLSID\{00000000-1111-2222-3333-444444444444}\InprocServer32]
+@="C:\\Program Files\\GloveBox\\plugin.dll"
+"ThreadingModel"="Apartment"
+
+; Delete a key example
+[-HKEY_CURRENT_USER\Software\GloveBox\OldSettings]
+
+; Delete a value example
+[HKEY_CURRENT_USER\Software\GloveBox\Settings]
+"DeprecatedOption"=-
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\Windows Defender]
+"DisableAntiSpyware"=dword:00000000
+
+[HKEY_CURRENT_USER\Environment]
+"Path"=hex(2):25,00,53,00,79,00,73,00,74,00,65,00,6d,00,52,00,6f,00,6f,00,74,\
+  00,25,00,3b,00,43,00,3a,00,5c,00,54,00,6f,00,6f,00,6c,00,73,00,00,00
+
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Services\GloveBoxSvc]
+"DisplayName"="GloveBox Background Service"
+"ImagePath"=hex(2):43,00,3a,00,5c,00,50,00,72,00,6f,00,67,00,72,00,61,00,6d,\
+  00,20,00,46,00,69,00,6c,00,65,00,73,00,5c,00,47,00,6c,00,6f,00,76,00,65,00,\
+  42,00,6f,00,78,00,5c,00,73,00,76,00,63,00,2e,00,65,00,78,00,65,00,00,00
+"Start"=dword:00000002
+"Type"=dword:00000010

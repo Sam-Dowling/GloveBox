@@ -1,0 +1,8 @@
+WEB
+1
+https://example.com/api/data?format=csv&report=quarterly
+
+Selection=AllTables
+Formatting=None
+PreFormattedTextToColumns=True
+ConsecutiveDelimitersAsOne=True

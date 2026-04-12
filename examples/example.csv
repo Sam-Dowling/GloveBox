@@ -1,0 +1,8 @@
+Name,Department,Email,Start Date,Salary,Active
+Alice Johnson,Engineering,alice.johnson@example.com,2022-03-15,95000,TRUE
+Bob Smith,Marketing,bob.smith@example.com,2021-07-01,78000,TRUE
+Carol Williams,Engineering,carol.w@example.com,2023-01-10,102000,TRUE
+David Brown,HR,david.brown@example.com,2020-11-22,85000,FALSE
+Eve Davis,"Sales, EMEA",eve.davis@example.com,2024-02-28,91000,TRUE
+Frank Miller,Engineering,frank.m@example.com,2019-06-15,115000,TRUE
+Grace Lee,Finance,grace.lee@example.com,2023-08-01,88000,TRUE

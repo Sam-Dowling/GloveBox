@@ -150,6 +150,18 @@ Object.assign(App.prototype, {
         const r = new WsfRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
         docEl = r.render(buffer, file.name);
+      } else if (ext === 'reg') {
+        const r = new RegRenderer();
+        this.findings = r.analyzeForSecurity(buffer, file.name);
+        docEl = r.render(buffer, file.name);
+      } else if (['inf', 'sct'].includes(ext)) {
+        const r = new InfSctRenderer();
+        this.findings = r.analyzeForSecurity(buffer, file.name);
+        docEl = r.render(buffer, file.name);
+      } else if (ext === 'msi') {
+        const r = new MsiRenderer();
+        this.findings = r.analyzeForSecurity(buffer, file.name);
+        docEl = r.render(buffer, file.name);
       } else if (['html', 'htm', 'mht', 'mhtml', 'xhtml', 'svg'].includes(ext)) {
         const r = new HtmlRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
@@ -308,6 +320,17 @@ Object.assign(App.prototype, {
       return { hex: h(5), label: 'XML Document' };
     if (head.startsWith('[InternetShortcut]'))
       return { hex: h(8), label: 'Internet Shortcut (.url)' };
+    // Registry files: REGEDIT4 or "Windows Registry Editor Version 5.00" (may have UTF-16LE BOM FF FE)
+    if (head.startsWith('REGEDIT4') || head.startsWith('Windows Registry'))
+      return { hex: h(8), label: 'Windows Registry File (.reg)' };
+    if (bytes.length >= 4 && bytes[0] === 0xFF && bytes[1] === 0xFE) {
+      const u16 = new TextDecoder('utf-16le', { fatal: false }).decode(bytes.subarray(0, Math.min(80, bytes.length)));
+      if (u16.startsWith('Windows Registry'))
+        return { hex: 'FF FE', label: 'Windows Registry File (.reg, UTF-16LE)' };
+    }
+    // INF: Setup Information files start with [Version] section
+    if (head.startsWith('[Version]') || head.startsWith('[version]'))
+      return { hex: h(9), label: 'Setup Information File (.inf)' };
     if (head.startsWith('From ') || head.startsWith('Received:') || head.startsWith('MIME-Version'))
       return { hex: h(6), label: 'Email Message (RFC 5322)' };
     // EVTX: "ElfFile\0"

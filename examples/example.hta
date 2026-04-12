@@ -1,0 +1,40 @@
+<html>
+<head>
+<title>GloveBox Sample HTA</title>
+<HTA:APPLICATION
+  ID="GloveBoxHTA"
+  APPLICATIONNAME="GloveBox Sample"
+  BORDER="thick"
+  BORDERSTYLE="normal"
+  CAPTION="yes"
+  ICON="glovebox.ico"
+  MAXIMIZEBUTTON="yes"
+  MINIMIZEBUTTON="yes"
+  SHOWINTASKBAR="yes"
+  SINGLEINSTANCE="yes"
+  SYSMENU="yes"
+  VERSION="1.0"
+  WINDOWSTATE="normal"
+  SCROLL="auto"
+/>
+<style>
+  body { font-family: Segoe UI, sans-serif; margin: 20px; background: #f0f0f0; }
+  h1 { color: #333; }
+  .info { background: #fff; padding: 15px; border-radius: 4px; border: 1px solid #ddd; }
+</style>
+</head>
+<body>
+  <h1>GloveBox Sample HTA Application</h1>
+  <div class="info">
+    <p>This is a sample HTML Application (.hta) file for testing the HTA renderer in GloveBox.</p>
+    <p>HTA files run as trusted applications with access to the local system.</p>
+  </div>
+  <script language="VBScript">
+    Sub ShowInfo()
+      MsgBox "GloveBox HTA Sample v1.0", vbInformation, "About"
+    End Sub
+  </script>
+  <br>
+  <button onclick="ShowInfo()">About</button>
+</body>
+</html>

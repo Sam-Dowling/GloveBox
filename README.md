@@ -33,7 +33,7 @@ SOC analysts, incident responders, and security-conscious users need a way to sa
 | **Archives** | `.zip` `.rar` `.7z` `.cab` — content listing, threat flagging, clickable entry extraction, ZipCrypto decryption |
 | **Disk images** | `.iso` `.img` — ISO 9660 filesystem listing |
 | **OneNote** | `.one` — embedded object extraction + phishing detection |
-| **Windows** | `.lnk` (Shell Link) · `.hta` (HTML Application) · `.url` `.webloc` (Internet shortcuts) |
+| **Windows** | `.lnk` (Shell Link) · `.hta` (HTML Application) · `.url` `.webloc` (Internet shortcuts) · `.reg` (Registry) · `.inf` (Setup Information) · `.sct` (Script Component) · `.msi` (Installer) |
 | **Scripts** | `.wsf` `.wsc` `.wsh` (Windows Script Files — parsed) · `.vbs` `.ps1` `.bat` `.cmd` `.js` |
 | **Forensics** | `.evtx` (Windows Event Log) · `.sqlite` `.db` (SQLite — Chrome/Firefox/Edge history auto-detect) |
 | **Data** | `.csv` `.tsv` · `.iqy` (Internet Query) · `.slk` (Symbolic Link) |
@@ -136,6 +136,9 @@ src/renderers/url-renderer.js          # UrlRenderer — .url / .webloc shortcut
 src/renderers/onenote-renderer.js      # OneNoteRenderer — .one embedded object extraction
 src/renderers/iqy-slk-renderer.js      # IqySlkRenderer — Internet Query + Symbolic Link files
 src/renderers/wsf-renderer.js          # WsfRenderer — Windows Script File parser
+src/renderers/reg-renderer.js          # RegRenderer — Windows Registry File (.reg) parser
+src/renderers/inf-renderer.js          # InfSctRenderer — .inf setup info + .sct scriptlet parser
+src/renderers/msi-renderer.js          # MsiRenderer — Windows Installer (.msi) analyser
 src/renderers/csv-renderer.js          # CsvRenderer — CSV/TSV table view
 src/renderers/evtx-renderer.js         # EvtxRenderer — Windows Event Log parser
 src/renderers/sqlite-renderer.js       # SqliteRenderer — SQLite + browser history
@@ -202,6 +205,9 @@ GloveBox/
 │   │   ├── onenote-renderer.js    # OneNoteRenderer — .one files
 │   │   ├── iqy-slk-renderer.js    # IqySlkRenderer — .iqy / .slk files
 │   │   ├── wsf-renderer.js        # WsfRenderer — Windows Script Files
+│   │   ├── reg-renderer.js        # RegRenderer — .reg registry files
+│   │   ├── inf-renderer.js        # InfSctRenderer — .inf / .sct files
+│   │   ├── msi-renderer.js        # MsiRenderer — .msi installer packages
 │   │   ├── csv-renderer.js        # CsvRenderer
 │   │   ├── evtx-renderer.js       # EvtxRenderer — .evtx parser
 │   │   ├── sqlite-renderer.js     # SqliteRenderer — SQLite + browser history

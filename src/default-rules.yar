@@ -4217,3 +4217,543 @@ rule Embedded_Compressed_Stream
     condition:
         any of them
 }
+
+// ════════════════════════════════════════════════════════════════════════
+// REG — Windows Registry File rules
+// ════════════════════════════════════════════════════════════════════════
+
+rule REG_Persistence_Run_Key
+{
+    meta:
+        description = "Registry file modifies Run/RunOnce autostart keys (persistence)"
+        severity    = "critical"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $run1 = "CurrentVersion\\Run]" nocase
+        $run2 = "CurrentVersion\\RunOnce]" nocase
+        $run3 = "CurrentVersion\\RunOnceEx]" nocase
+        $run4 = "CurrentVersion\\RunServices]" nocase
+
+    condition:
+        ($header1 or $header2) and any of ($run*)
+}
+
+rule REG_Persistence_Winlogon
+{
+    meta:
+        description = "Registry file modifies Winlogon keys (persistence/credential theft)"
+        severity    = "critical"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $wl1 = "CurrentVersion\\Winlogon" nocase
+        $wl2 = "\"Userinit\"" nocase
+        $wl3 = "\"Shell\"" nocase
+
+    condition:
+        ($header1 or $header2) and $wl1 and any of ($wl2, $wl3)
+}
+
+rule REG_Security_Disable
+{
+    meta:
+        description = "Registry file disables Windows security features"
+        severity    = "critical"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $dis1 = "DisableAntiSpyware" nocase
+        $dis2 = "DisableRealtimeMonitoring" nocase
+        $dis3 = "DisableBehaviorMonitoring" nocase
+        $dis4 = "DisableOnAccessProtection" nocase
+        $dis5 = "DisableScanOnRealtimeEnable" nocase
+        $dis6 = "DisableAntiVirus" nocase
+        $dis7 = "Windows Defender" nocase
+
+    condition:
+        ($header1 or $header2) and any of ($dis*)
+}
+
+rule REG_IFEO_Debugger
+{
+    meta:
+        description = "Registry file sets Image File Execution Options debugger (process hijack)"
+        severity    = "critical"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $ifeo = "Image File Execution Options" nocase
+        $dbg = "\"Debugger\"" nocase
+
+    condition:
+        ($header1 or $header2) and $ifeo and $dbg
+}
+
+rule REG_Service_Creation
+{
+    meta:
+        description = "Registry file creates or modifies Windows services"
+        severity    = "high"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $svc1 = "\\Services\\" nocase
+        $svc2 = "\"ImagePath\"" nocase
+        $svc3 = "\"Start\"=dword:" nocase
+
+    condition:
+        ($header1 or $header2) and $svc1 and any of ($svc2, $svc3)
+}
+
+rule REG_UAC_Disable
+{
+    meta:
+        description = "Registry file disables User Account Control"
+        severity    = "critical"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $uac1 = "EnableLUA" nocase
+        $uac2 = "ConsentPromptBehaviorAdmin" nocase
+        $uac3 = "PromptOnSecureDesktop" nocase
+
+    condition:
+        ($header1 or $header2) and any of ($uac*)
+}
+
+rule REG_COM_Hijack
+{
+    meta:
+        description = "Registry file modifies COM class registration (COM hijacking)"
+        severity    = "high"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $com1 = "\\Classes\\CLSID\\" nocase
+        $com2 = "InprocServer32" nocase
+        $com3 = "\\Classes\\*\\shell" nocase
+
+    condition:
+        ($header1 or $header2) and any of ($com*)
+}
+
+rule REG_Suspicious_Values
+{
+    meta:
+        description = "Registry file contains suspicious executable references in values"
+        severity    = "high"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $v1 = "powershell" nocase
+        $v2 = "cmd.exe" nocase
+        $v3 = "mshta" nocase
+        $v4 = "regsvr32" nocase
+        $v5 = "rundll32" nocase
+        $v6 = "certutil" nocase
+        $v7 = "bitsadmin" nocase
+        $v8 = "wscript" nocase
+        $v9 = "cscript" nocase
+        $v10 = "-EncodedCommand" nocase
+        $v11 = "FromBase64String" nocase
+        $v12 = "DownloadString" nocase
+        $v13 = "DownloadFile" nocase
+
+    condition:
+        ($header1 or $header2) and 2 of ($v*)
+}
+
+rule REG_File_Association_Hijack
+{
+    meta:
+        description = "Registry file modifies file associations or shell handlers"
+        severity    = "high"
+
+    strings:
+        $header1 = "Windows Registry Editor" nocase
+        $header2 = "REGEDIT4"
+        $fa1 = "\\Classes\\.exe\\" nocase
+        $fa2 = "\\Classes\\exefile\\" nocase
+        $fa3 = "\\Classes\\htmlfile\\" nocase
+        $fa4 = "\\Classes\\http\\" nocase
+        $fa5 = "\\shell\\open\\command" nocase
+
+    condition:
+        ($header1 or $header2) and any of ($fa*)
+}
+
+rule REG_Any_Presence
+{
+    meta:
+        description = "Windows Registry import file detected"
+        severity    = "info"
+
+    strings:
+        $header1 = "Windows Registry Editor Version 5.00"
+        $header2 = "REGEDIT4"
+
+    condition:
+        any of them
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// INF — Windows Setup Information File rules
+// ════════════════════════════════════════════════════════════════════════
+
+rule INF_Command_Execution
+{
+    meta:
+        description = "INF file with RunPreSetupCommands or RunPostSetupCommands (command execution)"
+        severity    = "critical"
+
+    strings:
+        $sec1 = "[RunPreSetupCommands]" nocase
+        $sec2 = "[RunPostSetupCommands]" nocase
+        $cmd1 = "RunPreSetupCommands" nocase
+        $cmd2 = "RunPostSetupCommands" nocase
+
+    condition:
+        any of them
+}
+
+rule INF_CMSTP_Bypass
+{
+    meta:
+        description = "INF file references CMSTP (UAC bypass technique T1218.003)"
+        severity    = "critical"
+
+    strings:
+        $cmstp1 = "cmstp" nocase
+        $cmstp2 = "CMSTP.EXE" nocase
+        $inf1 = "[DefaultInstall" nocase
+
+    condition:
+        any of ($cmstp*) and $inf1
+}
+
+rule INF_LOLBin_Reference
+{
+    meta:
+        description = "INF file references LOLBins (Living-off-the-Land binaries)"
+        severity    = "high"
+
+    strings:
+        $inf = "[DefaultInstall" nocase
+        $lol1 = "rundll32" nocase
+        $lol2 = "regsvr32" nocase
+        $lol3 = "mshta" nocase
+        $lol4 = "certutil" nocase
+        $lol5 = "bitsadmin" nocase
+        $lol6 = "scrobj.dll" nocase
+        $lol7 = "msiexec" nocase
+
+    condition:
+        $inf and any of ($lol*)
+}
+
+rule INF_Script_Execution
+{
+    meta:
+        description = "INF file references script interpreters"
+        severity    = "high"
+
+    strings:
+        $inf = "[DefaultInstall" nocase
+        $sc1 = "powershell" nocase
+        $sc2 = "cmd.exe" nocase
+        $sc3 = "wscript" nocase
+        $sc4 = "cscript" nocase
+        $sc5 = "cmd /c" nocase
+        $sc6 = "cmd /k" nocase
+
+    condition:
+        $inf and any of ($sc*)
+}
+
+rule INF_Registry_Modification
+{
+    meta:
+        description = "INF file with AddReg/DelReg directives (registry modification)"
+        severity    = "medium"
+
+    strings:
+        $addreg = "AddReg" nocase
+        $delreg = "DelReg" nocase
+        $hklm = "HKLM" nocase
+        $hkcu = "HKCU" nocase
+
+    condition:
+        any of ($addreg, $delreg) and any of ($hklm, $hkcu)
+}
+
+rule INF_DLL_Registration
+{
+    meta:
+        description = "INF file registers DLLs or OCX components"
+        severity    = "high"
+
+    strings:
+        $reg1 = "RegisterDlls" nocase
+        $reg2 = "UnRegisterDlls" nocase
+        $reg3 = "RegisterOCXs" nocase
+        $reg4 = "UnRegisterOCXs" nocase
+
+    condition:
+        any of them
+}
+
+rule INF_URL_Reference
+{
+    meta:
+        description = "INF file contains URL references"
+        severity    = "medium"
+
+    strings:
+        $url1 = "http://" nocase
+        $url2 = "https://" nocase
+        $inf = "[Version]" nocase
+
+    condition:
+        $inf and any of ($url*)
+}
+
+rule INF_Any_Presence
+{
+    meta:
+        description = "Windows Setup Information file detected"
+        severity    = "info"
+
+    strings:
+        $ver = "[Version]" nocase
+        $sig1 = "Signature=" nocase
+        $sig2 = "$Chicago$"
+        $sig3 = "$Windows NT$"
+
+    condition:
+        $ver and any of ($sig*)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// SCT — Windows Script Component (COM Scriptlet) rules
+// ════════════════════════════════════════════════════════════════════════
+
+rule SCT_Squiblydoo
+{
+    meta:
+        description = "SCT scriptlet with regsvr32 references (Squiblydoo attack T1218.010)"
+        severity    = "critical"
+
+    strings:
+        $sct1 = "<scriptlet" nocase
+        $sct2 = "<registration" nocase
+        $reg1 = "regsvr32" nocase
+        $reg2 = "scrobj.dll" nocase
+
+    condition:
+        any of ($sct*) and any of ($reg*)
+}
+
+rule SCT_Script_Execution
+{
+    meta:
+        description = "SCT scriptlet with embedded script code"
+        severity    = "high"
+
+    strings:
+        $sct = "<scriptlet" nocase
+        $sc1 = "<script" nocase
+        $lang1 = "JScript" nocase
+        $lang2 = "VBScript" nocase
+
+    condition:
+        $sct and $sc1 and any of ($lang*)
+}
+
+rule SCT_COM_Object_Creation
+{
+    meta:
+        description = "SCT scriptlet creates COM objects (code execution)"
+        severity    = "high"
+
+    strings:
+        $sct = "<scriptlet" nocase
+        $com1 = "CreateObject" nocase
+        $com2 = "GetObject" nocase
+        $com3 = "WScript.Shell" nocase
+        $com4 = "Shell.Application" nocase
+        $com5 = "Scripting.FileSystemObject" nocase
+
+    condition:
+        $sct and any of ($com*)
+}
+
+rule SCT_Network_Access
+{
+    meta:
+        description = "SCT scriptlet with network access capabilities"
+        severity    = "high"
+
+    strings:
+        $sct = "<scriptlet" nocase
+        $net1 = "XMLHTTP" nocase
+        $net2 = "MSXML2" nocase
+        $net3 = "WinHttp" nocase
+        $net4 = "ADODB.Stream" nocase
+        $net5 = "DownloadFile" nocase
+        $net6 = "DownloadString" nocase
+
+    condition:
+        $sct and any of ($net*)
+}
+
+rule SCT_Shell_Command
+{
+    meta:
+        description = "SCT scriptlet executes shell commands"
+        severity    = "critical"
+
+    strings:
+        $sct = "<scriptlet" nocase
+        $cmd1 = "powershell" nocase
+        $cmd2 = "cmd.exe" nocase
+        $cmd3 = "cmd /c" nocase
+        $cmd4 = ".Run" nocase
+        $cmd5 = ".Exec" nocase
+        $cmd6 = "mshta" nocase
+
+    condition:
+        $sct and 2 of ($cmd*)
+}
+
+rule SCT_Any_Presence
+{
+    meta:
+        description = "Windows Script Component (SCT/WSC scriptlet) detected"
+        severity    = "medium"
+
+    strings:
+        $sct1 = "<scriptlet" nocase
+        $sct2 = "<registration" nocase
+        $sct3 = "classid=" nocase
+
+    condition:
+        $sct1 and any of ($sct2, $sct3)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// MSI — Windows Installer Package rules
+// ════════════════════════════════════════════════════════════════════════
+
+rule MSI_Embedded_PE
+{
+    meta:
+        description = "MSI installer contains embedded PE executable"
+        severity    = "critical"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $mz1 = { 4D 5A 90 00 }
+        $mz2 = { 4D 5A 50 45 }
+        $pe  = "This program cannot be run in DOS mode"
+
+    condition:
+        $ole at 0 and (any of ($mz*) or $pe)
+}
+
+rule MSI_Embedded_Script
+{
+    meta:
+        description = "MSI installer contains embedded script content"
+        severity    = "high"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $sc1 = "WScript.Shell" nocase
+        $sc2 = "Scripting.FileSystemObject" nocase
+        $sc3 = "CreateObject" nocase
+        $sc4 = "powershell" nocase
+        $sc5 = "cmd.exe /c" nocase
+        $sc6 = "Shell.Application" nocase
+
+    condition:
+        $ole at 0 and 2 of ($sc*)
+}
+
+rule MSI_Suspicious_CustomAction
+{
+    meta:
+        description = "MSI installer references CustomAction execution patterns"
+        severity    = "high"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $ca = "CustomAction" nocase
+        $cmd1 = "powershell" nocase
+        $cmd2 = "cmd.exe" nocase
+        $cmd3 = "mshta" nocase
+        $cmd4 = "wscript" nocase
+        $cmd5 = "cscript" nocase
+        $cmd6 = "certutil" nocase
+        $cmd7 = "bitsadmin" nocase
+        $cmd8 = "rundll32" nocase
+
+    condition:
+        $ole at 0 and $ca and any of ($cmd*)
+}
+
+rule MSI_Network_Indicators
+{
+    meta:
+        description = "MSI installer contains network URL references"
+        severity    = "medium"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $url1 = "http://" nocase
+        $url2 = "https://" nocase
+        $url3 = "ftp://" nocase
+
+    condition:
+        $ole at 0 and any of ($url*)
+}
+
+rule MSI_Encoded_Content
+{
+    meta:
+        description = "MSI installer contains Base64 or encoded command indicators"
+        severity    = "high"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $enc1 = "-EncodedCommand" nocase
+        $enc2 = "-enc " nocase
+        $enc3 = "FromBase64String" nocase
+        $enc4 = "Convert]::FromBase64" nocase
+
+    condition:
+        $ole at 0 and any of ($enc*)
+}
+
+rule MSI_Service_Install
+{
+    meta:
+        description = "MSI installer creates Windows services"
+        severity    = "medium"
+
+    strings:
+        $ole = { D0 CF 11 E0 A1 B1 1A E1 }
+        $svc1 = "ServiceInstall" nocase
+        $svc2 = "ServiceControl" nocase
+
+    condition:
+        $ole at 0 and any of ($svc*)
+}

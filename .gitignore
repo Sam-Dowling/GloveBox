@@ -9,9 +9,6 @@ __pycache__/
 Thumbs.db
 desktop.ini
 
-# Build output
-dist/
-
 # Editor
 .vscode/
 .idea/
