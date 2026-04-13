@@ -1,8 +1,8 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
-// zip-renderer.js — Archive content listing for .zip / .7z / .rar / .cab
-// Supports: clickable file extraction, ZipCrypto password cracking
-// Depends on: constants.js (IOC), JSZip (vendor)
+// zip-renderer.js — Archive content listing for .zip / .gz / .tar / .7z / .rar / .cab
+// Supports: clickable file extraction, ZipCrypto password cracking, gzip decompression, TAR parsing
+// Depends on: constants.js (IOC), JSZip (vendor), Decompressor (decompressor.js)
 // ════════════════════════════════════════════════════════════════════════════
 class ZipRenderer {
 
@@ -26,8 +26,19 @@ class ZipRenderer {
 
   async render(buffer, fileName) {
     const wrap = document.createElement('div'); wrap.className = 'zip-view';
+    const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
 
-    // Banner
+    // ── Check for Gzip format (magic: 1F 8B) ────────────────────────────────
+    if (bytes[0] === 0x1F && bytes[1] === 0x8B) {
+      return await this._handleGzip(wrap, bytes, fileName);
+    }
+
+    // ── Check for TAR format (magic "ustar" at offset 257) ──────────────────
+    if (this._isTar(bytes)) {
+      return this._handleTar(wrap, bytes, fileName);
+    }
+
+    // Banner for ZIP
     const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
     banner.innerHTML = '<strong>Archive Contents</strong> — click any file to open it for analysis.';
     wrap.appendChild(banner);
@@ -37,7 +48,7 @@ class ZipRenderer {
     try { zip = await JSZip.loadAsync(buffer); }
     catch (e) {
       // May be encrypted or non-ZIP — check for encryption first
-      const encrypted = this._detectEncryption(new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer));
+      const encrypted = this._detectEncryption(bytes);
       if (encrypted) {
         return await this._handleEncrypted(wrap, buffer, fileName);
       }
@@ -53,6 +64,374 @@ class ZipRenderer {
     // Store zip for file extraction
     this._zip = zip;
     return this._renderZipContents(wrap, zip, buffer, fileName);
+  }
+
+  // ── Gzip handling ─────────────────────────────────────────────────────────
+
+  async _handleGzip(wrap, bytes, fileName) {
+    // Banner
+    const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
+    banner.innerHTML = '<strong>Gzip Compressed File</strong> — decompressing content for analysis.';
+    wrap.appendChild(banner);
+
+    // Parse gzip header for info
+    const gzInfo = this._parseGzipHeader(bytes);
+
+    // Show gzip info
+    const infoDiv = document.createElement('div'); infoDiv.style.cssText = 'padding:12px 20px;';
+    infoDiv.innerHTML = `<p><strong>Format:</strong> Gzip compressed${gzInfo.method ? ` (${escHtml(gzInfo.method)})` : ''}</p>` +
+      `<p><strong>Compressed size:</strong> ${this._fmtBytes(bytes.length)}</p>` +
+      (gzInfo.originalName ? `<p><strong>Original filename:</strong> ${escHtml(gzInfo.originalName)}</p>` : '') +
+      (gzInfo.mtime ? `<p><strong>Modified:</strong> ${escHtml(gzInfo.mtime)}</p>` : '');
+    wrap.appendChild(infoDiv);
+
+    // Try to decompress
+    let decompressed = null;
+    try {
+      decompressed = await Decompressor.inflate(bytes, 'gzip');
+    } catch (e) {
+      // Decompression failed
+    }
+
+    if (!decompressed) {
+      const errDiv = document.createElement('div');
+      errDiv.style.cssText = 'padding:12px 20px;color:#f88;';
+      errDiv.innerHTML = '<p>⚠ Decompression failed — file may be corrupted or truncated.</p>';
+      wrap.appendChild(errDiv);
+
+      // Show hex dump of compressed data
+      const hexSection = this._buildHexDump(bytes);
+      wrap.appendChild(hexSection);
+      return wrap;
+    }
+
+    // Successfully decompressed - determine inner file name
+    let innerName = gzInfo.originalName || (fileName || 'file').replace(/\.(gz|gzip)$/i, '') || 'decompressed';
+    // If no extension after stripping .gz, try to detect from content
+    if (!innerName.includes('.') || innerName === fileName) {
+      innerName = this._guessFilename(decompressed, innerName);
+    }
+
+    const decompInfo = document.createElement('div'); decompInfo.style.cssText = 'padding:0 20px 12px;';
+    decompInfo.innerHTML = `<p><strong>Decompressed size:</strong> ${this._fmtBytes(decompressed.length)}</p>` +
+      `<p><strong>Compression ratio:</strong> ${((1 - bytes.length / decompressed.length) * 100).toFixed(1)}%</p>`;
+    wrap.appendChild(decompInfo);
+
+    // Check if decompressed content is a TAR archive
+    if (this._isTar(decompressed)) {
+      const tarBanner = document.createElement('div'); tarBanner.className = 'doc-extraction-banner';
+      tarBanner.style.marginTop = '12px';
+      tarBanner.innerHTML = '<strong>TAR Archive Detected</strong> — listing archive contents.';
+      wrap.appendChild(tarBanner);
+
+      return this._renderTarContents(wrap, decompressed, fileName);
+    }
+
+    // Not a TAR — offer to open the decompressed file for analysis
+    const openDiv = document.createElement('div'); openDiv.style.cssText = 'padding:12px 20px;';
+    const openBtn = document.createElement('button');
+    openBtn.className = 'zip-extract-btn';
+    openBtn.style.cssText = 'padding:8px 16px;background:#0af;color:#000;border:none;border-radius:4px;cursor:pointer;font-weight:600;';
+    openBtn.textContent = `Open "${innerName}" for analysis`;
+    openBtn.addEventListener('click', () => {
+      const file = new File([decompressed], innerName, { type: 'application/octet-stream' });
+      wrap.dispatchEvent(new CustomEvent('open-inner-file', { bubbles: true, detail: file }));
+    });
+    openDiv.appendChild(openBtn);
+    wrap.appendChild(openDiv);
+
+    // Show preview of decompressed content
+    const previewDiv = document.createElement('div'); previewDiv.style.cssText = 'margin-top:12px;';
+    const previewHeader = document.createElement('div');
+    previewHeader.style.cssText = 'padding:8px 20px;background:rgba(0,0,0,0.2);border-top:1px solid rgba(255,255,255,0.1);font-weight:600;';
+    previewHeader.textContent = 'Decompressed Content Preview';
+    previewDiv.appendChild(previewHeader);
+
+    // Check if it looks like text
+    const isText = this._looksLikeText(decompressed.subarray(0, 1024));
+    if (isText) {
+      const textPre = document.createElement('pre');
+      textPre.style.cssText = 'margin:0;padding:12px 20px;background:rgba(0,0,0,0.15);max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-all;font-size:12px;';
+      const preview = new TextDecoder('utf-8', { fatal: false }).decode(decompressed.subarray(0, 8192));
+      textPre.textContent = preview + (decompressed.length > 8192 ? '\n\n... (truncated)' : '');
+      previewDiv.appendChild(textPre);
+    } else {
+      const hexPane = this._buildHexDump(decompressed, 4096);
+      previewDiv.appendChild(hexPane);
+    }
+    wrap.appendChild(previewDiv);
+
+    return wrap;
+  }
+
+  _parseGzipHeader(bytes) {
+    const info = { method: null, originalName: null, mtime: null };
+    if (bytes.length < 10) return info;
+
+    // Byte 2: compression method (8 = deflate)
+    if (bytes[2] === 0x08) info.method = 'Deflate';
+
+    // Byte 3: flags
+    const flags = bytes[3];
+    const FTEXT = 0x01, FHCRC = 0x02, FEXTRA = 0x04, FNAME = 0x08, FCOMMENT = 0x10;
+
+    // Bytes 4-7: modification time (Unix timestamp)
+    const mtime = bytes[4] | (bytes[5] << 8) | (bytes[6] << 16) | (bytes[7] << 24);
+    if (mtime > 0) {
+      try {
+        info.mtime = new Date(mtime * 1000).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+      } catch (e) {}
+    }
+
+    // Parse optional fields
+    let offset = 10;
+
+    // FEXTRA: skip extra field
+    if (flags & FEXTRA) {
+      if (offset + 2 > bytes.length) return info;
+      const xlen = bytes[offset] | (bytes[offset + 1] << 8);
+      offset += 2 + xlen;
+    }
+
+    // FNAME: original file name (null-terminated)
+    if (flags & FNAME) {
+      const start = offset;
+      while (offset < bytes.length && bytes[offset] !== 0) offset++;
+      if (offset > start) {
+        info.originalName = new TextDecoder('latin1').decode(bytes.subarray(start, offset));
+      }
+      offset++; // skip null terminator
+    }
+
+    return info;
+  }
+
+  _guessFilename(bytes, baseName) {
+    // Check for common file signatures
+    if (bytes[0] === 0x50 && bytes[1] === 0x4B) return baseName + '.zip';
+    if (bytes[0] === 0x7F && bytes[1] === 0x45 && bytes[2] === 0x4C && bytes[3] === 0x46) return baseName + '.elf';
+    if (bytes[0] === 0x4D && bytes[1] === 0x5A) return baseName + '.exe';
+    if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46) return baseName + '.pdf';
+    if (this._isTar(bytes)) return baseName + '.tar';
+    // Check for text/script content
+    if (this._looksLikeText(bytes.subarray(0, 512))) {
+      const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(0, 256)).toLowerCase();
+      if (text.startsWith('<?xml')) return baseName + '.xml';
+      if (text.startsWith('<!doctype html') || text.startsWith('<html')) return baseName + '.html';
+      if (text.startsWith('{') || text.startsWith('[')) return baseName + '.json';
+      return baseName + '.txt';
+    }
+    return baseName;
+  }
+
+  _looksLikeText(bytes) {
+    if (bytes.length === 0) return false;
+    let printable = 0;
+    for (let i = 0; i < bytes.length; i++) {
+      const b = bytes[i];
+      if ((b >= 0x20 && b <= 0x7e) || b === 0x09 || b === 0x0a || b === 0x0d) printable++;
+    }
+    return printable / bytes.length > 0.85;
+  }
+
+  // ── TAR handling ──────────────────────────────────────────────────────────
+
+  _isTar(bytes) {
+    // Check for "ustar" magic at offset 257 (POSIX tar)
+    if (bytes.length > 262) {
+      const magic = String.fromCharCode(bytes[257], bytes[258], bytes[259], bytes[260], bytes[261]);
+      if (magic === 'ustar') return true;
+    }
+    // Also check for older GNU tar format
+    if (bytes.length > 512) {
+      // Check if first block looks like a tar header (filename at 0, null padding, size at 124)
+      // Tar headers have specific structure: 100 bytes filename, then mode/uid/gid/size fields
+      const nameEnd = bytes.indexOf(0);
+      if (nameEnd > 0 && nameEnd < 100) {
+        // Check if there's a valid octal size at offset 124
+        const sizeBytes = bytes.subarray(124, 135);
+        const sizeStr = String.fromCharCode(...sizeBytes).replace(/\0/g, '').trim();
+        if (/^[0-7]+$/.test(sizeStr)) return true;
+      }
+    }
+    return false;
+  }
+
+  _handleTar(wrap, bytes, fileName) {
+    // Banner
+    const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
+    banner.innerHTML = '<strong>TAR Archive Contents</strong> — click any file to extract and analyze.';
+    wrap.appendChild(banner);
+
+    return this._renderTarContents(wrap, bytes, fileName);
+  }
+
+  _renderTarContents(wrap, bytes, fileName) {
+    const entries = this._parseTar(bytes);
+
+    if (!entries.length) {
+      const p = document.createElement('p'); p.style.cssText = 'color:#888;padding:20px;text-align:center';
+      p.textContent = 'Archive is empty or could not be parsed.';
+      wrap.appendChild(p);
+      return wrap;
+    }
+
+    // Summary
+    const dirs = entries.filter(e => e.dir).length;
+    const files = entries.filter(e => !e.dir).length;
+    const totalSize = entries.reduce((s, e) => s + (e.size || 0), 0);
+
+    const summ = document.createElement('div'); summ.className = 'zip-summary';
+    summ.textContent = `${files} file${files !== 1 ? 's' : ''}, ${dirs} folder${dirs !== 1 ? 's' : ''} — ${this._fmtBytes(totalSize)} total`;
+    wrap.appendChild(summ);
+
+    // Warnings
+    const warnings = this._checkWarnings(entries);
+    if (warnings.length) {
+      const warnDiv = document.createElement('div'); warnDiv.className = 'zip-warnings';
+      for (const w of warnings) {
+        const d = document.createElement('div'); d.className = `zip-warning zip-warning-${w.sev}`;
+        d.textContent = w.msg; warnDiv.appendChild(d);
+      }
+      wrap.appendChild(warnDiv);
+    }
+
+    // File table
+    const scr = document.createElement('div'); scr.style.cssText = 'overflow:auto;max-height:calc(100vh - 220px)';
+    const tbl = document.createElement('table'); tbl.className = 'zip-table';
+
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    for (const h of ['', 'Path', 'Size', 'Date']) {
+      const th = document.createElement('th'); th.textContent = h; hr.appendChild(th);
+    }
+    thead.appendChild(hr); tbl.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    for (const entry of entries) {
+      const tr = document.createElement('tr');
+      if (!entry.dir) {
+        tr.style.cursor = 'pointer';
+        tr.title = 'Click to open for analysis';
+        tr.addEventListener('click', () => this._extractTarEntry(bytes, entry, wrap));
+      }
+
+      const iconTd = document.createElement('td');
+      iconTd.textContent = entry.dir ? '📁' : this._getFileIcon(entry.path);
+      iconTd.style.cssText = 'width:24px;text-align:center';
+      tr.appendChild(iconTd);
+
+      const pathTd = document.createElement('td');
+      const ext = (entry.path || '').split('.').pop().toLowerCase();
+      const dangerous = ZipRenderer.EXEC_EXTS.has(ext);
+      pathTd.innerHTML = dangerous
+        ? `<span style="color:#f88">⚠ ${escHtml(entry.path)}</span>`
+        : escHtml(entry.path);
+      tr.appendChild(pathTd);
+
+      const sizeTd = document.createElement('td');
+      sizeTd.textContent = entry.dir ? '—' : this._fmtBytes(entry.size);
+      sizeTd.style.cssText = 'text-align:right;white-space:nowrap';
+      tr.appendChild(sizeTd);
+
+      const dateTd = document.createElement('td');
+      dateTd.textContent = entry.mtime ? entry.mtime.toISOString().slice(0, 16).replace('T', ' ') : '—';
+      dateTd.style.cssText = 'white-space:nowrap';
+      tr.appendChild(dateTd);
+
+      tbody.appendChild(tr);
+    }
+
+    tbl.appendChild(tbody); scr.appendChild(tbl); wrap.appendChild(scr);
+
+    // Store bytes for extraction
+    this._tarBytes = bytes;
+
+    return wrap;
+  }
+
+  _parseTar(bytes) {
+    const entries = [];
+    let offset = 0;
+
+    while (offset + 512 <= bytes.length) {
+      // Each tar entry starts with a 512-byte header
+      const header = bytes.subarray(offset, offset + 512);
+
+      // Check if this is a null block (end of archive)
+      if (header.every(b => b === 0)) break;
+
+      // Parse header fields
+      const name = this._tarString(header, 0, 100);
+      if (!name) break;
+
+      const mode = this._tarString(header, 100, 8);
+      const uid = this._tarOctal(header, 108, 8);
+      const gid = this._tarOctal(header, 116, 8);
+      const size = this._tarOctal(header, 124, 12);
+      const mtime = this._tarOctal(header, 136, 12);
+      const typeFlag = header[156];
+      const linkName = this._tarString(header, 157, 100);
+      const prefix = this._tarString(header, 345, 155);
+
+      // Combine prefix and name for full path
+      const fullPath = prefix ? prefix + '/' + name : name;
+
+      // Type: '0' or 0 = regular file, '5' = directory, '2' = symlink
+      const isDir = typeFlag === 53 || typeFlag === 0x35 || fullPath.endsWith('/');
+
+      entries.push({
+        path: fullPath.replace(/\/$/, ''),
+        name: fullPath.split('/').pop(),
+        dir: isDir,
+        size: isDir ? 0 : size,
+        mtime: mtime > 0 ? new Date(mtime * 1000) : null,
+        offset: offset + 512, // Data starts after header
+        linkName: linkName || null,
+      });
+
+      // Move to next entry: header (512) + data (rounded up to 512-byte blocks)
+      const dataBlocks = Math.ceil(size / 512);
+      offset += 512 + dataBlocks * 512;
+    }
+
+    return entries;
+  }
+
+  _tarString(header, offset, length) {
+    let end = offset;
+    while (end < offset + length && header[end] !== 0) end++;
+    if (end === offset) return '';
+    return new TextDecoder('utf-8', { fatal: false }).decode(header.subarray(offset, end));
+  }
+
+  _tarOctal(header, offset, length) {
+    const str = this._tarString(header, offset, length).trim();
+    return str ? parseInt(str, 8) || 0 : 0;
+  }
+
+  _extractTarEntry(bytes, entry, wrap) {
+    if (entry.dir || !entry.size) return;
+
+    const data = bytes.subarray(entry.offset, entry.offset + entry.size);
+    const name = entry.path.split('/').pop();
+    const file = new File([data], name, { type: 'application/octet-stream' });
+    wrap.dispatchEvent(new CustomEvent('open-inner-file', { bubbles: true, detail: file }));
+  }
+
+  _getFileIcon(path) {
+    const ext = (path || '').split('.').pop().toLowerCase();
+    if (['exe', 'dll', 'scr', 'com', 'msi'].includes(ext)) return '⚙️';
+    if (['bat', 'cmd', 'ps1', 'vbs', 'js', 'sh'].includes(ext)) return '📜';
+    if (['doc', 'docx', 'docm', 'odt', 'rtf'].includes(ext)) return '📄';
+    if (['xls', 'xlsx', 'xlsm', 'ods', 'csv'].includes(ext)) return '📊';
+    if (['ppt', 'pptx', 'pptm', 'odp'].includes(ext)) return '📽️';
+    if (['pdf'].includes(ext)) return '📕';
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return '📦';
+    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg'].includes(ext)) return '🖼️';
+    if (['txt', 'log', 'md'].includes(ext)) return '📝';
+    if (['html', 'htm', 'xml', 'json'].includes(ext)) return '🌐';
+    return '📄';
   }
 
   // ── Render ZIP contents table with clickable rows ─────────────────────────
@@ -539,7 +918,38 @@ class ZipRenderer {
 
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
 
-    // Check for encryption first
+    // ── Gzip handling ────────────────────────────────────────────────────────
+    if (bytes[0] === 0x1F && bytes[1] === 0x8B) {
+      f.externalRefs.push({ type: IOC.INFO, url: 'Gzip compressed file', severity: 'info' });
+
+      // Try to decompress and analyze contents
+      try {
+        const decompressed = await Decompressor.inflate(bytes, 'gzip');
+        if (decompressed) {
+          f.metadata.compressedSize = bytes.length;
+          f.metadata.decompressedSize = decompressed.length;
+          f.metadata.compressionRatio = ((1 - bytes.length / decompressed.length) * 100).toFixed(1) + '%';
+
+          // Check if it's a tar archive
+          if (this._isTar(decompressed)) {
+            const entries = this._parseTar(decompressed);
+            return this._analyzeArchiveEntries(f, entries);
+          }
+        }
+      } catch (e) {
+        f.externalRefs.push({ type: IOC.INFO, url: 'Gzip decompression failed — file may be corrupted', severity: 'medium' });
+      }
+      return f;
+    }
+
+    // ── TAR handling ─────────────────────────────────────────────────────────
+    if (this._isTar(bytes)) {
+      f.externalRefs.push({ type: IOC.INFO, url: 'TAR archive', severity: 'info' });
+      const entries = this._parseTar(bytes);
+      return this._analyzeArchiveEntries(f, entries);
+    }
+
+    // ── ZIP encryption check ─────────────────────────────────────────────────
     if (this._detectEncryption(bytes)) {
       f.externalRefs.push({ type: IOC.PATTERN, url: 'Password-protected archive detected', severity: 'high' });
       f.risk = 'high';
@@ -560,15 +970,29 @@ class ZipRenderer {
       return f;
     }
 
+    // ── ZIP handling ─────────────────────────────────────────────────────────
     let zip;
     try { zip = await JSZip.loadAsync(buffer); } catch (e) {
-      f.externalRefs.push({ type: IOC.INFO, url: 'Archive format not fully parseable (not ZIP)', severity: 'info' });
+      // Not a valid ZIP — check for other archive formats
+      if (bytes[0] === 0x52 && bytes[1] === 0x61 && bytes[2] === 0x72) {
+        f.externalRefs.push({ type: IOC.INFO, url: 'RAR archive — extraction not supported in-browser', severity: 'info' });
+      } else if (bytes[0] === 0x37 && bytes[1] === 0x7A && bytes[2] === 0xBC && bytes[3] === 0xAF) {
+        f.externalRefs.push({ type: IOC.INFO, url: '7-Zip archive — extraction not supported in-browser', severity: 'info' });
+      } else if (bytes[0] === 0x4D && bytes[1] === 0x53 && bytes[2] === 0x43 && bytes[3] === 0x46) {
+        f.externalRefs.push({ type: IOC.INFO, url: 'CAB archive — extraction not supported in-browser', severity: 'info' });
+      } else {
+        f.externalRefs.push({ type: IOC.INFO, url: 'Archive format not fully parseable', severity: 'info' });
+      }
       return f;
     }
 
     const entries = [];
     zip.forEach((path, entry) => entries.push({ path, dir: entry.dir }));
 
+    return this._analyzeArchiveEntries(f, entries);
+  }
+
+  _analyzeArchiveEntries(f, entries) {
     const warnings = this._checkWarnings(entries);
     for (const w of warnings) {
       f.externalRefs.push({ type: IOC.PATTERN, url: w.msg, severity: w.sev });
@@ -577,7 +1001,7 @@ class ZipRenderer {
     }
 
     // Count dangerous files
-    const dangerous = entries.filter(e => !e.dir && ZipRenderer.EXEC_EXTS.has(e.path.split('.').pop().toLowerCase()));
+    const dangerous = entries.filter(e => !e.dir && ZipRenderer.EXEC_EXTS.has((e.path || '').split('.').pop().toLowerCase()));
     if (dangerous.length) {
       f.externalRefs.push({ type: IOC.PATTERN, url: `${dangerous.length} executable/script file(s) inside archive`, severity: 'high' });
       f.risk = 'high';
@@ -628,22 +1052,101 @@ class ZipRenderer {
     const bytes = new Uint8Array(buffer);
     const ext = (fileName || '').split('.').pop().toLowerCase();
     let format = 'Unknown archive';
-    if (bytes[0] === 0x52 && bytes[1] === 0x61 && bytes[2] === 0x72) format = 'RAR archive';
-    else if (bytes[0] === 0x37 && bytes[1] === 0x7A && bytes[2] === 0xBC && bytes[3] === 0xAF) format = '7-Zip archive';
-    else if (bytes[0] === 0x4D && bytes[1] === 0x53 && bytes[2] === 0x43 && bytes[3] === 0x46) format = 'CAB (Cabinet) archive';
+    let extraInfo = '';
+
+    // Detect format from magic bytes
+    if (bytes[0] === 0x52 && bytes[1] === 0x61 && bytes[2] === 0x72) {
+      format = 'RAR archive';
+      // RAR version detection
+      if (bytes[3] === 0x21 && bytes[4] === 0x1A && bytes[5] === 0x07) {
+        if (bytes[6] === 0x00) extraInfo = 'RAR 4.x format';
+        else if (bytes[6] === 0x01) extraInfo = 'RAR 5.x format';
+      }
+    } else if (bytes[0] === 0x37 && bytes[1] === 0x7A && bytes[2] === 0xBC && bytes[3] === 0xAF) {
+      format = '7-Zip archive';
+      // 7z header parsing: version at bytes 6-7
+      if (bytes.length >= 8) {
+        const majorVer = bytes[6];
+        const minorVer = bytes[7];
+        extraInfo = `7-Zip format version ${majorVer}.${minorVer}`;
+      }
+    } else if (bytes[0] === 0x4D && bytes[1] === 0x53 && bytes[2] === 0x43 && bytes[3] === 0x46) {
+      format = 'CAB (Cabinet) archive';
+    } else if (bytes[0] === 0x1F && bytes[1] === 0x8B) {
+      format = 'Gzip compressed';
+      // Gzip header: compression method at byte 2, flags at byte 3
+      if (bytes[2] === 0x08) extraInfo = 'Deflate compression';
+    }
 
     const info = document.createElement('div'); info.className = 'doc-extraction-banner';
-    info.innerHTML = `<strong>${format}</strong> — only ZIP archives can be fully listed and extracted. Showing file signature and basic info.`;
+    info.innerHTML = `<strong>${format}</strong> — this archive format cannot be fully extracted in-browser. Showing file info and hex dump.`;
     wrap.innerHTML = ''; wrap.appendChild(info);
 
     const det = document.createElement('div'); det.style.cssText = 'padding:20px;';
-    det.innerHTML = `<p><strong>Format:</strong> ${escHtml(format)}</p>` +
+    det.innerHTML = `<p><strong>Format:</strong> ${escHtml(format)}${extraInfo ? ` (${escHtml(extraInfo)})` : ''}</p>` +
       `<p><strong>File size:</strong> ${this._fmtBytes(bytes.length)}</p>` +
       `<p><strong>Extension:</strong> .${escHtml(ext)}</p>` +
       `<p style="color:#f88;margin-top:12px">⚠ Archives are a common delivery mechanism for phishing payloads. ` +
       `Extract with caution in a sandbox environment.</p>`;
     wrap.appendChild(det);
+
+    // Add hex dump view
+    const hexSection = this._buildHexDump(bytes);
+    wrap.appendChild(hexSection);
+
     return wrap;
+  }
+
+  // ── Hex dump builder ────────────────────────────────────────────────────────
+
+  _buildHexDump(bytes, maxBytes = 65536) {
+    const container = document.createElement('div');
+    container.style.cssText = 'margin-top:16px;';
+
+    const header = document.createElement('div');
+    header.style.cssText = 'padding:8px 20px;background:rgba(0,0,0,0.2);border-top:1px solid rgba(255,255,255,0.1);font-weight:600;';
+    header.textContent = `Hex Dump (first ${this._fmtBytes(Math.min(bytes.length, maxBytes))} of ${this._fmtBytes(bytes.length)})`;
+    container.appendChild(header);
+
+    const scr = document.createElement('div');
+    scr.style.cssText = 'overflow:auto;max-height:400px;background:rgba(0,0,0,0.15);';
+
+    const pre = document.createElement('pre');
+    pre.className = 'hex-dump';
+    pre.style.cssText = 'margin:0;padding:12px 20px;font-family:monospace;font-size:12px;line-height:1.5;white-space:pre;';
+
+    const cap = Math.min(bytes.length, maxBytes);
+    const lines = [];
+
+    for (let off = 0; off < cap; off += 16) {
+      const hex = [];
+      const ascii = [];
+      for (let j = 0; j < 16; j++) {
+        if (off + j < cap) {
+          const b = bytes[off + j];
+          hex.push(b.toString(16).padStart(2, '0'));
+          ascii.push(b >= 0x20 && b <= 0x7e ? String.fromCharCode(b) : '.');
+        } else {
+          hex.push('  ');
+          ascii.push(' ');
+        }
+      }
+      const addr = off.toString(16).padStart(8, '0');
+      lines.push(`${addr}  ${hex.slice(0, 8).join(' ')}  ${hex.slice(8).join(' ')}  |${ascii.join('')}|`);
+    }
+
+    pre.textContent = lines.join('\n');
+    scr.appendChild(pre);
+    container.appendChild(scr);
+
+    if (bytes.length > maxBytes) {
+      const note = document.createElement('div');
+      note.style.cssText = 'padding:8px 20px;color:#888;font-size:12px;';
+      note.textContent = `Showing first ${this._fmtBytes(maxBytes)} of ${this._fmtBytes(bytes.length)}. Full file available for YARA scanning and hash computation.`;
+      container.appendChild(note);
+    }
+
+    return container;
   }
 
   _fmtBytes(n) {

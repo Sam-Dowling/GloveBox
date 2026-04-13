@@ -131,7 +131,7 @@ Object.assign(App.prototype, {
         const r = new RtfRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
         docEl = r.render(buffer, file.name);
-      } else if (['zip', 'rar', '7z', 'cab', 'gz', 'tar'].includes(ext)) {
+      } else if (['zip', 'rar', '7z', 'cab', 'gz', 'gzip', 'tar', 'tgz'].includes(ext)) {
         const r = new ZipRenderer();
         this.findings = await r.analyzeForSecurity(buffer, file.name);
         docEl = await r.render(buffer, file.name);
@@ -575,6 +575,16 @@ Object.assign(App.prototype, {
     // 7-Zip Archive
     if (bytes[0] === 0x37 && bytes[1] === 0x7A && bytes[2] === 0xBC && bytes[3] === 0xAF)
       return 'zip'; // Route to ZipRenderer
+    
+    // Gzip
+    if (bytes[0] === 0x1F && bytes[1] === 0x8B)
+      return 'zip'; // Route to ZipRenderer which handles gzip
+    
+    // TAR (check for "ustar" magic at offset 257)
+    if (bytes.length > 262) {
+      const tarMagic = String.fromCharCode(bytes[257], bytes[258], bytes[259], bytes[260], bytes[261]);
+      if (tarMagic === 'ustar') return 'zip'; // Route to ZipRenderer which handles TAR
+    }
     
     // ISO 9660 Disk Image (check at offset 32769)
     if (bytes.length > 32768 + 5) {

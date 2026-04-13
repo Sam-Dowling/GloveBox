@@ -30,7 +30,7 @@ SOC analysts, incident responders, and security-conscious users need a way to sa
 | **PDF** | `.pdf` |
 | **Email** | `.eml` `.msg` |
 | **HTML** | `.html` `.htm` `.mht` — sandboxed preview + source view |
-| **Archives** | `.zip` `.rar` `.7z` `.cab` — content listing, threat flagging, clickable entry extraction, ZipCrypto decryption |
+| **Archives** | `.zip` `.gz` `.tar` `.tar.gz`/`.tgz` `.rar` `.7z` `.cab` — content listing, threat flagging, clickable entry extraction, gzip decompression, TAR parsing, ZipCrypto decryption, hex dump fallback for unsupported formats |
 | **Disk images** | `.iso` `.img` — ISO 9660 filesystem listing |
 | **OneNote** | `.one` — embedded object extraction + phishing detection |
 | **Windows** | `.lnk` (Shell Link) · `.hta` (HTML Application) · `.url` `.webloc` (Internet shortcuts) · `.reg` (Registry) · `.inf` (Setup Information) · `.sct` (Script Component) · `.msi` (Installer) |
