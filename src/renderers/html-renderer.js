@@ -43,36 +43,24 @@ class HtmlRenderer {
     const previewPane = document.createElement('div');
     previewPane.className = 'html-preview-pane';
 
-    const blob = new Blob([text], { type: 'text/html' });
-    const blobUrl = URL.createObjectURL(blob);
-
     const iframe = document.createElement('iframe');
     iframe.className = 'html-iframe';
-    // Most restrictive sandbox: no scripts, no forms, no popups, unique origin
-    iframe.sandbox = '';
-    iframe.src = blobUrl;
+    // allow-same-origin enables scroll forwarding via contentWindow.scrollBy()
+    // while still blocking scripts, forms, popups, and top navigation
+    iframe.sandbox = 'allow-same-origin';
+    // Use srcdoc instead of blob URL - content is inline, works better with
+    // allow-same-origin for scroll access across all protocols including file://
+    iframe.srcdoc = text;
     iframe.title = 'Sandboxed HTML preview';
-    // Clean up blob URL after load
-    iframe.addEventListener('load', () => { URL.revokeObjectURL(blobUrl); }, { once: true });
 
     // ── Drag shield ──────────────────────────────────────────────────────
-    // Transparent overlay above the iframe. Inactive by default (pointer-events:
-    // none in CSS) so wheel/touch scrolling passes through naturally. Activated
-    // only during drag operations to intercept file drops.
+    // Always-active transparent overlay above the iframe. Intercepts drag/drop
+    // events (preventing browser from navigating when files are dropped on the
+    // iframe) and forwards scroll events to the iframe content programmatically.
     const dragShield = document.createElement('div');
     dragShield.className = 'html-drag-shield';
 
-    // ── Conditional drag shield activation ──────────────────────────────
-    // Activate shield when a drag operation enters the document, deactivate
-    // when drag ends or files are dropped.
-    const activateShield = () => dragShield.classList.add('active');
-    const deactivateShield = () => dragShield.classList.remove('active');
-
-    document.addEventListener('dragenter', activateShield);
-    document.addEventListener('drop', deactivateShield);
-    document.addEventListener('dragend', deactivateShield);
-
-    // ── Drag event handlers (active when shield is enabled) ─────────────
+    // ── Drag event handlers ─────────────────────────────────────────────
     // Capture drag events and dispatch custom events for GloveBox app handling
     dragShield.addEventListener('dragenter', e => {
       e.preventDefault();
@@ -95,13 +83,46 @@ class HtmlRenderer {
     dragShield.addEventListener('drop', e => {
       e.preventDefault();
       e.stopPropagation();
-      deactivateShield();
       if (e.dataTransfer?.files?.length) {
         window.dispatchEvent(new CustomEvent('glovebox-drop', {
           detail: { files: e.dataTransfer.files }
         }));
       }
     });
+
+    // ── Scroll forwarding ───────────────────────────────────────────────
+    // Forward wheel events to the iframe content programmatically.
+    // Works because we have allow-same-origin and srcdoc (same origin as parent).
+    dragShield.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      try {
+        iframe.contentWindow.scrollBy(e.deltaX, e.deltaY);
+      } catch (_) { /* ignore if cross-origin error */ }
+    }, { passive: false });
+
+    // ── Touch scroll support ────────────────────────────────────────────
+    // Track touch movements and scroll the iframe content accordingly
+    let touchStartY = 0;
+    let touchStartX = 0;
+
+    dragShield.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        touchStartY = e.touches[0].clientY;
+        touchStartX = e.touches[0].clientX;
+      }
+    }, { passive: true });
+
+    dragShield.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 1) {
+        const deltaY = touchStartY - e.touches[0].clientY;
+        const deltaX = touchStartX - e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+        touchStartX = e.touches[0].clientX;
+        try {
+          iframe.contentWindow.scrollBy(deltaX, deltaY);
+        } catch (_) { /* ignore if cross-origin error */ }
+      }
+    }, { passive: true });
 
     previewPane.appendChild(iframe);
     previewPane.appendChild(dragShield);

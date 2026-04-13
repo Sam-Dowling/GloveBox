@@ -2,7 +2,7 @@
 """Build script: assembles glovebox.html from source files."""
 import os
 
-VERSION = '1.0.4'
+VERSION = '1.0.5'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
