@@ -54,7 +54,90 @@ class HtmlRenderer {
     // Clean up blob URL after load
     iframe.addEventListener('load', () => { URL.revokeObjectURL(blobUrl); }, { once: true });
 
+    // ── Drag shield ──────────────────────────────────────────────────────
+    // Always-active transparent overlay above the iframe. Intercepts all
+    // pointer events to capture file drags (which would otherwise go
+    // directly to the sandboxed iframe's content document, causing the
+    // browser to navigate/download). Mouse events are forwarded through
+    // to the iframe so normal interaction still works.
+    const dragShield = document.createElement('div');
+    dragShield.className = 'html-drag-shield';
+
+    // ── Drag event interception ─────────────────────────────────────────
+    // Capture drag events and dispatch custom events for app handling
+    dragShield.addEventListener('dragenter', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      window.dispatchEvent(new CustomEvent('glovebox-dragenter'));
+    });
+
+    dragShield.addEventListener('dragover', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    });
+
+    dragShield.addEventListener('dragleave', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      window.dispatchEvent(new CustomEvent('glovebox-dragleave'));
+    });
+
+    dragShield.addEventListener('drop', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer?.files?.length) {
+        window.dispatchEvent(new CustomEvent('glovebox-drop', {
+          detail: { files: e.dataTransfer.files }
+        }));
+      }
+    });
+
+    // ── Forward pointer events to iframe ────────────────────────────────
+    // Temporarily disable shield to find element below, then dispatch event
+    const forwardMouseEvent = (e) => {
+      dragShield.style.pointerEvents = 'none';
+      const target = document.elementFromPoint(e.clientX, e.clientY);
+      dragShield.style.pointerEvents = 'auto';
+      if (target && target !== dragShield) {
+        const forwarded = new MouseEvent(e.type, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          screenX: e.screenX,
+          screenY: e.screenY,
+          button: e.button,
+          buttons: e.buttons,
+          ctrlKey: e.ctrlKey,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+          metaKey: e.metaKey,
+        });
+        target.dispatchEvent(forwarded);
+      }
+    };
+
+    // Forward click events
+    ['click', 'dblclick', 'mousedown', 'mouseup', 'contextmenu'].forEach(evt => {
+      dragShield.addEventListener(evt, forwardMouseEvent);
+    });
+
+    // For continuous events, just temporarily disable pointer-events
+    dragShield.addEventListener('mousemove', () => {
+      dragShield.style.pointerEvents = 'none';
+      requestAnimationFrame(() => { dragShield.style.pointerEvents = 'auto'; });
+    });
+
+    dragShield.addEventListener('wheel', (e) => {
+      dragShield.style.pointerEvents = 'none';
+      // Let the wheel event pass through naturally
+      requestAnimationFrame(() => { dragShield.style.pointerEvents = 'auto'; });
+    }, { passive: true });
+
     previewPane.appendChild(iframe);
+    previewPane.appendChild(dragShield);
     container.appendChild(previewPane);
 
     // ── Source pane (line-numbered) ──────────────────────────────────────

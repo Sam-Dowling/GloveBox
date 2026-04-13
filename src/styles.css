@@ -2515,12 +2515,18 @@ body.dark .hex-dump {
   display: flex;
   flex-direction: column;
   width: 100%;
+  max-width: 1400px;
   height: calc(100vh - 120px);
   min-height: 500px;
   background: #fff;
   border-radius: 6px;
   box-shadow: 0 2px 16px rgba(0, 0, 0, .15);
   overflow: hidden;
+}
+
+/* Make page-container full-width when containing HTML renderer */
+#page-container:has(.html-renderer) {
+  width: 100%;
 }
 
 body.dark .html-renderer {
@@ -2563,6 +2569,7 @@ body.dark .html-view-btn.active {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  position: relative;
 }
 
 .html-preview-pane.hidden {
@@ -2574,6 +2581,19 @@ body.dark .html-view-btn.active {
   height: 100%;
   border: none;
   background: #fff;
+}
+
+/* ── Drag shield ───────────────────────────────────────────────────────
+   Transparent overlay above sandboxed iframes. Always intercepts pointer
+   events to capture file drags (which would otherwise go directly to the
+   iframe's isolated content document). Mouse clicks and scrolls are
+   forwarded to the iframe via JavaScript. */
+.html-drag-shield {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: auto;
+  cursor: default;
 }
 
 .html-source-pane {

@@ -38,46 +38,85 @@ class App {
     const dz = document.getElementById('drop-zone'), fi = document.getElementById('file-input');
 
     // ── Full-page drag overlay ──────────────────────────────────────────
-    // Sits above everything (including iframes) so dropped files never
-    // reach an iframe's content document, which would cause the browser
-    // to navigate/download the file inside the iframe.
+    // Sits above everything so dropped files are captured by the app.
+    // Combined with .html-drag-shield elements that cover iframes, this
+    // prevents files from being opened/downloaded inside iframe content.
     const overlay = document.createElement('div');
     overlay.id = 'drag-overlay';
     document.body.appendChild(overlay);
 
-    let _enterCount = 0;                       // track nested dragenter/dragleave pairs
+    let _dragCounter = 0;
 
-    const showOverlay = () => { overlay.style.display = 'block'; };
-    const hideOverlay = () => { overlay.style.display = ''; _enterCount = 0; };
+    const showOverlay = () => {
+      overlay.style.display = 'block';
+    };
 
+    const hideOverlay = () => {
+      overlay.style.display = '';
+      _dragCounter = 0;
+    };
+
+    // ── Window-level drag handlers ──────────────────────────────────────
+    // Handles drags that enter over normal page elements (not iframes).
     window.addEventListener('dragenter', e => {
       e.preventDefault();
-      _enterCount++;
-      if (_enterCount === 1) showOverlay();
+      _dragCounter++;
+      if (_dragCounter === 1) showOverlay();
     });
 
-    overlay.addEventListener('dragover', e => {
+    window.addEventListener('dragover', e => {
       e.preventDefault();
-      e.dataTransfer.dropEffect = 'copy';
-      // Show drop-zone highlight when the drop-zone is visible
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
       if (!dz.classList.contains('has-document')) dz.classList.add('drag-over');
     });
 
-    overlay.addEventListener('dragleave', e => {
-      _enterCount--;
-      if (_enterCount <= 0) { hideOverlay(); dz.classList.remove('drag-over'); }
+    window.addEventListener('dragleave', () => {
+      _dragCounter--;
+      if (_dragCounter <= 0) {
+        hideOverlay();
+        dz.classList.remove('drag-over');
+      }
     });
 
-    overlay.addEventListener('drop', e => {
-      e.preventDefault(); e.stopPropagation();
+    window.addEventListener('drop', e => {
+      e.preventDefault();
+      e.stopPropagation();
       hideOverlay();
       dz.classList.remove('drag-over');
-      this._handleFiles(e.dataTransfer?.files);
+      if (e.dataTransfer?.files?.length) {
+        this._handleFiles(e.dataTransfer.files);
+      }
     });
 
-    // Safety net: prevent default on window so the browser never navigates
-    window.addEventListener('dragover', e => { e.preventDefault(); });
-    window.addEventListener('drop', e => { e.preventDefault(); e.stopPropagation(); hideOverlay(); });
+    window.addEventListener('dragend', () => {
+      hideOverlay();
+      dz.classList.remove('drag-over');
+    });
+
+    // ── Drag shield event handlers ──────────────────────────────────────
+    // Handles drags that enter directly over sandboxed iframes. The
+    // .html-drag-shield element dispatches these custom events because
+    // normal drag events go directly to the iframe's content document.
+    window.addEventListener('glovebox-dragenter', () => {
+      _dragCounter++;
+      if (_dragCounter === 1) showOverlay();
+    });
+
+    window.addEventListener('glovebox-dragleave', () => {
+      _dragCounter--;
+      if (_dragCounter <= 0) {
+        hideOverlay();
+        dz.classList.remove('drag-over');
+      }
+    });
+
+    window.addEventListener('glovebox-drop', e => {
+      hideOverlay();
+      dz.classList.remove('drag-over');
+      if (e.detail?.files) {
+        this._handleFiles(e.detail.files);
+      }
+    });
 
     // ── Drop-zone click / file-input ────────────────────────────────────
     dz.addEventListener('click', () => fi.click());
