@@ -10,6 +10,93 @@ class EncodedContentDetector {
     this.maxCandidatesPerType = opts.maxCandidatesPerType || 50;
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // STATIC: SafeLink URL unwrapping (Proofpoint & Microsoft)
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Unwrap Proofpoint URLDefense and Microsoft SafeLinks URLs.
+   * @param {string} url  The potentially wrapped URL.
+   * @returns {object|null}  { originalUrl, emails: [], provider } or null if not a SafeLink.
+   */
+  static unwrapSafeLink(url) {
+    if (!url || typeof url !== 'string') return null;
+
+    // ── Proofpoint URLDefense v3 ──
+    // Format: https://urldefense.com/v3/__<URL>__;!!<token>
+    const ppV3Re = /^https?:\/\/urldefense\.com\/v3\/__(.+?)__;/i;
+    let m = url.match(ppV3Re);
+    if (m) {
+      let extracted = m[1];
+      // Proofpoint v3 replaces certain chars with * followed by a hex code
+      extracted = extracted.replace(/\*([0-9A-Fa-f]{2})/g, (_, hex) =>
+        String.fromCharCode(parseInt(hex, 16))
+      );
+      return { originalUrl: extracted, emails: [], provider: 'Proofpoint v3' };
+    }
+
+    // ── Proofpoint URLDefense v2 ──
+    // Format: https://urldefense.proofpoint.com/v2/url?u=<encoded>&d=...
+    const ppV2Re = /^https?:\/\/urldefense\.proofpoint\.com\/v2\/url\?/i;
+    if (ppV2Re.test(url)) {
+      try {
+        const params = new URL(url).searchParams;
+        let encoded = params.get('u');
+        if (encoded) {
+          // Proofpoint v2 encoding: - → %, _ → /
+          encoded = encoded.replace(/-/g, '%').replace(/_/g, '/');
+          const extracted = decodeURIComponent(encoded);
+          return { originalUrl: extracted, emails: [], provider: 'Proofpoint v2' };
+        }
+      } catch (_) { /* malformed URL */ }
+    }
+
+    // ── Proofpoint URLDefense v1 ──
+    // Format: https://urldefense.proofpoint.com/v1/url?u=<encoded>&k=...
+    const ppV1Re = /^https?:\/\/urldefense\.proofpoint\.com\/v1\/url\?/i;
+    if (ppV1Re.test(url)) {
+      try {
+        const params = new URL(url).searchParams;
+        let encoded = params.get('u');
+        if (encoded) {
+          encoded = encoded.replace(/-/g, '%').replace(/_/g, '/');
+          const extracted = decodeURIComponent(encoded);
+          return { originalUrl: extracted, emails: [], provider: 'Proofpoint v1' };
+        }
+      } catch (_) { /* malformed URL */ }
+    }
+
+    // ── Microsoft SafeLinks ──
+    // Format: https://*.safelinks.protection.outlook.com/?url=<encoded>&data=...
+    const msRe = /^https?:\/\/[a-z0-9]+\.safelinks\.protection\.outlook\.com\/?\?/i;
+    if (msRe.test(url)) {
+      try {
+        const params = new URL(url).searchParams;
+        const encodedUrl = params.get('url');
+        const data = params.get('data');
+        const emails = [];
+
+        // Extract email from data parameter
+        if (data) {
+          let dataDecoded = data;
+          try { dataDecoded = decodeURIComponent(data); } catch (_) {}
+          const emailRe = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/g;
+          let em;
+          while ((em = emailRe.exec(dataDecoded)) !== null) {
+            if (!emails.includes(em[0])) emails.push(em[0]);
+          }
+        }
+
+        if (encodedUrl) {
+          const extracted = decodeURIComponent(encodedUrl);
+          return { originalUrl: extracted, emails, provider: 'Microsoft SafeLinks' };
+        }
+      } catch (_) { /* malformed URL */ }
+    }
+
+    return null;
+  }
+
   // ── Helper: propagate severity & IOCs from inner findings ────────────────
   static _propagateInnerFindings(severity, iocs, innerFindings) {
     if (!innerFindings || innerFindings.length === 0) return severity;
@@ -778,15 +865,33 @@ class EncodedContentDetector {
 
     const iocs = [];
     const seen = new Set();
-    const add = (type, val, sev) => {
+    const add = (type, val, sev, note) => {
       val = (val || '').trim().replace(/[.,;:!?)\]>]+$/, '');
       if (!val || val.length < 4 || val.length > 400 || seen.has(val)) return;
       seen.add(val);
-      iocs.push({ type, url: val, severity: sev });
+      const entry = { type, url: val, severity: sev };
+      if (note) entry.note = note;
+      iocs.push(entry);
     };
 
-    for (const m of text.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g))
-      add(IOC.URL, m[0], 'high');
+    // Process URLs with SafeLink unwrapping
+    for (const m of text.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g)) {
+      const url = (m[0] || '').trim().replace(/[.,;:!?)\]>]+$/, '');
+      const unwrapped = EncodedContentDetector.unwrapSafeLink(url);
+      if (unwrapped) {
+        // Add wrapper URL at info level
+        add(IOC.URL, url, 'medium', `${unwrapped.provider} wrapper`);
+        // Add extracted URL at high severity (found in encoded content)
+        add(IOC.URL, unwrapped.originalUrl, 'high', `Extracted from ${unwrapped.provider}`);
+        // Add any extracted emails
+        for (const email of unwrapped.emails) {
+          add(IOC.EMAIL, email, 'high', 'Extracted from SafeLinks');
+        }
+      } else {
+        add(IOC.URL, url, 'high');
+      }
+    }
+
     for (const m of text.matchAll(/\b[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,6}\b/g))
       add(IOC.EMAIL, m[0], 'medium');
     for (const m of text.matchAll(/\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g)) {

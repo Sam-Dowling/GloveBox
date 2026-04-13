@@ -1226,6 +1226,27 @@ body.dark .plaintext-table tr.enc-highlight-line > td {
   100% { background: rgba(34, 211, 238, .08) !important; }
 }
 
+/* ── IOC click-to-highlight in plaintext view ── */
+.plaintext-table tr.ioc-highlight-line > td {
+  background: rgba(255, 200, 50, .15) !important;
+  box-shadow: inset 3px 0 0 #f5a623;
+  transition: background .3s;
+}
+
+body.dark .plaintext-table tr.ioc-highlight-line > td {
+  background: rgba(255, 200, 50, .10) !important;
+  box-shadow: inset 3px 0 0 rgba(245, 166, 35, .7);
+}
+
+.plaintext-table tr.ioc-highlight-flash > td {
+  animation: ioc-line-flash 2s ease-out;
+}
+
+@keyframes ioc-line-flash {
+  0%   { background: rgba(255, 200, 50, .45) !important; }
+  100% { background: rgba(255, 200, 50, .10) !important; }
+}
+
 /* ── Drop zone ── */
 #drop-zone {
   border: 2px dashed rgba(255, 255, 255, .18);

@@ -7,6 +7,7 @@
         content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; frame-src blob:; worker-src blob:;">
   <meta name="description" content="GloveBox — a 100% offline, single-file security analyser for suspicious files. No server, no uploads, no tracking.">
   <title>GloveBox</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧤📦</text></svg>">
   <style>/* ══════════════════════════════════════════════════════
    GloveBox — "Midnight Glass" Theme
    Clean, modern dark-first UI with subtle accent colours
@@ -1233,6 +1234,27 @@ body.dark .plaintext-table tr.enc-highlight-line > td {
 @keyframes enc-flash {
   0%   { background: rgba(34, 211, 238, .35) !important; }
   100% { background: rgba(34, 211, 238, .08) !important; }
+}
+
+/* ── IOC click-to-highlight in plaintext view ── */
+.plaintext-table tr.ioc-highlight-line > td {
+  background: rgba(255, 200, 50, .15) !important;
+  box-shadow: inset 3px 0 0 #f5a623;
+  transition: background .3s;
+}
+
+body.dark .plaintext-table tr.ioc-highlight-line > td {
+  background: rgba(255, 200, 50, .10) !important;
+  box-shadow: inset 3px 0 0 rgba(245, 166, 35, .7);
+}
+
+.plaintext-table tr.ioc-highlight-flash > td {
+  animation: ioc-line-flash 2s ease-out;
+}
+
+@keyframes ioc-line-flash {
+  0%   { background: rgba(255, 200, 50, .45) !important; }
+  100% { background: rgba(255, 200, 50, .10) !important; }
 }
 
 /* ── Drop zone ── */
@@ -9655,6 +9677,93 @@ class EncodedContentDetector {
     this.maxCandidatesPerType = opts.maxCandidatesPerType || 50;
   }
 
+  // ════════════════════════════════════════════════════════════════════════
+  // STATIC: SafeLink URL unwrapping (Proofpoint & Microsoft)
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Unwrap Proofpoint URLDefense and Microsoft SafeLinks URLs.
+   * @param {string} url  The potentially wrapped URL.
+   * @returns {object|null}  { originalUrl, emails: [], provider } or null if not a SafeLink.
+   */
+  static unwrapSafeLink(url) {
+    if (!url || typeof url !== 'string') return null;
+
+    // ── Proofpoint URLDefense v3 ──
+    // Format: https://urldefense.com/v3/__<URL>__;!!<token>
+    const ppV3Re = /^https?:\/\/urldefense\.com\/v3\/__(.+?)__;/i;
+    let m = url.match(ppV3Re);
+    if (m) {
+      let extracted = m[1];
+      // Proofpoint v3 replaces certain chars with * followed by a hex code
+      extracted = extracted.replace(/\*([0-9A-Fa-f]{2})/g, (_, hex) =>
+        String.fromCharCode(parseInt(hex, 16))
+      );
+      return { originalUrl: extracted, emails: [], provider: 'Proofpoint v3' };
+    }
+
+    // ── Proofpoint URLDefense v2 ──
+    // Format: https://urldefense.proofpoint.com/v2/url?u=<encoded>&d=...
+    const ppV2Re = /^https?:\/\/urldefense\.proofpoint\.com\/v2\/url\?/i;
+    if (ppV2Re.test(url)) {
+      try {
+        const params = new URL(url).searchParams;
+        let encoded = params.get('u');
+        if (encoded) {
+          // Proofpoint v2 encoding: - → %, _ → /
+          encoded = encoded.replace(/-/g, '%').replace(/_/g, '/');
+          const extracted = decodeURIComponent(encoded);
+          return { originalUrl: extracted, emails: [], provider: 'Proofpoint v2' };
+        }
+      } catch (_) { /* malformed URL */ }
+    }
+
+    // ── Proofpoint URLDefense v1 ──
+    // Format: https://urldefense.proofpoint.com/v1/url?u=<encoded>&k=...
+    const ppV1Re = /^https?:\/\/urldefense\.proofpoint\.com\/v1\/url\?/i;
+    if (ppV1Re.test(url)) {
+      try {
+        const params = new URL(url).searchParams;
+        let encoded = params.get('u');
+        if (encoded) {
+          encoded = encoded.replace(/-/g, '%').replace(/_/g, '/');
+          const extracted = decodeURIComponent(encoded);
+          return { originalUrl: extracted, emails: [], provider: 'Proofpoint v1' };
+        }
+      } catch (_) { /* malformed URL */ }
+    }
+
+    // ── Microsoft SafeLinks ──
+    // Format: https://*.safelinks.protection.outlook.com/?url=<encoded>&data=...
+    const msRe = /^https?:\/\/[a-z0-9]+\.safelinks\.protection\.outlook\.com\/?\?/i;
+    if (msRe.test(url)) {
+      try {
+        const params = new URL(url).searchParams;
+        const encodedUrl = params.get('url');
+        const data = params.get('data');
+        const emails = [];
+
+        // Extract email from data parameter
+        if (data) {
+          let dataDecoded = data;
+          try { dataDecoded = decodeURIComponent(data); } catch (_) {}
+          const emailRe = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/g;
+          let em;
+          while ((em = emailRe.exec(dataDecoded)) !== null) {
+            if (!emails.includes(em[0])) emails.push(em[0]);
+          }
+        }
+
+        if (encodedUrl) {
+          const extracted = decodeURIComponent(encodedUrl);
+          return { originalUrl: extracted, emails, provider: 'Microsoft SafeLinks' };
+        }
+      } catch (_) { /* malformed URL */ }
+    }
+
+    return null;
+  }
+
   // ── Helper: propagate severity & IOCs from inner findings ────────────────
   static _propagateInnerFindings(severity, iocs, innerFindings) {
     if (!innerFindings || innerFindings.length === 0) return severity;
@@ -10423,15 +10532,33 @@ class EncodedContentDetector {
 
     const iocs = [];
     const seen = new Set();
-    const add = (type, val, sev) => {
+    const add = (type, val, sev, note) => {
       val = (val || '').trim().replace(/[.,;:!?)\]>]+$/, '');
       if (!val || val.length < 4 || val.length > 400 || seen.has(val)) return;
       seen.add(val);
-      iocs.push({ type, url: val, severity: sev });
+      const entry = { type, url: val, severity: sev };
+      if (note) entry.note = note;
+      iocs.push(entry);
     };
 
-    for (const m of text.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g))
-      add(IOC.URL, m[0], 'high');
+    // Process URLs with SafeLink unwrapping
+    for (const m of text.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g)) {
+      const url = (m[0] || '').trim().replace(/[.,;:!?)\]>]+$/, '');
+      const unwrapped = EncodedContentDetector.unwrapSafeLink(url);
+      if (unwrapped) {
+        // Add wrapper URL at info level
+        add(IOC.URL, url, 'medium', `${unwrapped.provider} wrapper`);
+        // Add extracted URL at high severity (found in encoded content)
+        add(IOC.URL, unwrapped.originalUrl, 'high', `Extracted from ${unwrapped.provider}`);
+        // Add any extracted emails
+        for (const email of unwrapped.emails) {
+          add(IOC.EMAIL, email, 'high', 'Extracted from SafeLinks');
+        }
+      } else {
+        add(IOC.URL, url, 'high');
+      }
+    }
+
     for (const m of text.matchAll(/\b[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,6}\b/g))
       add(IOC.EMAIL, m[0], 'medium');
     for (const m of text.matchAll(/\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g)) {
@@ -22464,6 +22591,19 @@ function _md5(bytes) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// SafeLink URL unwrapping — delegates to EncodedContentDetector.unwrapSafeLink
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Unwrap Proofpoint URLDefense and Microsoft SafeLinks URLs.
+ * @param {string} url  The potentially wrapped URL.
+ * @returns {object|null}  { originalUrl, emails: [], provider } or null if not a SafeLink.
+ */
+function _unwrapSafeLink(url) {
+  return EncodedContentDetector.unwrapSafeLink(url);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // App — file loading, hashing, interesting-string extraction
 // ════════════════════════════════════════════════════════════════════════════
 Object.assign(App.prototype, {
@@ -23151,27 +23291,110 @@ Object.assign(App.prototype, {
   _extractInterestingStrings(text, findings) {
     const seen = new Set((findings.externalRefs || []).map(r => r.url));
     const results = [];
-    const add = (type, val, sev) => {
+
+    // Enhanced add function that tracks source location for click-to-highlight
+    const add = (type, val, sev, note, sourceInfo) => {
       val = (val || '').trim().replace(/[.,;:!?)\]>]+$/, '');
       if (!val || val.length < 4 || val.length > 400 || seen.has(val)) return;
-      seen.add(val); results.push({ type, url: val, severity: sev });
+      seen.add(val);
+      const entry = { type, url: val, severity: sev };
+      if (note) entry.note = note;
+      // Source location info for click-to-highlight functionality
+      if (sourceInfo) {
+        entry._sourceOffset = sourceInfo.offset;
+        entry._sourceLength = sourceInfo.length;
+        // For SafeLinks: store the wrapper URL text to highlight instead of extracted value
+        if (sourceInfo.highlightText) entry._highlightText = sourceInfo.highlightText;
+      }
+      results.push(entry);
     };
+
+    // Helper to process a URL — checks for SafeLink wrappers and adds both
+    const processUrl = (rawUrl, baseSeverity, matchOffset, matchLength) => {
+      const url = (rawUrl || '').trim().replace(/[.,;:!?)\]>]+$/, '');
+      if (!url || url.length < 6) return;
+
+      const unwrapped = _unwrapSafeLink(url);
+      if (unwrapped) {
+        // Add the wrapper URL as info-level (with its own source location)
+        add(IOC.URL, url, 'info', `${unwrapped.provider} wrapper`, {
+          offset: matchOffset,
+          length: matchLength
+        });
+        // Add the extracted original URL with higher severity
+        // Point _highlightText to the wrapper URL so clicking highlights the wrapper
+        add(IOC.URL, unwrapped.originalUrl, 'high', `Extracted from ${unwrapped.provider}`, {
+          offset: matchOffset,
+          length: matchLength,
+          highlightText: url  // Highlight the wrapper, not the extracted URL
+        });
+        // Add any extracted emails from Microsoft SafeLinks data parameter
+        // These also point back to the wrapper URL for highlighting
+        for (const email of unwrapped.emails) {
+          add(IOC.EMAIL, email, 'medium', 'Extracted from SafeLinks', {
+            offset: matchOffset,
+            length: matchLength,
+            highlightText: url
+          });
+        }
+      } else {
+        // Regular URL — add as-is with source location
+        add(IOC.URL, url, baseSeverity, null, {
+          offset: matchOffset,
+          length: matchLength
+        });
+      }
+    };
+
     // Scan rendered text + VBA modules
     const sources = [text, ...(findings.modules || []).map(m => m.source || '')];
     const full = sources.join('\n');
-    for (const m of full.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g)) add(IOC.URL, m[0], 'info');
-    for (const m of full.matchAll(/\b[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,6}\b/g)) add(IOC.EMAIL, m[0], 'info');
+
+    // Extract and process URLs (check for SafeLinks) — now with offset tracking
+    for (const m of full.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g)) {
+      processUrl(m[0], 'info', m.index, m[0].length);
+    }
+
+    // Other IOC types — now with offset tracking
+    for (const m of full.matchAll(/\b[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,6}\b/g)) {
+      add(IOC.EMAIL, m[0], 'info', null, { offset: m.index, length: m[0].length });
+    }
     for (const m of full.matchAll(/\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g)) {
       const parts = m[0].split('.').map(Number);
-      if (parts.every(p => p <= 255) && !m[0].startsWith('0.')) add(IOC.IP, m[0], 'medium');
+      if (parts.every(p => p <= 255) && !m[0].startsWith('0.')) {
+        add(IOC.IP, m[0], 'medium', null, { offset: m.index, length: m[0].length });
+      }
     }
-    for (const m of full.matchAll(/[A-Za-z]:\\(?:[\w\-. ]+\\)+[\w\-. ]{2,}/g)) add(IOC.FILE_PATH, m[0], 'medium');
-    for (const m of full.matchAll(/\\\\[\w.\-]{2,}(?:\\[\w.\-]{1,})+/g)) add(IOC.UNC_PATH, m[0], 'medium');
-    // VBA-specific URL scan with higher severity
+    for (const m of full.matchAll(/[A-Za-z]:\\(?:[\w\-. ]+\\)+[\w\-. ]{2,}/g)) {
+      add(IOC.FILE_PATH, m[0], 'medium', null, { offset: m.index, length: m[0].length });
+    }
+    for (const m of full.matchAll(/\\\\[\w.\-]{2,}(?:\\[\w.\-]{1,})+/g)) {
+      add(IOC.UNC_PATH, m[0], 'medium', null, { offset: m.index, length: m[0].length });
+    }
+
+    // VBA-specific URL scan with higher severity (also check for SafeLinks)
+    // Note: VBA modules are appended to 'full' after the main text, so offsets
+    // are relative to 'full' and will work for highlighting in combined view
     for (const mod of (findings.modules || [])) {
       for (const m of (mod.source || '').matchAll(/https?:\/\/[^\s"']{6,}/g)) {
         const v = m[0].replace(/[.,;:!?)\]>]+$/, '');
-        if (!seen.has(v)) { seen.add(v); results.push({ type: IOC.URL, url: v, severity: 'high' }); }
+        if (!seen.has(v)) {
+          const unwrapped = _unwrapSafeLink(v);
+          if (unwrapped) {
+            add(IOC.URL, v, 'medium', `${unwrapped.provider} wrapper (VBA)`);
+            add(IOC.URL, unwrapped.originalUrl, 'critical', `Extracted from ${unwrapped.provider} (VBA)`, {
+              highlightText: v
+            });
+            for (const email of unwrapped.emails) {
+              add(IOC.EMAIL, email, 'high', 'Extracted from SafeLinks (VBA)', {
+                highlightText: v
+              });
+            }
+          } else {
+            seen.add(v);
+            results.push({ type: IOC.URL, url: v, severity: 'high' });
+          }
+        }
       }
     }
     return results.slice(0, 300);
@@ -23972,13 +24195,70 @@ Object.assign(App.prototype, {
       }
     }
 
-    // Fallback for non-EVTX/non-SQLite content: try to find and highlight matching text
+    // ── Plaintext view with offset-based line highlighting ──────────────────
+    // Check if we have a plaintext view with _rawText for precise highlighting
+    const docEl = pc && pc.firstElementChild;
+    const sourceText = docEl && docEl._rawText;
+    const plaintextTable = pc && pc.querySelector('.plaintext-table');
+
+    if (plaintextTable && sourceText) {
+      // Determine what text to search for:
+      // - For SafeLinks, use _highlightText (the wrapper URL) if available
+      // - Otherwise use the IOC value itself
+      const highlightText = ref._highlightText || ref.url;
+
+      // Try offset-based highlighting first (most accurate)
+      if (ref._sourceOffset !== undefined && ref._sourceLength) {
+        const offset = ref._sourceOffset;
+        const length = ref._sourceLength;
+
+        // Calculate line numbers from offset
+        const beforeText = sourceText.substring(0, offset);
+        const startLine = (beforeText.match(/\n/g) || []).length + 1;
+        const matchedText = sourceText.substring(offset, offset + length);
+        const lineSpan = (matchedText.match(/\n/g) || []).length;
+        const endLine = startLine + lineSpan;
+
+        // Use the encoded content highlight mechanism (already implemented)
+        this._highlightIOCInPlaintext(plaintextTable, startLine, endLine);
+        return;
+      }
+
+      // Fallback: search for the text in sourceText and calculate line numbers
+      const searchText = highlightText || ref.url;
+      if (searchText) {
+        const idx = sourceText.indexOf(searchText);
+        if (idx >= 0) {
+          const beforeText = sourceText.substring(0, idx);
+          const startLine = (beforeText.match(/\n/g) || []).length + 1;
+          const matchedText = sourceText.substring(idx, idx + searchText.length);
+          const lineSpan = (matchedText.match(/\n/g) || []).length;
+          const endLine = startLine + lineSpan;
+
+          this._highlightIOCInPlaintext(plaintextTable, startLine, endLine);
+          return;
+        }
+        // Try case-insensitive search
+        const idxLower = sourceText.toLowerCase().indexOf(searchText.toLowerCase());
+        if (idxLower >= 0) {
+          const beforeText = sourceText.substring(0, idxLower);
+          const startLine = (beforeText.match(/\n/g) || []).length + 1;
+          const matchedText = sourceText.substring(idxLower, idxLower + searchText.length);
+          const lineSpan = (matchedText.match(/\n/g) || []).length;
+          const endLine = startLine + lineSpan;
+
+          this._highlightIOCInPlaintext(plaintextTable, startLine, endLine);
+          return;
+        }
+      }
+    }
+
+    // ── Fallback for non-plaintext content: TreeWalker-based highlighting ──
     if (pc && ref.url) {
-      const searchText = ref.url;
-      // Try using the browser's built-in find if the text is in the page
+      // For SafeLinks, search for the wrapper URL if available
+      const searchText = ref._highlightText || ref.url;
       const textContent = pc.textContent || '';
       if (textContent.includes(searchText) || textContent.toLowerCase().includes(searchText.toLowerCase())) {
-        // Use window.find() for highlighting — fallback, may not work in all contexts
         try {
           const sel = window.getSelection();
           sel.removeAllRanges();
@@ -24008,6 +24288,48 @@ Object.assign(App.prototype, {
           }
         } catch (_) { /* best effort */ }
       }
+    }
+  },
+
+  // ── Highlight IOC lines in plaintext view ───────────────────────────────
+  _highlightIOCInPlaintext(table, startLine, endLine) {
+    // Clear any existing IOC highlights
+    this._clearIOCHighlight();
+
+    const rows = table.rows;
+    const start = startLine - 1;  // Convert to 0-indexed
+    const end = endLine - 1;
+
+    for (let i = start; i <= end && i < rows.length; i++) {
+      rows[i].classList.add('ioc-highlight-line');
+      rows[i].classList.add('ioc-highlight-flash');
+    }
+
+    // Scroll the first highlighted row into view
+    if (start < rows.length) {
+      rows[start].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    // Remove flash effect after animation, but keep the highlight briefly
+    setTimeout(() => {
+      for (let i = start; i <= end && i < rows.length; i++) {
+        rows[i].classList.remove('ioc-highlight-flash');
+      }
+    }, 2000);
+
+    // Remove highlight entirely after a longer delay
+    setTimeout(() => {
+      this._clearIOCHighlight();
+    }, 4000);
+  },
+
+  // ── Clear IOC line highlights ───────────────────────────────────────────
+  _clearIOCHighlight() {
+    const pc = document.getElementById('page-container');
+    if (!pc) return;
+    const highlighted = pc.querySelectorAll('.ioc-highlight-line');
+    for (const el of highlighted) {
+      el.classList.remove('ioc-highlight-line', 'ioc-highlight-flash');
     }
   },
 

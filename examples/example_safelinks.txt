@@ -1,0 +1,22 @@
+SafeLinks URL Test File
+=======================
+
+This file contains example Proofpoint URLDefense and Microsoft SafeLinks URLs
+for testing GloveBox's URL unwrapping functionality.
+
+
+## Proofpoint URLDefense v3
+https://urldefense.com/v3/__https://example.com/page*3Fid=123*26action=view__;Lw!!ABC123!token
+https://urldefense.com/v3/__https://malicious-site.com/download.exe__;!!XYZ789!anothertoken
+
+## Proofpoint URLDefense v2
+https://urldefense.proofpoint.com/v2/url?u=https-3A__github.com_Sam-2DDowling_GloveBox&d=DwMFaQ&c=abc123
+https://urldefense.proofpoint.com/v2/url?u=http-3A__suspicious-2Dsite.net_payload.js&d=DwIGAg&c=def456
+
+## Proofpoint URLDefense v1
+https://urldefense.proofpoint.com/v1/url?u=https://legit-site.org/document.pdf&k=abc123
+
+## Microsoft SafeLinks
+https://nam10.safelinks.protection.outlook.com/?url=https%3A%2F%2Fgithub.com%2FSam-Dowling%2FGloveBox&data=05%7C02%7Cbob%40example.com%7C4276f12e8
+https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fphishing-site.com%2Flogin&data=05%7C01%7Calice%40contoso.com%7Cabc123
+https://aus01.safelinks.protection.outlook.com/?url=http%3A%2F%2Fdownload.example.org%2Ffile.zip&data=04%7C01%7Cjohn.smith%40company.com%7Cxyz789

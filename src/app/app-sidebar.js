@@ -791,13 +791,70 @@ Object.assign(App.prototype, {
       }
     }
 
-    // Fallback for non-EVTX/non-SQLite content: try to find and highlight matching text
+    // ── Plaintext view with offset-based line highlighting ──────────────────
+    // Check if we have a plaintext view with _rawText for precise highlighting
+    const docEl = pc && pc.firstElementChild;
+    const sourceText = docEl && docEl._rawText;
+    const plaintextTable = pc && pc.querySelector('.plaintext-table');
+
+    if (plaintextTable && sourceText) {
+      // Determine what text to search for:
+      // - For SafeLinks, use _highlightText (the wrapper URL) if available
+      // - Otherwise use the IOC value itself
+      const highlightText = ref._highlightText || ref.url;
+
+      // Try offset-based highlighting first (most accurate)
+      if (ref._sourceOffset !== undefined && ref._sourceLength) {
+        const offset = ref._sourceOffset;
+        const length = ref._sourceLength;
+
+        // Calculate line numbers from offset
+        const beforeText = sourceText.substring(0, offset);
+        const startLine = (beforeText.match(/\n/g) || []).length + 1;
+        const matchedText = sourceText.substring(offset, offset + length);
+        const lineSpan = (matchedText.match(/\n/g) || []).length;
+        const endLine = startLine + lineSpan;
+
+        // Use the encoded content highlight mechanism (already implemented)
+        this._highlightIOCInPlaintext(plaintextTable, startLine, endLine);
+        return;
+      }
+
+      // Fallback: search for the text in sourceText and calculate line numbers
+      const searchText = highlightText || ref.url;
+      if (searchText) {
+        const idx = sourceText.indexOf(searchText);
+        if (idx >= 0) {
+          const beforeText = sourceText.substring(0, idx);
+          const startLine = (beforeText.match(/\n/g) || []).length + 1;
+          const matchedText = sourceText.substring(idx, idx + searchText.length);
+          const lineSpan = (matchedText.match(/\n/g) || []).length;
+          const endLine = startLine + lineSpan;
+
+          this._highlightIOCInPlaintext(plaintextTable, startLine, endLine);
+          return;
+        }
+        // Try case-insensitive search
+        const idxLower = sourceText.toLowerCase().indexOf(searchText.toLowerCase());
+        if (idxLower >= 0) {
+          const beforeText = sourceText.substring(0, idxLower);
+          const startLine = (beforeText.match(/\n/g) || []).length + 1;
+          const matchedText = sourceText.substring(idxLower, idxLower + searchText.length);
+          const lineSpan = (matchedText.match(/\n/g) || []).length;
+          const endLine = startLine + lineSpan;
+
+          this._highlightIOCInPlaintext(plaintextTable, startLine, endLine);
+          return;
+        }
+      }
+    }
+
+    // ── Fallback for non-plaintext content: TreeWalker-based highlighting ──
     if (pc && ref.url) {
-      const searchText = ref.url;
-      // Try using the browser's built-in find if the text is in the page
+      // For SafeLinks, search for the wrapper URL if available
+      const searchText = ref._highlightText || ref.url;
       const textContent = pc.textContent || '';
       if (textContent.includes(searchText) || textContent.toLowerCase().includes(searchText.toLowerCase())) {
-        // Use window.find() for highlighting — fallback, may not work in all contexts
         try {
           const sel = window.getSelection();
           sel.removeAllRanges();
@@ -827,6 +884,48 @@ Object.assign(App.prototype, {
           }
         } catch (_) { /* best effort */ }
       }
+    }
+  },
+
+  // ── Highlight IOC lines in plaintext view ───────────────────────────────
+  _highlightIOCInPlaintext(table, startLine, endLine) {
+    // Clear any existing IOC highlights
+    this._clearIOCHighlight();
+
+    const rows = table.rows;
+    const start = startLine - 1;  // Convert to 0-indexed
+    const end = endLine - 1;
+
+    for (let i = start; i <= end && i < rows.length; i++) {
+      rows[i].classList.add('ioc-highlight-line');
+      rows[i].classList.add('ioc-highlight-flash');
+    }
+
+    // Scroll the first highlighted row into view
+    if (start < rows.length) {
+      rows[start].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+
+    // Remove flash effect after animation, but keep the highlight briefly
+    setTimeout(() => {
+      for (let i = start; i <= end && i < rows.length; i++) {
+        rows[i].classList.remove('ioc-highlight-flash');
+      }
+    }, 2000);
+
+    // Remove highlight entirely after a longer delay
+    setTimeout(() => {
+      this._clearIOCHighlight();
+    }, 4000);
+  },
+
+  // ── Clear IOC line highlights ───────────────────────────────────────────
+  _clearIOCHighlight() {
+    const pc = document.getElementById('page-container');
+    if (!pc) return;
+    const highlighted = pc.querySelectorAll('.ioc-highlight-line');
+    for (const el of highlighted) {
+      el.classList.remove('ioc-highlight-line', 'ioc-highlight-flash');
     }
   },
 

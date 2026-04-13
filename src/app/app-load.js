@@ -29,6 +29,19 @@ function _md5(bytes) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// SafeLink URL unwrapping — delegates to EncodedContentDetector.unwrapSafeLink
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Unwrap Proofpoint URLDefense and Microsoft SafeLinks URLs.
+ * @param {string} url  The potentially wrapped URL.
+ * @returns {object|null}  { originalUrl, emails: [], provider } or null if not a SafeLink.
+ */
+function _unwrapSafeLink(url) {
+  return EncodedContentDetector.unwrapSafeLink(url);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // App — file loading, hashing, interesting-string extraction
 // ════════════════════════════════════════════════════════════════════════════
 Object.assign(App.prototype, {
@@ -716,27 +729,110 @@ Object.assign(App.prototype, {
   _extractInterestingStrings(text, findings) {
     const seen = new Set((findings.externalRefs || []).map(r => r.url));
     const results = [];
-    const add = (type, val, sev) => {
+
+    // Enhanced add function that tracks source location for click-to-highlight
+    const add = (type, val, sev, note, sourceInfo) => {
       val = (val || '').trim().replace(/[.,;:!?)\]>]+$/, '');
       if (!val || val.length < 4 || val.length > 400 || seen.has(val)) return;
-      seen.add(val); results.push({ type, url: val, severity: sev });
+      seen.add(val);
+      const entry = { type, url: val, severity: sev };
+      if (note) entry.note = note;
+      // Source location info for click-to-highlight functionality
+      if (sourceInfo) {
+        entry._sourceOffset = sourceInfo.offset;
+        entry._sourceLength = sourceInfo.length;
+        // For SafeLinks: store the wrapper URL text to highlight instead of extracted value
+        if (sourceInfo.highlightText) entry._highlightText = sourceInfo.highlightText;
+      }
+      results.push(entry);
     };
+
+    // Helper to process a URL — checks for SafeLink wrappers and adds both
+    const processUrl = (rawUrl, baseSeverity, matchOffset, matchLength) => {
+      const url = (rawUrl || '').trim().replace(/[.,;:!?)\]>]+$/, '');
+      if (!url || url.length < 6) return;
+
+      const unwrapped = _unwrapSafeLink(url);
+      if (unwrapped) {
+        // Add the wrapper URL as info-level (with its own source location)
+        add(IOC.URL, url, 'info', `${unwrapped.provider} wrapper`, {
+          offset: matchOffset,
+          length: matchLength
+        });
+        // Add the extracted original URL with higher severity
+        // Point _highlightText to the wrapper URL so clicking highlights the wrapper
+        add(IOC.URL, unwrapped.originalUrl, 'high', `Extracted from ${unwrapped.provider}`, {
+          offset: matchOffset,
+          length: matchLength,
+          highlightText: url  // Highlight the wrapper, not the extracted URL
+        });
+        // Add any extracted emails from Microsoft SafeLinks data parameter
+        // These also point back to the wrapper URL for highlighting
+        for (const email of unwrapped.emails) {
+          add(IOC.EMAIL, email, 'medium', 'Extracted from SafeLinks', {
+            offset: matchOffset,
+            length: matchLength,
+            highlightText: url
+          });
+        }
+      } else {
+        // Regular URL — add as-is with source location
+        add(IOC.URL, url, baseSeverity, null, {
+          offset: matchOffset,
+          length: matchLength
+        });
+      }
+    };
+
     // Scan rendered text + VBA modules
     const sources = [text, ...(findings.modules || []).map(m => m.source || '')];
     const full = sources.join('\n');
-    for (const m of full.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g)) add(IOC.URL, m[0], 'info');
-    for (const m of full.matchAll(/\b[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,6}\b/g)) add(IOC.EMAIL, m[0], 'info');
+
+    // Extract and process URLs (check for SafeLinks) — now with offset tracking
+    for (const m of full.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g)) {
+      processUrl(m[0], 'info', m.index, m[0].length);
+    }
+
+    // Other IOC types — now with offset tracking
+    for (const m of full.matchAll(/\b[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,6}\b/g)) {
+      add(IOC.EMAIL, m[0], 'info', null, { offset: m.index, length: m[0].length });
+    }
     for (const m of full.matchAll(/\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b/g)) {
       const parts = m[0].split('.').map(Number);
-      if (parts.every(p => p <= 255) && !m[0].startsWith('0.')) add(IOC.IP, m[0], 'medium');
+      if (parts.every(p => p <= 255) && !m[0].startsWith('0.')) {
+        add(IOC.IP, m[0], 'medium', null, { offset: m.index, length: m[0].length });
+      }
     }
-    for (const m of full.matchAll(/[A-Za-z]:\\(?:[\w\-. ]+\\)+[\w\-. ]{2,}/g)) add(IOC.FILE_PATH, m[0], 'medium');
-    for (const m of full.matchAll(/\\\\[\w.\-]{2,}(?:\\[\w.\-]{1,})+/g)) add(IOC.UNC_PATH, m[0], 'medium');
-    // VBA-specific URL scan with higher severity
+    for (const m of full.matchAll(/[A-Za-z]:\\(?:[\w\-. ]+\\)+[\w\-. ]{2,}/g)) {
+      add(IOC.FILE_PATH, m[0], 'medium', null, { offset: m.index, length: m[0].length });
+    }
+    for (const m of full.matchAll(/\\\\[\w.\-]{2,}(?:\\[\w.\-]{1,})+/g)) {
+      add(IOC.UNC_PATH, m[0], 'medium', null, { offset: m.index, length: m[0].length });
+    }
+
+    // VBA-specific URL scan with higher severity (also check for SafeLinks)
+    // Note: VBA modules are appended to 'full' after the main text, so offsets
+    // are relative to 'full' and will work for highlighting in combined view
     for (const mod of (findings.modules || [])) {
       for (const m of (mod.source || '').matchAll(/https?:\/\/[^\s"']{6,}/g)) {
         const v = m[0].replace(/[.,;:!?)\]>]+$/, '');
-        if (!seen.has(v)) { seen.add(v); results.push({ type: IOC.URL, url: v, severity: 'high' }); }
+        if (!seen.has(v)) {
+          const unwrapped = _unwrapSafeLink(v);
+          if (unwrapped) {
+            add(IOC.URL, v, 'medium', `${unwrapped.provider} wrapper (VBA)`);
+            add(IOC.URL, unwrapped.originalUrl, 'critical', `Extracted from ${unwrapped.provider} (VBA)`, {
+              highlightText: v
+            });
+            for (const email of unwrapped.emails) {
+              add(IOC.EMAIL, email, 'high', 'Extracted from SafeLinks (VBA)', {
+                highlightText: v
+              });
+            }
+          } else {
+            seen.add(v);
+            results.push({ type: IOC.URL, url: v, severity: 'high' });
+          }
+        }
       }
     }
     return results.slice(0, 300);
