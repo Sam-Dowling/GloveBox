@@ -2584,15 +2584,19 @@ body.dark .html-view-btn.active {
 }
 
 /* ── Drag shield ───────────────────────────────────────────────────────
-   Always-active transparent overlay above sandboxed iframes. Intercepts
-   drag/drop events (preventing browser navigation on file drops) and forwards
-   scroll events to the iframe content programmatically via JavaScript. */
+   Transparent overlay above sandboxed iframes. Inactive by default so that
+   wheel/touch scroll events pass through naturally to the iframe. Activated
+   only during drag operations to intercept file drops. */
 .html-drag-shield {
   position: absolute;
   inset: 0;
   z-index: 1;
-  pointer-events: auto;
+  pointer-events: none;
   cursor: default;
+}
+
+.html-drag-shield.active {
+  pointer-events: auto;
 }
 
 .html-source-pane {
