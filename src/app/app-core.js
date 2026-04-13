@@ -120,15 +120,26 @@ class App {
 
     // ── Drop-zone click / file-input ────────────────────────────────────
     dz.addEventListener('click', () => fi.click());
-    fi.addEventListener('change', e => { const f = e.target.files[0]; if (f) this._loadFile(f); fi.value = ''; });
+    fi.addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (f) {
+        // Clear nav stack for fresh file loads (not drill-down into archives)
+        this._navStack = [];
+        const backBtn = document.getElementById('btn-nav-back');
+        if (backBtn) backBtn.classList.add('hidden');
+        this._loadFile(f);
+      }
+      fi.value = '';
+    });
   }
 
   _setupToolbar() {
     document.getElementById('btn-open').addEventListener('click', () => document.getElementById('file-input').click());
+    document.getElementById('btn-nav-back').addEventListener('click', () => this._navBack());
+    document.getElementById('btn-close').addEventListener('click', () => this._clearFile());
     document.getElementById('btn-security').addEventListener('click', () => this._toggleSidebar());
     document.getElementById('btn-yara').addEventListener('click', () => this._openYaraDialog());
     document.getElementById('btn-help').addEventListener('click', () => this._openHelpDialog());
-    document.getElementById('btn-close').addEventListener('click', () => this._clearFile());
     document.getElementById('btn-save').addEventListener('click', () => this._saveContent());
     document.getElementById('btn-copy').addEventListener('click', () => this._copyContent());
     document.getElementById('btn-zoom-out').addEventListener('click', () => this._setZoom(this.zoom - 10));
@@ -238,6 +249,10 @@ class App {
 
   _handleFiles(files) {
     if (!files || !files.length) return;
+    // Clear nav stack for fresh file loads (not drill-down into archives)
+    this._navStack = [];
+    const backBtn = document.getElementById('btn-nav-back');
+    if (backBtn) backBtn.classList.add('hidden');
     this._loadFile(files[0]);
   }
 }

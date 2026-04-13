@@ -97,17 +97,8 @@ body.dark #app-title {
   color: #e0e0e8;
 }
 
-/* File info wrapper — centered in toolbar */
-#file-info-wrap {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-
-.tb-close.hidden {
+/* Hidden utility class for toolbar buttons */
+.tb-btn.hidden {
   display: none;
 }
 
@@ -125,44 +116,28 @@ body.dark #file-info {
   color: rgba(255, 255, 255, .82);
 }
 
-/* Close file button */
-.tb-close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  border: 1px solid rgba(239, 68, 68, .25);
-  background: rgba(239, 68, 68, .08);
-  color: #ef4444;
-  font-size: 13px;
-  font-weight: 700;
-  cursor: pointer;
-  transition: all .2s ease;
-  flex-shrink: 0;
-  line-height: 1;
+/* Close file button (✕) — red-tinted icon button */
+#btn-close {
+  color: #ef4444 !important;
+  border-color: rgba(239, 68, 68, .25) !important;
+  background: rgba(239, 68, 68, .08) !important;
 }
 
-.tb-close:hover {
-  background: rgba(239, 68, 68, .2);
-  border-color: rgba(239, 68, 68, .4);
+#btn-close:hover {
+  background: rgba(239, 68, 68, .2) !important;
+  border-color: rgba(239, 68, 68, .4) !important;
   box-shadow: 0 0 8px rgba(239, 68, 68, .15);
 }
 
-.tb-close:active {
-  transform: scale(.92);
+body.dark #btn-close {
+  color: #f87171 !important;
+  border-color: rgba(239, 68, 68, .3) !important;
+  background: rgba(239, 68, 68, .1) !important;
 }
 
-body.dark .tb-close {
-  border-color: rgba(239, 68, 68, .3);
-  background: rgba(239, 68, 68, .1);
-  color: #f87171;
-}
-
-body.dark .tb-close:hover {
-  background: rgba(239, 68, 68, .22);
-  border-color: rgba(239, 68, 68, .45);
+body.dark #btn-close:hover {
+  background: rgba(239, 68, 68, .22) !important;
+  border-color: rgba(239, 68, 68, .45) !important;
   box-shadow: 0 0 10px rgba(239, 68, 68, .12);
 }
 
@@ -227,15 +202,24 @@ body.dark .tb-separator {
   background: rgba(255, 255, 255, .1);
 }
 
-/* Toolbar button group (Save/Copy pair) */
+/* Toolbar button group */
 .tb-group {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 .tb-group.hidden {
   display: none;
+}
+
+/* File operations group — contains Open, file name, Back, Close */
+#file-ops {
+  gap: 8px;
+}
+
+#file-ops #file-info {
+  max-width: 300px;
 }
 
 .tb-action-btn {
@@ -290,6 +274,7 @@ body.dark #viewer-toolbar {
 
 .vt-search input {
   width: 100%;
+  min-width: 180px;
   max-width: 260px;
   padding: 5px 10px;
   font-size: 12px;
@@ -404,32 +389,28 @@ body.dark #zoom-level {
   color: rgba(255, 255, 255, .45);
 }
 
-/* Nav back button for archive drill-down */
-.nav-back-btn {
+/* Nav back button for archive drill-down — blue-tinted */
+#btn-nav-back {
   background: rgba(59, 130, 246, .1) !important;
   border-color: rgba(59, 130, 246, .25) !important;
   color: #3b82f6 !important;
   font-weight: 600 !important;
 }
 
-.nav-back-btn:hover {
+#btn-nav-back:hover {
   background: rgba(59, 130, 246, .2) !important;
   border-color: rgba(59, 130, 246, .4) !important;
 }
 
-body.dark .nav-back-btn {
+body.dark #btn-nav-back {
   background: rgba(96, 165, 250, .12) !important;
   border-color: rgba(96, 165, 250, .2) !important;
   color: #60a5fa !important;
 }
 
-body.dark .nav-back-btn:hover {
+body.dark #btn-nav-back:hover {
   background: rgba(96, 165, 250, .22) !important;
   border-color: rgba(96, 165, 250, .35) !important;
-}
-
-.nav-back-btn.hidden {
-  display: none;
 }
 
 
@@ -4257,11 +4238,16 @@ body.dark .help-tagline {
   <!-- ── Toolbar ─────────────────────────────────────────────────────── -->
   <div id="toolbar">
     <span id="app-title">🧤📦 GloveBox</span>
-    <button class="tb-btn" id="btn-open" title="Open file (or drag &amp; drop)">📁 Open File</button>
-    <div id="file-info-wrap">
+    <div class="tb-separator"></div>
+    <!-- File operations group -->
+    <div class="tb-group" id="file-ops">
+      <button class="tb-btn" id="btn-open" title="Open file (or drag &amp; drop)">📁 Open File</button>
       <span id="file-info"></span>
-      <button class="tb-close hidden" id="btn-close" title="Close file">✕</button>
+      <button class="tb-btn hidden" id="btn-nav-back" title="Return to parent archive">← Back</button>
+      <button class="tb-btn hidden" id="btn-close" title="Close file">✕</button>
     </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-separator"></div>
     <button class="tb-btn" id="btn-yara" title="YARA rule editor (Y)">📐 YARA Rules</button>
     <div class="tb-separator"></div>
     <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>
@@ -4429,7 +4415,7 @@ var o=[];var l=Array.isArray(e);for(f=n.s.c;f<=n.e.c;++f)s[f]=ya(f);for(var c=n.
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
-const GLOVEBOX_VERSION = '1.0.5';
+const GLOVEBOX_VERSION = '1.0.6';
 const DEFAULT_YARA_RULES = `// ─── Default YARA Rules ───────────────────────────────────
 // Edit or replace these rules, then click "Run Scan"
 // Supports: text strings, hex strings {AA BB}, regex /pattern/
@@ -23299,15 +23285,26 @@ class App {
 
     // ── Drop-zone click / file-input ────────────────────────────────────
     dz.addEventListener('click', () => fi.click());
-    fi.addEventListener('change', e => { const f = e.target.files[0]; if (f) this._loadFile(f); fi.value = ''; });
+    fi.addEventListener('change', e => {
+      const f = e.target.files[0];
+      if (f) {
+        // Clear nav stack for fresh file loads (not drill-down into archives)
+        this._navStack = [];
+        const backBtn = document.getElementById('btn-nav-back');
+        if (backBtn) backBtn.classList.add('hidden');
+        this._loadFile(f);
+      }
+      fi.value = '';
+    });
   }
 
   _setupToolbar() {
     document.getElementById('btn-open').addEventListener('click', () => document.getElementById('file-input').click());
+    document.getElementById('btn-nav-back').addEventListener('click', () => this._navBack());
+    document.getElementById('btn-close').addEventListener('click', () => this._clearFile());
     document.getElementById('btn-security').addEventListener('click', () => this._toggleSidebar());
     document.getElementById('btn-yara').addEventListener('click', () => this._openYaraDialog());
     document.getElementById('btn-help').addEventListener('click', () => this._openHelpDialog());
-    document.getElementById('btn-close').addEventListener('click', () => this._clearFile());
     document.getElementById('btn-save').addEventListener('click', () => this._saveContent());
     document.getElementById('btn-copy').addEventListener('click', () => this._copyContent());
     document.getElementById('btn-zoom-out').addEventListener('click', () => this._setZoom(this.zoom - 10));
@@ -23417,6 +23414,10 @@ class App {
 
   _handleFiles(files) {
     if (!files || !files.length) return;
+    // Clear nav stack for fresh file loads (not drill-down into archives)
+    this._navStack = [];
+    const backBtn = document.getElementById('btn-nav-back');
+    if (backBtn) backBtn.classList.add('hidden');
     this._loadFile(files[0]);
   }
 }
@@ -24140,21 +24141,12 @@ Object.assign(App.prototype, {
   },
 
   _updateNavBackButton() {
-    let btn = document.getElementById('btn-nav-back');
+    const btn = document.getElementById('btn-nav-back');
+    if (!btn) return;
     if (this._navStack && this._navStack.length > 0) {
-      if (!btn) {
-        btn = document.createElement('button');
-        btn.id = 'btn-nav-back';
-        btn.className = 'tb-btn nav-back-btn';
-        btn.textContent = '← Back';
-        btn.title = 'Return to parent archive';
-        btn.addEventListener('click', () => this._navBack());
-        const fileInfoWrap = document.getElementById('file-info-wrap');
-        fileInfoWrap.parentNode.insertBefore(btn, fileInfoWrap);
-      }
       btn.classList.remove('hidden');
     } else {
-      if (btn) btn.classList.add('hidden');
+      btn.classList.add('hidden');
     }
   },
 

@@ -2,7 +2,7 @@
 """Build script: assembles glovebox.html from source files."""
 import os
 
-VERSION = '1.0.5'
+VERSION = '1.0.6'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -88,11 +88,16 @@ HTML = f"""<!DOCTYPE html>
   <!-- ── Toolbar ─────────────────────────────────────────────────────── -->
   <div id="toolbar">
     <span id="app-title">🧤📦 GloveBox</span>
-    <button class="tb-btn" id="btn-open" title="Open file (or drag &amp; drop)">📁 Open File</button>
-    <div id="file-info-wrap">
+    <div class="tb-separator"></div>
+    <!-- File operations group -->
+    <div class="tb-group" id="file-ops">
+      <button class="tb-btn" id="btn-open" title="Open file (or drag &amp; drop)">📁 Open File</button>
       <span id="file-info"></span>
-      <button class="tb-close hidden" id="btn-close" title="Close file">✕</button>
+      <button class="tb-btn hidden" id="btn-nav-back" title="Return to parent archive">← Back</button>
+      <button class="tb-btn hidden" id="btn-close" title="Close file">✕</button>
     </div>
+    <div class="tb-spacer"></div>
+    <div class="tb-separator"></div>
     <button class="tb-btn" id="btn-yara" title="YARA rule editor (Y)">📐 YARA Rules</button>
     <div class="tb-separator"></div>
     <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>

@@ -717,21 +717,12 @@ Object.assign(App.prototype, {
   },
 
   _updateNavBackButton() {
-    let btn = document.getElementById('btn-nav-back');
+    const btn = document.getElementById('btn-nav-back');
+    if (!btn) return;
     if (this._navStack && this._navStack.length > 0) {
-      if (!btn) {
-        btn = document.createElement('button');
-        btn.id = 'btn-nav-back';
-        btn.className = 'tb-btn nav-back-btn';
-        btn.textContent = '← Back';
-        btn.title = 'Return to parent archive';
-        btn.addEventListener('click', () => this._navBack());
-        const fileInfoWrap = document.getElementById('file-info-wrap');
-        fileInfoWrap.parentNode.insertBefore(btn, fileInfoWrap);
-      }
       btn.classList.remove('hidden');
     } else {
-      if (btn) btn.classList.add('hidden');
+      btn.classList.add('hidden');
     }
   },
 
