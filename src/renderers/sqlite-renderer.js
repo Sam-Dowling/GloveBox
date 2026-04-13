@@ -653,26 +653,44 @@ class SqliteRenderer {
     tabBar.className = 'sqlite-tab-bar';
     const containers = [];
     const allTabRows = []; // array of arrays of { tr, searchText }
-    let activeTabIdx = 0;
+    let activeTabIdx = -1; // -1 = "All" tab
+
+    // "All" tab button (first, active by default)
+    const allTab = document.createElement('button');
+    allTab.className = 'tb-btn sqlite-tab sqlite-tab-active';
+    allTab.textContent = 'All';
+    allTab.addEventListener('click', () => {
+      tabBar.querySelectorAll('.sqlite-tab').forEach(t => t.classList.remove('sqlite-tab-active'));
+      allTab.classList.add('sqlite-tab-active');
+      containers.forEach(c => c.style.display = '');
+      activeTabIdx = -1;
+      updateFilterCount();
+    });
+    tabBar.appendChild(allTab);
 
     for (let ti = 0; ti < tableNames.length; ti++) {
       const tName = tableNames[ti];
       const tData = db.allTableData[tName];
 
       const tab = document.createElement('button');
-      tab.className = 'tb-btn sqlite-tab' + (ti === 0 ? ' sqlite-tab-active' : '');
+      tab.className = 'tb-btn sqlite-tab';
       tab.textContent = `${tName} (${tData.rows.length})`;
       tab.addEventListener('click', () => {
         tabBar.querySelectorAll('.sqlite-tab').forEach(t => t.classList.remove('sqlite-tab-active'));
         tab.classList.add('sqlite-tab-active');
-        containers.forEach((c, i) => c.classList.toggle('hidden', i !== ti));
+        containers.forEach((c, i) => c.style.display = i === ti ? '' : 'none');
         activeTabIdx = ti;
         updateFilterCount();
       });
       tabBar.appendChild(tab);
 
       const container = document.createElement('div');
-      container.className = ti === 0 ? '' : 'hidden';
+
+      // Table name header
+      const tableHeader = document.createElement('div');
+      tableHeader.className = 'sqlite-table-header';
+      tableHeader.textContent = tName;
+      container.appendChild(tableHeader);
 
       // CSV bar for this table
       const cols = tData.columns.length ? tData.columns : tData.rows.length ? Array.from({ length: tData.rows[0].length }, (_, i) => `col_${i}`) : [];
@@ -733,17 +751,26 @@ class SqliteRenderer {
       allTabRows.push(tabRowEls);
     }
 
-    // Update filter count for active tab
+    // Update filter count for active tab (or all tabs if activeTabIdx === -1)
     const updateFilterCount = () => {
-      const tabRows = allTabRows[activeTabIdx] || [];
-      const shown = tabRows.filter(r => r.tr.style.display !== 'none').length;
-      filterCount.textContent = `Showing ${shown.toLocaleString()} of ${tabRows.length.toLocaleString()}`;
+      if (activeTabIdx === -1) {
+        // "All" tab: sum across all tables
+        let totalShown = 0, totalRows = 0;
+        for (const tabRows of allTabRows) {
+          totalRows += tabRows.length;
+          totalShown += tabRows.filter(r => r.tr.style.display !== 'none').length;
+        }
+        filterCount.textContent = `Showing ${totalShown.toLocaleString()} of ${totalRows.toLocaleString()}`;
+      } else {
+        const tabRows = allTabRows[activeTabIdx] || [];
+        const shown = tabRows.filter(r => r.tr.style.display !== 'none').length;
+        filterCount.textContent = `Showing ${shown.toLocaleString()} of ${tabRows.length.toLocaleString()}`;
+      }
     };
 
-    // Initial count
-    if (allTabRows[0]) {
-      filterCount.textContent = `Showing ${allTabRows[0].length.toLocaleString()} of ${allTabRows[0].length.toLocaleString()}`;
-    }
+    // Initial count (all tables visible)
+    const totalRows = allTabRows.reduce((sum, rows) => sum + rows.length, 0);
+    filterCount.textContent = `Showing ${totalRows.toLocaleString()} of ${totalRows.toLocaleString()}`;
 
     // Filter logic — filters all tabs so switching tabs preserves the filter
     const applyFilters = () => {

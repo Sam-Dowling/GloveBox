@@ -18,7 +18,7 @@ body {
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif;
-  background: #525659;
+  background: #f8fafc;
   color: #222;
   display: flex;
   flex-direction: column;
@@ -1277,16 +1277,16 @@ body.dark .plaintext-table tr.enc-highlight-line > td {
 
 /* Light mode drop zone overrides */
 body:not(.dark) #drop-zone {
-  border-color: #bbb;
-  color: #888;
+  border-color: #cbd5e1;
+  color: #64748b;
   background: rgba(0, 0, 0, .02);
 }
 
 body:not(.dark) #drop-zone:hover,
 body:not(.dark) #drop-zone.drag-over {
-  border-color: #4a90e2;
-  background: rgba(74, 144, 226, .06);
-  color: #4a90e2;
+  border-color: #0ea5e9;
+  background: rgba(14, 165, 233, .06);
+  color: #0284c7;
 }
 
 /* ── Drag overlay ─────────────────────────────────────────────────────────
@@ -3313,6 +3313,22 @@ body.dark .sqlite-tab-bar {
 
 body.dark .sqlite-tab-active {
   background: rgba(34, 211, 238, .15) !important;
+}
+
+/* Table name header */
+.sqlite-table-header {
+  padding: 10px 16px 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+body.dark .sqlite-table-header {
+  color: #e0e0ea;
+  background: rgba(255, 255, 255, .03);
+  border-color: rgba(255, 255, 255, .06);
 }
 
 /* ══════════════════════════════════════════════════════
