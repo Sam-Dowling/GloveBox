@@ -2584,10 +2584,9 @@ body.dark .html-view-btn.active {
 }
 
 /* ── Drag shield ───────────────────────────────────────────────────────
-   Transparent overlay above sandboxed iframes. Always intercepts pointer
-   events to capture file drags (which would otherwise go directly to the
-   iframe's isolated content document). Mouse clicks and scrolls are
-   forwarded to the iframe via JavaScript. */
+   Always-active transparent overlay above sandboxed iframes. Intercepts
+   drag/drop events (preventing browser navigation on file drops) and forwards
+   scroll events to the iframe content programmatically via JavaScript. */
 .html-drag-shield {
   position: absolute;
   inset: 0;

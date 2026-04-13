@@ -317,7 +317,7 @@ Object.assign(App.prototype, {
       const bar = document.createElement('div'); bar.className = 'sev-bar';
       if (high) { const s = document.createElement('span'); s.style.color = '#721c24'; s.textContent = `🔴 ${high} high`; bar.appendChild(s); }
       if (med) { const s = document.createElement('span'); s.style.color = '#856404'; s.textContent = `🟡 ${med} medium`; bar.appendChild(s); }
-      if (inf) { const s = document.createElement('span'); s.style.color = '#666'; s.textContent = `ℹ ${inf} info`; bar.appendChild(s); }
+      if (inf) { const s = document.createElement('span'); s.style.color = '#666'; s.textContent = `🔵 ${inf} info`; bar.appendChild(s); }
       body.appendChild(bar);
     }
 
@@ -626,7 +626,7 @@ Object.assign(App.prototype, {
     if (crit) { const s = document.createElement('span'); s.style.color = '#4a1a7a'; s.textContent = `🟣 ${crit} critical`; bar.appendChild(s); }
     if (high) { const s = document.createElement('span'); s.style.color = '#721c24'; s.textContent = `🔴 ${high} high`; bar.appendChild(s); }
     if (med) { const s = document.createElement('span'); s.style.color = '#856404'; s.textContent = `🟡 ${med} medium`; bar.appendChild(s); }
-    if (inf) { const s = document.createElement('span'); s.style.color = '#666'; s.textContent = `ℹ ${inf} info`; bar.appendChild(s); }
+    if (inf) { const s = document.createElement('span'); s.style.color = '#666'; s.textContent = `🔵 ${inf} info`; bar.appendChild(s); }
     body.appendChild(bar);
 
     // Filter search

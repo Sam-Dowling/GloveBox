@@ -48,23 +48,23 @@ class HtmlRenderer {
 
     const iframe = document.createElement('iframe');
     iframe.className = 'html-iframe';
-    iframe.sandbox = ''; // Most restrictive: no scripts, no forms, no popups, unique origin
+    // allow-same-origin lets us access iframe.contentWindow for scroll forwarding,
+    // while still blocking scripts, forms, popups, and top navigation
+    iframe.sandbox = 'allow-same-origin';
     iframe.src = blobUrl;
     iframe.title = 'Sandboxed HTML preview';
     // Clean up blob URL after load
     iframe.addEventListener('load', () => { URL.revokeObjectURL(blobUrl); }, { once: true });
 
     // ── Drag shield ──────────────────────────────────────────────────────
-    // Always-active transparent overlay above the iframe. Intercepts all
-    // pointer events to capture file drags (which would otherwise go
-    // directly to the sandboxed iframe's content document, causing the
-    // browser to navigate/download). Mouse events are forwarded through
-    // to the iframe so normal interaction still works.
+    // Always-active transparent overlay above the iframe. Intercepts drag/drop
+    // events (preventing browser from navigating when files are dropped on the
+    // iframe) and forwards scroll events to the iframe content programmatically.
     const dragShield = document.createElement('div');
     dragShield.className = 'html-drag-shield';
 
-    // ── Drag event interception ─────────────────────────────────────────
-    // Capture drag events and dispatch custom events for app handling
+    // ── Drag event handlers ─────────────────────────────────────────────
+    // Capture drag events and dispatch custom events for GloveBox app handling
     dragShield.addEventListener('dragenter', e => {
       e.preventDefault();
       e.stopPropagation();
@@ -93,47 +93,38 @@ class HtmlRenderer {
       }
     });
 
-    // ── Forward pointer events to iframe ────────────────────────────────
-    // Temporarily disable shield to find element below, then dispatch event
-    const forwardMouseEvent = (e) => {
-      dragShield.style.pointerEvents = 'none';
-      const target = document.elementFromPoint(e.clientX, e.clientY);
-      dragShield.style.pointerEvents = 'auto';
-      if (target && target !== dragShield) {
-        const forwarded = new MouseEvent(e.type, {
-          bubbles: true,
-          cancelable: true,
-          view: window,
-          clientX: e.clientX,
-          clientY: e.clientY,
-          screenX: e.screenX,
-          screenY: e.screenY,
-          button: e.button,
-          buttons: e.buttons,
-          ctrlKey: e.ctrlKey,
-          shiftKey: e.shiftKey,
-          altKey: e.altKey,
-          metaKey: e.metaKey,
-        });
-        target.dispatchEvent(forwarded);
-      }
-    };
-
-    // Forward click events
-    ['click', 'dblclick', 'mousedown', 'mouseup', 'contextmenu'].forEach(evt => {
-      dragShield.addEventListener(evt, forwardMouseEvent);
-    });
-
-    // For continuous events, just temporarily disable pointer-events
-    dragShield.addEventListener('mousemove', () => {
-      dragShield.style.pointerEvents = 'none';
-      requestAnimationFrame(() => { dragShield.style.pointerEvents = 'auto'; });
-    });
-
+    // ── Scroll forwarding ───────────────────────────────────────────────
+    // Forward wheel events to the iframe content programmatically.
+    // This works because we have allow-same-origin in the sandbox.
     dragShield.addEventListener('wheel', (e) => {
-      dragShield.style.pointerEvents = 'none';
-      // Let the wheel event pass through naturally
-      requestAnimationFrame(() => { dragShield.style.pointerEvents = 'auto'; });
+      e.preventDefault();
+      try {
+        iframe.contentWindow.scrollBy(e.deltaX, e.deltaY);
+      } catch (_) { /* ignore if cross-origin error */ }
+    }, { passive: false });
+
+    // ── Touch scroll support ────────────────────────────────────────────
+    // Track touch movements and scroll the iframe content accordingly
+    let touchStartY = 0;
+    let touchStartX = 0;
+
+    dragShield.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 1) {
+        touchStartY = e.touches[0].clientY;
+        touchStartX = e.touches[0].clientX;
+      }
+    }, { passive: true });
+
+    dragShield.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 1) {
+        const deltaY = touchStartY - e.touches[0].clientY;
+        const deltaX = touchStartX - e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+        touchStartX = e.touches[0].clientX;
+        try {
+          iframe.contentWindow.scrollBy(deltaX, deltaY);
+        } catch (_) { /* ignore if cross-origin error */ }
+      }
     }, { passive: true });
 
     previewPane.appendChild(iframe);
