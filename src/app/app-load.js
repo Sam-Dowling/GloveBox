@@ -42,6 +42,42 @@ function _unwrapSafeLink(url) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Defanged URL/IP/email refanging — converts security-defanged IOCs to normal
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Refang a defanged URL, IP, domain, or email address.
+ * Common defang patterns: hxxp → http, [.] → ., [@] → @, [://] → ://
+ * @param {string} str - Potentially defanged string.
+ * @returns {object|null} - { original, refanged } or null if not defanged.
+ */
+function _refangString(str) {
+  if (!str || typeof str !== 'string') return null;
+
+  let refanged = str;
+  let changed = false;
+
+  // Protocol: hxxp → http, hxxps → https (case-insensitive)
+  refanged = refanged.replace(/\bhxxps?/gi, m => {
+    changed = true;
+    return m.toLowerCase().replace('xx', 'tt');
+  });
+
+  // Protocol separator variants: [://], [:], [:/], etc. → ://
+  refanged = refanged.replace(/\[:\/\/\]/g, () => { changed = true; return '://'; });
+  refanged = refanged.replace(/\[:\/\]/g, () => { changed = true; return '://'; });
+  refanged = refanged.replace(/\[:\]/g, () => { changed = true; return ':'; });
+
+  // Dots: [.] → .
+  refanged = refanged.replace(/\[\.\]/g, () => { changed = true; return '.'; });
+
+  // At symbol: [@] → @
+  refanged = refanged.replace(/\[@\]/g, () => { changed = true; return '@'; });
+
+  return changed ? { original: str, refanged } : null;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // App — file loading, hashing, interesting-string extraction
 // ════════════════════════════════════════════════════════════════════════════
 Object.assign(App.prototype, {
@@ -881,6 +917,81 @@ Object.assign(App.prototype, {
     }
     for (const m of full.matchAll(/\\\\[\w.\-]{2,}(?:\\[\w.\-]{1,})+/g)) {
       add(IOC.UNC_PATH, m[0], 'medium', null, { offset: m.index, length: m[0].length });
+    }
+
+    // ── Defanged IOC extraction ──────────────────────────────────────────────
+    // Detect defanged URLs (hxxp[s][://]...[.]...), IPs (1[.]2[.]3[.]4), and emails (user[@]domain[.]com)
+    // Refang them and add to IOCs with source highlighting pointing to the defanged original
+
+    // Defanged URLs: hxxp/hxxps with optional [://] and [.] in domain
+    // Pattern matches: hxxps[://]www[.]example[.]com/path or hxxp://example[.]com
+    const defangedUrlRe = /\bhxxps?(?:\[:\/?\/?\]|:\/\/)[^\s"'<>]{4,}/gi;
+    for (const m of full.matchAll(defangedUrlRe)) {
+      const result = _refangString(m[0]);
+      if (result && result.refanged.match(/^https?:\/\//i)) {
+        // Clean trailing punctuation from refanged URL
+        const cleaned = result.refanged.replace(/[.,;:!?)\]>]+$/, '');
+        if (!seen.has(cleaned) && cleaned.length >= 10) {
+          add(IOC.URL, cleaned, 'medium', 'Refanged', {
+            offset: m.index,
+            length: m[0].length,
+            highlightText: m[0]
+          });
+        }
+      }
+    }
+
+    // Defanged domains/URLs with [.] but no hxxp prefix (e.g., www[.]evil[.]com or evil[.]com/path)
+    // Must have at least one [.] to be considered defanged
+    const defangedDomainRe = /\b[\w\-]+(?:\[\.\][\w\-]+)+(?:\/[^\s"'<>]*)?\b/g;
+    for (const m of full.matchAll(defangedDomainRe)) {
+      const result = _refangString(m[0]);
+      if (result) {
+        const cleaned = result.refanged.replace(/[.,;:!?)\]>]+$/, '');
+        // Check if it looks like a valid domain (has at least one dot and a TLD-like ending)
+        if (!seen.has(cleaned) && /^[\w\-]+\.[\w\-]+/.test(cleaned) && cleaned.length >= 4) {
+          add(IOC.URL, cleaned, 'medium', 'Refanged domain', {
+            offset: m.index,
+            length: m[0].length,
+            highlightText: m[0]
+          });
+        }
+      }
+    }
+
+    // Defanged IPs: 192[.]168[.]1[.]1
+    const defangedIpRe = /\b\d{1,3}\[\.\]\d{1,3}\[\.\]\d{1,3}\[\.\]\d{1,3}\b/g;
+    for (const m of full.matchAll(defangedIpRe)) {
+      const result = _refangString(m[0]);
+      if (result) {
+        const parts = result.refanged.split('.').map(Number);
+        if (parts.length === 4 && parts.every(p => p >= 0 && p <= 255) && !result.refanged.startsWith('0.')) {
+          if (!seen.has(result.refanged)) {
+            add(IOC.IP, result.refanged, 'medium', 'Refanged', {
+              offset: m.index,
+              length: m[0].length,
+              highlightText: m[0]
+            });
+          }
+        }
+      }
+    }
+
+    // Defanged emails: user[@]domain[.]com
+    const defangedEmailRe = /\b[a-zA-Z0-9._%+\-]+\[@\][a-zA-Z0-9.\-\[\]]+\b/g;
+    for (const m of full.matchAll(defangedEmailRe)) {
+      const result = _refangString(m[0]);
+      if (result) {
+        const cleaned = result.refanged.replace(/[.,;:!?)\]>]+$/, '');
+        // Validate it looks like an email after refanging
+        if (!seen.has(cleaned) && /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/.test(cleaned)) {
+          add(IOC.EMAIL, cleaned, 'medium', 'Refanged', {
+            offset: m.index,
+            length: m[0].length,
+            highlightText: m[0]
+          });
+        }
+      }
     }
 
     // VBA-specific URL scan with higher severity (also check for SafeLinks)

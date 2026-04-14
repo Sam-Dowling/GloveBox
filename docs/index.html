@@ -6263,7 +6263,7 @@ relevance:0}),e.C_NUMBER_MODE]}}})();hljs.registerLanguage("vbscript",e)})();
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
-const GLOVEBOX_VERSION = '20260414.1302';
+const GLOVEBOX_VERSION = '20260414.1442';
 const DEFAULT_YARA_RULES = `// ─── Default YARA Rules ───────────────────────────────────
 // Edit or replace these rules, then click "Run Scan"
 // Supports: text strings, hex strings {AA BB}, regex /pattern/
@@ -11115,6 +11115,15 @@ function toRoman(n) {
   let r = ''; for (let i = 0; i < v.length; i++) while (n >= v[i]) { r += s[i]; n -= v[i]; } return r;
 }
 
+// ── Byte formatting ───────────────────────────────────────────────────────────
+/** Format bytes to human-readable string (B, KB, MB, GB). */
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  return (n / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+}
+
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
 // vba-utils.js — Shared VBA binary decoding and pattern matching
@@ -13631,19 +13640,22 @@ class OleCfbParser {
 
   _buildFAT(n) {
     const fat = []; let done = 0;
+    const bufLen = this.buf.length;
     const addSec = s => {
       if (s >= 0xFFFFFFF0) return;
       const off = this._so(s);
-      for (let i = 0; i < this._ss / 4; i++) fat.push(this.dv.getUint32(off + i * 4, true));
+      for (let i = 0; i < this._ss / 4 && off + i * 4 + 4 <= bufLen; i++) fat.push(this.dv.getUint32(off + i * 4, true));
       done++;
     };
-    for (let i = 0; i < 109 && done < n; i++) { const s = this.dv.getUint32(0x4C + i * 4, true); if (s >= 0xFFFFFFF0) break; addSec(s); }
+    for (let i = 0; i < 109 && done < n && 0x4C + i * 4 + 4 <= bufLen; i++) { const s = this.dv.getUint32(0x4C + i * 4, true); if (s >= 0xFFFFFFF0) break; addSec(s); }
+    if (0x48 > bufLen) return fat;
     let dif = this.dv.getUint32(0x44, true);
     const visitedDif = new Set(); // Cycle detection for DIFAT chain
     while (dif < 0xFFFFFFF0 && done < n) {
       if (visitedDif.has(dif)) break; // Prevent infinite loop on DIFAT cycle
       visitedDif.add(dif);
       const off = this._so(dif);
+      if (off + this._ss > bufLen) break; // Bounds check
       for (let i = 0; i < this._ss / 4 - 1 && done < n; i++) { const s = this.dv.getUint32(off + i * 4, true); if (s >= 0xFFFFFFF0) break; addSec(s); }
       dif = this.dv.getUint32(off + this._ss - 4, true);
     }
@@ -13652,12 +13664,14 @@ class OleCfbParser {
 
   _buildMFAT(first, n) {
     const mf = []; let s = first;
+    const bufLen = this.buf.length;
     const visited = new Set(); // Cycle detection
     while (s < 0xFFFFFFF0 && n-- > 0) {
       if (visited.has(s)) break; // Prevent infinite loop on mini-FAT cycle
       visited.add(s);
       const off = this._so(s);
-      for (let i = 0; i < this._ss / 4; i++) mf.push(this.dv.getUint32(off + i * 4, true));
+      if (off + this._ss > bufLen) break; // Bounds check
+      for (let i = 0; i < this._ss / 4 && off + i * 4 + 4 <= bufLen; i++) mf.push(this.dv.getUint32(off + i * 4, true));
       s = this._fat[s] ?? 0xFFFFFFFE;
     }
     return mf;
@@ -13683,19 +13697,23 @@ class OleCfbParser {
 
   _readDir(first) {
     const dir = []; let sec = first;
+    const bufLen = this.buf.length;
     const visited = new Set(); // Cycle detection
     while (sec < 0xFFFFFFF0) {
       if (visited.has(sec)) break; // Prevent infinite loop on FAT cycle
       visited.add(sec);
       const off = this._so(sec);
+      if (off + this._ss > bufLen) break; // Bounds check
       for (let i = 0; i < this._ss / 128; i++) {
-        const b = off + i * 128, nl = this.dv.getUint16(b + 64, true);
+        const b = off + i * 128;
+        if (b + 128 > bufLen) break; // Entry bounds check
+        const nl = this.dv.getUint16(b + 64, true);
         if (!nl || nl > 64) {
           dir.push({ type: 0, name: '', start: 0, size: 0, child: 0xFFFFFFFF, lsib: 0xFFFFFFFF, rsib: 0xFFFFFFFF });
           continue;
         }
         let name = '';
-        for (let j = 0; j < (nl - 2) / 2; j++) name += String.fromCharCode(this.dv.getUint16(b + j * 2, true));
+        for (let j = 0; j < (nl - 2) / 2 && b + j * 2 + 2 <= bufLen; j++) name += String.fromCharCode(this.dv.getUint16(b + j * 2, true));
         dir.push({
           name, type: this.buf[b + 66],
           lsib: this.dv.getUint32(b + 68, true),
@@ -14424,7 +14442,8 @@ class OdtRenderer {
     return styles;
   }
 
-  _applyParaStyle(el, styleName, styles) {
+  _applyParaStyle(el, styleName, styles, depth = 0) {
+    if (depth > 20) return; // Prevent infinite recursion on circular style references
     const s = styles[styleName];
     if (!s) return;
     const p = s.props;
@@ -14436,11 +14455,12 @@ class OdtRenderer {
     if (p.fontWeight) el.style.fontWeight = p.fontWeight;
     if (p.fontStyle) el.style.fontStyle = p.fontStyle;
     if (p.color) el.style.color = p.color;
-    // Inherit from parent
-    if (s.parent && styles[s.parent]) this._applyParaStyle(el, s.parent, styles);
+    // Inherit from parent (with depth limit)
+    if (s.parent && styles[s.parent]) this._applyParaStyle(el, s.parent, styles, depth + 1);
   }
 
-  _applyTextStyle(el, styleName, styles) {
+  _applyTextStyle(el, styleName, styles, depth = 0) {
+    if (depth > 20) return; // Prevent infinite recursion on circular style references
     const s = styles[styleName];
     if (!s) return;
     const p = s.props;
@@ -14449,7 +14469,7 @@ class OdtRenderer {
     if (p.fontStyle) el.style.fontStyle = p.fontStyle;
     if (p.color) el.style.color = p.color;
     if (p.textDecoration) el.style.textDecoration = p.textDecoration;
-    if (s.parent && styles[s.parent]) this._applyTextStyle(el, s.parent, styles);
+    if (s.parent && styles[s.parent]) this._applyTextStyle(el, s.parent, styles, depth + 1);
   }
 
   // ── Media loading ──────────────────────────────────────────────────────────
@@ -15516,8 +15536,9 @@ class ZipRenderer {
     }
 
     const decompInfo = document.createElement('div'); decompInfo.style.cssText = 'padding:0 20px 12px;';
+    const compressionRatio = decompressed.length > 0 ? ((1 - bytes.length / decompressed.length) * 100).toFixed(1) : '0.0';
     decompInfo.innerHTML = `<p><strong>Decompressed size:</strong> ${this._fmtBytes(decompressed.length)}</p>` +
-      `<p><strong>Compression ratio:</strong> ${((1 - bytes.length / decompressed.length) * 100).toFixed(1)}%</p>`;
+      `<p><strong>Compression ratio:</strong> ${compressionRatio}%</p>`;
     wrap.appendChild(decompInfo);
 
     // Check if decompressed content is a TAR archive
@@ -16348,7 +16369,7 @@ class ZipRenderer {
         if (decompressed) {
           f.metadata.compressedSize = bytes.length;
           f.metadata.decompressedSize = decompressed.length;
-          f.metadata.compressionRatio = ((1 - bytes.length / decompressed.length) * 100).toFixed(1) + '%';
+          f.metadata.compressionRatio = decompressed.length > 0 ? ((1 - bytes.length / decompressed.length) * 100).toFixed(1) + '%' : 'N/A';
 
           // Check if it's a tar archive
           if (this._isTar(decompressed)) {
@@ -16453,6 +16474,13 @@ class ZipRenderer {
 
     const htas = files.filter(e => /\.hta$/i.test(e.path || e.name || ''));
     if (htas.length) w.push({ sev: 'high', msg: `⚠ HTA file(s) — can execute arbitrary scripts` });
+
+    // Path traversal detection (Zip Slip vulnerability)
+    const traversal = entries.filter(e => {
+      const p = e.path || e.name || '';
+      return p.includes('../') || p.includes('..\\') || p.startsWith('/') || /^[A-Za-z]:/.test(p);
+    });
+    if (traversal.length) w.push({ sev: 'high', msg: `⚠ Path traversal attempt detected (Zip Slip) — ${traversal.length} entry/entries with suspicious paths` });
 
     return w;
   }
@@ -16954,22 +16982,30 @@ class UrlShortcutRenderer {
     // Additional fields
     if (parsed.iconFile) {
       const row = document.createElement('div'); row.className = 'url-field';
-      row.innerHTML = `<span class="url-label">Icon File:</span> <span class="url-value">${escHtml(parsed.iconFile)}</span>`;
+      const lbl = document.createElement('span'); lbl.className = 'url-label'; lbl.textContent = 'Icon File:';
+      const val = document.createElement('span'); val.className = 'url-value'; val.textContent = parsed.iconFile;
+      row.appendChild(lbl); row.appendChild(document.createTextNode(' ')); row.appendChild(val);
       card.appendChild(row);
     }
     if (parsed.iconIndex !== undefined) {
       const row = document.createElement('div'); row.className = 'url-field';
-      row.innerHTML = `<span class="url-label">Icon Index:</span> <span class="url-value">${escHtml(String(parsed.iconIndex))}</span>`;
+      const lbl = document.createElement('span'); lbl.className = 'url-label'; lbl.textContent = 'Icon Index:';
+      const val = document.createElement('span'); val.className = 'url-value'; val.textContent = String(parsed.iconIndex);
+      row.appendChild(lbl); row.appendChild(document.createTextNode(' ')); row.appendChild(val);
       card.appendChild(row);
     }
     if (parsed.workingDir) {
       const row = document.createElement('div'); row.className = 'url-field';
-      row.innerHTML = `<span class="url-label">Working Directory:</span> <span class="url-value">${escHtml(parsed.workingDir)}</span>`;
+      const lbl = document.createElement('span'); lbl.className = 'url-label'; lbl.textContent = 'Working Directory:';
+      const val = document.createElement('span'); val.className = 'url-value'; val.textContent = parsed.workingDir;
+      row.appendChild(lbl); row.appendChild(document.createTextNode(' ')); row.appendChild(val);
       card.appendChild(row);
     }
     if (parsed.hotKey) {
       const row = document.createElement('div'); row.className = 'url-field';
-      row.innerHTML = `<span class="url-label">Hot Key:</span> <span class="url-value">${escHtml(parsed.hotKey)}</span>`;
+      const lbl = document.createElement('span'); lbl.className = 'url-label'; lbl.textContent = 'Hot Key:';
+      const val = document.createElement('span'); val.className = 'url-value'; val.textContent = parsed.hotKey;
+      row.appendChild(lbl); row.appendChild(document.createTextNode(' ')); row.appendChild(val);
       card.appendChild(row);
     }
 
@@ -17582,8 +17618,9 @@ class IqySlkRenderer {
 
   _renderIqy(wrap, text, bytes) {
     const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
-    banner.innerHTML = '<strong>⚠ Internet Query File (.iqy)</strong> — This file instructs Excel to fetch data from a remote URL. ' +
-      'IQY files are commonly weaponised in phishing to download and execute malicious payloads.';
+    const bannerStrong = document.createElement('strong'); bannerStrong.textContent = '⚠ Internet Query File (.iqy)';
+    banner.appendChild(bannerStrong);
+    banner.appendChild(document.createTextNode(' — This file instructs Excel to fetch data from a remote URL. IQY files are commonly weaponised in phishing to download and execute malicious payloads.'));
     wrap.appendChild(banner);
 
     const lines = text.split(/\r?\n/);
@@ -17606,13 +17643,17 @@ class IqySlkRenderer {
 
     if (parsed.queryType) {
       const row = document.createElement('div'); row.className = 'url-field';
-      row.innerHTML = `<span class="url-label">Query Type:</span> <span class="url-value">${escHtml(parsed.queryType)}</span>`;
+      const lbl = document.createElement('span'); lbl.className = 'url-label'; lbl.textContent = 'Query Type:';
+      const val = document.createElement('span'); val.className = 'url-value'; val.textContent = parsed.queryType;
+      row.appendChild(lbl); row.appendChild(document.createTextNode(' ')); row.appendChild(val);
       card.appendChild(row);
     }
 
     if (parsed.postParams) {
       const row = document.createElement('div'); row.className = 'url-field';
-      row.innerHTML = `<span class="url-label">POST Parameters:</span> <span class="url-value">${escHtml(parsed.postParams)}</span>`;
+      const lbl = document.createElement('span'); lbl.className = 'url-label'; lbl.textContent = 'POST Parameters:';
+      const val = document.createElement('span'); val.className = 'url-value'; val.textContent = parsed.postParams;
+      row.appendChild(lbl); row.appendChild(document.createTextNode(' ')); row.appendChild(val);
       card.appendChild(row);
     }
 
@@ -17651,8 +17692,9 @@ class IqySlkRenderer {
 
   _renderSlk(wrap, text, bytes) {
     const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
-    banner.innerHTML = '<strong>⚠ Symbolic Link File (.slk)</strong> — SLK is a text-based spreadsheet format ' +
-      'that can contain executable macros (EXEC, CALL, RUN). These bypass many security controls.';
+    const bannerStrong = document.createElement('strong'); bannerStrong.textContent = '⚠ Symbolic Link File (.slk)';
+    banner.appendChild(bannerStrong);
+    banner.appendChild(document.createTextNode(' — SLK is a text-based spreadsheet format that can contain executable macros (EXEC, CALL, RUN). These bypass many security controls.'));
     wrap.appendChild(banner);
 
     // Analyze for dangerous content
@@ -18380,7 +18422,12 @@ class InfSctRenderer {
   _renderInf(wrap, text, bytes, fileName) {
     // Banner
     const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
-    banner.innerHTML = '<strong>⚠ Windows Setup Information File (.inf)</strong> — INF files configure driver and software installation. They can execute arbitrary commands via right-click "Install" and are abused for <code>CMSTP</code> UAC bypass, DLL side-loading, and malware persistence.';
+    const bannerStrong = document.createElement('strong'); bannerStrong.textContent = '⚠ Windows Setup Information File (.inf)';
+    banner.appendChild(bannerStrong);
+    banner.appendChild(document.createTextNode(' — INF files configure driver and software installation. They can execute arbitrary commands via right-click "Install" and are abused for '));
+    const codeEl = document.createElement('code'); codeEl.textContent = 'CMSTP';
+    banner.appendChild(codeEl);
+    banner.appendChild(document.createTextNode(' UAC bypass, DLL side-loading, and malware persistence.'));
     wrap.appendChild(banner);
 
     const analysis = this._analyzeInf(text);
@@ -18445,7 +18492,12 @@ class InfSctRenderer {
 
   _renderSct(wrap, text, bytes, fileName) {
     const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
-    banner.innerHTML = '<strong>⚠ Windows Script Component (.sct)</strong> — COM scriptlet that executes via <code>regsvr32 /s /n /u /i:file.sct scrobj.dll</code> (Squiblydoo attack). Can run VBScript/JScript with full system access and download remote payloads.';
+    const bannerStrong = document.createElement('strong'); bannerStrong.textContent = '⚠ Windows Script Component (.sct)';
+    banner.appendChild(bannerStrong);
+    banner.appendChild(document.createTextNode(' — COM scriptlet that executes via '));
+    const codeEl = document.createElement('code'); codeEl.textContent = 'regsvr32 /s /n /u /i:file.sct scrobj.dll';
+    banner.appendChild(codeEl);
+    banner.appendChild(document.createTextNode(' (Squiblydoo attack). Can run VBScript/JScript with full system access and download remote payloads.'));
     wrap.appendChild(banner);
 
     const analysis = this._analyzeSct(text);
@@ -18852,8 +18904,13 @@ class MsiRenderer {
 
     // Banner
     const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
-    banner.innerHTML = '<strong>Windows Installer Package (.msi)</strong> — click any stream to analyze its contents. MSI files execute with elevated privileges and can run custom actions, modify the registry, and install services.';
+    const bannerStrong = document.createElement('strong'); bannerStrong.textContent = 'Windows Installer Package (.msi)';
+    banner.appendChild(bannerStrong);
+    banner.appendChild(document.createTextNode(' — click any stream to analyze its contents. MSI files execute with elevated privileges and can run custom actions, modify the registry, and install services.'));
     wrap.appendChild(banner);
+
+    // Cleanup previous OLE parser reference to prevent memory leaks
+    this._ole = null;
 
     // Check for large files
     if (bytes.length > MSI_SIZE_LIMIT) {
@@ -22718,8 +22775,8 @@ class SqliteRenderer {
       ctx.pos += 8;
       return v;
     }
-    if (serialType === 8) return (ctx.pos, 0); // Integer 0
-    if (serialType === 9) return (ctx.pos, 1); // Integer 1
+    if (serialType === 8) return 0; // Integer 0
+    if (serialType === 9) return 1; // Integer 1
     if (serialType >= 12 && serialType % 2 === 0) {
       // BLOB: length = (serialType - 12) / 2
       const len = (serialType - 12) / 2;
@@ -23318,7 +23375,9 @@ class DocBinaryRenderer {
   render(buffer) {
     const wrap = document.createElement('div'); wrap.className = 'doc-text-view';
     const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
-    banner.innerHTML = '<strong>Text Extraction Mode</strong> — .doc (Word 97-2003) binary: content shown as plain text only; formatting, images and tables are not rendered.';
+    const bannerStrong = document.createElement('strong'); bannerStrong.textContent = 'Text Extraction Mode';
+    banner.appendChild(bannerStrong);
+    banner.appendChild(document.createTextNode(' — .doc (Word 97-2003) binary: content shown as plain text only; formatting, images and tables are not rendered.'));
     wrap.appendChild(banner);
     let paras = [];
     try {
@@ -23481,7 +23540,10 @@ class MsgRenderer {
     // Attachments — Extracted Files table (shown at top for easy access)
     if (msg.attachments.length) {
       const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
-      banner.innerHTML = `<strong>Attachments (${msg.attachments.length})</strong> — click any file to open it for analysis.`;
+      const bannerStrong = document.createElement('strong');
+      bannerStrong.textContent = `Attachments (${msg.attachments.length})`;
+      banner.appendChild(bannerStrong);
+      banner.appendChild(document.createTextNode(' — click any file to open it for analysis.'));
       page.appendChild(banner);
 
       const attTbl = document.createElement('table'); attTbl.className = 'zip-table';
@@ -23640,20 +23702,35 @@ class MsgRenderer {
   }
 
   _sanitize(html, container) {
-    const OK = new Set(['p', 'br', 'b', 'strong', 'i', 'em', 'u', 's', 'span', 'div', 'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'code', 'hr', 'a', 'font', 'center']);
+    const OK = new Set(['p', 'br', 'b', 'strong', 'i', 'em', 'u', 's', 'span', 'div', 'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'code', 'hr', 'a', 'font', 'center', 'sub', 'sup', 'abbr', 'cite', 'q', 'mark']);
     const ATTR = new Set(['href', 'style', 'color', 'size', 'face', 'align', 'colspan', 'rowspan']);
     const walk = (node, target) => {
       for (const c of Array.from(node.childNodes)) {
         if (c.nodeType === 3) { target.appendChild(document.createTextNode(c.textContent)); continue; }
         if (c.nodeType !== 1) continue;
         const tag = c.tagName.toLowerCase();
-        if (['script', 'style', 'meta', 'link', 'object', 'iframe', 'embed'].includes(tag)) continue;
+        if (['script', 'style', 'meta', 'link', 'object', 'iframe', 'embed', 'svg', 'math'].includes(tag)) continue;
         if (!OK.has(tag)) { walk(c, target); continue; }
         const el = document.createElement(tag);
         for (const a of Array.from(c.attributes)) {
           const n = a.name.toLowerCase(); if (!ATTR.has(n)) continue;
-          if (n === 'href') { const s = sanitizeUrl(a.value); if (s) el.setAttribute(n, s); }
-          else if (n === 'style') { el.setAttribute(n, a.value.replace(/(expression|javascript|vbscript)/gi, '')); }
+          if (n === 'href') {
+            const s = sanitizeUrl(a.value);
+            // Block data: URLs in href to prevent XSS
+            if (s && !s.toLowerCase().startsWith('data:')) el.setAttribute(n, s);
+          }
+          else if (n === 'style') {
+            // Comprehensive CSS XSS sanitization
+            const cleanStyle = a.value
+              .replace(/expression\s*\(/gi, '')
+              .replace(/javascript\s*:/gi, '')
+              .replace(/vbscript\s*:/gi, '')
+              .replace(/-moz-binding\s*:/gi, '')
+              .replace(/behavior\s*:/gi, '')
+              .replace(/url\s*\([^)]*\)/gi, '')  // Remove all url() to prevent data: exploits
+              .replace(/\\[0-9a-f]{1,6}/gi, ''); // Remove unicode escapes that could spell javascript
+            el.setAttribute(n, cleanStyle);
+          }
           else el.setAttribute(n, a.value);
         }
         walk(c, el); target.appendChild(el);
@@ -24099,43 +24176,69 @@ class EmlRenderer {
       'p', 'br', 'div', 'span', 'b', 'i', 'u', 'em', 'strong', 'a', 'ul', 'ol', 'li',
       'table', 'tr', 'td', 'th', 'thead', 'tbody', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
       'pre', 'code', 'blockquote', 'hr', 'font', 'center', 'sub', 'sup', 'small', 'big',
-      'dl', 'dt', 'dd', 'abbr', 'address', 'cite',
+      'dl', 'dt', 'dd', 'abbr', 'address', 'cite', 'q', 'mark',
     ]);
-    const allowedAttrs = new Set(['style', 'class', 'align', 'valign', 'width', 'height', 'colspan', 'rowspan', 'dir', 'color', 'size', 'face']);
+    // Dangerous elements to completely remove (not just strip tag)
+    const dangerousTags = new Set(['script', 'style', 'meta', 'link', 'object', 'iframe', 'embed', 'svg', 'math', 'base', 'form']);
+    const allowedAttrs = new Set(['style', 'class', 'align', 'valign', 'width', 'height', 'colspan', 'rowspan', 'dir', 'color', 'size', 'face', 'href']);
 
-    const tmp = document.createElement('div');
-    tmp.innerHTML = html;
-
-    function walk(node) {
-      const children = [...node.childNodes];
-      for (const child of children) {
-        if (child.nodeType === 3) continue; // text node
-        if (child.nodeType !== 1) { child.remove(); continue; }
-        const tag = child.tagName.toLowerCase();
-        if (!allowedTags.has(tag)) {
-          // Replace with its text content
-          const txt = document.createTextNode(child.textContent);
-          node.replaceChild(txt, child);
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    
+    function walk(node, target) {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 3) { // text node
+          target.appendChild(document.createTextNode(child.textContent));
           continue;
         }
-        // Strip dangerous attributes
-        for (const attr of [...child.attributes]) {
-          if (!allowedAttrs.has(attr.name.toLowerCase()) || attr.name.toLowerCase().startsWith('on')) {
-            child.removeAttribute(attr.name);
+        if (child.nodeType !== 1) continue;
+        const tag = child.tagName.toLowerCase();
+        
+        // Completely skip dangerous elements
+        if (dangerousTags.has(tag)) continue;
+        
+        // If not in allowed list, unwrap (keep children but not the tag)
+        if (!allowedTags.has(tag)) {
+          walk(child, target);
+          continue;
+        }
+        
+        const el = document.createElement(tag);
+        
+        // Copy allowed attributes with sanitization
+        for (const attr of Array.from(child.attributes)) {
+          const name = attr.name.toLowerCase();
+          // Skip event handlers
+          if (name.startsWith('on')) continue;
+          if (!allowedAttrs.has(name)) continue;
+          
+          if (name === 'href') {
+            const url = sanitizeUrl(attr.value);
+            // Block data: and javascript: URLs
+            if (url && !url.toLowerCase().startsWith('data:') && !url.toLowerCase().startsWith('javascript:')) {
+              el.setAttribute(name, url);
+            }
+          } else if (name === 'style') {
+            // Comprehensive CSS XSS sanitization
+            const cleanStyle = attr.value
+              .replace(/expression\s*\(/gi, '')
+              .replace(/javascript\s*:/gi, '')
+              .replace(/vbscript\s*:/gi, '')
+              .replace(/-moz-binding\s*:/gi, '')
+              .replace(/behavior\s*:/gi, '')
+              .replace(/url\s*\([^)]*\)/gi, '')  // Remove all url() to prevent data: exploits
+              .replace(/\\[0-9a-f]{1,6}/gi, ''); // Remove unicode escapes that could spell javascript
+            el.setAttribute(name, cleanStyle);
+          } else {
+            el.setAttribute(name, attr.value);
           }
         }
-        // Strip javascript: from style
-        if (child.getAttribute('style')) {
-          child.setAttribute('style',
-            child.getAttribute('style').replace(/expression\s*\(/gi, '').replace(/javascript\s*:/gi, '')
-          );
-        }
-        walk(child);
+        
+        walk(child, el);
+        target.appendChild(el);
       }
     }
 
-    walk(tmp);
-    container.innerHTML = tmp.innerHTML;
+    if (doc.body) walk(doc.body, container);
   }
 
   _fmtSize(n) {
@@ -25254,7 +25357,9 @@ class ImageRenderer {
 
     // Banner
     const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
-    banner.innerHTML = `<strong>Image Preview</strong> — ${ext.toUpperCase()} image (${this._fmtBytes(bytes.length)})`;
+    const bannerStrong = document.createElement('strong'); bannerStrong.textContent = 'Image Preview';
+    banner.appendChild(bannerStrong);
+    banner.appendChild(document.createTextNode(` — ${ext.toUpperCase()} image (${this._fmtBytes(bytes.length)})`));
     wrap.appendChild(banner);
 
     // Image element
@@ -25272,10 +25377,14 @@ class ImageRenderer {
     infoDiv.textContent = `Loading image…`;
     img.addEventListener('load', () => {
       infoDiv.textContent = `${img.naturalWidth} × ${img.naturalHeight} px  ·  ${ext.toUpperCase()}  ·  ${this._fmtBytes(bytes.length)}`;
+      // Revoke blob URL after image is loaded to free memory
+      URL.revokeObjectURL(blobUrl);
     });
     img.addEventListener('error', () => {
       infoDiv.textContent = `Failed to render image — file may be corrupted or unsupported format`;
       infoDiv.style.color = '#f88';
+      // Revoke blob URL on error to free memory
+      URL.revokeObjectURL(blobUrl);
     });
 
     imgWrap.appendChild(img);
@@ -26296,6 +26405,42 @@ function _unwrapSafeLink(url) {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
+// Defanged URL/IP/email refanging — converts security-defanged IOCs to normal
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Refang a defanged URL, IP, domain, or email address.
+ * Common defang patterns: hxxp → http, [.] → ., [@] → @, [://] → ://
+ * @param {string} str - Potentially defanged string.
+ * @returns {object|null} - { original, refanged } or null if not defanged.
+ */
+function _refangString(str) {
+  if (!str || typeof str !== 'string') return null;
+
+  let refanged = str;
+  let changed = false;
+
+  // Protocol: hxxp → http, hxxps → https (case-insensitive)
+  refanged = refanged.replace(/\bhxxps?/gi, m => {
+    changed = true;
+    return m.toLowerCase().replace('xx', 'tt');
+  });
+
+  // Protocol separator variants: [://], [:], [:/], etc. → ://
+  refanged = refanged.replace(/\[:\/\/\]/g, () => { changed = true; return '://'; });
+  refanged = refanged.replace(/\[:\/\]/g, () => { changed = true; return '://'; });
+  refanged = refanged.replace(/\[:\]/g, () => { changed = true; return ':'; });
+
+  // Dots: [.] → .
+  refanged = refanged.replace(/\[\.\]/g, () => { changed = true; return '.'; });
+
+  // At symbol: [@] → @
+  refanged = refanged.replace(/\[@\]/g, () => { changed = true; return '@'; });
+
+  return changed ? { original: str, refanged } : null;
+}
+
+// ════════════════════════════════════════════════════════════════════════════
 // App — file loading, hashing, interesting-string extraction
 // ════════════════════════════════════════════════════════════════════════════
 Object.assign(App.prototype, {
@@ -27135,6 +27280,81 @@ Object.assign(App.prototype, {
     }
     for (const m of full.matchAll(/\\\\[\w.\-]{2,}(?:\\[\w.\-]{1,})+/g)) {
       add(IOC.UNC_PATH, m[0], 'medium', null, { offset: m.index, length: m[0].length });
+    }
+
+    // ── Defanged IOC extraction ──────────────────────────────────────────────
+    // Detect defanged URLs (hxxp[s][://]...[.]...), IPs (1[.]2[.]3[.]4), and emails (user[@]domain[.]com)
+    // Refang them and add to IOCs with source highlighting pointing to the defanged original
+
+    // Defanged URLs: hxxp/hxxps with optional [://] and [.] in domain
+    // Pattern matches: hxxps[://]www[.]example[.]com/path or hxxp://example[.]com
+    const defangedUrlRe = /\bhxxps?(?:\[:\/?\/?\]|:\/\/)[^\s"'<>]{4,}/gi;
+    for (const m of full.matchAll(defangedUrlRe)) {
+      const result = _refangString(m[0]);
+      if (result && result.refanged.match(/^https?:\/\//i)) {
+        // Clean trailing punctuation from refanged URL
+        const cleaned = result.refanged.replace(/[.,;:!?)\]>]+$/, '');
+        if (!seen.has(cleaned) && cleaned.length >= 10) {
+          add(IOC.URL, cleaned, 'medium', 'Refanged', {
+            offset: m.index,
+            length: m[0].length,
+            highlightText: m[0]
+          });
+        }
+      }
+    }
+
+    // Defanged domains/URLs with [.] but no hxxp prefix (e.g., www[.]evil[.]com or evil[.]com/path)
+    // Must have at least one [.] to be considered defanged
+    const defangedDomainRe = /\b[\w\-]+(?:\[\.\][\w\-]+)+(?:\/[^\s"'<>]*)?\b/g;
+    for (const m of full.matchAll(defangedDomainRe)) {
+      const result = _refangString(m[0]);
+      if (result) {
+        const cleaned = result.refanged.replace(/[.,;:!?)\]>]+$/, '');
+        // Check if it looks like a valid domain (has at least one dot and a TLD-like ending)
+        if (!seen.has(cleaned) && /^[\w\-]+\.[\w\-]+/.test(cleaned) && cleaned.length >= 4) {
+          add(IOC.URL, cleaned, 'medium', 'Refanged domain', {
+            offset: m.index,
+            length: m[0].length,
+            highlightText: m[0]
+          });
+        }
+      }
+    }
+
+    // Defanged IPs: 192[.]168[.]1[.]1
+    const defangedIpRe = /\b\d{1,3}\[\.\]\d{1,3}\[\.\]\d{1,3}\[\.\]\d{1,3}\b/g;
+    for (const m of full.matchAll(defangedIpRe)) {
+      const result = _refangString(m[0]);
+      if (result) {
+        const parts = result.refanged.split('.').map(Number);
+        if (parts.length === 4 && parts.every(p => p >= 0 && p <= 255) && !result.refanged.startsWith('0.')) {
+          if (!seen.has(result.refanged)) {
+            add(IOC.IP, result.refanged, 'medium', 'Refanged', {
+              offset: m.index,
+              length: m[0].length,
+              highlightText: m[0]
+            });
+          }
+        }
+      }
+    }
+
+    // Defanged emails: user[@]domain[.]com
+    const defangedEmailRe = /\b[a-zA-Z0-9._%+\-]+\[@\][a-zA-Z0-9.\-\[\]]+\b/g;
+    for (const m of full.matchAll(defangedEmailRe)) {
+      const result = _refangString(m[0]);
+      if (result) {
+        const cleaned = result.refanged.replace(/[.,;:!?)\]>]+$/, '');
+        // Validate it looks like an email after refanging
+        if (!seen.has(cleaned) && /^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$/.test(cleaned)) {
+          add(IOC.EMAIL, cleaned, 'medium', 'Refanged', {
+            offset: m.index,
+            length: m[0].length,
+            highlightText: m[0]
+          });
+        }
+      }
     }
 
     // VBA-specific URL scan with higher severity (also check for SafeLinks)
