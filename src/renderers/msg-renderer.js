@@ -32,27 +32,20 @@ class MsgRenderer {
       }
       page.appendChild(tbl);
     }
-    const hr = document.createElement('hr'); hr.style.cssText = 'margin:16px 0;border:none;border-top:1px solid #ddd;'; page.appendChild(hr);
 
-    // Body
-    if (msg.bodyHtml) { const d = document.createElement('div'); d.className = 'msg-body-html'; this._sanitize(msg.bodyHtml, d); page.appendChild(d); }
-    else if (msg.body) { const d = document.createElement('div'); d.style.cssText = 'white-space:pre-wrap;font-size:10pt;line-height:1.5;'; d.textContent = msg.body; page.appendChild(d); }
-    else { const p = document.createElement('p'); p.style.cssText = 'color:#888;font-style:italic;'; p.textContent = '(No message body)'; page.appendChild(p); }
-
-    // Attachments — Extracted Files table
+    // Attachments — Extracted Files table (shown at top for easy access)
     if (msg.attachments.length) {
-      const hr2 = document.createElement('hr'); hr2.style.cssText = 'margin:16px 0;border:none;border-top:1px solid #ddd;'; page.appendChild(hr2);
       const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
       banner.innerHTML = `<strong>Attachments (${msg.attachments.length})</strong> — click any file to open it for analysis.`;
       page.appendChild(banner);
 
-      const tbl = document.createElement('table'); tbl.className = 'zip-table';
+      const attTbl = document.createElement('table'); attTbl.className = 'zip-table';
       const thead = document.createElement('thead');
-      const hr3 = document.createElement('tr');
+      const headerRow = document.createElement('tr');
       for (const h of ['', 'Filename', 'Size', '']) {
-        const th = document.createElement('th'); th.textContent = h; hr3.appendChild(th);
+        const th = document.createElement('th'); th.textContent = h; headerRow.appendChild(th);
       }
-      thead.appendChild(hr3); tbl.appendChild(thead);
+      thead.appendChild(headerRow); attTbl.appendChild(thead);
 
       const tbody = document.createElement('tbody');
       for (const a of msg.attachments) {
@@ -108,8 +101,16 @@ class MsgRenderer {
 
         tbody.appendChild(tr);
       }
-      tbl.appendChild(tbody); page.appendChild(tbl);
+      attTbl.appendChild(tbody); page.appendChild(attTbl);
     }
+
+    const hr = document.createElement('hr'); hr.style.cssText = 'margin:16px 0;border:none;border-top:1px solid #ddd;'; page.appendChild(hr);
+
+    // Body
+    if (msg.bodyHtml) { const d = document.createElement('div'); d.className = 'msg-body-html'; this._sanitize(msg.bodyHtml, d); page.appendChild(d); }
+    else if (msg.body) { const d = document.createElement('div'); d.style.cssText = 'white-space:pre-wrap;font-size:10pt;line-height:1.5;'; d.textContent = msg.body; page.appendChild(d); }
+    else { const p = document.createElement('p'); p.style.cssText = 'color:#888;font-style:italic;'; p.textContent = '(No message body)'; page.appendChild(p); }
+
     wrap.appendChild(page); return wrap;
   }
 

@@ -6263,7 +6263,7 @@ relevance:0}),e.C_NUMBER_MODE]}}})();hljs.registerLanguage("vbscript",e)})();
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
-const GLOVEBOX_VERSION = '20260414.1254';
+const GLOVEBOX_VERSION = '20260414.1302';
 const DEFAULT_YARA_RULES = `// ─── Default YARA Rules ───────────────────────────────────
 // Edit or replace these rules, then click "Run Scan"
 // Supports: text strings, hex strings {AA BB}, regex /pattern/
@@ -23477,27 +23477,20 @@ class MsgRenderer {
       }
       page.appendChild(tbl);
     }
-    const hr = document.createElement('hr'); hr.style.cssText = 'margin:16px 0;border:none;border-top:1px solid #ddd;'; page.appendChild(hr);
 
-    // Body
-    if (msg.bodyHtml) { const d = document.createElement('div'); d.className = 'msg-body-html'; this._sanitize(msg.bodyHtml, d); page.appendChild(d); }
-    else if (msg.body) { const d = document.createElement('div'); d.style.cssText = 'white-space:pre-wrap;font-size:10pt;line-height:1.5;'; d.textContent = msg.body; page.appendChild(d); }
-    else { const p = document.createElement('p'); p.style.cssText = 'color:#888;font-style:italic;'; p.textContent = '(No message body)'; page.appendChild(p); }
-
-    // Attachments — Extracted Files table
+    // Attachments — Extracted Files table (shown at top for easy access)
     if (msg.attachments.length) {
-      const hr2 = document.createElement('hr'); hr2.style.cssText = 'margin:16px 0;border:none;border-top:1px solid #ddd;'; page.appendChild(hr2);
       const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
       banner.innerHTML = `<strong>Attachments (${msg.attachments.length})</strong> — click any file to open it for analysis.`;
       page.appendChild(banner);
 
-      const tbl = document.createElement('table'); tbl.className = 'zip-table';
+      const attTbl = document.createElement('table'); attTbl.className = 'zip-table';
       const thead = document.createElement('thead');
-      const hr3 = document.createElement('tr');
+      const headerRow = document.createElement('tr');
       for (const h of ['', 'Filename', 'Size', '']) {
-        const th = document.createElement('th'); th.textContent = h; hr3.appendChild(th);
+        const th = document.createElement('th'); th.textContent = h; headerRow.appendChild(th);
       }
-      thead.appendChild(hr3); tbl.appendChild(thead);
+      thead.appendChild(headerRow); attTbl.appendChild(thead);
 
       const tbody = document.createElement('tbody');
       for (const a of msg.attachments) {
@@ -23553,8 +23546,16 @@ class MsgRenderer {
 
         tbody.appendChild(tr);
       }
-      tbl.appendChild(tbody); page.appendChild(tbl);
+      attTbl.appendChild(tbody); page.appendChild(attTbl);
     }
+
+    const hr = document.createElement('hr'); hr.style.cssText = 'margin:16px 0;border:none;border-top:1px solid #ddd;'; page.appendChild(hr);
+
+    // Body
+    if (msg.bodyHtml) { const d = document.createElement('div'); d.className = 'msg-body-html'; this._sanitize(msg.bodyHtml, d); page.appendChild(d); }
+    else if (msg.body) { const d = document.createElement('div'); d.style.cssText = 'white-space:pre-wrap;font-size:10pt;line-height:1.5;'; d.textContent = msg.body; page.appendChild(d); }
+    else { const p = document.createElement('p'); p.style.cssText = 'color:#888;font-style:italic;'; p.textContent = '(No message body)'; page.appendChild(p); }
+
     wrap.appendChild(page); return wrap;
   }
 
@@ -23728,45 +23729,19 @@ class EmlRenderer {
       }
       wrap.appendChild(tbl);
 
-      // Subject line
-      if (email.subject) {
-        const subj = document.createElement('div');
-        subj.className = 'msg-subject';
-        subj.textContent = email.subject;
-        wrap.appendChild(subj);
-      }
-
-      // Auth results
-      if (email.authResults) {
-        const ad = document.createElement('div');
-        ad.className = 'eml-auth-results';
-        ad.textContent = '🔐 ' + email.authResults;
-        wrap.appendChild(ad);
-      }
-
-      // Body
-      const bodyFrame = document.createElement('div');
-      bodyFrame.className = 'msg-body-frame';
-      if (email.bodyHtml) {
-        this._sanitize(email.bodyHtml, bodyFrame);
-      } else {
-        bodyFrame.textContent = email.bodyText || '(no body content)';
-      }
-      wrap.appendChild(bodyFrame);
-
-      // Attachments — Extracted Files table
+      // Attachments — Extracted Files table (shown at top for easy access)
       if (email.attachments.length) {
         const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
         banner.innerHTML = `<strong>Attachments (${email.attachments.length})</strong> — click any file to open it for analysis.`;
         wrap.appendChild(banner);
 
-        const tbl = document.createElement('table'); tbl.className = 'zip-table';
+        const attTbl = document.createElement('table'); attTbl.className = 'zip-table';
         const thead = document.createElement('thead');
         const hr = document.createElement('tr');
         for (const h of ['', 'Filename', 'Size', '']) {
           const th = document.createElement('th'); th.textContent = h; hr.appendChild(th);
         }
-        thead.appendChild(hr); tbl.appendChild(thead);
+        thead.appendChild(hr); attTbl.appendChild(thead);
 
         const tbody = document.createElement('tbody');
         for (const att of email.attachments) {
@@ -23822,8 +23797,34 @@ class EmlRenderer {
 
           tbody.appendChild(tr);
         }
-        tbl.appendChild(tbody); wrap.appendChild(tbl);
+        attTbl.appendChild(tbody); wrap.appendChild(attTbl);
       }
+
+      // Subject line
+      if (email.subject) {
+        const subj = document.createElement('div');
+        subj.className = 'msg-subject';
+        subj.textContent = email.subject;
+        wrap.appendChild(subj);
+      }
+
+      // Auth results
+      if (email.authResults) {
+        const ad = document.createElement('div');
+        ad.className = 'eml-auth-results';
+        ad.textContent = '🔐 ' + email.authResults;
+        wrap.appendChild(ad);
+      }
+
+      // Body
+      const bodyFrame = document.createElement('div');
+      bodyFrame.className = 'msg-body-frame';
+      if (email.bodyHtml) {
+        this._sanitize(email.bodyHtml, bodyFrame);
+      } else {
+        bodyFrame.textContent = email.bodyText || '(no body content)';
+      }
+      wrap.appendChild(bodyFrame);
 
     } catch (e) {
       const eb = document.createElement('div');
@@ -26368,10 +26369,26 @@ Object.assign(App.prototype, {
         const r = new MsgRenderer();
         this.findings = r.analyzeForSecurity(buffer);
         docEl = r.render(buffer);
+        // Listen for inner-file open events from MSG attachments
+        docEl.addEventListener('open-inner-file', (e) => {
+          const innerFile = e.detail;
+          if (innerFile) {
+            this._pushNavState(file.name);
+            this._loadFile(innerFile);
+          }
+        });
       } else if (ext === 'eml') {
         const r = new EmlRenderer();
         this.findings = r.analyzeForSecurity(buffer);
         docEl = r.render(buffer);
+        // Listen for inner-file open events from EML attachments
+        docEl.addEventListener('open-inner-file', (e) => {
+          const innerFile = e.detail;
+          if (innerFile) {
+            this._pushNavState(file.name);
+            this._loadFile(innerFile);
+          }
+        });
       } else if (ext === 'lnk') {
         const r = new LnkRenderer();
         this.findings = r.analyzeForSecurity(buffer);
@@ -26507,6 +26524,14 @@ Object.assign(App.prototype, {
             const r = new MsgRenderer();
             this.findings = r.analyzeForSecurity(buffer);
             docEl = r.render(buffer);
+            // Listen for inner-file open events from MSG attachments
+            docEl.addEventListener('open-inner-file', (e) => {
+              const innerFile = e.detail;
+              if (innerFile) {
+                this._pushNavState(file.name);
+                this._loadFile(innerFile);
+              }
+            });
           } else if (oleType === 'msi') {
             const r = new MsiRenderer();
             this.findings = r.analyzeForSecurity(buffer, file.name);
@@ -26517,6 +26542,14 @@ Object.assign(App.prototype, {
               const r = new MsgRenderer();
               this.findings = r.analyzeForSecurity(buffer);
               docEl = r.render(buffer);
+              // Listen for inner-file open events from MSG attachments
+              docEl.addEventListener('open-inner-file', (e) => {
+                const innerFile = e.detail;
+                if (innerFile) {
+                  this._pushNavState(file.name);
+                  this._loadFile(innerFile);
+                }
+              });
             } catch (e) {
               try {
                 const r = new DocBinaryRenderer();
@@ -26553,6 +26586,14 @@ Object.assign(App.prototype, {
           const r = new EmlRenderer();
           this.findings = r.analyzeForSecurity(buffer);
           docEl = r.render(buffer);
+          // Listen for inner-file open events from EML attachments
+          docEl.addEventListener('open-inner-file', (e) => {
+            const innerFile = e.detail;
+            if (innerFile) {
+              this._pushNavState(file.name);
+              this._loadFile(innerFile);
+            }
+          });
         } else if (detectedType === 'url') {
           const r = new UrlShortcutRenderer();
           this.findings = r.analyzeForSecurity(buffer, file.name);

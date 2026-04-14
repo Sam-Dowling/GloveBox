@@ -115,10 +115,26 @@ Object.assign(App.prototype, {
         const r = new MsgRenderer();
         this.findings = r.analyzeForSecurity(buffer);
         docEl = r.render(buffer);
+        // Listen for inner-file open events from MSG attachments
+        docEl.addEventListener('open-inner-file', (e) => {
+          const innerFile = e.detail;
+          if (innerFile) {
+            this._pushNavState(file.name);
+            this._loadFile(innerFile);
+          }
+        });
       } else if (ext === 'eml') {
         const r = new EmlRenderer();
         this.findings = r.analyzeForSecurity(buffer);
         docEl = r.render(buffer);
+        // Listen for inner-file open events from EML attachments
+        docEl.addEventListener('open-inner-file', (e) => {
+          const innerFile = e.detail;
+          if (innerFile) {
+            this._pushNavState(file.name);
+            this._loadFile(innerFile);
+          }
+        });
       } else if (ext === 'lnk') {
         const r = new LnkRenderer();
         this.findings = r.analyzeForSecurity(buffer);
@@ -254,6 +270,14 @@ Object.assign(App.prototype, {
             const r = new MsgRenderer();
             this.findings = r.analyzeForSecurity(buffer);
             docEl = r.render(buffer);
+            // Listen for inner-file open events from MSG attachments
+            docEl.addEventListener('open-inner-file', (e) => {
+              const innerFile = e.detail;
+              if (innerFile) {
+                this._pushNavState(file.name);
+                this._loadFile(innerFile);
+              }
+            });
           } else if (oleType === 'msi') {
             const r = new MsiRenderer();
             this.findings = r.analyzeForSecurity(buffer, file.name);
@@ -264,6 +288,14 @@ Object.assign(App.prototype, {
               const r = new MsgRenderer();
               this.findings = r.analyzeForSecurity(buffer);
               docEl = r.render(buffer);
+              // Listen for inner-file open events from MSG attachments
+              docEl.addEventListener('open-inner-file', (e) => {
+                const innerFile = e.detail;
+                if (innerFile) {
+                  this._pushNavState(file.name);
+                  this._loadFile(innerFile);
+                }
+              });
             } catch (e) {
               try {
                 const r = new DocBinaryRenderer();
@@ -300,6 +332,14 @@ Object.assign(App.prototype, {
           const r = new EmlRenderer();
           this.findings = r.analyzeForSecurity(buffer);
           docEl = r.render(buffer);
+          // Listen for inner-file open events from EML attachments
+          docEl.addEventListener('open-inner-file', (e) => {
+            const innerFile = e.detail;
+            if (innerFile) {
+              this._pushNavState(file.name);
+              this._loadFile(innerFile);
+            }
+          });
         } else if (detectedType === 'url') {
           const r = new UrlShortcutRenderer();
           this.findings = r.analyzeForSecurity(buffer, file.name);

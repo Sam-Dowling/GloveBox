@@ -42,45 +42,19 @@ class EmlRenderer {
       }
       wrap.appendChild(tbl);
 
-      // Subject line
-      if (email.subject) {
-        const subj = document.createElement('div');
-        subj.className = 'msg-subject';
-        subj.textContent = email.subject;
-        wrap.appendChild(subj);
-      }
-
-      // Auth results
-      if (email.authResults) {
-        const ad = document.createElement('div');
-        ad.className = 'eml-auth-results';
-        ad.textContent = '🔐 ' + email.authResults;
-        wrap.appendChild(ad);
-      }
-
-      // Body
-      const bodyFrame = document.createElement('div');
-      bodyFrame.className = 'msg-body-frame';
-      if (email.bodyHtml) {
-        this._sanitize(email.bodyHtml, bodyFrame);
-      } else {
-        bodyFrame.textContent = email.bodyText || '(no body content)';
-      }
-      wrap.appendChild(bodyFrame);
-
-      // Attachments — Extracted Files table
+      // Attachments — Extracted Files table (shown at top for easy access)
       if (email.attachments.length) {
         const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
         banner.innerHTML = `<strong>Attachments (${email.attachments.length})</strong> — click any file to open it for analysis.`;
         wrap.appendChild(banner);
 
-        const tbl = document.createElement('table'); tbl.className = 'zip-table';
+        const attTbl = document.createElement('table'); attTbl.className = 'zip-table';
         const thead = document.createElement('thead');
         const hr = document.createElement('tr');
         for (const h of ['', 'Filename', 'Size', '']) {
           const th = document.createElement('th'); th.textContent = h; hr.appendChild(th);
         }
-        thead.appendChild(hr); tbl.appendChild(thead);
+        thead.appendChild(hr); attTbl.appendChild(thead);
 
         const tbody = document.createElement('tbody');
         for (const att of email.attachments) {
@@ -136,8 +110,34 @@ class EmlRenderer {
 
           tbody.appendChild(tr);
         }
-        tbl.appendChild(tbody); wrap.appendChild(tbl);
+        attTbl.appendChild(tbody); wrap.appendChild(attTbl);
       }
+
+      // Subject line
+      if (email.subject) {
+        const subj = document.createElement('div');
+        subj.className = 'msg-subject';
+        subj.textContent = email.subject;
+        wrap.appendChild(subj);
+      }
+
+      // Auth results
+      if (email.authResults) {
+        const ad = document.createElement('div');
+        ad.className = 'eml-auth-results';
+        ad.textContent = '🔐 ' + email.authResults;
+        wrap.appendChild(ad);
+      }
+
+      // Body
+      const bodyFrame = document.createElement('div');
+      bodyFrame.className = 'msg-body-frame';
+      if (email.bodyHtml) {
+        this._sanitize(email.bodyHtml, bodyFrame);
+      } else {
+        bodyFrame.textContent = email.bodyText || '(no body content)';
+      }
+      wrap.appendChild(bodyFrame);
 
     } catch (e) {
       const eb = document.createElement('div');
