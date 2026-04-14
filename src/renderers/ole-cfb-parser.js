@@ -1,7 +1,7 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
 // ole-cfb-parser.js — OLE Compound File Binary (CFB) parser
-// Used by: DocBinaryRenderer (.doc), MsgRenderer (.msg)
+// Used by: DocBinaryRenderer (.doc), MsgRenderer (.msg), MsiRenderer (.msi)
 // No external dependencies.
 // ════════════════════════════════════════════════════════════════════════════
 class OleCfbParser {
@@ -12,6 +12,7 @@ class OleCfbParser {
     this.buf = new Uint8Array(ab);
     this.dv = new DataView(ab);
     this.streams = new Map();
+    this.streamMeta = new Map(); // Metadata-only: {size, start, isMini} without loading content
   }
 
   parse() {
@@ -30,6 +31,50 @@ class OleCfbParser {
     return this;
   }
 
+  /**
+   * Lightweight parse that only extracts stream metadata (name, size) without
+   * loading stream content into memory. Used by MsiRenderer for large files.
+   * Populates this.streamMeta instead of this.streams.
+   */
+  parseMetadataOnly() {
+    const M = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+    for (let i = 0; i < 8; i++) if (this.buf[i] !== M[i]) throw new Error('Not an OLE Compound File');
+    this._ss = 1 << this.dv.getUint16(0x1E, true);
+    this._ms = 1 << this.dv.getUint16(0x20, true);
+    this._cut = this.dv.getUint32(0x38, true);
+    this._fat = this._buildFAT(this.dv.getUint32(0x2C, true));
+    this._mfat = this._buildMFAT(this.dv.getUint32(0x3C, true), this.dv.getUint32(0x40, true));
+    this._dir = this._readDir(this.dv.getUint32(0x30, true));
+    if (!this._dir.length) throw new Error('OLE: empty directory');
+    const root = this._dir[0];
+    // Store root info for potential mini-stream loading later
+    this._rootStart = root.start;
+    this._rootSize = root.size;
+    // Walk directory but only collect metadata
+    if (root.child < 0xFFFFFFF0) this._walkMetaOnly(root.child, '', 0);
+    return this;
+  }
+
+  /**
+   * Load a specific stream by name (on-demand loading for metadata-only parse).
+   * @param {string} name - Stream name (lowercase)
+   * @returns {Uint8Array|null} - Stream content or null if not found
+   */
+  getStream(name) {
+    // If already loaded via full parse, return from cache
+    if (this.streams.has(name)) return this.streams.get(name);
+    // If metadata-only parse, load on demand
+    const meta = this.streamMeta.get(name);
+    if (!meta) return null;
+    // Ensure mini-stream is loaded if needed
+    if (meta.isMini && !this._mini) {
+      this._mini = this._chain(this._rootStart, this._rootSize, false);
+    }
+    const data = this._chain(meta.start, meta.size, meta.isMini);
+    this.streams.set(name, data); // Cache for future access
+    return data;
+  }
+
   _walk(idx, prefix, depth) {
     if (depth > 64 || idx >= 0xFFFFFFF0 || idx >= this._dir.length) return;
     const e = this._dir[idx]; if (!e || e.type === 0) return;
@@ -41,6 +86,20 @@ class OleCfbParser {
     if (e.type !== 2 && e.child < 0xFFFFFFF0) this._walk(e.child, e.type === 5 ? '' : path, depth + 1);
     if (e.lsib < 0xFFFFFFF0) this._walk(e.lsib, prefix, depth + 1);
     if (e.rsib < 0xFFFFFFF0) this._walk(e.rsib, prefix, depth + 1);
+  }
+
+  _walkMetaOnly(idx, prefix, depth) {
+    if (depth > 64 || idx >= 0xFFFFFFF0 || idx >= this._dir.length) return;
+    const e = this._dir[idx]; if (!e || e.type === 0) return;
+    const path = prefix ? prefix + '/' + e.name : e.name;
+    if (e.type === 2) {
+      const isMini = e.size > 0 && e.size < this._cut && e.start < 0xFFFFFFF0;
+      // Store only metadata, don't load content
+      this.streamMeta.set(path.toLowerCase(), { size: e.size, start: e.start, isMini });
+    }
+    if (e.type !== 2 && e.child < 0xFFFFFFF0) this._walkMetaOnly(e.child, e.type === 5 ? '' : path, depth + 1);
+    if (e.lsib < 0xFFFFFFF0) this._walkMetaOnly(e.lsib, prefix, depth + 1);
+    if (e.rsib < 0xFFFFFFF0) this._walkMetaOnly(e.rsib, prefix, depth + 1);
   }
 
   _so(sec) { return 512 + sec * this._ss; }

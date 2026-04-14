@@ -1,10 +1,13 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
-// msi-renderer.js — Windows Installer (.msi) analysis
-// Uses OleCfbParser to read the OLE compound file structure, lists streams,
-// extracts summary information, and flags suspicious content.
+// msi-renderer.js — Windows Installer (.msi) analysis (lightweight)
+// Uses OleCfbParser in metadata-only mode to avoid loading large stream content.
+// Extracts: Summary Information, MSI table names, stream listing (name+size).
 // Depends on: ole-cfb-parser.js, constants.js (IOC, escHtml)
 // ════════════════════════════════════════════════════════════════════════════
+
+const MSI_SIZE_LIMIT = 50 * 1024 * 1024; // 50MB - show simplified view above this
+
 class MsiRenderer {
 
   render(buffer, fileName) {
@@ -13,8 +16,13 @@ class MsiRenderer {
 
     // Banner
     const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
-    banner.innerHTML = '<strong>⚠ Windows Installer Package (.msi)</strong> — MSI files execute with elevated privileges during installation. They can run custom actions (scripts, executables), modify the registry, install services, and alter system files.';
+    banner.innerHTML = '<strong>Windows Installer Package (.msi)</strong> — MSI files execute with elevated privileges during installation. They can run custom actions (scripts, executables), modify the registry, install services, and alter system files.';
     wrap.appendChild(banner);
+
+    // Check for large files
+    if (bytes.length > MSI_SIZE_LIMIT) {
+      return this._renderLargeFileView(wrap, bytes, fileName);
+    }
 
     let analysis;
     try {
@@ -26,7 +34,7 @@ class MsiRenderer {
       return wrap;
     }
 
-    // Summary info
+    // Summary info line
     const infoDiv = document.createElement('div'); infoDiv.className = 'plaintext-info';
     infoDiv.textContent = `${analysis.streams.length} stream(s)  ·  ${this._fmtBytes(bytes.length)}  ·  Windows Installer Package`;
     wrap.appendChild(infoDiv);
@@ -37,7 +45,7 @@ class MsiRenderer {
       for (const w of analysis.warnings) {
         const d = document.createElement('div');
         d.className = `zip-warning zip-warning-${w.sev}`;
-        d.textContent = `⚠ ${w.label}`;
+        d.textContent = `${w.sev === 'critical' ? '🚨' : '⚠'} ${w.label}`;
         warnDiv.appendChild(d);
       }
       wrap.appendChild(warnDiv);
@@ -78,10 +86,10 @@ class MsiRenderer {
       tblDiv.appendChild(chips); wrap.appendChild(tblDiv);
     }
 
-    // Custom Actions
+    // Custom Actions / Security Warnings
     if (analysis.customActions.length) {
       const caH = document.createElement('div'); caH.className = 'hta-section-hdr';
-      caH.textContent = `Custom Actions (${analysis.customActions.length})`;
+      caH.textContent = `Security Concerns (${analysis.customActions.length})`;
       wrap.appendChild(caH);
 
       const caDiv = document.createElement('div'); caDiv.style.cssText = 'padding:0 8px;';
@@ -94,7 +102,7 @@ class MsiRenderer {
       wrap.appendChild(caDiv);
     }
 
-    // OLE Streams
+    // OLE Streams (name + size only)
     if (analysis.streams.length) {
       const stH = document.createElement('div'); stH.className = 'hta-section-hdr';
       stH.textContent = `OLE Streams (${analysis.streams.length})`;
@@ -103,7 +111,7 @@ class MsiRenderer {
       const stTbl = document.createElement('table'); stTbl.className = 'lnk-info-table';
       // Header
       const hdr = document.createElement('tr');
-      for (const h of ['Stream Name', 'Size', 'Flags']) {
+      for (const h of ['Stream Name', 'Size']) {
         const th = document.createElement('td'); th.className = 'lnk-lbl';
         th.style.cssText = 'font-weight:bold;'; th.textContent = h;
         hdr.appendChild(th);
@@ -114,41 +122,85 @@ class MsiRenderer {
         const tr = document.createElement('tr');
         const tdN = document.createElement('td'); tdN.className = 'lnk-val';
         tdN.textContent = s.name;
-        tdN.style.cssText = `font-family:monospace;font-size:12px;${s.isSuspicious ? 'color:#f88;' : ''}`;
+        tdN.style.cssText = 'font-family:monospace;font-size:12px;';
         const tdS = document.createElement('td'); tdS.className = 'lnk-val';
         tdS.textContent = this._fmtBytes(s.size);
         tdS.style.cssText = 'min-width:80px;';
-        const tdF = document.createElement('td'); tdF.className = 'lnk-val';
-        tdF.textContent = s.flags.join(', ') || '—';
-        tdF.style.cssText = s.flags.length ? 'color:#f88;' : 'opacity:0.5;';
-        tr.appendChild(tdN); tr.appendChild(tdS); tr.appendChild(tdF);
+        tr.appendChild(tdN); tr.appendChild(tdS);
         stTbl.appendChild(tr);
       }
       wrap.appendChild(stTbl);
     }
 
-    // Embedded binary data preview (for large Binary streams)
-    if (analysis.embeddedBinaries.length) {
-      const ebH = document.createElement('div'); ebH.className = 'hta-section-hdr';
-      ebH.textContent = `Embedded Binaries (${analysis.embeddedBinaries.length})`;
-      wrap.appendChild(ebH);
+    return wrap;
+  }
 
-      for (const eb of analysis.embeddedBinaries) {
-        const d = document.createElement('div');
-        d.style.cssText = 'padding:4px 8px;margin:4px 0;';
-        const label = document.createElement('div');
-        label.style.cssText = 'font-family:monospace;font-size:12px;margin-bottom:4px;';
-        label.textContent = `${eb.name} — ${this._fmtBytes(eb.size)} — ${eb.magic}`;
-        label.style.cssText += eb.isPE ? 'color:#f44;font-weight:bold;' : '';
-        d.appendChild(label);
+  /**
+   * Render a simplified view for very large MSI files (>50MB)
+   */
+  _renderLargeFileView(wrap, bytes, fileName) {
+    const infoDiv = document.createElement('div'); infoDiv.className = 'plaintext-info';
+    infoDiv.textContent = `${this._fmtBytes(bytes.length)}  ·  Windows Installer Package  ·  Large file mode`;
+    wrap.appendChild(infoDiv);
 
-        // Hex preview of first 64 bytes
-        const pre = document.createElement('pre'); pre.className = 'rtf-raw-source';
-        pre.style.cssText += 'max-height:60px;overflow:auto;font-size:11px;';
-        pre.textContent = eb.hexPreview;
-        d.appendChild(pre);
-        wrap.appendChild(d);
+    const noteDiv = document.createElement('div');
+    noteDiv.className = 'zip-warning zip-warning-info';
+    noteDiv.style.cssText = 'margin:8px;';
+    noteDiv.textContent = 'Large MSI file — showing summary information only for performance.';
+    wrap.appendChild(noteDiv);
+
+    // Try to extract just the Summary Information
+    try {
+      const ole = new OleCfbParser(bytes.buffer).parseMetadataOnly();
+      const summaryInfo = this._extractSummaryInfoLazy(ole);
+
+      if (summaryInfo && Object.keys(summaryInfo).length) {
+        const siH = document.createElement('div'); siH.className = 'hta-section-hdr';
+        siH.textContent = 'Summary Information';
+        wrap.appendChild(siH);
+
+        const tbl = document.createElement('table'); tbl.className = 'lnk-info-table';
+        for (const [key, val] of Object.entries(summaryInfo)) {
+          const tr = document.createElement('tr');
+          const tdL = document.createElement('td'); tdL.className = 'lnk-lbl'; tdL.textContent = key;
+          const tdV = document.createElement('td'); tdV.className = 'lnk-val'; tdV.textContent = val;
+          tr.appendChild(tdL); tr.appendChild(tdV); tbl.appendChild(tr);
+        }
+        wrap.appendChild(tbl);
       }
+
+      // Show stream count and list table names only
+      const streamCount = ole.streamMeta.size;
+      const tables = [];
+      for (const [name] of ole.streamMeta) {
+        const tableName = this._decodeMsiTableName(name);
+        if (tableName) tables.push({ name: tableName, isSuspicious: this._isSuspiciousTable(tableName) });
+      }
+
+      if (streamCount > 0) {
+        const countDiv = document.createElement('div'); countDiv.className = 'plaintext-info';
+        countDiv.style.cssText = 'margin-top:8px;';
+        countDiv.textContent = `Contains ${streamCount} OLE stream(s), ${tables.length} MSI table(s)`;
+        wrap.appendChild(countDiv);
+      }
+
+      // Show suspicious tables if any
+      const suspicious = tables.filter(t => t.isSuspicious);
+      if (suspicious.length) {
+        const warnDiv = document.createElement('div'); warnDiv.className = 'zip-warnings';
+        for (const t of suspicious) {
+          const d = document.createElement('div');
+          d.className = 'zip-warning zip-warning-medium';
+          d.textContent = `⚠ Contains ${t.name} table`;
+          warnDiv.appendChild(d);
+        }
+        wrap.appendChild(warnDiv);
+      }
+
+    } catch (e) {
+      const err = document.createElement('div'); err.className = 'error-box';
+      err.textContent = `Could not extract metadata: ${e.message}`;
+      wrap.appendChild(err);
     }
 
     return wrap;
@@ -170,42 +222,72 @@ class MsiRenderer {
     });
 
     try {
-      const analysis = this._analyze(bytes);
+      // Use metadata-only parsing for security analysis too
+      const ole = new OleCfbParser(bytes.buffer).parseMetadataOnly();
 
-      // Summary info as metadata
-      f.metadata = analysis.summaryInfo;
+      // Extract summary info (loads one small stream)
+      const summaryInfo = this._extractSummaryInfoLazy(ole);
+      f.metadata = summaryInfo || {};
+
+      // Identify tables from stream names
+      const tables = [];
+      for (const [name] of ole.streamMeta) {
+        const tableName = this._decodeMsiTableName(name);
+        if (tableName) tables.push(tableName);
+      }
 
       f.externalRefs.push({
         type: IOC.PATTERN,
-        url: `${analysis.streams.length} OLE stream(s), ${analysis.tables.length} MSI table(s)`,
+        url: `${ole.streamMeta.size} OLE stream(s), ${tables.length} MSI table(s)`,
         severity: 'info'
       });
 
-      // Report warnings
-      for (const w of analysis.warnings) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: w.label, severity: w.sev });
-      }
+      // Check for dangerous tables
+      const hasCustomAction = tables.includes('CustomAction');
+      const hasBinary = tables.includes('Binary');
+      const hasServiceInstall = tables.includes('ServiceInstall');
+      const hasRegistry = tables.includes('Registry');
 
-      // Report custom actions
-      for (const ca of analysis.customActions) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: ca.label, severity: ca.sev });
-      }
-
-      // Escalate risk
-      const hasCustomActions = analysis.customActions.length > 0;
-      const hasEmbeddedPE = analysis.embeddedBinaries.some(b => b.isPE);
-      const highWarnings = analysis.warnings.filter(w => w.sev === 'high' || w.sev === 'critical').length;
-
-      if (hasEmbeddedPE) {
-        f.risk = 'critical';
+      if (hasCustomAction) {
         f.externalRefs.push({
           type: IOC.PATTERN,
-          url: `Embedded PE executable(s) detected in MSI binary streams`,
-          severity: 'critical'
+          url: 'CustomAction table present — installer can execute arbitrary code',
+          severity: 'high'
         });
-      } else if (hasCustomActions || highWarnings >= 2) {
         f.risk = 'high';
       }
+
+      if (hasBinary) {
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: 'Binary table present — contains embedded executables, DLLs, or scripts',
+          severity: 'medium'
+        });
+      }
+
+      if (hasServiceInstall) {
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: 'ServiceInstall table — MSI will install Windows service(s)',
+          severity: 'high'
+        });
+        if (f.risk !== 'critical') f.risk = 'high';
+      }
+
+      if (hasRegistry) {
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: 'Registry table — MSI modifies Windows registry',
+          severity: 'medium'
+        });
+      }
+
+      // Escalate to high if multiple concerning tables
+      const concernCount = [hasCustomAction, hasBinary, hasServiceInstall].filter(Boolean).length;
+      if (concernCount >= 2 && f.risk !== 'critical') {
+        f.risk = 'high';
+      }
+
     } catch (e) {
       f.externalRefs.push({
         type: IOC.PATTERN,
@@ -217,7 +299,7 @@ class MsiRenderer {
     return f;
   }
 
-  // ── MSI analysis ─────────────────────────────────────────────────────────
+  // ── MSI analysis (lightweight, metadata-only) ────────────────────────────
 
   _analyze(bytes) {
     const result = {
@@ -226,58 +308,18 @@ class MsiRenderer {
       summaryInfo: {},
       warnings: [],
       customActions: [],
-      embeddedBinaries: [],
     };
 
-    // Parse OLE structure
-    const ole = new OleCfbParser(bytes.buffer).parse();
+    // Parse OLE structure in metadata-only mode (no stream content loading)
+    const ole = new OleCfbParser(bytes.buffer).parseMetadataOnly();
 
-    // Enumerate streams
-    for (const [name, data] of ole.streams) {
-      const flags = [];
-      const ln = name.toLowerCase();
-      let isSuspicious = false;
-
-      // Detect PE headers in stream data
-      const isPE = data.length >= 2 && data[0] === 0x4D && data[1] === 0x5A;
-      if (isPE) { flags.push('PE executable'); isSuspicious = true; }
-
-      // Detect script content
-      if (data.length > 10) {
-        const head = this._peekString(data, 200);
-        if (/^\s*<script|^\s*function\s|^\s*sub\s|^\s*dim\s/i.test(head)) {
-          flags.push('Script content'); isSuspicious = true;
-        }
-        if (/powershell|cmd\.exe|wscript|cscript/i.test(head)) {
-          flags.push('Command execution'); isSuspicious = true;
-        }
-      }
-
-      // Large binary streams
-      if (data.length > 100000) flags.push('Large binary');
-
-      // Known suspicious stream name patterns
-      if (ln.includes('customaction') || ln.includes('binary')) {
-        isSuspicious = true;
-      }
-
-      result.streams.push({ name, size: data.length, flags, isSuspicious });
-
-      // Collect embedded binaries for detailed view
-      if ((isPE || data.length > 50000) && (ln.includes('binary') || isPE)) {
-        result.embeddedBinaries.push({
-          name,
-          size: data.length,
-          isPE,
-          magic: this._detectStreamMagic(data),
-          hexPreview: this._hexPreview(data, 64),
-        });
-      }
+    // Enumerate streams (metadata only - name and size)
+    for (const [name, meta] of ole.streamMeta) {
+      result.streams.push({ name, size: meta.size });
     }
 
     // Identify MSI database tables from stream names
-    // MSI encodes table names with a specific prefix pattern
-    for (const [name] of ole.streams) {
+    for (const [name] of ole.streamMeta) {
       const tableName = this._decodeMsiTableName(name);
       if (tableName) {
         const isSuspicious = this._isSuspiciousTable(tableName);
@@ -340,26 +382,8 @@ class MsiRenderer {
       });
     }
 
-    // Detect embedded PE files across all streams
-    const peStreams = result.streams.filter(s => s.flags.includes('PE executable'));
-    if (peStreams.length) {
-      result.warnings.push({
-        label: `${peStreams.length} stream(s) contain embedded PE executable(s): ${peStreams.map(s => s.name).join(', ')}`,
-        sev: 'critical'
-      });
-    }
-
-    // Detect script content
-    const scriptStreams = result.streams.filter(s => s.flags.includes('Script content'));
-    if (scriptStreams.length) {
-      result.warnings.push({
-        label: `${scriptStreams.length} stream(s) contain script content`,
-        sev: 'high'
-      });
-    }
-
-    // Extract Summary Information
-    this._extractSummaryInfo(ole, result);
+    // Extract Summary Information (loads one small stream on demand)
+    result.summaryInfo = this._extractSummaryInfoLazy(ole) || {};
 
     // Deduplicate warnings
     const seen = new Set();
@@ -372,12 +396,9 @@ class MsiRenderer {
   }
 
   // ── MSI table name decoding ──────────────────────────────────────────────
-  // MSI stores table/column names in OLE stream names with a specific encoding:
-  // Characters 0-9, A-Z, a-z, _, . are valid; encoded with a base-62 scheme.
-  // Stream names prefixed with special chars indicate system tables.
+  // MSI stores table/column names in OLE stream names with a specific encoding.
 
   _decodeMsiTableName(streamName) {
-    // MSI table streams have names that start with certain patterns
     // Skip known non-table streams
     const skip = [
       '\x05summaryinformation', '\x05documentsummaryinformation',
@@ -386,7 +407,7 @@ class MsiRenderer {
     if (skip.includes(streamName.toLowerCase())) return null;
     if (streamName.startsWith('\x05') || streamName.startsWith('\x01')) return null;
 
-    // Known MSI table names — if the stream name matches directly
+    // Known MSI table names
     const knownTables = [
       'ActionText', 'AdminExecuteSequence', 'AdminUISequence', 'AdvtExecuteSequence',
       'AdvtUISequence', 'AppId', 'AppSearch', 'BBControl', 'Billboard', 'Binary',
@@ -434,26 +455,30 @@ class MsiRenderer {
     return suspicious.includes(tableName);
   }
 
-  // ── Summary Information extraction ───────────────────────────────────────
+  // ── Summary Information extraction (lazy loading) ────────────────────────
 
-  _extractSummaryInfo(ole, result) {
-    // Try to read the \x05SummaryInformation stream
-    const siStream = ole.streams.get('\x05summaryinformation') || ole.streams.get('\u0005summaryinformation');
-    if (!siStream || siStream.length < 48) return;
+  _extractSummaryInfoLazy(ole) {
+    // Load Summary Information stream on demand
+    const siStream = ole.getStream('\x05summaryinformation') || ole.getStream('\u0005summaryinformation');
+    if (!siStream || siStream.length < 48) return null;
+
+    return this._parseSummaryInfo(siStream);
+  }
+
+  _parseSummaryInfo(siStream) {
+    const result = {};
 
     try {
       const dv = new DataView(siStream.buffer, siStream.byteOffset, siStream.byteLength);
 
       // Property Set Header
-      // Byte order, version, OS, CLSID, num property sets
       const numSets = dv.getUint32(24, true);
-      if (numSets < 1) return;
+      if (numSets < 1) return result;
 
       // First property set offset
       const setOffset = dv.getUint32(44, true);
-      if (setOffset >= siStream.length) return;
+      if (setOffset >= siStream.length) return result;
 
-      const setSize = dv.getUint32(setOffset, true);
       const numProps = dv.getUint32(setOffset + 4, true);
 
       const propNames = {
@@ -482,10 +507,10 @@ class MsiRenderer {
           if (valOff + 8 + len <= siStream.length) {
             const str = new TextDecoder('utf-8', { fatal: false })
               .decode(siStream.subarray(valOff + 8, valOff + 8 + len - 1));
-            if (str.trim()) result.summaryInfo[propName] = str.trim();
+            if (str.trim()) result[propName] = str.trim();
           }
         } else if (vType === 3) { // VT_I4
-          result.summaryInfo[propName] = dv.getInt32(valOff + 4, true).toString();
+          result[propName] = dv.getInt32(valOff + 4, true).toString();
         } else if (vType === 64) { // VT_FILETIME
           try {
             const lo = dv.getUint32(valOff + 4, true);
@@ -493,7 +518,7 @@ class MsiRenderer {
             const ft = (BigInt(hi) << 32n) | BigInt(lo);
             const ms = Number(ft / 10000n) - 11644473600000;
             if (ms > 0 && ms < 4102444800000) {
-              result.summaryInfo[propName] = new Date(ms).toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
+              result[propName] = new Date(ms).toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
             }
           } catch (e) { }
         }
@@ -501,44 +526,11 @@ class MsiRenderer {
     } catch (e) {
       // Silently fail — summary info is optional
     }
+
+    return result;
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────
-
-  _peekString(data, maxLen) {
-    const len = Math.min(data.length, maxLen);
-    return new TextDecoder('utf-8', { fatal: false }).decode(data.subarray(0, len));
-  }
-
-  _detectStreamMagic(data) {
-    if (data.length < 4) return 'Unknown';
-    if (data[0] === 0x4D && data[1] === 0x5A) return 'PE Executable (MZ)';
-    if (data[0] === 0x50 && data[1] === 0x4B) return 'ZIP / Cabinet';
-    if (data[0] === 0xD0 && data[1] === 0xCF) return 'Nested OLE/CFB';
-    if (data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4E && data[3] === 0x47) return 'PNG Image';
-    if (data[0] === 0xFF && data[1] === 0xD8) return 'JPEG Image';
-    if (data[0] === 0x47 && data[1] === 0x49 && data[2] === 0x46) return 'GIF Image';
-    const head = this._peekString(data, 50);
-    if (head.includes('<?xml') || head.includes('<html') || head.includes('<script')) return 'XML/HTML/Script';
-    return 'Binary data';
-  }
-
-  _hexPreview(data, maxBytes) {
-    const len = Math.min(data.length, maxBytes);
-    const parts = [];
-    for (let i = 0; i < len; i++) {
-      parts.push(data[i].toString(16).padStart(2, '0').toUpperCase());
-    }
-    // Format as rows of 16 bytes
-    const rows = [];
-    for (let i = 0; i < parts.length; i += 16) {
-      const hex = parts.slice(i, i + 16).join(' ');
-      const ascii = Array.from(data.subarray(i, Math.min(i + 16, len)))
-        .map(b => b >= 32 && b < 127 ? String.fromCharCode(b) : '.').join('');
-      rows.push(`${i.toString(16).padStart(6, '0')}  ${hex.padEnd(47)}  ${ascii}`);
-    }
-    return rows.join('\n');
-  }
 
   _fmtBytes(n) {
     if (n < 1024) return n + ' B';

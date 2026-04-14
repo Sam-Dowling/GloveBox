@@ -490,14 +490,15 @@ Object.assign(App.prototype, {
   // ── OLE/CFB disambiguation (determine doc/xls/ppt/msg/msi from OLE compound) ──
   _tryOleCfbDisambiguation(buffer) {
     // Try to identify the specific OLE compound file type
-    // by checking internal structure and stream names
+    // by checking internal structure and stream names.
+    // Uses metadata-only parsing to avoid loading large stream content.
     try {
-      // Parse OLE structure to get stream names
+      // Parse OLE structure to get stream names (metadata only)
       const parser = new OleCfbParser(buffer);
-      parser.parse();
+      parser.parseMetadataOnly();
       
       // Get all stream names (already lowercase from parser)
-      const streamNames = Array.from(parser.streams.keys());
+      const streamNames = Array.from(parser.streamMeta.keys());
       
       // MSG (Outlook message): has __substg1.0_ streams
       if (streamNames.some(n => n.startsWith('__substg1.0_')))
