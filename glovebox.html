@@ -1908,6 +1908,13 @@ body.dark .csv-info {
   white-space: pre;
 }
 
+/* Override xlsx-cell truncation for CSV tables - allow auto-fit columns */
+.csv-table .xlsx-cell {
+  max-width: none;
+  overflow: visible;
+  text-overflow: unset;
+}
+
 .csv-table tr:nth-child(even) td {
   background: #fafafa;
 }
@@ -5936,7 +5943,7 @@ relevance:0}),e.C_NUMBER_MODE]}}})();hljs.registerLanguage("vbscript",e)})();
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
-const GLOVEBOX_VERSION = '20260414.1128';
+const GLOVEBOX_VERSION = '20260414.1141';
 const DEFAULT_YARA_RULES = `// ─── Default YARA Rules ───────────────────────────────────
 // Edit or replace these rules, then click "Run Scan"
 // Supports: text strings, hex strings {AA BB}, regex /pattern/

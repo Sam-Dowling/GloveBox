@@ -1898,6 +1898,13 @@ body.dark .csv-info {
   white-space: pre;
 }
 
+/* Override xlsx-cell truncation for CSV tables - allow auto-fit columns */
+.csv-table .xlsx-cell {
+  max-width: none;
+  overflow: visible;
+  text-overflow: unset;
+}
+
 .csv-table tr:nth-child(even) td {
   background: #fafafa;
 }
