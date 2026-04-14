@@ -128,7 +128,7 @@ class HtmlRenderer {
     previewPane.appendChild(dragShield);
     container.appendChild(previewPane);
 
-    // ── Source pane (line-numbered) ──────────────────────────────────────
+    // ── Source pane (line-numbered with syntax highlighting) ──────────────
     const sourcePane = document.createElement('div');
     sourcePane.className = 'html-source-pane hidden';
 
@@ -142,16 +142,43 @@ class HtmlRenderer {
     code.className = 'line-code';
     const lineCount = Math.min(lines.length, maxLines);
     const gutterLines = [];
-    const codeLines = [];
+
+    // Apply syntax highlighting if available (limit to 100KB for performance)
+    let highlightedCode = null;
+    if (typeof hljs !== 'undefined' && text.length < 100 * 1024) {
+      try {
+        const result = hljs.highlight(text, { language: 'xml', ignoreIllegals: true });
+        highlightedCode = result.value;
+      } catch (_) { /* fallback to plain */ }
+    }
+
     for (let i = 0; i < lineCount; i++) {
       gutterLines.push(String(i + 1));
-      codeLines.push(this._escHtml(lines[i]));
     }
-    if (lines.length > maxLines) {
-      codeLines.push(`\n… truncated (${lines.length - maxLines} more lines)`);
-    }
+
     gutter.textContent = gutterLines.join('\n');
-    code.innerHTML = codeLines.join('\n');
+
+    if (highlightedCode) {
+      // Use highlighted HTML (already escaped by highlight.js)
+      let codeContent = highlightedCode;
+      if (lines.length > maxLines) {
+        // Find where to truncate in the highlighted output
+        const truncatedLines = highlightedCode.split('\n').slice(0, lineCount);
+        codeContent = truncatedLines.join('\n') + `\n… truncated (${lines.length - maxLines} more lines)`;
+      }
+      code.innerHTML = codeContent;
+    } else {
+      // Fallback to escaped plain text
+      const codeLines = [];
+      for (let i = 0; i < lineCount; i++) {
+        codeLines.push(this._escHtml(lines[i]));
+      }
+      if (lines.length > maxLines) {
+        codeLines.push(`\n… truncated (${lines.length - maxLines} more lines)`);
+      }
+      code.innerHTML = codeLines.join('\n');
+    }
+
     pre.appendChild(gutter);
     pre.appendChild(code);
     sourcePane.appendChild(pre);
@@ -200,6 +227,8 @@ class HtmlRenderer {
     for (const url of domInfo.urls) {
       let sev = 'info';
       const lower = url.toLowerCase();
+      // Skip data:image/* URLs — these are embedded images, not IOCs
+      if (lower.startsWith('data:image/')) continue;
       if (lower.startsWith('javascript:') || lower.startsWith('vbscript:') || lower.startsWith('data:text/html')) {
         sev = 'high';
         if (risk !== 'high') risk = 'high';

@@ -11,11 +11,12 @@ def read(rel):
     with open(os.path.join(BASE, rel), 'r', encoding='utf-8') as f:
         return f.read()
 
-jszip      = read('vendor/jszip.min.js')
-xlsx_js    = read('vendor/xlsx.full.min.js')
-pdf_js     = read('vendor/pdf.min.js')
-pdf_wrk_js = read('vendor/pdf.worker.min.js')
-css        = read('src/styles.css')
+jszip        = read('vendor/jszip.min.js')
+xlsx_js      = read('vendor/xlsx.full.min.js')
+pdf_js       = read('vendor/pdf.min.js')
+pdf_wrk_js   = read('vendor/pdf.worker.min.js')
+highlight_js = read('vendor/highlight.min.js')
+css          = read('src/styles.css')
 
 # Default YARA rules — injected as a JS constant
 yar_rules  = read('src/default-rules.yar')
@@ -186,6 +187,11 @@ HTML = f"""<!DOCTYPE html>
   <!-- ── pdf.js (inlined) ────────────────────────────────────────────── -->
   <script>
 {pdf_js}
+  </script>
+
+  <!-- ── highlight.js (inlined) ──────────────────────────────────────── -->
+  <script>
+{highlight_js}
   </script>
 
   <!-- ── Application ─────────────────────────────────────────────────── -->

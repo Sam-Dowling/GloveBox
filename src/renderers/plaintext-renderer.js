@@ -27,6 +27,63 @@ class PlainTextRenderer {
     { value: 'latin1',    label: 'Latin-1 (ISO 8859-1)' },
   ];
 
+  // Map file extensions to highlight.js language names
+  static LANG_MAP = {
+    // PowerShell
+    'ps1': 'powershell', 'psm1': 'powershell', 'psd1': 'powershell',
+    // VBScript / VBA
+    'vbs': 'vbscript', 'vbe': 'vbscript',
+    // JavaScript
+    'js': 'javascript', 'jse': 'javascript', 'mjs': 'javascript',
+    // Batch / CMD
+    'bat': 'dos', 'cmd': 'dos',
+    // Shell / Bash
+    'sh': 'bash', 'bash': 'bash', 'zsh': 'bash',
+    // Python
+    'py': 'python', 'pyw': 'python',
+    // Ruby / Perl / PHP
+    'rb': 'ruby', 'pl': 'perl', 'php': 'php',
+    // XML / HTML / SVG
+    'xml': 'xml', 'html': 'xml', 'htm': 'xml', 'xhtml': 'xml',
+    'svg': 'xml', 'xsl': 'xml', 'xslt': 'xml', 'xaml': 'xml',
+    'mht': 'xml', 'mhtml': 'xml',
+    // JSON
+    'json': 'json',
+    // YAML
+    'yml': 'yaml', 'yaml': 'yaml',
+    // Config / INI
+    'ini': 'ini', 'cfg': 'ini', 'conf': 'ini', 'toml': 'ini',
+    'reg': 'ini', 'inf': 'ini',
+    // SQL
+    'sql': 'sql',
+    // CSS
+    'css': 'css',
+    // C-family
+    'c': 'c', 'h': 'c',
+    'cpp': 'cpp', 'cc': 'cpp', 'cxx': 'cpp', 'hpp': 'cpp', 'hxx': 'cpp',
+    'cs': 'csharp',
+    'java': 'java',
+    'go': 'go',
+    'rs': 'rust',
+    'swift': 'swift',
+    'kt': 'kotlin', 'kts': 'kotlin',
+    // TypeScript
+    'ts': 'typescript', 'tsx': 'typescript',
+    // Markdown
+    'md': 'markdown', 'markdown': 'markdown',
+    // Makefile
+    'makefile': 'makefile', 'mk': 'makefile',
+    // Lua
+    'lua': 'lua',
+    // R
+    'r': 'r',
+    // Diff
+    'diff': 'diff', 'patch': 'diff',
+  };
+
+  // Size limit for syntax highlighting (100 KB)
+  static HIGHLIGHT_SIZE_LIMIT = 100 * 1024;
+
   // ── Render ──────────────────────────────────────────────────────────────
 
   render(buffer, fileName) {
@@ -47,10 +104,8 @@ class PlainTextRenderer {
 
     const infoText = document.createElement('span');
     infoText.className = 'plaintext-info-text';
-    if (isTextByDefault) {
-      const lines = decodedText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
-      infoText.textContent = `${lines.length} line${lines.length !== 1 ? 's' : ''}  ·  ${this._fmtBytes(bytes.length)}  ·  Plain text view`;
-    } else {
+    // Info text will be updated after building textPane to include detected language
+    if (!isTextByDefault) {
       infoText.textContent = `${this._fmtBytes(bytes.length)}  ·  Binary file  ·  Hex dump view`;
     }
     info.appendChild(infoText);
@@ -106,6 +161,12 @@ class PlainTextRenderer {
     // ── State tracking ───────────────────────────────────────────────────
     let showingText = isTextByDefault;
     let currentEncoding = detected.encoding;
+    let detectedLang = textPane._detectedLang || null;
+
+    // Update initial info text now that we have the detected language
+    if (isTextByDefault) {
+      this._updateInfoText(infoText, true, bytes, currentEncoding, detectedLang);
+    }
 
     // Store raw decoded text for analysis pipeline (IOC extraction, encoded content detection)
     wrap._rawText = decodedText;
@@ -126,7 +187,7 @@ class PlainTextRenderer {
       // Show/hide encoding selector (only relevant for text view)
       encLabel.style.display = showingText ? '' : 'none';
       encSelect.style.display = showingText ? '' : 'none';
-      this._updateInfoText(infoText, showingText, bytes, currentEncoding);
+      this._updateInfoText(infoText, showingText, bytes, currentEncoding, detectedLang);
     });
 
     // ── Encoding change handler ──────────────────────────────────────────
@@ -139,7 +200,9 @@ class PlainTextRenderer {
       contentArea.replaceChild(newTextPane, oldTextPane);
       contentArea._textPane = newTextPane;
       wrap._rawText = newText;
-      this._updateInfoText(infoText, showingText, bytes, currentEncoding);
+      // Update detected language from new text pane
+      detectedLang = newTextPane._detectedLang || null;
+      this._updateInfoText(infoText, showingText, bytes, currentEncoding, detectedLang);
     });
 
     return wrap;
@@ -241,10 +304,41 @@ class PlainTextRenderer {
     }
   }
 
-  // ── Build text pane (line-numbered view) ────────────────────────────────
+  // ── Build text pane (line-numbered view with syntax highlighting) ────────
 
   _buildTextPane(text, fileName) {
     const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+
+    // Get file extension and determine language
+    const ext = (fileName || '').split('.').pop().toLowerCase();
+    const lang = PlainTextRenderer.LANG_MAP[ext];
+
+    // Determine if we should highlight (check availability and size limit)
+    const shouldHighlight = typeof hljs !== 'undefined' &&
+                            text.length < PlainTextRenderer.HIGHLIGHT_SIZE_LIMIT;
+
+    let highlightedLines = null;
+    let detectedLang = null;
+
+    if (shouldHighlight) {
+      try {
+        let result;
+        if (lang) {
+          // Known language — use specific highlighting
+          result = hljs.highlight(text, { language: lang, ignoreIllegals: true });
+          detectedLang = lang;
+        } else {
+          // Unknown — try auto-detection
+          result = hljs.highlightAuto(text);
+          detectedLang = result.language || null;
+        }
+        // Split highlighted HTML by lines
+        highlightedLines = result.value.split('\n');
+      } catch (_) {
+        // Fallback to plain text on error
+        highlightedLines = null;
+      }
+    }
 
     const scr = document.createElement('div');
     scr.className = 'plaintext-scroll';
@@ -254,6 +348,7 @@ class PlainTextRenderer {
 
     const maxLines = 50000;
     const count = Math.min(lines.length, maxLines);
+
     for (let i = 0; i < count; i++) {
       const tr = document.createElement('tr');
       const tdNum = document.createElement('td');
@@ -261,11 +356,20 @@ class PlainTextRenderer {
       tdNum.textContent = i + 1;
       const tdCode = document.createElement('td');
       tdCode.className = 'plaintext-code';
-      tdCode.textContent = lines[i];
+
+      if (highlightedLines && highlightedLines[i] !== undefined) {
+        // Use highlighted HTML
+        tdCode.innerHTML = highlightedLines[i] || '';
+      } else {
+        // Plain text fallback
+        tdCode.textContent = lines[i];
+      }
+
       tr.appendChild(tdNum);
       tr.appendChild(tdCode);
       table.appendChild(tr);
     }
+
     if (lines.length > maxLines) {
       const tr = document.createElement('tr');
       const td = document.createElement('td');
@@ -277,6 +381,10 @@ class PlainTextRenderer {
     }
 
     scr.appendChild(table);
+
+    // Store detected language for info display
+    scr._detectedLang = detectedLang;
+
     return scr;
   }
 
@@ -320,16 +428,58 @@ class PlainTextRenderer {
 
   // ── Update info text helper ─────────────────────────────────────────────
 
-  _updateInfoText(infoText, showingText, bytes, encoding) {
+  _updateInfoText(infoText, showingText, bytes, encoding, detectedLang) {
     if (showingText) {
       const text = this._decodeAs(bytes, encoding);
       const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
       const encLabel = PlainTextRenderer.ENCODINGS.find(e => e.value === encoding);
       const encName = encLabel ? encLabel.label : encoding;
-      infoText.textContent = `${lines.length} line${lines.length !== 1 ? 's' : ''}  ·  ${this._fmtBytes(bytes.length)}  ·  Plain text view  ·  ${encName}`;
+      let info = `${lines.length} line${lines.length !== 1 ? 's' : ''}  ·  ${this._fmtBytes(bytes.length)}  ·  ${encName}`;
+      if (detectedLang) {
+        // Capitalize first letter and prettify language name
+        const langDisplay = this._prettifyLangName(detectedLang);
+        info += `  ·  ${langDisplay}`;
+      }
+      infoText.textContent = info;
     } else {
       infoText.textContent = `${this._fmtBytes(bytes.length)}  ·  Binary file  ·  Hex dump view`;
     }
+  }
+
+  /** Prettify highlight.js language name for display */
+  _prettifyLangName(lang) {
+    const nameMap = {
+      'javascript': 'JavaScript',
+      'typescript': 'TypeScript',
+      'powershell': 'PowerShell',
+      'vbscript': 'VBScript',
+      'csharp': 'C#',
+      'cpp': 'C++',
+      'dos': 'Batch',
+      'bash': 'Shell',
+      'python': 'Python',
+      'ruby': 'Ruby',
+      'perl': 'Perl',
+      'php': 'PHP',
+      'java': 'Java',
+      'kotlin': 'Kotlin',
+      'swift': 'Swift',
+      'go': 'Go',
+      'rust': 'Rust',
+      'sql': 'SQL',
+      'css': 'CSS',
+      'xml': 'XML/HTML',
+      'json': 'JSON',
+      'yaml': 'YAML',
+      'ini': 'INI/Config',
+      'markdown': 'Markdown',
+      'makefile': 'Makefile',
+      'lua': 'Lua',
+      'r': 'R',
+      'diff': 'Diff',
+      'c': 'C',
+    };
+    return nameMap[lang] || (lang.charAt(0).toUpperCase() + lang.slice(1));
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────
