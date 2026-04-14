@@ -121,7 +121,7 @@ class ZipRenderer {
     if (this._isTar(decompressed)) {
       const tarBanner = document.createElement('div'); tarBanner.className = 'doc-extraction-banner';
       tarBanner.style.marginTop = '12px';
-      tarBanner.innerHTML = '<strong>TAR Archive Detected</strong> — listing archive contents.';
+      tarBanner.innerHTML = '<strong>TAR Archive Detected</strong> — click any file to open it for analysis.';
       wrap.appendChild(tarBanner);
 
       return this._renderTarContents(wrap, decompressed, fileName);
@@ -302,7 +302,7 @@ class ZipRenderer {
 
     const thead = document.createElement('thead');
     const hr = document.createElement('tr');
-    for (const h of ['', 'Path', 'Size', 'Date']) {
+    for (const h of ['', 'Path', 'Size', 'Date', '']) {
       const th = document.createElement('th'); th.textContent = h; hr.appendChild(th);
     }
     thead.appendChild(hr); tbl.appendChild(thead);
@@ -310,34 +310,51 @@ class ZipRenderer {
     const tbody = document.createElement('tbody');
     for (const entry of entries) {
       const tr = document.createElement('tr');
+      const ext = (entry.path || '').split('.').pop().toLowerCase();
+      const isDangerous = !entry.dir && ZipRenderer.EXEC_EXTS.has(ext);
+      const isDouble = this._isDoubleExt(entry.path);
+      if (isDangerous || isDouble) tr.className = 'zip-row-danger';
+
       if (!entry.dir) {
-        tr.style.cursor = 'pointer';
-        tr.title = 'Click to open for analysis';
+        tr.classList.add('zip-row-clickable');
         tr.addEventListener('click', () => this._extractTarEntry(bytes, entry, wrap));
       }
 
-      const iconTd = document.createElement('td');
-      iconTd.textContent = entry.dir ? '📁' : this._getFileIcon(entry.path);
-      iconTd.style.cssText = 'width:24px;text-align:center';
-      tr.appendChild(iconTd);
+      // Icon
+      const tdIcon = document.createElement('td'); tdIcon.className = 'zip-icon';
+      tdIcon.textContent = entry.dir ? '📁' : (isDangerous ? '⚠️' : this._getFileIcon(entry.path));
+      tr.appendChild(tdIcon);
 
-      const pathTd = document.createElement('td');
-      const ext = (entry.path || '').split('.').pop().toLowerCase();
-      const dangerous = ZipRenderer.EXEC_EXTS.has(ext);
-      pathTd.innerHTML = dangerous
-        ? `<span style="color:#f88">⚠ ${escHtml(entry.path)}</span>`
-        : escHtml(entry.path);
-      tr.appendChild(pathTd);
+      // Path
+      const tdPath = document.createElement('td'); tdPath.className = 'zip-path';
+      tdPath.textContent = entry.path;
+      if (isDangerous) { const badge = document.createElement('span'); badge.className = 'zip-badge-danger'; badge.textContent = 'EXECUTABLE'; tdPath.appendChild(badge); }
+      if (isDouble) { const badge = document.createElement('span'); badge.className = 'zip-badge-danger'; badge.textContent = 'DOUBLE EXT'; tdPath.appendChild(badge); }
+      tr.appendChild(tdPath);
 
-      const sizeTd = document.createElement('td');
-      sizeTd.textContent = entry.dir ? '—' : this._fmtBytes(entry.size);
-      sizeTd.style.cssText = 'text-align:right;white-space:nowrap';
-      tr.appendChild(sizeTd);
+      // Size
+      const tdSize = document.createElement('td'); tdSize.className = 'zip-size';
+      tdSize.textContent = entry.dir ? '—' : this._fmtBytes(entry.size);
+      tr.appendChild(tdSize);
 
-      const dateTd = document.createElement('td');
-      dateTd.textContent = entry.mtime ? entry.mtime.toISOString().slice(0, 16).replace('T', ' ') : '—';
-      dateTd.style.cssText = 'white-space:nowrap';
-      tr.appendChild(dateTd);
+      // Date
+      const tdDate = document.createElement('td'); tdDate.className = 'zip-date';
+      tdDate.textContent = entry.mtime ? entry.mtime.toISOString().slice(0, 16).replace('T', ' ') : '—';
+      tr.appendChild(tdDate);
+
+      // Action column
+      const tdAction = document.createElement('td'); tdAction.className = 'zip-action';
+      if (!entry.dir) {
+        const openBtn = document.createElement('span'); openBtn.className = 'zip-badge-open';
+        openBtn.textContent = '🔍 Open';
+        openBtn.title = `Open ${entry.path.split('/').pop()} for analysis`;
+        openBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          this._extractTarEntry(bytes, entry, wrap);
+        });
+        tdAction.appendChild(openBtn);
+      }
+      tr.appendChild(tdAction);
 
       tbody.appendChild(tr);
     }

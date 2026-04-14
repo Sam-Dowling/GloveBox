@@ -39,15 +39,76 @@ class MsgRenderer {
     else if (msg.body) { const d = document.createElement('div'); d.style.cssText = 'white-space:pre-wrap;font-size:10pt;line-height:1.5;'; d.textContent = msg.body; page.appendChild(d); }
     else { const p = document.createElement('p'); p.style.cssText = 'color:#888;font-style:italic;'; p.textContent = '(No message body)'; page.appendChild(p); }
 
-    // Attachments
+    // Attachments — Extracted Files table
     if (msg.attachments.length) {
       const hr2 = document.createElement('hr'); hr2.style.cssText = 'margin:16px 0;border:none;border-top:1px solid #ddd;'; page.appendChild(hr2);
-      const h4 = document.createElement('h4'); h4.style.cssText = 'font-size:11pt;margin-bottom:8px;'; h4.textContent = `Attachments (${msg.attachments.length})`; page.appendChild(h4);
-      const ul = document.createElement('ul'); ul.style.cssText = 'margin:0 0 0 20px;font-size:10pt;';
-      for (const a of msg.attachments) {
-        const li = document.createElement('li'); li.textContent = (a.name || 'unnamed') + (a.size ? ` — ${(a.size / 1024).toFixed(1)} KB` : ''); ul.appendChild(li);
+      const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
+      banner.innerHTML = `<strong>Attachments (${msg.attachments.length})</strong> — click any file to open it for analysis.`;
+      page.appendChild(banner);
+
+      const tbl = document.createElement('table'); tbl.className = 'zip-table';
+      const thead = document.createElement('thead');
+      const hr3 = document.createElement('tr');
+      for (const h of ['', 'Filename', 'Size', '']) {
+        const th = document.createElement('th'); th.textContent = h; hr3.appendChild(th);
       }
-      page.appendChild(ul);
+      thead.appendChild(hr3); tbl.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      for (const a of msg.attachments) {
+        const tr = document.createElement('tr');
+        if (a.data) tr.classList.add('zip-row-clickable');
+
+        // Icon
+        const tdIcon = document.createElement('td'); tdIcon.className = 'zip-icon';
+        tdIcon.textContent = this._getFileIcon(a.name); tr.appendChild(tdIcon);
+
+        // Filename
+        const tdName = document.createElement('td'); tdName.className = 'zip-path';
+        tdName.textContent = a.name || 'unnamed';
+        const ext = (a.name || '').split('.').pop().toLowerCase();
+        if (/^(exe|dll|scr|com|bat|cmd|vbs|js|ps1|hta|msi|jar)$/.test(ext)) {
+          const badge = document.createElement('span'); badge.className = 'zip-badge-danger'; badge.textContent = 'EXECUTABLE';
+          tdName.appendChild(badge);
+        }
+        tr.appendChild(tdName);
+
+        // Size
+        const tdSize = document.createElement('td'); tdSize.className = 'zip-size';
+        tdSize.textContent = a.size ? this._fmtBytes(a.size) : '—'; tr.appendChild(tdSize);
+
+        // Actions
+        const tdAction = document.createElement('td'); tdAction.className = 'zip-action';
+        if (a.data) {
+          const openBtn = document.createElement('span'); openBtn.className = 'zip-badge-open';
+          openBtn.textContent = '🔍 Open';
+          openBtn.title = `Open ${a.name} for analysis`;
+          openBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            this._openAttachment(a, wrap);
+          });
+          tdAction.appendChild(openBtn);
+
+          const dlBtn = document.createElement('span'); dlBtn.className = 'zip-badge-open';
+          dlBtn.style.marginLeft = '6px';
+          dlBtn.textContent = '⬇';
+          dlBtn.title = `Download ${a.name}`;
+          dlBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            this._downloadAttachment(a);
+          });
+          tdAction.appendChild(dlBtn);
+        }
+        tr.appendChild(tdAction);
+
+        // Row click opens file
+        if (a.data) {
+          tr.addEventListener('click', () => this._openAttachment(a, wrap));
+        }
+
+        tbody.appendChild(tr);
+      }
+      tbl.appendChild(tbody); page.appendChild(tbl);
     }
     wrap.appendChild(page); return wrap;
   }
@@ -87,12 +148,50 @@ class MsgRenderer {
         (() => { const d = cfb.streams.get(`${pre}/__substg1.0_3707001e`); return d ? new TextDecoder('latin1').decode(d) : ''; })() ||
         'attachment';
       const data = cfb.streams.get(`${pre}/__substg1.0_37010102`);
-      msg.attachments.push({ name, size: data ? data.length : 0 });
+      msg.attachments.push({ name, size: data ? data.length : 0, data: data || null });
     }
     return msg;
   }
 
   _u16(data) { if (!data || !data.length) return ''; try { return new TextDecoder('utf-16le').decode(data).replace(/\0+$/, ''); } catch (e) { return ''; } }
+
+  _openAttachment(att, wrap) {
+    if (!att.data) return;
+    const file = new File([att.data], att.name || 'attachment', { type: 'application/octet-stream' });
+    wrap.dispatchEvent(new CustomEvent('open-inner-file', { bubbles: true, detail: file }));
+  }
+
+  _downloadAttachment(att) {
+    if (!att.data) return;
+    const blob = new Blob([att.data], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = att.name || 'attachment';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  _getFileIcon(name) {
+    const ext = (name || '').split('.').pop().toLowerCase();
+    if (['exe', 'dll', 'scr', 'com', 'msi'].includes(ext)) return '⚙️';
+    if (['bat', 'cmd', 'ps1', 'vbs', 'js', 'sh'].includes(ext)) return '📜';
+    if (['doc', 'docx', 'docm', 'odt', 'rtf'].includes(ext)) return '📄';
+    if (['xls', 'xlsx', 'xlsm', 'ods', 'csv'].includes(ext)) return '📊';
+    if (['ppt', 'pptx', 'pptm', 'odp'].includes(ext)) return '📽️';
+    if (['pdf'].includes(ext)) return '📕';
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return '📦';
+    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg'].includes(ext)) return '🖼️';
+    if (['txt', 'log', 'md'].includes(ext)) return '📝';
+    if (['html', 'htm', 'xml', 'json'].includes(ext)) return '🌐';
+    if (['eml', 'msg'].includes(ext)) return '✉️';
+    return '📄';
+  }
+
+  _fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  }
 
   _sanitize(html, container) {
     const OK = new Set(['p', 'br', 'b', 'strong', 'i', 'em', 'u', 's', 'span', 'div', 'ul', 'ol', 'li', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'code', 'hr', 'a', 'font', 'center']);

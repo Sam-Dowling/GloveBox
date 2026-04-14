@@ -68,20 +68,75 @@ class EmlRenderer {
       }
       wrap.appendChild(bodyFrame);
 
-      // Attachments
+      // Attachments — Extracted Files table
       if (email.attachments.length) {
-        const al = document.createElement('div');
-        al.className = 'msg-attach-list';
-        const h4 = document.createElement('h4');
-        h4.textContent = `📎 Attachments (${email.attachments.length})`;
-        al.appendChild(h4);
-        for (const att of email.attachments) {
-          const item = document.createElement('span');
-          item.className = 'msg-attach-item';
-          item.textContent = att.filename + (att.size ? ` (${att.size})` : '');
-          al.appendChild(item);
+        const banner = document.createElement('div'); banner.className = 'doc-extraction-banner';
+        banner.innerHTML = `<strong>Attachments (${email.attachments.length})</strong> — click any file to open it for analysis.`;
+        wrap.appendChild(banner);
+
+        const tbl = document.createElement('table'); tbl.className = 'zip-table';
+        const thead = document.createElement('thead');
+        const hr = document.createElement('tr');
+        for (const h of ['', 'Filename', 'Size', '']) {
+          const th = document.createElement('th'); th.textContent = h; hr.appendChild(th);
         }
-        wrap.appendChild(al);
+        thead.appendChild(hr); tbl.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        for (const att of email.attachments) {
+          const tr = document.createElement('tr');
+          if (att.data) tr.classList.add('zip-row-clickable');
+
+          // Icon
+          const tdIcon = document.createElement('td'); tdIcon.className = 'zip-icon';
+          tdIcon.textContent = this._getFileIcon(att.filename); tr.appendChild(tdIcon);
+
+          // Filename
+          const tdName = document.createElement('td'); tdName.className = 'zip-path';
+          tdName.textContent = att.filename || 'unnamed';
+          const ext = (att.filename || '').split('.').pop().toLowerCase();
+          if (/^(exe|dll|scr|com|bat|cmd|vbs|js|ps1|hta|msi|jar)$/.test(ext)) {
+            const badge = document.createElement('span'); badge.className = 'zip-badge-danger'; badge.textContent = 'EXECUTABLE';
+            tdName.appendChild(badge);
+          }
+          tr.appendChild(tdName);
+
+          // Size
+          const tdSize = document.createElement('td'); tdSize.className = 'zip-size';
+          tdSize.textContent = att.size ? this._fmtSize(att.size) : '—'; tr.appendChild(tdSize);
+
+          // Actions
+          const tdAction = document.createElement('td'); tdAction.className = 'zip-action';
+          if (att.data) {
+            const openBtn = document.createElement('span'); openBtn.className = 'zip-badge-open';
+            openBtn.textContent = '🔍 Open';
+            openBtn.title = `Open ${att.filename} for analysis`;
+            openBtn.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              this._openAttachment(att, wrap);
+            });
+            tdAction.appendChild(openBtn);
+
+            const dlBtn = document.createElement('span'); dlBtn.className = 'zip-badge-open';
+            dlBtn.style.marginLeft = '6px';
+            dlBtn.textContent = '⬇';
+            dlBtn.title = `Download ${att.filename}`;
+            dlBtn.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              this._downloadAttachment(att);
+            });
+            tdAction.appendChild(dlBtn);
+          }
+          tr.appendChild(tdAction);
+
+          // Row click opens file
+          if (att.data) {
+            tr.addEventListener('click', () => this._openAttachment(att, wrap));
+          }
+
+          tbody.appendChild(tr);
+        }
+        tbl.appendChild(tbody); wrap.appendChild(tbl);
       }
 
     } catch (e) {
@@ -264,8 +319,8 @@ class EmlRenderer {
       // Attachment
       if (cd.toLowerCase().includes('attachment') || (cd.toLowerCase().includes('filename'))) {
         const fn = this._extractFilename(cd) || this._extractFilename(partHeaders['content-type'] || '') || 'attachment';
-        const decoded = this._decodeBody(partBody, cte);
-        email.attachments.push({ filename: fn, size: this._fmtSize(decoded.length) });
+        const decoded = this._decodeBodyBinary(partBody, cte);
+        email.attachments.push({ filename: fn, size: decoded.length, data: decoded });
         continue;
       }
 
@@ -277,7 +332,8 @@ class EmlRenderer {
       } else if (!pct.includes('text/')) {
         // Non-text inline = treat as attachment
         const fn = this._extractFilename(cd) || this._extractFilename(partHeaders['content-type'] || '') || 'inline-content';
-        email.attachments.push({ filename: fn, size: '' });
+        const decoded = this._decodeBodyBinary(partBody, cte);
+        email.attachments.push({ filename: fn, size: decoded.length, data: decoded });
       }
     }
   }
@@ -311,6 +367,27 @@ class EmlRenderer {
         );
     }
     return body;
+  }
+
+  _decodeBodyBinary(body, cte) {
+    const enc = (cte || '').toLowerCase().trim();
+    if (enc === 'base64') {
+      try {
+        const binaryStr = atob(body.replace(/\s/g, ''));
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+        return bytes;
+      } catch (_) {
+        return new TextEncoder().encode(body);
+      }
+    }
+    if (enc === 'quoted-printable') {
+      const decoded = body
+        .replace(/=\n/g, '')
+        .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+      return new TextEncoder().encode(decoded);
+    }
+    return new TextEncoder().encode(body);
   }
 
   _decodeHeader(val) {
@@ -378,5 +455,37 @@ class EmlRenderer {
     if (n < 1024) return n + ' B';
     if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
     return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  _openAttachment(att, wrap) {
+    if (!att.data) return;
+    const file = new File([att.data], att.filename || 'attachment', { type: 'application/octet-stream' });
+    wrap.dispatchEvent(new CustomEvent('open-inner-file', { bubbles: true, detail: file }));
+  }
+
+  _downloadAttachment(att) {
+    if (!att.data) return;
+    const blob = new Blob([att.data], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = att.filename || 'attachment';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  _getFileIcon(name) {
+    const ext = (name || '').split('.').pop().toLowerCase();
+    if (['exe', 'dll', 'scr', 'com', 'msi'].includes(ext)) return '⚙️';
+    if (['bat', 'cmd', 'ps1', 'vbs', 'js', 'sh'].includes(ext)) return '📜';
+    if (['doc', 'docx', 'docm', 'odt', 'rtf'].includes(ext)) return '📄';
+    if (['xls', 'xlsx', 'xlsm', 'ods', 'csv'].includes(ext)) return '📊';
+    if (['ppt', 'pptx', 'pptm', 'odp'].includes(ext)) return '📽️';
+    if (['pdf'].includes(ext)) return '📕';
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext)) return '📦';
+    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg'].includes(ext)) return '🖼️';
+    if (['txt', 'log', 'md'].includes(ext)) return '📝';
+    if (['html', 'htm', 'xml', 'json'].includes(ext)) return '🌐';
+    if (['eml', 'msg'].includes(ext)) return '✉️';
+    return '📄';
   }
 }
