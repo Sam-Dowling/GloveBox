@@ -271,11 +271,11 @@ class EncodedContentDetector {
   // ════════════════════════════════════════════════════════════════════════
 
   _findBase64Candidates(text, context) {
-    if (!text || text.length < 64) return [];
+    if (!text || text.length < 40) return [];
     const candidates = [];
 
     // Standard Base64 (including URL-safe variant)
-    const b64Re = /[A-Za-z0-9+\/\-_]{64,}={0,2}/g;
+    const b64Re = /[A-Za-z0-9+\/\-_]{40,}={0,2}/g;
     let m;
     while ((m = b64Re.exec(text)) !== null) {
       if (candidates.length >= this.maxCandidatesPerType) break;

@@ -6327,7 +6327,7 @@ relevance:0}),e.C_NUMBER_MODE]}}})();hljs.registerLanguage("vbscript",e)})();
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
-const GLOVEBOX_VERSION = '20260414.2236';
+const GLOVEBOX_VERSION = '20260415.1711';
 const DEFAULT_YARA_RULES = `// ─── Default YARA Rules ───────────────────────────────────
 // Edit or replace these rules, then click "Run Scan"
 // Supports: text strings, hex strings {AA BB}, regex /pattern/
@@ -12662,11 +12662,11 @@ class EncodedContentDetector {
   // ════════════════════════════════════════════════════════════════════════
 
   _findBase64Candidates(text, context) {
-    if (!text || text.length < 64) return [];
+    if (!text || text.length < 40) return [];
     const candidates = [];
 
     // Standard Base64 (including URL-safe variant)
-    const b64Re = /[A-Za-z0-9+\/\-_]{64,}={0,2}/g;
+    const b64Re = /[A-Za-z0-9+\/\-_]{40,}={0,2}/g;
     let m;
     while ((m = b64Re.exec(text)) !== null) {
       if (candidates.length >= this.maxCandidatesPerType) break;
@@ -29959,6 +29959,17 @@ Object.assign(App.prototype, {
 
     // Show sidebar
     if (!this.sidebarOpen) this._toggleSidebar();
+
+    // Lock sidebar width after initial render so filter toggles don't cause resizing.
+    // Uses requestAnimationFrame to read the computed fit-content width after layout,
+    // then sets it as a fixed pixel value. Manual drag-resize still works because
+    // _setupSidebarResize() sets style.width directly. Cleared in _clearFile().
+    const sidebar = document.getElementById('sidebar');
+    requestAnimationFrame(() => {
+      if (!sidebar.classList.contains('hidden')) {
+        sidebar.style.width = sidebar.getBoundingClientRect().width + 'px';
+      }
+    });
   },
 
   // ── File Info section ──────────────────────────────────────────────────
@@ -32104,8 +32115,9 @@ Object.assign(App.prototype, {
     document.getElementById('viewer-toolbar').classList.add('hidden');
     document.getElementById('doc-search').value = '';
     if (this._clearSearch) this._clearSearch();
-    // Close sidebar and clear its content
+    // Close sidebar and clear its content; reset locked width for fresh auto-sizing
     if (this.sidebarOpen) this._toggleSidebar();
+    document.getElementById('sidebar').style.width = '';
     document.getElementById('sb-body').innerHTML = '';
     document.getElementById('sb-risk').className = 'sb-risk risk-low';
     document.getElementById('sb-risk-title').textContent = 'No threats detected';

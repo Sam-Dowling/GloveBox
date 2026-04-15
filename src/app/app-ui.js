@@ -127,8 +127,9 @@ Object.assign(App.prototype, {
     document.getElementById('viewer-toolbar').classList.add('hidden');
     document.getElementById('doc-search').value = '';
     if (this._clearSearch) this._clearSearch();
-    // Close sidebar and clear its content
+    // Close sidebar and clear its content; reset locked width for fresh auto-sizing
     if (this.sidebarOpen) this._toggleSidebar();
+    document.getElementById('sidebar').style.width = '';
     document.getElementById('sb-body').innerHTML = '';
     document.getElementById('sb-risk').className = 'sb-risk risk-low';
     document.getElementById('sb-risk-title').textContent = 'No threats detected';

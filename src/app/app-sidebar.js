@@ -50,6 +50,17 @@ Object.assign(App.prototype, {
 
     // Show sidebar
     if (!this.sidebarOpen) this._toggleSidebar();
+
+    // Lock sidebar width after initial render so filter toggles don't cause resizing.
+    // Uses requestAnimationFrame to read the computed fit-content width after layout,
+    // then sets it as a fixed pixel value. Manual drag-resize still works because
+    // _setupSidebarResize() sets style.width directly. Cleared in _clearFile().
+    const sidebar = document.getElementById('sidebar');
+    requestAnimationFrame(() => {
+      if (!sidebar.classList.contains('hidden')) {
+        sidebar.style.width = sidebar.getBoundingClientRect().width + 'px';
+      }
+    });
   },
 
   // ── File Info section ──────────────────────────────────────────────────
