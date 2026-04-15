@@ -103,17 +103,20 @@ rule JS_Obfuscated_Payload
         (($cc1 or $cc2 or $cc3) and ($eval or $func)) or $arr or $split
 }
 
-rule JS_Encoded_Script_JSE
+rule Encoded_Script_File_JSE_VBE
 {
     meta:
-        description = "JScript.Encode encoded script file (JSE format marker)"
+        description = "File contains Microsoft JScript.Encode or VBScript.Encode markers (JSE/VBE)"
         severity    = "high"
 
     strings:
-        $jse = "#@~^"
+        $marker_start = "#@~^" ascii
+        $marker_end   = "^#~@" ascii
+        $lang1 = "JScript.Encode" nocase
+        $lang2 = "VBScript.Encode" nocase
 
     condition:
-        $jse
+        ($marker_start and $marker_end) or any of ($lang*)
 }
 
 rule JS_WMI_Execution
@@ -218,19 +221,6 @@ rule VBS_Scheduled_Task
         ($a or $b or $c) and $d
 }
 
-rule VBS_Encoded_VBE
-{
-    meta:
-        description = "VBScript.Encode encoded file (VBE format marker)"
-        severity    = "high"
-
-    strings:
-        $a = "#@~^"
-        $b = "VBScript.Encode" nocase
-
-    condition:
-        any of them
-}
 
 rule VBS_Obfuscation_ChrW
 {
@@ -255,13 +245,17 @@ rule PowerShell_Encoded_Command
         severity    = "critical"
 
     strings:
-        $ps = "powershell" nocase
-        $a = "-EncodedCommand" nocase
-        $b = "-enc " nocase
-        $c = "-ec " nocase
+        $ps  = "powershell" nocase
+        $a   = "-EncodedCommand" nocase
+        $b   = "-enc " nocase
+        $c   = "-ec " nocase
+        $enc1 = /-[Ee]nc\s+[A-Za-z0-9+\/]{20,}/
+        $enc2 = /-[Ee]ncodedcommand\s+[A-Za-z0-9+\/]{20,}/ nocase
+        $enc3 = /-[Ee][Cc]\s+[A-Za-z0-9+\/]{20,}/
+        $from = "FromBase64String" nocase fullword
 
     condition:
-        $ps and ($a or $b or $c)
+        ($ps and ($a or $b or $c)) or any of ($enc*) or $from
 }
 
 rule PowerShell_Download_Cradle
@@ -560,36 +554,7 @@ rule PowerShell_Stealth_Flags_Combo
         $ps and 2 of ($a, $b, $c, $d, $e, $f)
 }
 
-rule PowerShell_Reflection_Assembly_Load
-{
-    meta:
-        description = "PowerShell loads .NET assembly via reflection — fileless PE execution"
-        severity    = "critical"
 
-    strings:
-        $a     = "System.Reflection.Assembly" nocase
-        $b     = "[Reflection.Assembly]::Load" nocase
-        $c     = "FromBase64String" nocase
-        $d     = "Add-Type" nocase
-
-    condition:
-        ($a or $b) and ($c or $d)
-}
-
-rule PowerShell_IEX_Env_Variable
-{
-    meta:
-        description = "PowerShell IEX via environment variable — obfuscated execution"
-        severity    = "critical"
-
-    strings:
-        $a     = "IEX $env:" nocase
-        $b     = "iex $env:" nocase
-        $c     = "Invoke-Expression $env:" nocase
-
-    condition:
-        any of them
-}
 
 rule WMIC_Process_Create
 {
@@ -643,21 +608,6 @@ rule AMSI_ETW_Bypass_Patterns
         ($a or $b or $c) and ($f or $g)
 }
 
-rule PowerShell_EncodedCommand
-{
-    meta:
-        description = "PowerShell -EncodedCommand with Base64 payload"
-        severity    = "high"
-
-    strings:
-        $enc1 = /-[Ee]nc\s+[A-Za-z0-9+\/]{20,}/
-        $enc2 = /-[Ee]ncodedcommand\s+[A-Za-z0-9+\/]{20,}/ nocase
-        $enc3 = /-[Ee][Cc]\s+[A-Za-z0-9+\/]{20,}/
-        $from = "FromBase64String" nocase fullword
-
-    condition:
-        any of them
-}
 
 rule CMD_Caret_Obfuscation
 {
@@ -815,21 +765,6 @@ rule VBScript_Chr_Concatenation
         any of them
 }
 
-rule JScript_Encoded_Script
-{
-    meta:
-        description = "File contains Microsoft JScript.Encode encoded script"
-        severity    = "high"
-
-    strings:
-        $marker = "#@~^" ascii
-        $end = "^#~@" ascii
-        $lang1 = "JScript.Encode" nocase
-        $lang2 = "VBScript.Encode" nocase
-
-    condition:
-        ($marker and $end) or any of ($lang*)
-}
 
 rule Python_Exec_Base64_Obfuscation
 {
@@ -1151,5 +1086,61 @@ rule Shell_Curl_Wget_Pipe_Exec
 
     condition:
         any of them
+}
+
+// ============================================================================
+// Python Reverse Shell / Network Backdoor
+// ============================================================================
+
+rule Python_Reverse_Shell
+{
+    meta:
+        description = "Detects Python reverse shell patterns — socket connect with subprocess/pty"
+        severity = "critical"
+        category = "execution"
+
+    strings:
+        $socket_import = "import socket" nocase
+        $subprocess    = "import subprocess" nocase
+        $pty           = "import pty" nocase
+        $os_dup2       = "os.dup2(" nocase
+        $connect       = ".connect((" nocase
+        $popen         = "subprocess.Popen(" nocase
+        $call          = "subprocess.call(" nocase
+        $pty_spawn     = "pty.spawn(" nocase
+        $bin_sh        = "/bin/sh" nocase
+        $bin_bash      = "/bin/bash" nocase
+
+    condition:
+        $socket_import and $connect and ($subprocess or $pty) and ($os_dup2 or $popen or $call or $pty_spawn or $bin_sh or $bin_bash)
+}
+
+// ============================================================================
+// Node.js child_process Execution
+// ============================================================================
+
+rule NodeJS_Child_Process_Execution
+{
+    meta:
+        description = "Detects Node.js child_process module usage for command execution"
+        severity = "high"
+        category = "execution"
+
+    strings:
+        $require_cp = "require('child_process')" nocase
+        $require_cp2 = "require(\"child_process\")" nocase
+        $import_cp = "from 'child_process'" nocase
+        $import_cp2 = "from \"child_process\"" nocase
+        $exec       = ".exec(" nocase
+        $execSync   = ".execSync(" nocase
+        $spawn      = ".spawn(" nocase
+        $spawnSync  = ".spawnSync(" nocase
+        $execFile   = ".execFile(" nocase
+        $cmd        = "cmd" nocase
+        $powershell = "powershell" nocase
+        $bash       = "/bin/sh" nocase
+
+    condition:
+        any of ($require_cp*,$import_cp*) and any of ($exec,$execSync,$spawn,$spawnSync,$execFile) and any of ($cmd,$powershell,$bash)
 }
 

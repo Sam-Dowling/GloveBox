@@ -502,6 +502,8 @@ rule HTML_WebSocket_Exfil
 
     strings:
         $a = "new WebSocket" nocase
+        $b = "WebSocket(" nocase
+        $c = "wss://" nocase
         $d = "password" nocase
 
     condition:
@@ -634,5 +636,71 @@ rule HTML_Entity_Obfuscated_Script
 
     condition:
         $entity_chain and ($script_tag or $eval)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// MHTML Smuggling
+// ════════════════════════════════════════════════════════════════════════
+
+rule MHTML_Smuggling
+{
+    meta:
+        description = "MHTML file with embedded active content — smuggles payloads through MIME wrapping"
+        severity    = "high"
+
+    strings:
+        $mime    = "MIME-Version:" nocase
+        $mhtml1  = "Content-Location:" nocase
+        $mhtml2  = "Content-Type: multipart/related" nocase
+        $mhtml3  = "Content-Type: message/rfc822" nocase
+        $active1 = "<script" nocase
+        $active2 = "ActiveXObject" nocase
+        $active3 = "WScript.Shell" nocase
+        $active4 = "<HTA:APPLICATION" nocase
+
+    condition:
+        $mime and any of ($mhtml*) and any of ($active*)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// OneNote Embedded PE
+// ════════════════════════════════════════════════════════════════════════
+
+rule OneNote_Embedded_PE
+{
+    meta:
+        description = "OneNote file with embedded MZ PE executable — payload delivery via notebook"
+        severity    = "critical"
+
+    strings:
+        $magic = { E4 52 5C 7B 8C D8 A7 4D }
+        $mz    = { 4D 5A 90 00 }
+        $pe    = "This program cannot be run in DOS mode"
+
+    condition:
+        $magic and ($mz or $pe)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// HTML Blob with Password-Protected Archive
+// ════════════════════════════════════════════════════════════════════════
+
+rule HTML_Smuggling_Password_Hint
+{
+    meta:
+        description = "HTML smuggling page includes password hint text — common malware delivery pattern"
+        severity    = "critical"
+
+    strings:
+        $blob   = "new Blob" nocase
+        $b64    = "atob(" nocase
+        $dl     = "download=" nocase
+        $pw1    = "password" nocase
+        $pw2    = "passcode" nocase
+        $pw3    = "Password:" nocase
+        $zip    = ".zip" nocase
+
+    condition:
+        ($blob or $b64) and $dl and any of ($pw*) and $zip
 }
 

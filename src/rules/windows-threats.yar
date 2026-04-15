@@ -79,9 +79,11 @@ rule URL_Shortcut_Suspicious
         $header = "[InternetShortcut]"
         $url = "URL="
         $icon = "IconFile="
+        $smb1 = "URL=\\\\\\\\" nocase
+        $smb2 = "URL=file://" nocase
 
     condition:
-        $header and $url and ($smb or $icon)
+        $header and $url and ($smb1 or $smb2 or $icon)
 }
 
 rule URL_Shortcut_UNC_Icon
@@ -2117,5 +2119,70 @@ rule URL_Encoded_Command
 
     condition:
         any of them
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// ClickOnce Application Reference
+// ════════════════════════════════════════════════════════════════════════
+
+rule ClickOnce_AppRef_MS
+{
+    meta:
+        description = "ClickOnce .appref-ms application reference — can install .NET malware on click"
+        severity    = "critical"
+
+    strings:
+        $appref  = ".application#" nocase
+        $culture = "Culture=" nocase
+        $token   = "PublicKeyToken=" nocase
+        $proc    = "processorArchitecture=" nocase
+        $http    = "http" nocase
+
+    condition:
+        $appref and any of ($culture, $token, $proc) and $http
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Scheduled Task XML
+// ════════════════════════════════════════════════════════════════════════
+
+rule Scheduled_Task_XML
+{
+    meta:
+        description = "File contains Windows Scheduled Task XML definition — persistence or execution"
+        severity    = "high"
+
+    strings:
+        $task   = "<Task " nocase
+        $xmlns  = "schemas.microsoft.com/windows" nocase
+        $exec   = "<Exec>" nocase
+        $cmd    = "<Command>" nocase
+        $args   = "<Arguments>" nocase
+        $trigger1 = "<LogonTrigger>" nocase
+        $trigger2 = "<BootTrigger>" nocase
+        $trigger3 = "<TimeTrigger>" nocase
+        $trigger4 = "<CalendarTrigger>" nocase
+
+    condition:
+        $task and $xmlns and $exec and $cmd and any of ($trigger*)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// ISO Disk Image
+// ════════════════════════════════════════════════════════════════════════
+
+rule ISO_Disk_Image
+{
+    meta:
+        description = "ISO disk image file — bypasses MotW on Windows, mounts on double-click"
+        severity    = "high"
+
+    strings:
+        $cd001 = "CD001" ascii
+        $el_torito = "EL TORITO" nocase
+        $iso = "ISO 9660" nocase
+
+    condition:
+        $cd001 or ($el_torito and $iso)
 }
 

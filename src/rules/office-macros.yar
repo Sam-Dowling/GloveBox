@@ -265,8 +265,9 @@ rule Office_DDE_AutoLink
         severity    = "critical"
 
     strings:
-        $a = "DDEAUTO" nocase
-        $b = "DDEAUTO" nocase wide
+        $a = "DDE" nocase fullword
+        $b = "DDEAUTO" nocase
+        $c = "DDEAUTO" nocase wide
 
     condition:
         any of them
@@ -493,6 +494,7 @@ rule VBA_GetObject_WMI
         $get   = "GetObject" nocase
         $a     = "winmgmts" nocase
         $b     = "Win32_Process" nocase
+        $c     = "Win32_ComputerSystem" nocase
         $vba   = "Sub " nocase
 
     condition:

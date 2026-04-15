@@ -6469,7 +6469,7 @@ relevance:0}),e.C_NUMBER_MODE]}}})();hljs.registerLanguage("vbscript",e)})();
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
-const GLOVEBOX_VERSION = '20260415.2108';
+const GLOVEBOX_VERSION = '20260415.2128';
 const DEFAULT_YARA_RULES = `// ─── Office Macros ───
 // 33 rules
 
@@ -6737,8 +6737,9 @@ rule Office_DDE_AutoLink
         severity    = "critical"
 
     strings:
-        $a = "DDEAUTO" nocase
-        $b = "DDEAUTO" nocase wide
+        $a = "DDE" nocase fullword
+        $b = "DDEAUTO" nocase
+        $c = "DDEAUTO" nocase wide
 
     condition:
         any of them
@@ -6965,6 +6966,7 @@ rule VBA_GetObject_WMI
         $get   = "GetObject" nocase
         $a     = "winmgmts" nocase
         $b     = "Win32_Process" nocase
+        $c     = "Win32_ComputerSystem" nocase
         $vba   = "Sub " nocase
 
     condition:
@@ -7142,17 +7144,20 @@ rule JS_Obfuscated_Payload
         (($cc1 or $cc2 or $cc3) and ($eval or $func)) or $arr or $split
 }
 
-rule JS_Encoded_Script_JSE
+rule Encoded_Script_File_JSE_VBE
 {
     meta:
-        description = "JScript.Encode encoded script file (JSE format marker)"
+        description = "File contains Microsoft JScript.Encode or VBScript.Encode markers (JSE/VBE)"
         severity    = "high"
 
     strings:
-        $jse = "#@~^"
+        $marker_start = "#@~^" ascii
+        $marker_end   = "^#~@" ascii
+        $lang1 = "JScript.Encode" nocase
+        $lang2 = "VBScript.Encode" nocase
 
     condition:
-        $jse
+        ($marker_start and $marker_end) or any of ($lang*)
 }
 
 rule JS_WMI_Execution
@@ -7257,19 +7262,6 @@ rule VBS_Scheduled_Task
         ($a or $b or $c) and $d
 }
 
-rule VBS_Encoded_VBE
-{
-    meta:
-        description = "VBScript.Encode encoded file (VBE format marker)"
-        severity    = "high"
-
-    strings:
-        $a = "#@~^"
-        $b = "VBScript.Encode" nocase
-
-    condition:
-        any of them
-}
 
 rule VBS_Obfuscation_ChrW
 {
@@ -7294,13 +7286,17 @@ rule PowerShell_Encoded_Command
         severity    = "critical"
 
     strings:
-        $ps = "powershell" nocase
-        $a = "-EncodedCommand" nocase
-        $b = "-enc " nocase
-        $c = "-ec " nocase
+        $ps  = "powershell" nocase
+        $a   = "-EncodedCommand" nocase
+        $b   = "-enc " nocase
+        $c   = "-ec " nocase
+        $enc1 = /-[Ee]nc\\s+[A-Za-z0-9+\\/]{20,}/
+        $enc2 = /-[Ee]ncodedcommand\\s+[A-Za-z0-9+\\/]{20,}/ nocase
+        $enc3 = /-[Ee][Cc]\\s+[A-Za-z0-9+\\/]{20,}/
+        $from = "FromBase64String" nocase fullword
 
     condition:
-        $ps and ($a or $b or $c)
+        ($ps and ($a or $b or $c)) or any of ($enc*) or $from
 }
 
 rule PowerShell_Download_Cradle
@@ -7599,36 +7595,7 @@ rule PowerShell_Stealth_Flags_Combo
         $ps and 2 of ($a, $b, $c, $d, $e, $f)
 }
 
-rule PowerShell_Reflection_Assembly_Load
-{
-    meta:
-        description = "PowerShell loads .NET assembly via reflection — fileless PE execution"
-        severity    = "critical"
 
-    strings:
-        $a     = "System.Reflection.Assembly" nocase
-        $b     = "[Reflection.Assembly]::Load" nocase
-        $c     = "FromBase64String" nocase
-        $d     = "Add-Type" nocase
-
-    condition:
-        ($a or $b) and ($c or $d)
-}
-
-rule PowerShell_IEX_Env_Variable
-{
-    meta:
-        description = "PowerShell IEX via environment variable — obfuscated execution"
-        severity    = "critical"
-
-    strings:
-        $a     = "IEX $env:" nocase
-        $b     = "iex $env:" nocase
-        $c     = "Invoke-Expression $env:" nocase
-
-    condition:
-        any of them
-}
 
 rule WMIC_Process_Create
 {
@@ -7682,21 +7649,6 @@ rule AMSI_ETW_Bypass_Patterns
         ($a or $b or $c) and ($f or $g)
 }
 
-rule PowerShell_EncodedCommand
-{
-    meta:
-        description = "PowerShell -EncodedCommand with Base64 payload"
-        severity    = "high"
-
-    strings:
-        $enc1 = /-[Ee]nc\\s+[A-Za-z0-9+\\/]{20,}/
-        $enc2 = /-[Ee]ncodedcommand\\s+[A-Za-z0-9+\\/]{20,}/ nocase
-        $enc3 = /-[Ee][Cc]\\s+[A-Za-z0-9+\\/]{20,}/
-        $from = "FromBase64String" nocase fullword
-
-    condition:
-        any of them
-}
 
 rule CMD_Caret_Obfuscation
 {
@@ -7854,21 +7806,6 @@ rule VBScript_Chr_Concatenation
         any of them
 }
 
-rule JScript_Encoded_Script
-{
-    meta:
-        description = "File contains Microsoft JScript.Encode encoded script"
-        severity    = "high"
-
-    strings:
-        $marker = "#@~^" ascii
-        $end = "^#~@" ascii
-        $lang1 = "JScript.Encode" nocase
-        $lang2 = "VBScript.Encode" nocase
-
-    condition:
-        ($marker and $end) or any of ($lang*)
-}
 
 rule Python_Exec_Base64_Obfuscation
 {
@@ -8190,6 +8127,62 @@ rule Shell_Curl_Wget_Pipe_Exec
 
     condition:
         any of them
+}
+
+// ============================================================================
+// Python Reverse Shell / Network Backdoor
+// ============================================================================
+
+rule Python_Reverse_Shell
+{
+    meta:
+        description = "Detects Python reverse shell patterns — socket connect with subprocess/pty"
+        severity = "critical"
+        category = "execution"
+
+    strings:
+        $socket_import = "import socket" nocase
+        $subprocess    = "import subprocess" nocase
+        $pty           = "import pty" nocase
+        $os_dup2       = "os.dup2(" nocase
+        $connect       = ".connect((" nocase
+        $popen         = "subprocess.Popen(" nocase
+        $call          = "subprocess.call(" nocase
+        $pty_spawn     = "pty.spawn(" nocase
+        $bin_sh        = "/bin/sh" nocase
+        $bin_bash      = "/bin/bash" nocase
+
+    condition:
+        $socket_import and $connect and ($subprocess or $pty) and ($os_dup2 or $popen or $call or $pty_spawn or $bin_sh or $bin_bash)
+}
+
+// ============================================================================
+// Node.js child_process Execution
+// ============================================================================
+
+rule NodeJS_Child_Process_Execution
+{
+    meta:
+        description = "Detects Node.js child_process module usage for command execution"
+        severity = "high"
+        category = "execution"
+
+    strings:
+        $require_cp = "require('child_process')" nocase
+        $require_cp2 = "require(\\"child_process\\")" nocase
+        $import_cp = "from 'child_process'" nocase
+        $import_cp2 = "from \\"child_process\\"" nocase
+        $exec       = ".exec(" nocase
+        $execSync   = ".execSync(" nocase
+        $spawn      = ".spawn(" nocase
+        $spawnSync  = ".spawnSync(" nocase
+        $execFile   = ".execFile(" nocase
+        $cmd        = "cmd" nocase
+        $powershell = "powershell" nocase
+        $bash       = "/bin/sh" nocase
+
+    condition:
+        any of ($require_cp*,$import_cp*) and any of ($exec,$execSync,$spawn,$spawnSync,$execFile) and any of ($cmd,$powershell,$bash)
 }
 
 
@@ -8697,6 +8690,8 @@ rule HTML_WebSocket_Exfil
 
     strings:
         $a = "new WebSocket" nocase
+        $b = "WebSocket(" nocase
+        $c = "wss://" nocase
         $d = "password" nocase
 
     condition:
@@ -8831,6 +8826,72 @@ rule HTML_Entity_Obfuscated_Script
         $entity_chain and ($script_tag or $eval)
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// MHTML Smuggling
+// ════════════════════════════════════════════════════════════════════════
+
+rule MHTML_Smuggling
+{
+    meta:
+        description = "MHTML file with embedded active content — smuggles payloads through MIME wrapping"
+        severity    = "high"
+
+    strings:
+        $mime    = "MIME-Version:" nocase
+        $mhtml1  = "Content-Location:" nocase
+        $mhtml2  = "Content-Type: multipart/related" nocase
+        $mhtml3  = "Content-Type: message/rfc822" nocase
+        $active1 = "<script" nocase
+        $active2 = "ActiveXObject" nocase
+        $active3 = "WScript.Shell" nocase
+        $active4 = "<HTA:APPLICATION" nocase
+
+    condition:
+        $mime and any of ($mhtml*) and any of ($active*)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// OneNote Embedded PE
+// ════════════════════════════════════════════════════════════════════════
+
+rule OneNote_Embedded_PE
+{
+    meta:
+        description = "OneNote file with embedded MZ PE executable — payload delivery via notebook"
+        severity    = "critical"
+
+    strings:
+        $magic = { E4 52 5C 7B 8C D8 A7 4D }
+        $mz    = { 4D 5A 90 00 }
+        $pe    = "This program cannot be run in DOS mode"
+
+    condition:
+        $magic and ($mz or $pe)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// HTML Blob with Password-Protected Archive
+// ════════════════════════════════════════════════════════════════════════
+
+rule HTML_Smuggling_Password_Hint
+{
+    meta:
+        description = "HTML smuggling page includes password hint text — common malware delivery pattern"
+        severity    = "critical"
+
+    strings:
+        $blob   = "new Blob" nocase
+        $b64    = "atob(" nocase
+        $dl     = "download=" nocase
+        $pw1    = "password" nocase
+        $pw2    = "passcode" nocase
+        $pw3    = "Password:" nocase
+        $zip    = ".zip" nocase
+
+    condition:
+        ($blob or $b64) and $dl and any of ($pw*) and $zip
+}
+
 
 // ─── Windows Threats ───
 // 126 rules
@@ -8913,9 +8974,11 @@ rule URL_Shortcut_Suspicious
         $header = "[InternetShortcut]"
         $url = "URL="
         $icon = "IconFile="
+        $smb1 = "URL=\\\\\\\\\\\\\\\\" nocase
+        $smb2 = "URL=file://" nocase
 
     condition:
-        $header and $url and ($smb or $icon)
+        $header and $url and ($smb1 or $smb2 or $icon)
 }
 
 rule URL_Shortcut_UNC_Icon
@@ -10953,6 +11016,71 @@ rule URL_Encoded_Command
         any of them
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// ClickOnce Application Reference
+// ════════════════════════════════════════════════════════════════════════
+
+rule ClickOnce_AppRef_MS
+{
+    meta:
+        description = "ClickOnce .appref-ms application reference — can install .NET malware on click"
+        severity    = "critical"
+
+    strings:
+        $appref  = ".application#" nocase
+        $culture = "Culture=" nocase
+        $token   = "PublicKeyToken=" nocase
+        $proc    = "processorArchitecture=" nocase
+        $http    = "http" nocase
+
+    condition:
+        $appref and any of ($culture, $token, $proc) and $http
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Scheduled Task XML
+// ════════════════════════════════════════════════════════════════════════
+
+rule Scheduled_Task_XML
+{
+    meta:
+        description = "File contains Windows Scheduled Task XML definition — persistence or execution"
+        severity    = "high"
+
+    strings:
+        $task   = "<Task " nocase
+        $xmlns  = "schemas.microsoft.com/windows" nocase
+        $exec   = "<Exec>" nocase
+        $cmd    = "<Command>" nocase
+        $args   = "<Arguments>" nocase
+        $trigger1 = "<LogonTrigger>" nocase
+        $trigger2 = "<BootTrigger>" nocase
+        $trigger3 = "<TimeTrigger>" nocase
+        $trigger4 = "<CalendarTrigger>" nocase
+
+    condition:
+        $task and $xmlns and $exec and $cmd and any of ($trigger*)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// ISO Disk Image
+// ════════════════════════════════════════════════════════════════════════
+
+rule ISO_Disk_Image
+{
+    meta:
+        description = "ISO disk image file — bypasses MotW on Windows, mounts on double-click"
+        severity    = "high"
+
+    strings:
+        $cd001 = "CD001" ascii
+        $el_torito = "EL TORITO" nocase
+        $iso = "ISO 9660" nocase
+
+    condition:
+        $cd001 or ($el_torito and $iso)
+}
+
 
 // ─── Archive Threats ───
 // 11 rules
@@ -11708,6 +11836,95 @@ rule Credential_Dumping_Commands
         ($a and $b) or ($c and $d) or ($e and ($f or $g))
 }
 
+// ════════════════════════════════════════════════════════════════════════
+// C2 / Exfiltration Channel Detection
+// ════════════════════════════════════════════════════════════════════════
+
+rule Exfil_Telegram_Bot_API
+{
+    meta:
+        description = "File references Telegram Bot API — common exfiltration and C2 channel"
+        severity    = "high"
+
+    strings:
+        $api1 = "api.telegram.org" nocase
+        $api2 = "/sendMessage" nocase
+        $api3 = "/sendDocument" nocase
+        $bot  = "bot_token" nocase
+        $chat = "chat_id" nocase
+
+    condition:
+        $api1 or ($api2 and ($bot or $chat)) or ($api3 and ($bot or $chat))
+}
+
+rule Exfil_Discord_Webhook
+{
+    meta:
+        description = "File references Discord webhook URL — used for data exfiltration"
+        severity    = "high"
+
+    strings:
+        $webhook = "discord.com/api/webhooks/" nocase
+        $discordapp = "discordapp.com/api/webhooks/" nocase
+        $content = "\\"content\\"" nocase
+        $embed = "\\"embeds\\"" nocase
+
+    condition:
+        ($webhook or $discordapp) or (($content or $embed) and ($webhook or $discordapp))
+}
+
+rule Exfil_Slack_Webhook
+{
+    meta:
+        description = "File references Slack webhook — potential data exfiltration channel"
+        severity    = "high"
+
+    strings:
+        $hook = "hooks.slack.com/services/" nocase
+        $api  = "slack.com/api/" nocase
+
+    condition:
+        any of them
+}
+
+rule SSH_Private_Key_Reference
+{
+    meta:
+        description = "File contains or references SSH/PGP private key material"
+        severity    = "critical"
+
+    strings:
+        $rsa     = "-----BEGIN RSA PRIVATE KEY-----"
+        $openssh = "-----BEGIN OPENSSH PRIVATE KEY-----"
+        $ec      = "-----BEGIN EC PRIVATE KEY-----"
+        $dsa     = "-----BEGIN DSA PRIVATE KEY-----"
+        $pgp     = "-----BEGIN PGP PRIVATE KEY BLOCK-----"
+        $generic = "-----BEGIN PRIVATE KEY-----"
+        $ppk     = "PuTTY-User-Key-File" nocase
+
+    condition:
+        any of them
+}
+
+rule Exfil_Pastebin_Reference
+{
+    meta:
+        description = "File references Pastebin or paste-like services — dead-drop exfiltration"
+        severity    = "medium"
+
+    strings:
+        $pb1 = "pastebin.com" nocase
+        $pb2 = "hastebin.com" nocase
+        $pb3 = "paste.ee" nocase
+        $pb4 = "ghostbin.co" nocase
+        $pb5 = "dpaste.org" nocase
+        $pb6 = "transfer.sh" nocase
+        $pb7 = "file.io" nocase
+
+    condition:
+        any of them
+}
+
 
 // ─── Suspicious Patterns ───
 // 7 rules
@@ -11818,6 +12035,77 @@ rule Embedded_Compressed_Stream
 
     condition:
         any of them
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Crypto Miner Indicators
+// ════════════════════════════════════════════════════════════════════════
+
+rule Crypto_Miner_Indicators
+{
+    meta:
+        description = "File contains cryptocurrency mining indicators — pool addresses, miner tools"
+        severity    = "high"
+
+    strings:
+        $pool1  = "stratum+tcp://" nocase
+        $pool2  = "stratum+ssl://" nocase
+        $pool3  = "pool.minexmr.com" nocase
+        $pool4  = "xmrpool.eu" nocase
+        $pool5  = "nanopool.org" nocase
+        $pool6  = "hashvault.pro" nocase
+        $miner1 = "xmrig" nocase
+        $miner2 = "cpuminer" nocase
+        $miner3 = "cgminer" nocase
+        $miner4 = "bfgminer" nocase
+        $miner5 = "CoinHive" nocase
+        $wallet = /[14][a-km-zA-HJ-NP-Z1-9]{25,34}/ ascii
+        $monero = /4[0-9AB][1-9A-HJ-NP-Za-km-z]{93}/ ascii
+
+    condition:
+        any of ($pool*) or any of ($miner*) or ($wallet and any of ($pool*, $miner*)) or ($monero and any of ($pool*, $miner*))
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// OLE10Native Embedded Object Abuse
+// ════════════════════════════════════════════════════════════════════════
+
+rule OLE10Native_Embedded_Executable
+{
+    meta:
+        description = "OLE document contains OLE10Native stream with executable — drops file on activation"
+        severity    = "critical"
+
+    strings:
+        $ole    = { D0 CF 11 E0 A1 B1 1A E1 }
+        $native = "\\x01Ole10Native" wide
+        $exe    = ".exe" nocase
+        $cmd    = ".cmd" nocase
+        $bat    = ".bat" nocase
+        $scr    = ".scr" nocase
+        $pif    = ".pif" nocase
+        $ps1    = ".ps1" nocase
+
+    condition:
+        $ole and $native and any of ($exe, $cmd, $bat, $scr, $pif, $ps1)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Suspicious String Entropy / Padding
+// ════════════════════════════════════════════════════════════════════════
+
+rule Suspicious_Null_Byte_Padding
+{
+    meta:
+        description = "File contains suspicious null byte padding patterns — payload alignment or evasion"
+        severity    = "medium"
+
+    strings:
+        $nop_sled = { 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 }
+        $null_pad = { 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 }
+
+    condition:
+        $nop_sled or (#null_pad > 10)
 }
 
 // ════════════════════════════════════════════════════════════════════════

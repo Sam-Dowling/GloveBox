@@ -110,6 +110,77 @@ rule Embedded_Compressed_Stream
 }
 
 // ════════════════════════════════════════════════════════════════════════
+// Crypto Miner Indicators
+// ════════════════════════════════════════════════════════════════════════
+
+rule Crypto_Miner_Indicators
+{
+    meta:
+        description = "File contains cryptocurrency mining indicators — pool addresses, miner tools"
+        severity    = "high"
+
+    strings:
+        $pool1  = "stratum+tcp://" nocase
+        $pool2  = "stratum+ssl://" nocase
+        $pool3  = "pool.minexmr.com" nocase
+        $pool4  = "xmrpool.eu" nocase
+        $pool5  = "nanopool.org" nocase
+        $pool6  = "hashvault.pro" nocase
+        $miner1 = "xmrig" nocase
+        $miner2 = "cpuminer" nocase
+        $miner3 = "cgminer" nocase
+        $miner4 = "bfgminer" nocase
+        $miner5 = "CoinHive" nocase
+        $wallet = /[14][a-km-zA-HJ-NP-Z1-9]{25,34}/ ascii
+        $monero = /4[0-9AB][1-9A-HJ-NP-Za-km-z]{93}/ ascii
+
+    condition:
+        any of ($pool*) or any of ($miner*) or ($wallet and any of ($pool*, $miner*)) or ($monero and any of ($pool*, $miner*))
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// OLE10Native Embedded Object Abuse
+// ════════════════════════════════════════════════════════════════════════
+
+rule OLE10Native_Embedded_Executable
+{
+    meta:
+        description = "OLE document contains OLE10Native stream with executable — drops file on activation"
+        severity    = "critical"
+
+    strings:
+        $ole    = { D0 CF 11 E0 A1 B1 1A E1 }
+        $native = "\x01Ole10Native" wide
+        $exe    = ".exe" nocase
+        $cmd    = ".cmd" nocase
+        $bat    = ".bat" nocase
+        $scr    = ".scr" nocase
+        $pif    = ".pif" nocase
+        $ps1    = ".ps1" nocase
+
+    condition:
+        $ole and $native and any of ($exe, $cmd, $bat, $scr, $pif, $ps1)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Suspicious String Entropy / Padding
+// ════════════════════════════════════════════════════════════════════════
+
+rule Suspicious_Null_Byte_Padding
+{
+    meta:
+        description = "File contains suspicious null byte padding patterns — payload alignment or evasion"
+        severity    = "medium"
+
+    strings:
+        $nop_sled = { 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 }
+        $null_pad = { 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 }
+
+    condition:
+        $nop_sled or (#null_pad > 10)
+}
+
+// ════════════════════════════════════════════════════════════════════════
 // REG — Windows Registry File rules
 // ════════════════════════════════════════════════════════════════════════
 
