@@ -78,7 +78,7 @@ src/renderers/sqlite-renderer.js       # SqliteRenderer — SQLite + browser his
 src/renderers/doc-renderer.js          # DocBinaryRenderer — legacy .doc text extraction
 src/renderers/msg-renderer.js          # MsgRenderer — Outlook .msg email view
 src/renderers/eml-renderer.js          # EmlRenderer — RFC 5322/MIME email parser
-src/renderers/lnk-renderer.js         # LnkRenderer — Windows Shell Link (.lnk) parser
+src/renderers/lnk-renderer.js          # LnkRenderer — Windows Shell Link (.lnk) parser
 src/renderers/hta-renderer.js          # HtaRenderer — HTA source viewer + security scanner
 src/renderers/html-renderer.js         # HtmlRenderer — sandboxed HTML preview + source view
 src/renderers/pdf-renderer.js          # PdfRenderer — PDF page renderer + security scanner
@@ -106,17 +106,17 @@ GloveBox/
 ├── README.md
 ├── CONTRIBUTING.md
 ├── docs/
-│   └── index.html                  # Built output (GitHub Pages) — DO NOT EDIT
+│   └── index.html                   # Built output (GitHub Pages) — DO NOT EDIT
 ├── vendor/
 │   ├── jszip.min.js                # JSZip — ZIP parsing for DOCX/XLSX/PPTX
 │   ├── xlsx.full.min.js            # SheetJS — spreadsheet parsing
 │   ├── pdf.min.js                  # pdf.js — PDF rendering (Mozilla)
 │   ├── pdf.worker.min.js           # pdf.js worker — PDF parsing backend
-│   └── highlight.min.js            # highlight.js — syntax highlighting
+│   └── highlight.min.js             # highlight.js — syntax highlighting
 ├── src/
 │   ├── styles/                     # CSS (split for manageable file sizes)
 │   │   ├── core.css                # Base theme, toolbar, sidebar, dialogs (1,729 lines)
-│   │   └── viewers.css             # Format-specific viewer styles (3,274 lines)
+│   │   └── viewers.css              # Format-specific viewer styles (3,274 lines)
 │   ├── rules/                      # YARA rules (split by threat category)
 │   │   ├── office-macros.yar       # Office/VBA macro detection
 │   │   ├── script-threats.yar      # PS, JS, VBS, CMD, Python threats
@@ -126,7 +126,7 @@ GloveBox/
 │   │   ├── encoding-threats.yar    # Encoding/obfuscation patterns
 │   │   ├── network-indicators.yar  # UNC, WebDAV, credential theft
 │   │   ├── suspicious-patterns.yar # General suspicious patterns
-│   │   └── file-analysis.yar       # PE, image, forensic analysis
+│   │   └── file-analysis.yar        # PE, image, forensic analysis
 │   ├── constants.js                # Shared constants, DOM helpers, unit converters, sanitizers
 │   ├── vba-utils.js                # Shared VBA binary decoder + auto-exec pattern scanner
 │   ├── yara-engine.js              # YaraEngine — in-browser YARA rule parser + matcher
@@ -165,14 +165,14 @@ GloveBox/
 │   │   ├── html-renderer.js        # HtmlRenderer — sandboxed HTML preview
 │   │   ├── pdf-renderer.js         # PdfRenderer
 │   │   ├── image-renderer.js       # ImageRenderer — image preview + stego detection
-│   │   └── plaintext-renderer.js   # PlainTextRenderer
+│   │   └── plaintext-renderer.js    # PlainTextRenderer
 │   └── app/
 │       ├── app-core.js             # App class definition + setup methods
 │       ├── app-load.js             # File loading, hashing, IOC extraction
 │       ├── app-sidebar.js          # Sidebar rendering (risk bar + collapsible panes)
 │       ├── app-yara.js             # YARA rule editor, scanning, result display
-│       └── app-ui.js               # UI helpers + DOMContentLoaded bootstrap
-└── examples/                       # Sample files for testing various formats
+│       └── app-ui.js                # UI helpers + DOMContentLoaded bootstrap
+└── examples/                        # Sample files for testing various formats
 ```
 
 ---
