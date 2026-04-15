@@ -155,6 +155,21 @@ class App {
       e.preventDefault();
       this._handlePasteEvent(e);
     });
+
+    // Strip HTML from copy selections inside viewer panes so that
+    // Ctrl+C / drag-select copies clean plain text, not table markup.
+    document.addEventListener('copy', e => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return;
+      const node = sel.anchorNode;
+      if (!node) return;
+      const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+      if (!el) return;
+      if (el.closest('.plaintext-scroll, .html-source-pane, .hex-dump')) {
+        e.preventDefault();
+        e.clipboardData.setData('text/plain', sel.toString());
+      }
+    });
   }
 
   // ── Paste from clipboard ────────────────────────────────────────────────
@@ -174,18 +189,19 @@ class App {
               return;
             }
           }
-          // Check for text
-          if (item.types.includes('text/html')) {
-            const blob = await item.getType('text/html');
-            const text = await blob.text();
-            const file = new File([text], 'clipboard.html', { type: 'text/html' });
-            this._loadFile(file);
-            return;
-          }
+          // Check for text — prefer plain text over HTML so that pasting
+          // from apps like Slack gives the actual text, not rich formatting.
           if (item.types.includes('text/plain')) {
             const blob = await item.getType('text/plain');
             const text = await blob.text();
             const file = new File([text], 'clipboard.txt', { type: 'text/plain' });
+            this._loadFile(file);
+            return;
+          }
+          if (item.types.includes('text/html')) {
+            const blob = await item.getType('text/html');
+            const text = await blob.text();
+            const file = new File([text], 'clipboard.html', { type: 'text/html' });
             this._loadFile(file);
             return;
           }
@@ -229,18 +245,19 @@ class App {
       }
     }
 
-    // Check for HTML text
-    const html = dt.getData('text/html');
-    if (html && html.trim()) {
-      const file = new File([html], 'clipboard.html', { type: 'text/html' });
+    // Prefer plain text over HTML so that pasting from apps like Slack
+    // gives the actual text content, not rich formatting / table markup.
+    const text = dt.getData('text/plain');
+    if (text && text.trim()) {
+      const file = new File([text], 'clipboard.txt', { type: 'text/plain' });
       this._loadFile(file);
       return;
     }
 
-    // Fallback to plain text
-    const text = dt.getData('text/plain');
-    if (text && text.trim()) {
-      const file = new File([text], 'clipboard.txt', { type: 'text/plain' });
+    // Fallback to HTML if no plain text available
+    const html = dt.getData('text/html');
+    if (html && html.trim()) {
+      const file = new File([html], 'clipboard.html', { type: 'text/html' });
       this._loadFile(file);
       return;
     }
