@@ -1312,7 +1312,7 @@ body.dark .enc-finding-inner-card {
   color: rgba(255, 255, 255, .5);
 }
 
-/* ── Decoded content preview ── */
+/* ── Decoded content preview (green-tinted) ── */
 .enc-decoded-preview {
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 10px;
@@ -1333,6 +1333,28 @@ body.dark .enc-decoded-preview {
   background: rgba(74, 222, 128, .06);
   border-color: rgba(74, 222, 128, .12);
   color: rgba(74, 222, 128, .7);
+}
+
+/* ── Raw encoded snippet fallback (neutral grey) ── */
+.enc-snippet {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+  background: rgba(0, 0, 0, .04);
+  border: 1px solid rgba(0, 0, 0, .08);
+  border-radius: 4px;
+  padding: 5px 8px;
+  margin: 4px 0;
+  word-break: break-all;
+  line-height: 1.5;
+  color: #555;
+  max-height: 54px;
+  overflow: hidden;
+}
+
+body.dark .enc-snippet {
+  background: rgba(255, 255, 255, .04);
+  border-color: rgba(255, 255, 255, .08);
+  color: rgba(255, 255, 255, .5);
 }
 
 /* ── Encoded content meta clickable ── */

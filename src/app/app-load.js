@@ -423,6 +423,13 @@ Object.assign(App.prototype, {
           }
         );
         this.findings.encodedContent = encodedFindings;
+        // Speculatively decode lazy findings so sidebar can show decoded previews
+        // immediately (base64/hex decode is lightweight; skip compressed blobs)
+        await Promise.all(
+          encodedFindings
+            .filter(ef => ef.rawCandidate && !ef.decodedBytes)
+            .map(ef => detector.lazyDecode(ef))
+        );
         // Store raw bytes reference on compressed findings for lazy decompression
         for (const ef of encodedFindings) {
           if (ef.needsDecompression) ef._rawBytes = new Uint8Array(buffer);

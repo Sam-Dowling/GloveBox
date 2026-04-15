@@ -454,6 +454,25 @@ Object.assign(App.prototype, {
           ? _decodedPreview.substring(0, maxLen) + '\u2026'
           : _decodedPreview;
         details.appendChild(previewEl);
+      } else {
+        // Fallback: show raw encoded snippet when decoded preview isn't available
+        // (e.g. binary decoded content, pending decompression, or decode failure)
+        const _snippetText = finding.snippet || (_sourceText && finding.length
+          ? _sourceText.substring(finding.offset, finding.offset + Math.min(finding.length, 120))
+          : null);
+        if (_snippetText) {
+          const snippetEl = document.createElement('div');
+          snippetEl.className = 'enc-snippet';
+          snippetEl.textContent = _snippetText.length < (finding.length || Infinity)
+            ? _snippetText + '\u2026'
+            : _snippetText;
+          if (_canLocate) {
+            snippetEl.title = 'Click to locate in view';
+            snippetEl.style.cursor = 'pointer';
+            snippetEl.addEventListener('click', () => this._highlightEncodedInView(finding, true));
+          }
+          details.appendChild(snippetEl);
+        }
       }
 
       // Decoded type

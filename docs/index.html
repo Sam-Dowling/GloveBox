@@ -1322,7 +1322,7 @@ body.dark .enc-finding-inner-card {
   color: rgba(255, 255, 255, .5);
 }
 
-/* ── Decoded content preview ── */
+/* ── Decoded content preview (green-tinted) ── */
 .enc-decoded-preview {
   font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
   font-size: 10px;
@@ -1343,6 +1343,28 @@ body.dark .enc-decoded-preview {
   background: rgba(74, 222, 128, .06);
   border-color: rgba(74, 222, 128, .12);
   color: rgba(74, 222, 128, .7);
+}
+
+/* ── Raw encoded snippet fallback (neutral grey) ── */
+.enc-snippet {
+  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+  background: rgba(0, 0, 0, .04);
+  border: 1px solid rgba(0, 0, 0, .08);
+  border-radius: 4px;
+  padding: 5px 8px;
+  margin: 4px 0;
+  word-break: break-all;
+  line-height: 1.5;
+  color: #555;
+  max-height: 54px;
+  overflow: hidden;
+}
+
+body.dark .enc-snippet {
+  background: rgba(255, 255, 255, .04);
+  border-color: rgba(255, 255, 255, .08);
+  color: rgba(255, 255, 255, .5);
 }
 
 /* ── Encoded content meta clickable ── */
@@ -6470,7 +6492,7 @@ relevance:0}),e.C_NUMBER_MODE]}}})();hljs.registerLanguage("vbscript",e)})();
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
-const GLOVEBOX_VERSION = '20260415.2224';
+const GLOVEBOX_VERSION = '20260415.2237';
 const DEFAULT_YARA_RULES = `// ─── Office Macros ───
 // 33 rules
 
@@ -29759,6 +29781,13 @@ Object.assign(App.prototype, {
           }
         );
         this.findings.encodedContent = encodedFindings;
+        // Speculatively decode lazy findings so sidebar can show decoded previews
+        // immediately (base64/hex decode is lightweight; skip compressed blobs)
+        await Promise.all(
+          encodedFindings
+            .filter(ef => ef.rawCandidate && !ef.decodedBytes)
+            .map(ef => detector.lazyDecode(ef))
+        );
         // Store raw bytes reference on compressed findings for lazy decompression
         for (const ef of encodedFindings) {
           if (ef.needsDecompression) ef._rawBytes = new Uint8Array(buffer);
@@ -30842,6 +30871,25 @@ Object.assign(App.prototype, {
           ? _decodedPreview.substring(0, maxLen) + '\u2026'
           : _decodedPreview;
         details.appendChild(previewEl);
+      } else {
+        // Fallback: show raw encoded snippet when decoded preview isn't available
+        // (e.g. binary decoded content, pending decompression, or decode failure)
+        const _snippetText = finding.snippet || (_sourceText && finding.length
+          ? _sourceText.substring(finding.offset, finding.offset + Math.min(finding.length, 120))
+          : null);
+        if (_snippetText) {
+          const snippetEl = document.createElement('div');
+          snippetEl.className = 'enc-snippet';
+          snippetEl.textContent = _snippetText.length < (finding.length || Infinity)
+            ? _snippetText + '\u2026'
+            : _snippetText;
+          if (_canLocate) {
+            snippetEl.title = 'Click to locate in view';
+            snippetEl.style.cursor = 'pointer';
+            snippetEl.addEventListener('click', () => this._highlightEncodedInView(finding, true));
+          }
+          details.appendChild(snippetEl);
+        }
       }
 
       // Decoded type
