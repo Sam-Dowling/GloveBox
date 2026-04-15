@@ -206,13 +206,9 @@ const GLOVEBOX_VERSION = '{VERSION}';
 # docs/index.html — served by GitHub Pages
 docs = os.path.join(BASE, 'docs')
 os.makedirs(docs, exist_ok=True)
-with open(os.path.join(docs, 'index.html'), 'w', encoding='utf-8') as _f:
+out = os.path.join(docs, 'index.html')
+with open(out, 'w', encoding='utf-8') as _f:
     _f.write(HTML)
-
-# root copy
-out = os.path.join(BASE, 'glovebox.html')
-with open(out, 'w', encoding='utf-8') as f:
-    f.write(HTML)
 
 size = os.path.getsize(out)
 print(f"OK  Built {out}  ({size:,} bytes / {size//1024} KB)")

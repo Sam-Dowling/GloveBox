@@ -15,3 +15,6 @@ desktop.ini
 *.swp
 *.swo
 *~
+
+# Build output (only docs/index.html is committed)
+glovebox.html

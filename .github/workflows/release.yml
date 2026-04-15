@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     branches: [main]
-    paths: [glovebox.html]
+    paths: [docs/index.html]
 
 permissions:
   contents: write
@@ -19,7 +19,7 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          VER=$(grep -oP "GLOVEBOX_VERSION = '\K[^']+" glovebox.html)
+          VER=$(grep -oP "GLOVEBOX_VERSION = '\K[^']+" docs/index.html)
           echo "version=v${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Check if tag exists
@@ -30,6 +30,10 @@ jobs:
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Prepare release asset
+        if: steps.check.outputs.exists == 'false'
+        run: cp docs/index.html glovebox.html
 
       - name: Create Release
         if: steps.check.outputs.exists == 'false'

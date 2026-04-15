@@ -12,12 +12,11 @@ Requires **Python 3.8+** (standard library only — no `pip install` needed).
 python build.py
 ```
 
-The build script reads `src/styles.css` and the JS source files listed below, inlines all CSS and JavaScript (including vendor libraries) into a single self-contained HTML document, and writes two identical copies:
+The build script reads `src/styles.css` and the JS source files listed below, inlines all CSS and JavaScript (including vendor libraries) into a single self-contained HTML document:
 
 | Output | Purpose |
 |---|---|
-| `glovebox.html` | Root-level convenience copy for local use |
-| `docs/index.html` | GitHub Pages deployment |
+| `docs/index.html` | GitHub Pages deployment (sole build output) |
 
 ### JS Concatenation Order
 
@@ -79,8 +78,7 @@ Vendor libraries (`vendor/jszip.min.js`, `vendor/xlsx.full.min.js`, `vendor/pdf.
 
 ```
 GloveBox/
-├── build.py                       # Build script — reads src/, writes HTML outputs
-├── glovebox.html                  # Built output (root convenience copy)
+├── build.py                       # Build script — reads src/, writes docs/index.html
 ├── README.md
 ├── docs/
 │   └── index.html                 # Built output (GitHub Pages)
@@ -167,7 +165,7 @@ GloveBox/
 1. Fork the repo
 2. Make your changes in `src/`
 3. Run `python build.py` to rebuild
-4. Test by opening `glovebox.html` in a browser
+4. Test by opening `docs/index.html` in a browser
 5. Submit a pull request
 
 YARA rule submissions, new format parsers, and build-process improvements are especially welcome.
