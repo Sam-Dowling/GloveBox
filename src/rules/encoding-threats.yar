@@ -6,6 +6,8 @@ rule Double_Extension_Any_File
     meta:
         description = "File with double extension pattern in its content — masquerade attempt"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1036.007"
 
     strings:
         $a = ".pdf.hta" nocase
@@ -30,6 +32,8 @@ rule Right_To_Left_Override
     meta:
         description = "File contains Right-to-Left Override character — filename spoofing technique"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1036.002"
 
     strings:
         $a = { E2 80 AE }
@@ -44,6 +48,8 @@ rule Standalone_Script_Shell_Execution
     meta:
         description = "Individual script/shell execution indicator (standalone match)"
         severity    = "medium"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $wscript_shell   = "WScript.Shell" nocase
@@ -64,6 +70,8 @@ rule Standalone_COM_Objects
     meta:
         description = "COM object instantiation or access (standalone match)"
         severity    = "medium"
+        category    = "execution"
+        mitre       = "T1559.001"
 
     strings:
         $fso    = "Scripting.FileSystemObject" nocase
@@ -80,6 +88,8 @@ rule Standalone_Download_Network_Indicators
     meta:
         description = "Individual network/download indicator (standalone match)"
         severity    = "medium"
+        category    = "command-and-control"
+        mitre       = "T1105"
 
     strings:
         $dl_file       = "DownloadFile" nocase
@@ -107,6 +117,8 @@ rule Standalone_PowerShell_Indicators
     meta:
         description = "Individual PowerShell indicator (standalone match)"
         severity    = "medium"
+        category    = "execution"
+        mitre       = "T1059.001"
 
     strings:
         $iex            = "Invoke-Expression" nocase
@@ -133,6 +145,8 @@ rule Standalone_LOLBin_Indicators
     meta:
         description = "LOLBin (Living Off The Land Binary) reference — may indicate abuse"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1218"
 
     strings:
         $certutil   = "certutil" nocase fullword
@@ -155,6 +169,8 @@ rule Standalone_HTML_Suspicious_Elements
     meta:
         description = "Suspicious HTML element or attribute (standalone match)"
         severity    = "info"
+        category    = "execution"
+        mitre       = "T1059.007"
 
     strings:
         $script_tag     = /<script[\s>]/ nocase
@@ -173,6 +189,8 @@ rule Standalone_HTML_Credential_Indicators
     meta:
         description = "HTML credential harvesting or redirect indicator"
         severity    = "medium"
+        category    = "credential-access"
+        mitre       = "T1056.003"
 
     strings:
         $password_input = /type\s*=\s*["']?password/ nocase
@@ -190,6 +208,8 @@ rule Standalone_HTML_Code_Execution
     meta:
         description = "HTML/JavaScript code execution or obfuscation (2+ indicators)"
         severity    = "medium"
+        category    = "execution"
+        mitre       = "T1059.007"
 
     strings:
         $eval_call      = /eval\s*\(/ nocase
@@ -210,6 +230,8 @@ rule Standalone_HTA_VBScript_Indicators
     meta:
         description = "HTA or VBScript execution indicator (standalone match)"
         severity    = "medium"
+        category    = "execution"
+        mitre       = "T1059.005"
 
     strings:
         $hta_tag        = /<HTA:APPLICATION[^>]*>/ nocase
@@ -234,6 +256,8 @@ rule Standalone_WSF_Script_Indicators
     meta:
         description = "Windows Script File execution indicator (standalone match)"
         severity    = "medium"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $regwrite    = "RegWrite" nocase fullword
@@ -251,6 +275,8 @@ rule Standalone_RTF_OLE_Keywords
     meta:
         description = "RTF OLE object control word with RTF context"
         severity    = "high"
+        category    = "initial-access"
+        mitre       = "T1204.002"
 
     strings:
         $rtf        = "{\\rtf"
@@ -272,6 +298,8 @@ rule Standalone_RTF_Exploit_Patterns
     meta:
         description = "RTF exploit vector or DDE field with RTF context"
         severity    = "high"
+        category    = "initial-access"
+        mitre       = "T1203"
 
     strings:
         $rtf           = "{\\rtf"
@@ -293,6 +321,8 @@ rule Standalone_RTF_Obfuscation
     meta:
         description = "RTF obfuscation technique with RTF context"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $rtf           = "{\\rtf"
@@ -308,6 +338,8 @@ rule Standalone_LNK_Argument_Patterns
     meta:
         description = "Suspicious command-line argument patterns (2+ indicators suggest malicious intent)"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $enc_flag     = /-e(nc(odedcommand)?)\b/ nocase
@@ -325,6 +357,8 @@ rule Encoded_Base64_PE_Header
     meta:
         description = "Base64-encoded PE executable (MZ header = TVqQ/TVpQ/TVro)"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $b64_mz1 = "TVqQ" ascii
@@ -340,6 +374,8 @@ rule Encoded_Base64_Gzip
     meta:
         description = "Base64-encoded gzip data (H4sI prefix)"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $b64_gz = "H4sI" ascii
@@ -353,6 +389,8 @@ rule Encoded_Base64_OLE_Document
     meta:
         description = "Base64-encoded OLE/CFB compound document (0M8R prefix)"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $b64_ole = "0M8R" ascii
@@ -366,6 +404,8 @@ rule Encoded_Base64_PDF
     meta:
         description = "Base64-encoded PDF document (JVBE prefix)"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $b64_pdf = "JVBE" ascii
@@ -379,6 +419,8 @@ rule Encoded_Base64_ZIP
     meta:
         description = "Base64-encoded ZIP archive (UEsD prefix)"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $b64_zip = "UEsD" ascii
@@ -392,6 +434,8 @@ rule Hex_Encoded_PE_Header
     meta:
         description = "Hex-encoded PE executable header (4D5A9000)"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $hex_mz_lower = "4d5a9000" ascii
@@ -407,6 +451,8 @@ rule Hex_Shellcode_Pattern
     meta:
         description = "Hex-encoded byte array pattern commonly used for shellcode"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $ps_bytes = /0x[0-9a-fA-F]{2}(,\s*0x[0-9a-fA-F]{2}){15,}/ ascii
@@ -421,6 +467,8 @@ rule Stacked_Encoding_Indicators
     meta:
         description = "Indicators of multi-layer encoding/obfuscation"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1140"
 
     strings:
         $decompress   = "IO.Compression" nocase
@@ -441,6 +489,8 @@ rule Unicode_Escape_Obfuscation
     meta:
         description = "File uses Unicode escape sequences to hide content"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $uesc = /(\\u[0-9a-fA-F]{4}){8,}/ ascii
@@ -454,6 +504,8 @@ rule Obfuscated_IEX_Invocation
     meta:
         description = "PowerShell uses obfuscated Invoke-Expression (IEX) patterns"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1059.001"
 
     strings:
         $iex1 = /\.\s*\(\s*\$[a-zA-Z]*[eE][nN][vV]:[a-zA-Z]+\[/ ascii
@@ -472,6 +524,8 @@ rule Obfuscated_Download_Cradle
     meta:
         description = "File contains obfuscated download cradle patterns"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1059.001"
 
     strings:
         $dl1 = "DownloadString" nocase
@@ -503,6 +557,7 @@ rule Space_Delimited_Hex_Payload
         description = "Detects space, colon, or dash delimited hex byte strings that may encode payloads"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "Hex bytes like '4d 5a 90 00' or '4d:5a:90:00' encoding executables or scripts"
 
     strings:

@@ -4,8 +4,10 @@
 rule Embedded_PE_Header
 {
     meta:
-        description = "File contains an embedded MZ PE header — hidden executable inside document"
+        description = "File contains an embedded MZ PE header (4D5A9000) — hidden executable inside non-PE file"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1027.009"
 
     strings:
         $mz = { 4D 5A 90 00 }
@@ -19,6 +21,8 @@ rule Suspicious_COM_Hijack_CLSID
     meta:
         description = "File references COM object CLSIDs commonly abused for hijacking persistence"
         severity    = "medium"
+        category    = "persistence"
+        mitre       = "T1546.015"
 
     strings:
         $clsid_mmcfx   = "{49CBB1C7-97D1-485A-9EC1-A26065633066}" nocase
@@ -35,6 +39,8 @@ rule General_XOR_Decode_Loop
     meta:
         description = "File contains XOR decoding patterns — common payload deobfuscation"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1140"
 
     strings:
         $a     = "xor" nocase fullword
@@ -51,6 +57,8 @@ rule General_Base64_With_Execution
     meta:
         description = "File decodes base64 and passes result to execution function"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $b64_1 = "base64" nocase
@@ -72,6 +80,8 @@ rule General_Hex_Encoded_Shellcode
     meta:
         description = "File contains patterns consistent with hex-encoded shellcode blobs"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $hex_prefix = /\\x[0-9a-fA-F]{2}(\\x[0-9a-fA-F]{2}){15,}/
@@ -86,6 +96,8 @@ rule Embedded_ZIP_In_Non_Archive
     meta:
         description = "ZIP local file header (PK\\x03\\x04) found inside a non-archive file"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027.009"
 
     strings:
         $pk = { 50 4B 03 04 }
@@ -99,6 +111,8 @@ rule Embedded_Compressed_Stream
     meta:
         description = "Zlib or gzip compressed stream embedded in file"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $zlib_default = { 78 9C }
@@ -118,6 +132,8 @@ rule Crypto_Miner_Indicators
     meta:
         description = "File contains cryptocurrency mining indicators — pool addresses, miner tools"
         severity    = "high"
+        category    = "impact"
+        mitre       = "T1496"
 
     strings:
         $pool1  = "stratum+tcp://" nocase
@@ -147,6 +163,8 @@ rule OLE10Native_Embedded_Executable
     meta:
         description = "OLE document contains OLE10Native stream with executable — drops file on activation"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $ole    = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -171,6 +189,8 @@ rule Suspicious_Null_Byte_Padding
     meta:
         description = "File contains suspicious null byte padding patterns — payload alignment or evasion"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $nop_sled = { 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 }

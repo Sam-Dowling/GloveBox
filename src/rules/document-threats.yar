@@ -1,11 +1,13 @@
 // ─── Document Threats ───
-// 39 rules
+// 38 rules
 
 rule PDF_JavaScript_Execution
 {
     meta:
         description = "PDF contains JavaScript references — can be used for exploitation"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1059.007"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -22,6 +24,8 @@ rule PDF_AutoOpen_Action
     meta:
         description = "PDF uses OpenAction or Additional Actions to auto-execute on open"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -37,6 +41,8 @@ rule PDF_Launch_Action
     meta:
         description = "PDF uses /Launch to execute external programs"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -51,6 +57,8 @@ rule PDF_Embedded_File_Attachment
     meta:
         description = "PDF contains embedded file attachments — potential payload delivery"
         severity    = "medium"
+        category    = "delivery"
+        mitre       = "T1566.001"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -66,6 +74,8 @@ rule PDF_Obfuscated_Stream
     meta:
         description = "PDF uses multiple unusual encoding filters — may hide malicious content"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -83,6 +93,8 @@ rule PDF_SubmitForm_Action
     meta:
         description = "PDF uses /SubmitForm — can exfiltrate form data to external URL"
         severity    = "high"
+        category    = "exfiltration"
+        mitre       = "T1048"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -96,7 +108,9 @@ rule PDF_URI_Link
 {
     meta:
         description = "PDF contains URI action — may redirect to phishing or malware site"
-        severity    = "medium"
+        severity    = "low"
+        category    = "initial-access"
+        mitre       = "T1566.002"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -112,6 +126,8 @@ rule PDF_GoToR_Remote_Link
     meta:
         description = "PDF uses /GoToR to open a remote PDF — can chain to exploit"
         severity    = "high"
+        category    = "initial-access"
+        mitre       = "T1566.002"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -127,6 +143,8 @@ rule PDF_XFA_Form
     meta:
         description = "PDF contains XFA forms — complex attack surface, historically exploited"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1203"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -143,6 +161,8 @@ rule PDF_Encrypted_Content
     meta:
         description = "PDF is encrypted — may bypass content scanning by email gateways"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -155,8 +175,10 @@ rule PDF_Encrypted_Content
 rule PDF_Phishing_QR_Code_Indicators
 {
     meta:
-        description = "PDF likely contains only an image — possible QR code phishing (quishing)"
+        description = "PDF contains image XObjects — may be an image-only PDF used for QR code phishing (quishing)"
         severity    = "medium"
+        category    = "initial-access"
+        mitre       = "T1566.002"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -173,6 +195,8 @@ rule RTF_Embedded_Object
     meta:
         description = "RTF document contains embedded OLE object"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $rtf = "{\\rtf"
@@ -189,6 +213,8 @@ rule RTF_Equation_Editor_Exploit
     meta:
         description = "RTF references Equation Editor CLSID — CVE-2017-11882 / CVE-2018-0802"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1203"
 
     strings:
         $rtf = "{\\rtf"
@@ -203,6 +229,8 @@ rule RTF_Obfuscated_Header
     meta:
         description = "RTF with heavy obfuscation — absurdly long control words or hex escapes"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $rtf = "{\\rtf"
@@ -218,6 +246,8 @@ rule RTF_Large_Hex_Blob
     meta:
         description = "RTF with very large hex-encoded data blob — likely embedded payload"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $rtf = "{\\rtf"
@@ -233,6 +263,8 @@ rule RTF_Package_Object
     meta:
         description = "RTF contains packager shell object — drops files to disk"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $rtf = "{\\rtf"
@@ -249,6 +281,8 @@ rule OneNote_Embedded_Script
     meta:
         description = "OneNote file with embedded script or executable file references"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $magic = { E4 52 5C 7B 8C D8 A7 4D }
@@ -270,6 +304,8 @@ rule OneNote_Any_Embedded_File
     meta:
         description = "OneNote file with any embedded file attachment — review for payloads"
         severity    = "high"
+        category    = "delivery"
+        mitre       = "T1566.001"
 
     strings:
         $magic = { E4 52 5C 7B 8C D8 A7 4D }
@@ -279,29 +315,13 @@ rule OneNote_Any_Embedded_File
         $magic and $a
 }
 
-rule SVG_Embedded_Script
-{
-    meta:
-        description = "SVG image containing embedded JavaScript or event handlers"
-        severity    = "high"
-
-    strings:
-        $svg = "<svg" nocase
-        $a = "<script" nocase
-        $b = "onload=" nocase
-        $c = "onerror=" nocase
-        $d = "onclick=" nocase
-        $e = "<foreignObject" nocase
-
-    condition:
-        $svg and ($a or $b or $c or $d or $e)
-}
-
 rule SVG_Redirect_Phish
 {
     meta:
         description = "SVG image with embedded link or meta redirect — phishing lure disguised as image"
         severity    = "high"
+        category    = "initial-access"
+        mitre       = "T1566.002"
 
     strings:
         $svg = "<svg" nocase
@@ -319,6 +339,8 @@ rule SVG_Base64_Embedded_Content
     meta:
         description = "SVG with large base64 data URI — may smuggle hidden content"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $svg = "<svg" nocase
@@ -335,6 +357,8 @@ rule HTML_Smuggling
     meta:
         description = "HTML file using blob/download smuggling to deliver hidden payload"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1027.006"
 
     strings:
         $a = "new Blob" nocase
@@ -354,6 +378,8 @@ rule HTML_Credential_Phish_Form
     meta:
         description = "HTML file with password input and brand impersonation or external form action"
         severity    = "high"
+        category    = "credential-access"
+        mitre       = "T1056.003"
 
     strings:
         $form = "<form" nocase
@@ -378,6 +404,8 @@ rule HTML_Meta_Redirect_Phish
     meta:
         description = "HTML file with meta refresh redirect — used in phishing redirectors"
         severity    = "high"
+        category    = "initial-access"
+        mitre       = "T1566.002"
 
     strings:
         $a = "http-equiv=\"refresh\"" nocase
@@ -394,6 +422,8 @@ rule HTML_JavaScript_Redirect
     meta:
         description = "HTML with JavaScript redirect — common phishing redirector technique"
         severity    = "high"
+        category    = "initial-access"
+        mitre       = "T1566.002"
 
     strings:
         $a = "window.location" nocase
@@ -411,6 +441,8 @@ rule HTML_Obfuscated_Phish_Page
     meta:
         description = "HTML page with heavy obfuscation — typical of advanced phishing kits"
         severity    = "critical"
+        category    = "credential-access"
+        mitre       = "T1056.003"
 
     strings:
         $a = "atob(" nocase
@@ -430,6 +462,8 @@ rule HTML_Invisible_Iframe
     meta:
         description = "HTML page with hidden/invisible iframe — clickjacking or silent redirect"
         severity    = "high"
+        category    = "initial-access"
+        mitre       = "T1566.002"
 
     strings:
         $a = "<iframe" nocase
@@ -449,6 +483,8 @@ rule HTML_Captcha_Phish_Gate
     meta:
         description = "HTML phishing page with fake CAPTCHA gate — delays analysis, builds trust"
         severity    = "high"
+        category    = "initial-access"
+        mitre       = "T1566.002"
 
     strings:
         $a = "captcha" nocase
@@ -466,6 +502,8 @@ rule HTML_LocalStorage_Exfil
     meta:
         description = "HTML phishing page accesses localStorage or sessionStorage — credential caching"
         severity    = "medium"
+        category    = "credential-access"
+        mitre       = "T1056.003"
 
     strings:
         $a = "localStorage" nocase
@@ -483,6 +521,8 @@ rule HTML_Data_URI_Payload
     meta:
         description = "HTML file uses data URI to embed executable or script content"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $a = "data:text/html;base64" nocase
@@ -499,6 +539,8 @@ rule HTML_WebSocket_Exfil
     meta:
         description = "HTML page opens WebSocket connection — potential credential exfiltration channel"
         severity    = "medium"
+        category    = "exfiltration"
+        mitre       = "T1048"
 
     strings:
         $a = "new WebSocket" nocase
@@ -513,8 +555,10 @@ rule HTML_WebSocket_Exfil
 rule IQY_Web_Query_File
 {
     meta:
-        description = "IQY web query file — fetches remote data into Excel, abused for C2"
+        description = "IQY web query file starting with WEB header — fetches remote data into Excel, abused for C2"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1559.002"
 
     strings:
         $a = "WEB" nocase
@@ -522,20 +566,22 @@ rule IQY_Web_Query_File
         $c = "1"
 
     condition:
-        all of them
+        $a at 0 and $b
 }
 
 rule SLK_Symbolic_Link_File
 {
     meta:
-        description = "SLK (Symbolic Link) spreadsheet file — legacy format that bypasses macro blocks"
+        description = "SLK (Symbolic Link) spreadsheet file starting with ID;P header — legacy format that bypasses macro blocks"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $a = "ID;P" nocase
 
     condition:
-        $a
+        $a at 0
 }
 
 rule CSV_Formula_Injection
@@ -543,6 +589,8 @@ rule CSV_Formula_Injection
     meta:
         description = "CSV file with formula injection — payloads execute when opened in Excel"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $a = "=CMD(" nocase
@@ -563,6 +611,8 @@ rule PDF_AcroForm_With_JavaScript
     meta:
         description = "PDF has AcroForm combined with JavaScript — interactive form exploitation"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1059.007"
 
     strings:
         $pdf   = { 25 50 44 46 }
@@ -579,6 +629,8 @@ rule PDF_RichMedia_Content
     meta:
         description = "PDF contains RichMedia (Flash/multimedia) — historically exploited attack surface"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1203"
 
     strings:
         $pdf   = { 25 50 44 46 }
@@ -593,6 +645,8 @@ rule PDF_ObjectStream_With_Action
     meta:
         description = "PDF uses object streams with auto-action — can hide malicious objects"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $pdf   = { 25 50 44 46 }
@@ -610,6 +664,8 @@ rule PDF_Eval_Obfuscation
     meta:
         description = "PDF contains JavaScript eval or encoding functions — obfuscated exploit code"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1059.007"
 
     strings:
         $pdf   = { 25 50 44 46 }
@@ -628,6 +684,8 @@ rule HTML_Entity_Obfuscated_Script
     meta:
         description = "HTML file uses numeric character entities to hide script content"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $entity_chain = /(&#x?[0-9a-fA-F]{2,4};){10,}/ ascii
@@ -647,6 +705,8 @@ rule MHTML_Smuggling
     meta:
         description = "MHTML file with embedded active content — smuggles payloads through MIME wrapping"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027.006"
 
     strings:
         $mime    = "MIME-Version:" nocase
@@ -671,6 +731,8 @@ rule OneNote_Embedded_PE
     meta:
         description = "OneNote file with embedded MZ PE executable — payload delivery via notebook"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $magic = { E4 52 5C 7B 8C D8 A7 4D }
@@ -690,6 +752,8 @@ rule HTML_Smuggling_Password_Hint
     meta:
         description = "HTML smuggling page includes password hint text — common malware delivery pattern"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1027.006"
 
     strings:
         $blob   = "new Blob" nocase

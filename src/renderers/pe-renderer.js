@@ -582,6 +582,26 @@ class PeRenderer {
     // ── Import hash (Imphash) ───────────────────────────────────────
     pe.imphash = this._computeImphash(pe.imports);
 
+    // ── Authenticode Certificates (from Certificate Table data dir) ─
+    pe.certificates = [];
+    try {
+      const certDD = pe.dataDirectories[4];
+      if (certDD && certDD.rva > 0 && certDD.size > 0) {
+        // Note: Certificate Table "RVA" is actually a raw file offset
+        const certOff = certDD.rva;
+        if (certOff + 8 <= bytes.length) {
+          const dwLength = this._u32(bytes, certOff);
+          const wCertType = this._u16(bytes, certOff + 6);
+          // WIN_CERT_TYPE_PKCS_SIGNED_DATA = 0x0002
+          if (wCertType === 0x0002 && dwLength > 8 && certOff + dwLength <= bytes.length) {
+            const pkcs7 = bytes.subarray(certOff + 8, certOff + dwLength);
+            const result = X509Renderer.parseCertificatesFromCMS(pkcs7);
+            if (result.certs.length) pe.certificates = result.certs;
+          }
+        }
+      }
+    } catch (_) { /* cert parsing is best-effort */ }
+
     return pe;
   }
 
@@ -1118,7 +1138,8 @@ class PeRenderer {
         const totalFuncs = pe.imports.reduce((s, d) => s + d.functions.length, 0);
         wrap.appendChild(this._renderSection(
           '📥 Imports (' + pe.imports.length + ' DLLs, ' + totalFuncs + ' functions)',
-          this._renderImports(pe)
+          this._renderImports(pe),
+          totalFuncs
         ));
       }
 
@@ -1126,7 +1147,8 @@ class PeRenderer {
       if (pe.exports && pe.exports.names.length > 0) {
         wrap.appendChild(this._renderSection(
           '📤 Exports (' + pe.exports.names.length + ')',
-          this._renderExports(pe)
+          this._renderExports(pe),
+          pe.exports.names.length
         ));
       }
 
@@ -1138,6 +1160,14 @@ class PeRenderer {
       // ── Rich Header ────────────────────────────────────────────────
       if (pe.richHeader && pe.richHeader.entries.length > 0) {
         wrap.appendChild(this._renderSection('🔑 Rich Header (' + pe.richHeader.entries.length + ' entries)', this._renderRichHeader(pe)));
+      }
+
+      // ── Authenticode Certificates ──────────────────────────────────
+      if (pe.certificates && pe.certificates.length > 0) {
+        wrap.appendChild(this._renderSection(
+          '📜 Authenticode Certificates (' + pe.certificates.length + ')',
+          this._renderCertificates(pe.certificates)
+        ));
       }
 
       // ── Data Directories ───────────────────────────────────────────
@@ -1452,6 +1482,48 @@ class PeRenderer {
     return div;
   }
 
+  _renderCertificates(certs) {
+    const div = document.createElement('div');
+    for (let i = 0; i < certs.length; i++) {
+      const c = certs[i];
+      const label = c.subject.CN || c.subjectStr || '(unnamed)';
+      const now = new Date();
+      let status = '✅ Valid';
+      if (c.notAfter && now > c.notAfter) status = '❌ Expired';
+      else if (c.notBefore && now < c.notBefore) status = '⏳ Not Yet Valid';
+
+      let pk = c.publicKeyAlgorithm || '';
+      if (c.publicKeySize) pk += ' ' + c.publicKeySize + '-bit';
+      if (c.publicKeyCurve) pk += ' (' + c.publicKeyCurve + ')';
+
+      const rows = [
+        ['Subject', c.subjectStr || '(empty)'],
+        ['Issuer', c.issuerStr || '(empty)'],
+        ['Serial', c.serialNumber || '(none)'],
+        ['Validity', `${status}  ·  ${c.notBeforeStr || '?'} → ${c.notAfterStr || '?'}`],
+        ['Public Key', pk],
+        ['Signature', c.signatureAlgorithm || '(unknown)'],
+      ];
+      if (c.isSelfSigned) rows.push(['Self-Signed', 'Yes']);
+      if (c.isCA) rows.push(['CA', 'Yes']);
+
+      // EKU
+      const ekuExt = c.extensions.find(e => e.oid === '2.5.29.37');
+      if (ekuExt && ekuExt.value) rows.push(['Extended Key Usage', ekuExt.value]);
+
+      // SAN
+      const sanExt = c.extensions.find(e => e.oid === '2.5.29.17');
+      if (sanExt && sanExt.value) rows.push(['Subject Alt Names', sanExt.value]);
+
+      const header = document.createElement('div');
+      header.className = 'pe-rich-info';
+      header.textContent = `Certificate ${i + 1}: ${label}`;
+      div.appendChild(header);
+      div.appendChild(this._buildTable(['Field', 'Value'], rows));
+    }
+    return div;
+  }
+
   _renderDataDirs(pe) {
     const rows = pe.dataDirectories.map(dd => [
       dd.name,
@@ -1464,6 +1536,40 @@ class PeRenderer {
   _renderStrings(pe) {
     const div = document.createElement('div');
     div.className = 'pe-strings';
+
+    // Save/Copy pill group for strings
+    const allStrings = [...pe.strings.ascii, ...pe.strings.unicode];
+    const pillBar = document.createElement('div');
+    pillBar.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px;';
+    const pillGroup = document.createElement('div');
+    pillGroup.className = 'btn-pill-group';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'tb-btn tb-action-btn';
+    saveBtn.textContent = '💾 Save';
+    saveBtn.title = 'Save strings as .txt';
+    saveBtn.addEventListener('click', () => {
+      const blob = new Blob([allStrings.join('\n')], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'strings.txt'; a.click();
+      URL.revokeObjectURL(url);
+    });
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'tb-btn tb-action-btn';
+    copyBtn.textContent = '📋 Copy';
+    copyBtn.title = 'Copy all strings to clipboard';
+    copyBtn.addEventListener('click', () => {
+      const text = allStrings.join('\n');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+      }
+    });
+    pillGroup.appendChild(saveBtn);
+    pillGroup.appendChild(copyBtn);
+    pillBar.appendChild(pillGroup);
+    div.appendChild(pillBar);
 
     const buildStringList = (strings, label) => {
       const listDiv = document.createElement('div');
@@ -1858,21 +1964,15 @@ class PeRenderer {
 
       // ── Extract IOCs from strings ──────────────────────────────────
       const allStrings = [...pe.strings.ascii, ...pe.strings.unicode].join('\n');
-      if (typeof IOC !== 'undefined') {
-        const urlMatch = allStrings.match(IOC.PATTERN);
-        if (urlMatch) {
-          const unique = [...new Set(urlMatch)];
-          for (const url of unique.slice(0, 50)) {
-            findings.interestingStrings.push({ type: 'url', url });
-          }
-        }
-        const uncMatch = allStrings.match(IOC.UNC_PATH);
-        if (uncMatch) {
-          const unique = [...new Set(uncMatch)];
-          for (const unc of unique.slice(0, 20)) {
-            findings.interestingStrings.push({ type: 'unc_path', url: unc });
-          }
-        }
+      const _urlRx = /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g;
+      const _uncRx = /\\\\[\w.\-]{2,}(?:\\[\w.\-]+)+/g;
+      const urlMatches = [...new Set([...allStrings.matchAll(_urlRx)].map(m => m[0]))];
+      for (const url of urlMatches.slice(0, 50)) {
+        findings.interestingStrings.push({ type: IOC.URL, url, severity: 'info' });
+      }
+      const uncMatches = [...new Set([...allStrings.matchAll(_uncRx)].map(m => m[0]))];
+      for (const unc of uncMatches.slice(0, 20)) {
+        findings.interestingStrings.push({ type: IOC.UNC_PATH, url: unc, severity: 'medium' });
       }
 
       // ── Risk assessment ────────────────────────────────────────────

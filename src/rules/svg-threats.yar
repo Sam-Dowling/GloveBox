@@ -9,11 +9,12 @@ rule SVG_Embedded_Script {
         description = "SVG contains embedded <script> element — potential JavaScript execution"
         severity    = "critical"
         category    = "execution"
+        mitre       = "T1059.007"
     strings:
         $script1 = "<script" nocase
         $script2 = "&lt;script" nocase
     condition:
-        any of ($script*)
+        any of ($script*) and "<svg"
 }
 
 rule SVG_ForeignObject_Form {
@@ -21,6 +22,7 @@ rule SVG_ForeignObject_Form {
         description = "SVG <foreignObject> contains HTML form — potential credential phishing"
         severity    = "high"
         category    = "phishing"
+        mitre       = "T1566.002"
     strings:
         $fo   = "<foreignObject" nocase
         $form = "<form" nocase
@@ -33,6 +35,7 @@ rule SVG_ForeignObject_Password {
         description = "SVG <foreignObject> contains password field — credential harvesting"
         severity    = "critical"
         category    = "credential_theft"
+        mitre       = "T1056.003"
     strings:
         $fo   = "<foreignObject" nocase
         $pwd1 = "type=\"password\"" nocase
@@ -47,6 +50,7 @@ rule SVG_ForeignObject_Iframe {
         description = "SVG <foreignObject> contains <iframe> — potential redirect or phishing page"
         severity    = "high"
         category    = "phishing"
+        mitre       = "T1566.002"
     strings:
         $fo     = "<foreignObject" nocase
         $iframe = "<iframe" nocase
@@ -59,6 +63,7 @@ rule SVG_Event_Handler_OnLoad {
         description = "SVG element with onload handler — JavaScript executes when SVG renders"
         severity    = "high"
         category    = "execution"
+        mitre       = "T1059.007"
     strings:
         $onload1 = /onload\s*=\s*["'][^"']{1,500}["']/i
         $onload2 = /onload\s*=\s*[^"'\s>]{1,200}/i
@@ -71,6 +76,7 @@ rule SVG_Event_Handler_Mouse {
         description = "SVG element with mouse event handler — JavaScript on user interaction"
         severity    = "high"
         category    = "execution"
+        mitre       = "T1059.007"
     strings:
         $mouse1 = /onmouseover\s*=\s*["'][^"']{1,500}["']/i
         $mouse2 = /onclick\s*=\s*["'][^"']{1,500}["']/i
@@ -85,6 +91,7 @@ rule SVG_Event_Handler_Error {
         description = "SVG element with onerror handler — forced error triggers JavaScript"
         severity    = "high"
         category    = "execution"
+        mitre       = "T1059.007"
     strings:
         $onerror = /onerror\s*=\s*["'][^"']{1,500}["']/i
     condition:
@@ -96,6 +103,7 @@ rule SVG_Base64_Script_Payload {
         description = "SVG contains Base64-encoded JavaScript payload in data: URI"
         severity    = "critical"
         category    = "obfuscation"
+        mitre       = "T1027"
     strings:
         $data_js1 = "data:text/javascript;base64," nocase
         $data_js2 = "data:application/javascript;base64," nocase
@@ -109,6 +117,7 @@ rule SVG_Data_URI_HTML {
         description = "SVG contains data:text/html URI — potential embedded phishing page"
         severity    = "high"
         category    = "phishing"
+        mitre       = "T1566.002"
     strings:
         $data_html1 = "data:text/html;base64," nocase
         $data_html2 = "data:text/html," nocase
@@ -121,6 +130,7 @@ rule SVG_JavaScript_Obfuscation {
         description = "SVG contains obfuscated JavaScript patterns (eval, atob, fromCharCode)"
         severity    = "high"
         category    = "obfuscation"
+        mitre       = "T1027"
     strings:
         $eval  = /eval\s*\(/ nocase
         $atob  = /atob\s*\(/ nocase
@@ -136,6 +146,7 @@ rule SVG_Document_Cookie {
         description = "SVG accesses document.cookie — potential session theft"
         severity    = "critical"
         category    = "credential_theft"
+        mitre       = "T1539"
     strings:
         $cookie = "document.cookie" nocase
         $svg    = "<svg" nocase
@@ -148,6 +159,7 @@ rule SVG_Location_Redirect {
         description = "SVG contains location redirect — potential phishing redirect"
         severity    = "high"
         category    = "phishing"
+        mitre       = "T1566.002"
     strings:
         $loc1 = "window.location" nocase
         $loc2 = "document.location" nocase
@@ -163,6 +175,7 @@ rule SVG_XMLHttpRequest_Fetch {
         description = "SVG makes network request — potential data exfiltration"
         severity    = "high"
         category    = "exfiltration"
+        mitre       = "T1048"
     strings:
         $xhr   = "XMLHttpRequest" nocase
         $fetch = /fetch\s*\(/ nocase
@@ -176,6 +189,7 @@ rule SVG_External_Use_Reference {
         description = "SVG <use> element references external resource"
         severity    = "medium"
         category    = "external_loading"
+        mitre       = "T1105"
     strings:
         $use   = "<use" nocase
         $http1 = /xlink:href\s*=\s*["']https?:\/\//i
@@ -189,6 +203,7 @@ rule SVG_Animate_Href_Manipulation {
         description = "SVG <animate>/<set> modifies href attribute — runtime URL manipulation"
         severity    = "high"
         category    = "evasion"
+        mitre       = "T1027"
     strings:
         $anim1 = "<animate" nocase
         $anim2 = "<set" nocase
@@ -205,6 +220,7 @@ rule SVG_XXE_Entity {
         description = "SVG contains XML entity declaration — potential XXE attack"
         severity    = "high"
         category    = "xxe"
+        mitre       = "T1190"
     strings:
         $entity = /<!ENTITY\s+\w+/i
         $system = /SYSTEM\s+["']/i
@@ -217,6 +233,7 @@ rule SVG_Meta_Refresh_Redirect {
         description = "SVG contains meta refresh redirect — automatic navigation to phishing URL"
         severity    = "high"
         category    = "phishing"
+        mitre       = "T1566.002"
     strings:
         $meta = /http-equiv\s*=\s*["']?refresh/i
         $url  = /url\s*=\s*["']?https?:\/\//i
@@ -230,6 +247,7 @@ rule SVG_Phishing_Multi_Indicator {
         description = "SVG exhibits multiple phishing indicators (script + form/redirect + obfuscation)"
         severity    = "critical"
         category    = "phishing"
+        mitre       = "T1566.002"
     strings:
         $script = "<script" nocase
         $fo     = "<foreignObject" nocase

@@ -217,6 +217,76 @@ body.dark .tb-separator {
   font-size: 11px;
 }
 
+/* ── Pill button group (connected Save / Copy) ──────────────────────── */
+.btn-pill-group {
+  display: inline-flex;
+  align-items: center;
+}
+
+.btn-pill-group .tb-btn {
+  border-radius: 0;
+  margin: 0;
+  position: relative;
+}
+
+.btn-pill-group .tb-btn:first-child {
+  border-radius: 8px 0 0 8px;
+}
+
+.btn-pill-group .tb-btn:last-child {
+  border-radius: 0 8px 8px 0;
+}
+
+.btn-pill-group .tb-btn:only-child {
+  border-radius: 8px;
+}
+
+.btn-pill-group .tb-btn + .tb-btn {
+  border-left: none;
+}
+
+body.dark .btn-pill-group .tb-btn + .tb-btn {
+  border-left: 1px solid rgba(255, 255, 255, .04);
+}
+
+/* ── Accent button (⚡ Copy Analysis) ───────────────────────────────── */
+.tb-accent-btn {
+  background: #e0edff;
+  border-color: #93b8e8;
+  color: #1a5fb4;
+  font-weight: 600;
+}
+
+.tb-accent-btn:hover {
+  background: #c8ddfb;
+  border-color: #6e9fdb;
+  color: #134694;
+}
+
+.tb-accent-btn:active {
+  background: #b0ccf5;
+  transform: scale(.97);
+}
+
+body.dark .tb-accent-btn {
+  background: rgba(34, 211, 238, .12);
+  border-color: rgba(34, 211, 238, .3);
+  color: #22d3ee;
+  font-weight: 600;
+}
+
+body.dark .tb-accent-btn:hover {
+  background: rgba(34, 211, 238, .22);
+  border-color: rgba(34, 211, 238, .5);
+  color: #67e8f9;
+  box-shadow: 0 0 16px rgba(34, 211, 238, .15);
+}
+
+body.dark .tb-accent-btn:active {
+  background: rgba(34, 211, 238, .28);
+  transform: scale(.97);
+}
+
 /* ── Viewer Toolbar (Save/Copy + Search + Zoom, inline above content) ── */
 #viewer-toolbar {
   display: flex;
@@ -659,7 +729,7 @@ body.dark .sb-section {
 }
 
 .hash-val {
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace;
+  font-family: 'Fira Code', 'Consolas', 'Courier New', monospace;
   word-break: break-all;
   color: #333;
   font-size: 10px;
@@ -884,7 +954,7 @@ body.dark .ext-search {
 }
 
 .ext-table .ext-val {
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', 'Courier New', monospace;
+  font-family: 'Fira Code', 'Consolas', 'Courier New', monospace;
   font-size: 10px;
   word-break: break-all;
 }
@@ -1185,7 +1255,7 @@ body.dark .enc-finding-details {
 }
 
 .enc-finding-meta {
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-family: 'Fira Code', 'Consolas', monospace;
 }
 
 .enc-finding-type {
@@ -1304,7 +1374,7 @@ body.dark .enc-btn-decode:hover {
   background: rgba(0, 0, 0, .03);
   border-radius: 4px;
   color: #555;
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-family: 'Fira Code', 'Consolas', monospace;
 }
 
 body.dark .enc-finding-inner-card {
@@ -1314,7 +1384,7 @@ body.dark .enc-finding-inner-card {
 
 /* ── Decoded content preview (green-tinted) ── */
 .enc-decoded-preview {
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-family: 'Fira Code', 'Consolas', monospace;
   font-size: 10px;
   background: rgba(22, 163, 74, .06);
   border: 1px solid rgba(22, 163, 74, .15);
@@ -1337,7 +1407,7 @@ body.dark .enc-decoded-preview {
 
 /* ── Raw encoded snippet fallback (neutral grey) ── */
 .enc-snippet {
-  font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+  font-family: 'Fira Code', 'Consolas', monospace;
   font-size: 10px;
   background: rgba(0, 0, 0, .04);
   border: 1px solid rgba(0, 0, 0, .08);

@@ -62,7 +62,8 @@ class App {
     window.addEventListener('dragenter', e => {
       e.preventDefault();
       _dragCounter++;
-      if (_dragCounter === 1) showOverlay();
+      // Skip overlay when YARA dialog is open — let its own drag handlers fire
+      if (_dragCounter === 1 && !document.getElementById('yara-dialog')) showOverlay();
     });
 
     window.addEventListener('dragover', e => {
@@ -143,6 +144,7 @@ class App {
     document.getElementById('btn-help').addEventListener('click', () => this._openHelpDialog());
     document.getElementById('btn-save').addEventListener('click', () => this._saveContent());
     document.getElementById('btn-copy').addEventListener('click', () => this._copyContent());
+    document.getElementById('btn-copy-analysis').addEventListener('click', () => this._copyAnalysis());
     document.getElementById('btn-zoom-out').addEventListener('click', () => this._setZoom(this.zoom - 10));
     document.getElementById('btn-zoom-in').addEventListener('click', () => this._setZoom(this.zoom + 10));
     document.getElementById('btn-theme').addEventListener('click', () => this._toggleTheme());

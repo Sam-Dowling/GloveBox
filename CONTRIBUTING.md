@@ -32,18 +32,20 @@ src/styles/viewers.css                 # All format-specific viewer styles
 ```
 src/rules/office-macros.yar            # Office/VBA macro detection (33 rules)
 src/rules/script-threats.yar           # Script threats: PS, JS, VBS, CMD, Python (61 rules)
-src/rules/document-threats.yar         # PDF, RTF, OLE, HTML, SVG, OneNote (42 rules)
+src/rules/document-threats.yar         # PDF, RTF, OLE, HTML, SVG, OneNote (41 rules)
 src/rules/windows-threats.yar          # LNK, HTA, MSI, registry, LOLBins (129 rules)
-src/rules/archive-threats.yar          # Archive format threats (11 rules)
+src/rules/archive-threats.yar          # Archive format threats (10 rules)
 src/rules/encoding-threats.yar         # Base64, hex, obfuscation patterns (28 rules)
 src/rules/network-indicators.yar       # UNC, WebDAV, credential theft (8 rules)
 src/rules/suspicious-patterns.yar      # General suspicious patterns (10 rules)
-src/rules/file-analysis.yar            # PE, image, forensic analysis (5 rules)
+src/rules/file-analysis.yar            # PE, image, forensic analysis (3 rules)
 src/rules/pe-threats.yar               # PE executable threats: packers, malware toolkits (26 rules)
 src/rules/elf-threats.yar              # ELF binary threats: Mirai, cryptominers, rootkits (17 rules)
 src/rules/macho-threats.yar            # Mach-O binary threats: macOS stealers, RATs, persistence (17 rules)
-src/rules/jar-threats.yar              # JAR/Java threats: deserialization, JNDI, reverse shells (18 rules)
-src/rules/svg-threats.yar              # SVG threats: script injection, phishing, XXE (19 rules)
+src/rules/jar-threats.yar              # JAR/Java threats: deserialization, JNDI, reverse shells (17 rules)
+src/rules/svg-threats.yar              # SVG threats: script injection, phishing, XXE (18 rules)
+src/rules/osascript-threats.yar        # AppleScript/JXA threats: shell injection, persistence (18 rules)
+src/rules/plist-threats.yar            # Property list threats: LaunchAgent, persistence keys (21 rules)
 ```
 
 ### JS Concatenation Order
@@ -93,6 +95,8 @@ src/renderers/macho-renderer.js        # MachoRenderer — Mach-O / Universal Bi
 src/renderers/x509-renderer.js         # X509Renderer — X.509 certificate / PEM / DER / PKCS#12 viewer
 src/renderers/jar-renderer.js          # JarRenderer — JAR/WAR/EAR archive + .class file analyser
 src/renderers/svg-renderer.js          # SvgRenderer — SVG sandboxed preview + security analyser
+src/renderers/osascript-renderer.js    # OsascriptRenderer — AppleScript / JXA source + compiled binary analyser
+src/renderers/plist-renderer.js        # PlistRenderer — macOS .plist (XML + binary) tree view + security analyser
 src/renderers/image-renderer.js        # ImageRenderer — image preview + stego/polyglot detection
 src/renderers/plaintext-renderer.js    # PlainTextRenderer — catch-all text/hex viewer
 src/app/app-core.js                    # App class — constructor, init, drop-zone, toolbar
@@ -125,8 +129,8 @@ GloveBox/
 │   └── highlight.min.js             # highlight.js — syntax highlighting
 ├── src/
 │   ├── styles/                      # CSS (split for manageable file sizes)
-│   │   ├── core.css                 # Base theme, toolbar, sidebar, dialogs (1,752 lines)
-│   │   └── viewers.css              # Format-specific viewer styles (4,564 lines)
+│   │   ├── core.css                 # Base theme, toolbar, sidebar, dialogs
+│   │   └── viewers.css              # Format-specific viewer styles
 │   ├── rules/                       # YARA rules (split by threat category)
 │   │   ├── office-macros.yar        # Office/VBA macro detection
 │   │   ├── script-threats.yar       # PS, JS, VBS, CMD, Python threats
@@ -141,7 +145,9 @@ GloveBox/
 │   │   ├── elf-threats.yar          # ELF binary threats
 │   │   ├── macho-threats.yar        # Mach-O binary threats
 │   │   ├── jar-threats.yar          # JAR/Java threats
-│   │   └── svg-threats.yar          # SVG threats
+│   │   ├── svg-threats.yar          # SVG threats
+│   │   ├── osascript-threats.yar    # AppleScript/JXA threats
+│   │   └── plist-threats.yar        # Property list threats
 │   ├── constants.js                 # Shared constants, DOM helpers, unit converters, sanitizers
 │   ├── vba-utils.js                 # Shared VBA binary decoder + auto-exec pattern scanner
 │   ├── yara-engine.js               # YaraEngine — in-browser YARA rule parser + matcher
@@ -170,7 +176,7 @@ GloveBox/
 │   │   ├── inf-renderer.js          # InfSctRenderer — .inf / .sct files
 │   │   ├── msi-renderer.js          # MsiRenderer — .msi installer packages
 │   │   ├── csv-renderer.js          # CsvRenderer
-│   │   ├── evtx-renderer.js         # EvtxRenderer — .evtx parser (2,852 lines)
+│   │   ├── evtx-renderer.js         # EvtxRenderer — .evtx parser
 │   │   ├── sqlite-renderer.js       # SqliteRenderer — SQLite + browser history
 │   │   ├── doc-renderer.js          # DocBinaryRenderer
 │   │   ├── msg-renderer.js          # MsgRenderer
@@ -185,6 +191,8 @@ GloveBox/
 │   │   ├── x509-renderer.js         # X509Renderer — X.509 certificate viewer
 │   │   ├── jar-renderer.js          # JarRenderer — JAR/WAR/EAR + .class analyser
 │   │   ├── svg-renderer.js          # SvgRenderer — SVG preview + security analyser
+│   │   ├── osascript-renderer.js    # OsascriptRenderer — AppleScript / JXA analyser
+│   │   ├── plist-renderer.js        # PlistRenderer — macOS .plist viewer + security analyser
 │   │   ├── image-renderer.js        # ImageRenderer — image preview + stego detection
 │   │   └── plaintext-renderer.js    # PlainTextRenderer
 │   └── app/
@@ -230,6 +238,8 @@ GloveBox is optimised for AI coding agents (Cline, Cursor, Copilot Workspace, et
 - **X.509 certificate analysis** — `X509Renderer` provides a pure-JS ASN.1/DER parser with ~80 OID mappings. Parses PEM/DER certificates and PKCS#12 containers — subject/issuer DN, validity period, public key details, extensions (SAN, Key Usage, EKU, CRL Distribution Points, AIA), fingerprints. Flags self-signed, expired, weak keys/signatures, and extracts IOCs from SANs and CRL/AIA URIs.
 - **JAR / Java analysis** — `JarRenderer` parses JAR/WAR/EAR archives and standalone `.class` files — class file headers, MANIFEST.MF, package tree, dependency extraction, constant pool string analysis with ~45 suspicious Java API patterns mapped to MITRE ATT&CK, obfuscation detection, and clickable inner file extraction.
 - **SVG analysis** — `SvgRenderer` provides a sandboxed iframe preview and source-code view with line numbers. `analyzeForSecurity()` performs deep SVG-specific analysis: `<script>` extraction, `<foreignObject>` detection, event handler scanning, Base64/data URI payload analysis, SVG-specific vectors (`<use>`, `<animate>`/`<set>` href manipulation, `<feImage>` external filters), XXE detection, and JavaScript obfuscation patterns. Augmented buffer is stored separately in `_yaraBuffer` to avoid contaminating Copy/Save.
+- **AppleScript / JXA analysis** — `OsascriptRenderer` handles `.applescript` source files (syntax-highlighted display), compiled `.scpt` binaries (string extraction from binary data), and `.jxa` JavaScript for Automation files. Security analysis flags shell command execution (`do shell script`), application targeting, file system access, and macOS-specific persistence/privilege escalation patterns.
+- **Property list analysis** — `PlistRenderer` parses both XML and binary `.plist` formats into an interactive tree view with expandable nested structures. Security analysis detects LaunchAgent/LaunchDaemon persistence, suspicious URL schemes, shell command execution, and privacy-sensitive entitlement keys. 21 dedicated YARA rules cover plist-specific threat patterns.
 - **Catch-all viewer** — `PlainTextRenderer` accepts any file type. Text files get line-numbered display; binary files get a hex dump. Both paths run IOC extraction and YARA scanning.
 
 ---

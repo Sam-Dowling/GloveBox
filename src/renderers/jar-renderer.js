@@ -1034,6 +1034,18 @@ class JarRenderer {
       f.metadata['Nested JARs'] = String(nestedJars.length);
     }
 
+    // Store detailed data for analysis copy
+    const manifest = manifestText ? this._parseManifest(manifestText) : null;
+    f.jarInfo = {
+      manifest,
+      classes: classEntries.map(c => c.path),
+      dependencies: analysis.imports || [],
+      suspiciousAPIs: analysis.suspicious || [],
+      obfuscation,
+      resources: entries.filter(e => !e.dir && !e.path.toLowerCase().endsWith('.class')).map(e => e.path),
+      configFiles: entries.filter(e => !e.dir && JarRenderer.CONFIG_FILES.some(p => e.path.match(p))).map(e => e.path),
+    };
+
     return f;
   }
 

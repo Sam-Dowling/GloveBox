@@ -1380,11 +1380,22 @@ class X509Renderer {
         }
       }
 
+      // Store parsed certificates for analysis copy
+      findings.x509Certs = certs;
+
       // Set risk level
       if (findings.riskScore >= 50) findings.riskLevel = 'critical';
       else if (findings.riskScore >= 30) findings.riskLevel = 'high';
       else if (findings.riskScore >= 10) findings.riskLevel = 'medium';
       else findings.riskLevel = 'low';
+
+      // Normalize to standard findings format for sidebar/copy compatibility
+      findings.risk = findings.riskLevel;
+      findings.metadata = {};
+      for (const fs of findings.formatSpecific) findings.metadata[fs.label] = fs.value;
+      findings.externalRefs = findings.detections.map(d => ({
+        type: IOC.PATTERN, url: d.description, severity: d.severity, ruleName: d.name,
+      }));
 
       // Summary
       const certCount = certs.length;
@@ -1393,8 +1404,62 @@ class X509Renderer {
 
     } catch (e) {
       findings.summary = `Analysis error: ${e.message}`;
+      findings.risk = findings.riskLevel;
+      findings.metadata = {};
+      findings.externalRefs = [];
     }
 
     return findings;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Static helper: extract X.509 certs from CMS/PKCS#7 SignedData
+  //  Used by PE (Authenticode) and Mach-O (code signature) renderers.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * @param {Uint8Array} cmsBytes - Raw DER-encoded CMS ContentInfo
+   * @returns {{ certs: Array, error: string|null }}
+   */
+  static parseCertificatesFromCMS(cmsBytes) {
+    try {
+      const r = new X509Renderer();
+      const root = r._parseDER(cmsBytes);
+
+      // ContentInfo SEQUENCE { contentType OID, content [0] EXPLICIT { SignedData } }
+      if (root.tag !== 0x10 || !root.children || root.children.length < 2)
+        return { certs: [], error: 'Not a valid ContentInfo' };
+
+      // The [0] EXPLICIT wrapper around SignedData
+      const contentWrapper = root.children[1];
+      if (!contentWrapper.children || !contentWrapper.children.length)
+        return { certs: [], error: 'No SignedData content' };
+
+      // SignedData SEQUENCE
+      const signedData = contentWrapper.children[0];
+      if (signedData.tag !== 0x10 || !signedData.children)
+        return { certs: [], error: 'Invalid SignedData' };
+
+      // Find the [0] IMPLICIT SET OF Certificate (cls=2, tag=0, constructed)
+      let certSet = null;
+      for (const child of signedData.children) {
+        if (child.cls === 2 && child.tag === 0 && child.constructed) {
+          certSet = child; break;
+        }
+      }
+      if (!certSet || !certSet.children || !certSet.children.length)
+        return { certs: [], error: null }; // no certs — not an error
+
+      const certs = [];
+      for (const certNode of certSet.children) {
+        try {
+          const certDer = cmsBytes.subarray(certNode.offset, certNode.end);
+          certs.push(r._parseCertificate(certDer));
+        } catch (_) { /* skip unparseable */ }
+      }
+      return { certs, error: null };
+    } catch (e) {
+      return { certs: [], error: e.message };
+    }
   }
 }

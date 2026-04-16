@@ -836,8 +836,6 @@ class SqliteRenderer {
         document.body.removeChild(ta); this._showToast('Copied!');
       }
     });
-    bar.appendChild(copyBtn);
-
     const dlBtn = document.createElement('button');
     dlBtn.className = 'tb-btn csv-export-btn';
     dlBtn.textContent = '💾 Download CSV';
@@ -852,7 +850,12 @@ class SqliteRenderer {
       URL.revokeObjectURL(url);
       this._showToast('Downloaded!');
     });
-    bar.appendChild(dlBtn);
+
+    const pillGroup = document.createElement('div');
+    pillGroup.className = 'btn-pill-group';
+    pillGroup.appendChild(dlBtn);
+    pillGroup.appendChild(copyBtn);
+    bar.appendChild(pillGroup);
 
     return bar;
   }

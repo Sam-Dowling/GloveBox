@@ -7,6 +7,7 @@ rule ELF_UPX_Packed {
     meta:
         description = "UPX packed ELF binary"
         category = "packer"
+        mitre       = "T1027.002"
         severity = "medium"
     strings:
         $upx0 = "UPX!" ascii
@@ -21,6 +22,7 @@ rule ELF_Generic_Packer {
     meta:
         description = "Possible packed/encrypted ELF binary (modified section names)"
         category = "packer"
+        mitre       = "T1027.002"
         severity = "medium"
     strings:
         $s1 = ".packed" ascii
@@ -36,6 +38,7 @@ rule ELF_Mirai_Strings {
     meta:
         description = "Mirai botnet variant indicators"
         category = "malware"
+        mitre       = "T1583.005"
         severity = "critical"
     strings:
         $s1 = "/proc/self/exe" ascii
@@ -64,6 +67,7 @@ rule ELF_Mirai_Config {
     meta:
         description = "Mirai botnet configuration/CNC patterns"
         category = "malware"
+        mitre       = "T1583.005"
         severity = "critical"
     strings:
         $cnc1 = "CNC_ADDR" ascii
@@ -86,6 +90,7 @@ rule ELF_Cryptominer_XMRig {
     meta:
         description = "XMRig cryptocurrency miner"
         category = "cryptominer"
+        mitre       = "T1496"
         severity = "high"
     strings:
         $s1 = "xmrig" ascii nocase
@@ -107,6 +112,7 @@ rule ELF_Cryptominer_Generic {
     meta:
         description = "Generic cryptocurrency mining indicators"
         category = "cryptominer"
+        mitre       = "T1496"
         severity = "high"
     strings:
         $pool1 = "mining.pool" ascii
@@ -129,6 +135,7 @@ rule ELF_ESXi_Ransomware {
     meta:
         description = "ESXi/VMware ransomware indicators"
         category = "ransomware"
+        mitre       = "T1486"
         severity = "critical"
     strings:
         $esxi1 = "esxcli" ascii
@@ -160,6 +167,7 @@ rule ELF_Reverse_Shell {
     meta:
         description = "Reverse shell indicators"
         category = "backdoor"
+        mitre       = "T1059.004"
         severity = "high"
     strings:
         $sh1 = "/bin/sh" ascii
@@ -187,6 +195,7 @@ rule ELF_LD_PRELOAD_Hijack {
     meta:
         description = "LD_PRELOAD library hijacking / userland rootkit"
         category = "rootkit"
+        mitre       = "T1574.006"
         severity = "high"
     strings:
         $s1 = "LD_PRELOAD" ascii
@@ -210,6 +219,7 @@ rule ELF_Proc_Hiding {
     meta:
         description = "Process/file hiding via /proc manipulation"
         category = "rootkit"
+        mitre       = "T1564.001"
         severity = "high"
     strings:
         $proc1 = "/proc/self/maps" ascii
@@ -231,6 +241,7 @@ rule ELF_Ptrace_AntiDebug {
     meta:
         description = "Anti-debugging via ptrace"
         category = "evasion"
+        mitre       = "T1497.001"
         severity = "medium"
     strings:
         $s1 = "PTRACE_TRACEME" ascii
@@ -246,6 +257,7 @@ rule ELF_Self_Deletion {
     meta:
         description = "Self-deleting binary (anti-forensics)"
         category = "evasion"
+        mitre       = "T1070.004"
         severity = "medium"
     strings:
         $s1 = "/proc/self/exe" ascii
@@ -263,6 +275,7 @@ rule ELF_Kernel_Module_Rootkit {
     meta:
         description = "Kernel module / LKM rootkit indicators"
         category = "rootkit"
+        mitre       = "T1547.006"
         severity = "critical"
     strings:
         $s1 = "init_module" ascii
@@ -284,6 +297,7 @@ rule ELF_Credential_Access {
     meta:
         description = "Credential file access patterns"
         category = "credential_theft"
+        mitre       = "T1552.001"
         severity = "high"
     strings:
         $s1 = "/etc/passwd" ascii
@@ -304,6 +318,7 @@ rule ELF_Persistence_Mechanism {
     meta:
         description = "Linux persistence mechanism indicators"
         category = "persistence"
+        mitre       = "T1053.003"
         severity = "high"
     strings:
         $cron1 = "/etc/crontab" ascii
@@ -328,6 +343,7 @@ rule ELF_Container_Escape {
     meta:
         description = "Container escape / breakout indicators"
         category = "container_escape"
+        mitre       = "T1611"
         severity = "critical"
     strings:
         $s1 = "/.dockerenv" ascii
@@ -350,6 +366,7 @@ rule ELF_BPF_Rootkit {
     meta:
         description = "eBPF-based rootkit indicators"
         category = "rootkit"
+        mitre       = "T1014"
         severity = "high"
     strings:
         $s1 = "bpf_probe_read" ascii

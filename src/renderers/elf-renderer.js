@@ -984,7 +984,7 @@ class ElfRenderer {
   _renderSection(title, contentEl, rowCount) {
     const sec = document.createElement('details');
     sec.className = 'elf-section';
-    const collapse = rowCount && rowCount > 100;
+    const collapse = rowCount && rowCount > 50;
     sec.open = !collapse;
     const sum = document.createElement('summary');
     sum.innerHTML = this._esc(title) + (collapse ? ` <span class="bin-collapse-note">${rowCount} rows — click to expand</span>` : '');
@@ -1267,6 +1267,39 @@ class ElfRenderer {
   _renderStrings(elf) {
     const div = document.createElement('div');
     div.className = 'elf-strings-container';
+
+    // Save/Copy pill group for strings
+    const pillBar = document.createElement('div');
+    pillBar.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px;';
+    const pillGroup = document.createElement('div');
+    pillGroup.className = 'btn-pill-group';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'tb-btn tb-action-btn';
+    saveBtn.textContent = '💾 Save';
+    saveBtn.title = 'Save strings as .txt';
+    saveBtn.addEventListener('click', () => {
+      const blob = new Blob([elf.strings.join('\n')], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'strings.txt'; a.click();
+      URL.revokeObjectURL(url);
+    });
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'tb-btn tb-action-btn';
+    copyBtn.textContent = '📋 Copy';
+    copyBtn.title = 'Copy all strings to clipboard';
+    copyBtn.addEventListener('click', () => {
+      const text = elf.strings.join('\n');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+      }
+    });
+    pillGroup.appendChild(saveBtn);
+    pillGroup.appendChild(copyBtn);
+    pillBar.appendChild(pillGroup);
+    div.appendChild(pillBar);
 
     const list = document.createElement('div');
     list.className = 'elf-strings-list';
@@ -1623,21 +1656,15 @@ class ElfRenderer {
 
       // ── Extract IOCs from strings ──────────────────────────────────
       const allStrings = elf.strings.join('\n');
-      if (typeof IOC !== 'undefined') {
-        const urlMatch = allStrings.match(IOC.PATTERN);
-        if (urlMatch) {
-          const unique = [...new Set(urlMatch)];
-          for (const url of unique.slice(0, 50)) {
-            findings.interestingStrings.push({ type: 'url', url });
-          }
-        }
-        const uncMatch = allStrings.match(IOC.UNC_PATH);
-        if (uncMatch) {
-          const unique = [...new Set(uncMatch)];
-          for (const unc of unique.slice(0, 20)) {
-            findings.interestingStrings.push({ type: 'unc_path', url: unc });
-          }
-        }
+      const _urlRx = /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g;
+      const _uncRx = /\\\\[\w.\-]{2,}(?:\\[\w.\-]+)+/g;
+      const urlMatches = [...new Set([...allStrings.matchAll(_urlRx)].map(m => m[0]))];
+      for (const url of urlMatches.slice(0, 50)) {
+        findings.interestingStrings.push({ type: IOC.URL, url, severity: 'info' });
+      }
+      const uncMatches = [...new Set([...allStrings.matchAll(_uncRx)].map(m => m[0]))];
+      for (const unc of uncMatches.slice(0, 20)) {
+        findings.interestingStrings.push({ type: IOC.UNC_PATH, url: unc, severity: 'medium' });
       }
 
       // ── Risk assessment ────────────────────────────────────────────

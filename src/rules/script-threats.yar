@@ -7,6 +7,7 @@ rule PS_Whitespace_Token_Obfuscation
         description = "Detects PowerShell token obfuscation via excessive whitespace between characters"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1027"
     strings:
         $ws_pattern = /[A-Za-z]\s{2,}[A-Za-z]\s{2,}[A-Za-z]\s{2,}[A-Za-z]\s{2,}[A-Za-z]/ nocase
         $ws_cmdlet = /[Ww]\s{2,}[Rr]\s{2,}[Ii]\s{2,}[Tt]\s{2,}[Ee]/ nocase
@@ -21,6 +22,7 @@ rule PS_ScriptBlock_Reflection_Create
         description = "Detects PowerShell ScriptBlock creation via .NET reflection"
         severity = "high"
         category = "obfuscation"
+        mitre       = "T1059.001"
     strings:
         $sb_reflect = "ScriptBlock].GetMethod" nocase
         $sb_create = /ScriptBlock\].*Create/ nocase
@@ -36,6 +38,7 @@ rule Python_Dynamic_Import_Getattr
         description = "Detects Python dynamic import with getattr/getattribute for obfuscated access"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1059.006"
     strings:
         $import_builtins = "__import__('builtins')" nocase
         $import_os = "__import__('os')" nocase
@@ -53,6 +56,7 @@ rule JS_Comment_Injection_Obfuscation
         description = "Detects JavaScript comment injection between object property access chains"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1027"
     strings:
         $comment_dot = /\w+\s*\/\*[^*]*\*\/\s*\.\s*\/\*[^*]*\*\/\s*\w+/ nocase
         $comment_bracket = /\w+\s*\/\*[^*]*\*\/\s*\[\s*\/\*[^*]*\*\/\s*['"]/ nocase
@@ -66,6 +70,8 @@ rule JS_WSH_Dropper
     meta:
         description = "JavaScript uses Windows Script Host objects with execution capability"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1059.007"
 
     strings:
         $wsh1 = "WScript.Shell" nocase
@@ -89,6 +95,8 @@ rule JS_Obfuscated_Payload
     meta:
         description = "Heavily obfuscated JavaScript — charCode loops, eval, or large encoded arrays"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $cc1 = "fromCharCode" nocase
@@ -108,6 +116,8 @@ rule Encoded_Script_File_JSE_VBE
     meta:
         description = "File contains Microsoft JScript.Encode or VBScript.Encode markers (JSE/VBE)"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027.010"
 
     strings:
         $marker_start = "#@~^" ascii
@@ -124,6 +134,8 @@ rule JS_WMI_Execution
     meta:
         description = "JavaScript uses WMI to execute processes — evasion of direct Shell calls"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1047"
 
     strings:
         $a = "GetObject" nocase
@@ -140,6 +152,8 @@ rule JS_Clipboard_Paste_Lure
     meta:
         description = "JavaScript or HTML uses clipboard manipulation — paste-jacking attack"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1204.001"
 
     strings:
         $a = "navigator.clipboard" nocase
@@ -156,6 +170,8 @@ rule JS_Deobfuscation_Heavy
     meta:
         description = "JavaScript uses multiple layers of encoding — base64, unescape, decode chains"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1140"
 
     strings:
         $a = "atob(" nocase
@@ -175,6 +191,8 @@ rule VBS_Download_Execute
     meta:
         description = "VBScript downloads remote content and executes or saves it"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1059.005"
 
     strings:
         $http1 = "MSXML2.XMLHTTP" nocase
@@ -195,6 +213,8 @@ rule VBS_Registry_Persistence
     meta:
         description = "VBScript writes registry Run keys for persistence"
         severity    = "critical"
+        category    = "persistence"
+        mitre       = "T1547.001"
 
     strings:
         $a = "RegWrite" nocase
@@ -210,6 +230,8 @@ rule VBS_Scheduled_Task
     meta:
         description = "VBScript creates scheduled tasks for persistence or delayed execution"
         severity    = "critical"
+        category    = "persistence"
+        mitre       = "T1053.005"
 
     strings:
         $a = "Schedule.Service" nocase
@@ -227,6 +249,8 @@ rule VBS_Obfuscation_ChrW
     meta:
         description = "VBScript uses heavy ChrW/Chr obfuscation to build strings dynamically"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $a = "ChrW(" nocase
@@ -243,6 +267,8 @@ rule PowerShell_Encoded_Command
     meta:
         description = "PowerShell invoked with encoded command flag — hides base64 payload"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1059.001"
 
     strings:
         $ps  = "powershell" nocase
@@ -263,6 +289,8 @@ rule PowerShell_Download_Cradle
     meta:
         description = "PowerShell download cradle — fetches and executes remote code"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1059.001"
 
     strings:
         $iex1 = "Invoke-Expression" nocase
@@ -284,6 +312,8 @@ rule PowerShell_AMSI_Bypass
     meta:
         description = "PowerShell attempts to bypass AMSI (Antimalware Scan Interface)"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1562.001"
 
     strings:
         $a = "AmsiUtils" nocase
@@ -299,6 +329,8 @@ rule PowerShell_Reflective_Load
     meta:
         description = "PowerShell reflectively loads .NET assembly or PE — fileless attack"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1620"
 
     strings:
         $a = "Reflection.Assembly" nocase
@@ -317,6 +349,8 @@ rule PowerShell_Execution_Policy_Bypass
     meta:
         description = "PowerShell bypasses execution policy — allows unsigned scripts to run"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1059.001"
 
     strings:
         $a = "-ExecutionPolicy" nocase
@@ -326,7 +360,7 @@ rule PowerShell_Execution_Policy_Bypass
         $e = "Set-ExecutionPolicy" nocase
 
     condition:
-        ($a and ($b or $c)) or ($d and ($b or $c)) or $e
+        ($a and ($b or $c)) or ($d and ($b or $c)) or ($e and ($b or $c))
 }
 
 rule PowerShell_Hidden_Window
@@ -334,6 +368,8 @@ rule PowerShell_Hidden_Window
     meta:
         description = "PowerShell runs with hidden window — user won't see execution"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1059.001"
 
     strings:
         $a = "-WindowStyle" nocase
@@ -343,7 +379,7 @@ rule PowerShell_Hidden_Window
         $e = "-nop" nocase
 
     condition:
-        ($a and $b) or $c or $d
+        ($a and $b) or ($c and $e) or ($d and $e)
 }
 
 rule PowerShell_Credential_Theft
@@ -351,6 +387,8 @@ rule PowerShell_Credential_Theft
     meta:
         description = "PowerShell accesses stored credentials or prompts for credentials"
         severity    = "critical"
+        category    = "credential-access"
+        mitre       = "T1003"
 
     strings:
         $a = "Get-Credential" nocase
@@ -368,6 +406,8 @@ rule PowerShell_Certutil_Combo
     meta:
         description = "PowerShell combined with certutil — decode and execute pattern"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1140"
 
     strings:
         $a = "certutil" nocase
@@ -383,6 +423,8 @@ rule BAT_Download_Execute
     meta:
         description = "Batch file downloads and executes a remote payload"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1059.003"
 
     strings:
         $a = "certutil" nocase
@@ -404,6 +446,8 @@ rule BAT_Obfuscated_Variables
     meta:
         description = "Batch file uses variable obfuscation — environment variable substring abuse"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $a = /\%[a-zA-Z]+:~\d+,\d+\%/
@@ -419,6 +463,8 @@ rule BAT_Recursive_Copy_Drop
     meta:
         description = "Batch file copies or moves files from temp paths — payload staging"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1074.001"
 
     strings:
         $a = "copy " nocase
@@ -438,6 +484,8 @@ rule BAT_Registry_Persistence
     meta:
         description = "Batch file modifies registry Run keys for persistence"
         severity    = "critical"
+        category    = "persistence"
+        mitre       = "T1547.001"
 
     strings:
         $a = "reg add" nocase
@@ -453,6 +501,8 @@ rule JS_DocumentWrite_With_Obfuscation
     meta:
         description = "JavaScript uses document.write with encoding/decoding — DOM-based payload injection"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $dw    = "document.write" nocase
@@ -471,6 +521,8 @@ rule JS_Location_Redirect_Obfuscated
     meta:
         description = "JavaScript redirects via window.location with encoding — phishing redirect"
         severity    = "high"
+        category    = "initial-access"
+        mitre       = "T1566.002"
 
     strings:
         $loc1  = "window.location" nocase
@@ -491,6 +543,8 @@ rule JS_ActiveX_With_XMLHttp
     meta:
         description = "JavaScript creates ActiveXObject for HTTP requests — classic dropper pattern"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1059.007"
 
     strings:
         $ax    = "ActiveXObject" nocase
@@ -507,6 +561,8 @@ rule PowerShell_AddType_Inline_CSharp
     meta:
         description = "PowerShell compiles inline C# via Add-Type — used for API access and evasion"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1059.001"
 
     strings:
         $a     = "Add-Type" nocase
@@ -524,6 +580,8 @@ rule PowerShell_Invoke_Command_Remote
     meta:
         description = "PowerShell uses Invoke-Command for lateral movement"
         severity    = "critical"
+        category    = "lateral-movement"
+        mitre       = "T1021.006"
 
     strings:
         $a     = "Invoke-Command" nocase
@@ -540,6 +598,8 @@ rule PowerShell_Stealth_Flags_Combo
     meta:
         description = "PowerShell uses multiple stealth flags together (hidden, noprofile, noninteractive)"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1059.001"
 
     strings:
         $ps    = "powershell" nocase
@@ -561,6 +621,8 @@ rule WMIC_Process_Create
     meta:
         description = "WMIC used to create remote processes — lateral movement technique"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1047"
 
     strings:
         $a     = "wmic" nocase
@@ -577,6 +639,8 @@ rule PowerShell_WMI_Event_Persistence
     meta:
         description = "PowerShell creates WMI event subscription — fileless persistence"
         severity    = "critical"
+        category    = "persistence"
+        mitre       = "T1546.003"
 
     strings:
         $a     = "__EventFilter" nocase
@@ -594,6 +658,8 @@ rule AMSI_ETW_Bypass_Patterns
     meta:
         description = "File attempts to patch AMSI or disable ETW tracing"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1562.001"
 
     strings:
         $a     = "AmsiScanBuffer" nocase
@@ -614,6 +680,8 @@ rule CMD_Caret_Obfuscation
     meta:
         description = "CMD command uses caret (^) insertion to break up keywords and evade detection"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $c1 = /[pP]\^[oO]\^[wW]\^[eE]\^[rR]\^[sS]\^[hH]\^[eE]\^[lL]\^[lL]/ ascii
@@ -635,6 +703,8 @@ rule CMD_Set_Variable_Obfuscation
     meta:
         description = "CMD script uses SET variable concatenation to build commands from fragments"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $set_pattern = /[sS][eE][tT]\s+\w{1,3}=\S{1,20}/ ascii
@@ -650,6 +720,8 @@ rule CMD_Environment_Substring_Abuse
     meta:
         description = "CMD script extracts substrings from environment variables to build commands"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $substr = /(%\w+:~\d{1,3},\d{1,3}%){3,}/ ascii
@@ -665,6 +737,8 @@ rule PS_String_Concatenation_Obfuscation
     meta:
         description = "PowerShell uses excessive string concatenation to evade keyword detection"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $concat_single = /('[a-zA-Z]{1,4}'\s*\+\s*){4,}'[a-zA-Z]{1,4}'/ ascii
@@ -680,6 +754,8 @@ rule PS_Backtick_Obfuscation
     meta:
         description = "PowerShell uses backtick escape characters to break up keywords"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $bt1 = "In`v`o`k`e" ascii
@@ -699,6 +775,8 @@ rule PS_Format_Operator_Obfuscation
     meta:
         description = "PowerShell uses -f format operator to reconstruct strings from fragments"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $fmt = /'\{0\}\{1\}\{2\}(\{3\})?(\{4\})?(\{5\})?' *-[fF] *'[^']{1,12}',\s*'[^']{1,12}',\s*'[^']{1,12}'/ ascii
@@ -712,6 +790,8 @@ rule PS_Char_Casting_Obfuscation
     meta:
         description = "PowerShell uses [char] type casting to build strings from ASCII codes"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $char = /(\[char\]\d{2,3}\s*\+\s*){4,}/ nocase
@@ -727,6 +807,8 @@ rule PS_String_Reversal_Obfuscation
     meta:
         description = "PowerShell reverses strings to hide commands"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $rev1 = /\[array\]::reverse\s*\(/ nocase
@@ -742,6 +824,8 @@ rule PS_Replace_Chain_Obfuscation
     meta:
         description = "PowerShell uses chained -replace operators to transform encoded strings"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $rep = /(-replace\s*'[^']{1,20}'\s*,\s*'[^']{0,20}'\s*){3,}/ nocase
@@ -756,6 +840,8 @@ rule VBScript_Chr_Concatenation
     meta:
         description = "VBScript uses Chr() function concatenation to build strings"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $chr = /([Cc][Hh][Rr]\s*\(\s*\d{2,3}\s*\)\s*(&|&amp;)\s*){5,}/ ascii
@@ -772,6 +858,7 @@ rule Python_Exec_Base64_Obfuscation
         description = "Detects Python code using exec() with base64-decoded payloads"
         severity = "high"
         category = "obfuscation"
+        mitre       = "T1059.006"
         reference = "Python exec + base64 payload delivery"
 
     strings:
@@ -795,6 +882,7 @@ rule Python_Eval_Codec_Obfuscation
         description = "Detects Python eval/exec with codec or marshal-based obfuscation"
         severity = "high"
         category = "obfuscation"
+        mitre       = "T1059.006"
         reference = "Python eval with codec/zlib/marshal deobfuscation"
 
     strings:
@@ -818,6 +906,7 @@ rule Python_Char_Construction
         description = "Detects Python string construction via chr() calls to evade static analysis"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "Python chr() string building"
 
     strings:
@@ -841,6 +930,7 @@ rule JS_ROT13_Cipher_Implementation
         description = "Detects JavaScript ROT13/Caesar cipher implementations used for obfuscation"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "ROT13 character rotation in JavaScript"
 
     strings:
@@ -865,6 +955,7 @@ rule PS_Call_Operator_Obfuscation
         description = "Detects PowerShell call operator (&) with string concatenation to invoke commands dynamically"
         severity = "high"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "PowerShell & operator with dynamic command construction"
 
     strings:
@@ -889,6 +980,7 @@ rule PS_EnvVar_Payload_Execution
         description = "Detects PowerShell using environment variables as payload containers with IEX"
         severity = "high"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "PowerShell $env: variable payload + IEX execution"
 
     strings:
@@ -914,6 +1006,7 @@ rule PS_Split_Join_Reassembly
         description = "Detects PowerShell -split/-join operators used for string reassembly obfuscation"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "PowerShell -split + -join pattern for payload reassembly"
 
     strings:
@@ -938,6 +1031,7 @@ rule PS_Hashtable_Command_Construction
         description = "Detects PowerShell hashtable-based command construction and invocation"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "PowerShell @{} hashtable with call operator execution"
 
     strings:
@@ -960,6 +1054,7 @@ rule JS_Split_Join_Deobfuscation
         description = "Detects JavaScript split/join pattern used for character removal deobfuscation"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "JavaScript .split('x').join('') character stripping"
 
     strings:
@@ -984,6 +1079,7 @@ rule JS_Proxy_Function_Hiding
         description = "Detects JavaScript Proxy objects used to wrap or hide function calls"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "JavaScript Proxy handler wrapping suspicious invocations"
 
     strings:
@@ -1007,6 +1103,7 @@ rule JS_Bracket_Hex_Property_Execution
         description = "Detects JavaScript bracket notation with hex/unicode escapes to invoke functions"
         severity = "high"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "window['\\x65\\x76\\x61\\x6c'] style property access"
 
     strings:
@@ -1031,6 +1128,7 @@ rule Bash_Base64_Execution
         description = "Detects bash/shell commands that decode and execute base64-encoded payloads"
         severity = "high"
         category = "obfuscation"
+        mitre       = "T1059.004"
         reference = "eval $(echo ... | base64 -d) and similar patterns"
 
     strings:
@@ -1052,6 +1150,7 @@ rule Bash_Variable_Obfuscation
         description = "Detects bash variable expansion and string manipulation obfuscation techniques"
         severity = "medium"
         category = "obfuscation"
+        mitre       = "T1027"
         reference = "Bash ${var} abuse, IFS manipulation, and heredoc payloads"
 
     strings:
@@ -1074,6 +1173,7 @@ rule Shell_Curl_Wget_Pipe_Exec
         description = "Detects shell commands that download and directly execute scripts via pipe"
         severity = "high"
         category = "obfuscation"
+        mitre       = "T1059.004"
         reference = "curl/wget piped to bash/sh for remote code execution"
 
     strings:
@@ -1098,6 +1198,7 @@ rule Python_Reverse_Shell
         description = "Detects Python reverse shell patterns — socket connect with subprocess/pty"
         severity = "critical"
         category = "execution"
+        mitre       = "T1059.006"
 
     strings:
         $socket_import = "import socket" nocase
@@ -1125,6 +1226,7 @@ rule NodeJS_Child_Process_Execution
         description = "Detects Node.js child_process module usage for command execution"
         severity = "high"
         category = "execution"
+        mitre       = "T1059.007"
 
     strings:
         $require_cp = "require('child_process')" nocase

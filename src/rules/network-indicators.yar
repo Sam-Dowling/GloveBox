@@ -1,11 +1,13 @@
 // ─── Network Indicators ───
-// 3 rules
+// 8 rules
 
 rule UNC_Path_NTLM_Theft
 {
     meta:
         description = "File contains UNC path reference — may trigger NTLM authentication to attacker"
         severity    = "high"
+        category    = "credential-access"
+        mitre       = "T1187"
 
     strings:
         $a = /\\\\[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\\/
@@ -20,6 +22,8 @@ rule WebDAV_Reference
     meta:
         description = "File references WebDAV path — can fetch remote payloads or steal NTLM hashes"
         severity    = "high"
+        category    = "credential-access"
+        mitre       = "T1187"
 
     strings:
         $a = "\\\\DavWWWRoot\\" nocase
@@ -33,8 +37,10 @@ rule WebDAV_Reference
 rule Credential_Dumping_Commands
 {
     meta:
-        description = "File references credential dumping tools or techniques beyond mimikatz"
+        description = "File references credential dumping tools or techniques (procdump+lsass, comsvcs MiniDump, ntdsutil)"
         severity    = "critical"
+        category    = "credential-access"
+        mitre       = "T1003"
 
     strings:
         $a     = "procdump" nocase
@@ -58,6 +64,8 @@ rule Exfil_Telegram_Bot_API
     meta:
         description = "File references Telegram Bot API — common exfiltration and C2 channel"
         severity    = "high"
+        category    = "exfiltration"
+        mitre       = "T1567"
 
     strings:
         $api1 = "api.telegram.org" nocase
@@ -75,15 +83,15 @@ rule Exfil_Discord_Webhook
     meta:
         description = "File references Discord webhook URL — used for data exfiltration"
         severity    = "high"
+        category    = "exfiltration"
+        mitre       = "T1567"
 
     strings:
         $webhook = "discord.com/api/webhooks/" nocase
         $discordapp = "discordapp.com/api/webhooks/" nocase
-        $content = "\"content\"" nocase
-        $embed = "\"embeds\"" nocase
 
     condition:
-        ($webhook or $discordapp) or (($content or $embed) and ($webhook or $discordapp))
+        $webhook or $discordapp
 }
 
 rule Exfil_Slack_Webhook
@@ -91,6 +99,8 @@ rule Exfil_Slack_Webhook
     meta:
         description = "File references Slack webhook — potential data exfiltration channel"
         severity    = "high"
+        category    = "exfiltration"
+        mitre       = "T1567"
 
     strings:
         $hook = "hooks.slack.com/services/" nocase
@@ -105,6 +115,8 @@ rule SSH_Private_Key_Reference
     meta:
         description = "File contains or references SSH/PGP private key material"
         severity    = "critical"
+        category    = "credential-access"
+        mitre       = "T1552.004"
 
     strings:
         $rsa     = "-----BEGIN RSA PRIVATE KEY-----"
@@ -122,8 +134,10 @@ rule SSH_Private_Key_Reference
 rule Exfil_Pastebin_Reference
 {
     meta:
-        description = "File references Pastebin or paste-like services — dead-drop exfiltration"
+        description = "File references paste services or ephemeral file-sharing — dead-drop exfiltration"
         severity    = "medium"
+        category    = "exfiltration"
+        mitre       = "T1567.002"
 
     strings:
         $pb1 = "pastebin.com" nocase
@@ -132,9 +146,7 @@ rule Exfil_Pastebin_Reference
         $pb4 = "ghostbin.co" nocase
         $pb5 = "dpaste.org" nocase
         $pb6 = "transfer.sh" nocase
-        $pb7 = "file.io" nocase
 
     condition:
         any of them
 }
-

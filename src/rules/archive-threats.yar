@@ -1,11 +1,13 @@
 // ─── Archive Threats ───
-// 11 rules
+// 10 rules
 
 rule ZIP_Contains_Script_File
 {
     meta:
         description = "ZIP archive contains scripting files (.js/.vbs/.wsf/.hta/.bat/.cmd/.ps1)"
         severity    = "critical"
+        category    = "delivery"
+        mitre       = "T1566.001"
 
     strings:
         $pk = { 50 4B 03 04 }
@@ -28,6 +30,8 @@ rule ZIP_Contains_LNK
     meta:
         description = "ZIP archive contains Windows shortcut (.lnk) — masquerade delivery"
         severity    = "critical"
+        category    = "delivery"
+        mitre       = "T1204.002"
 
     strings:
         $pk = { 50 4B 03 04 }
@@ -42,6 +46,8 @@ rule ZIP_Contains_URL_Shortcut
     meta:
         description = "ZIP archive contains .url shortcut file — uncommon, likely phishing"
         severity    = "critical"
+        category    = "delivery"
+        mitre       = "T1204.002"
 
     strings:
         $pk = { 50 4B 03 04 }
@@ -56,6 +62,8 @@ rule ZIP_Contains_ISO_IMG
     meta:
         description = "ZIP archive contains disk image (.iso/.img/.vhd/.vhdx) — MotW bypass nesting"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1553.005"
 
     strings:
         $pk = { 50 4B 03 04 }
@@ -73,6 +81,8 @@ rule ZIP_Contains_Office_Macro_File
     meta:
         description = "ZIP contains macro-enabled Office document (.docm/.xlsm/.pptm/.xlsb)"
         severity    = "high"
+        category    = "delivery"
+        mitre       = "T1566.001"
 
     strings:
         $pk = { 50 4B 03 04 }
@@ -86,25 +96,13 @@ rule ZIP_Contains_Office_Macro_File
         $pk and any of ($a, $b, $c, $d, $e)
 }
 
-rule ZIP_Contains_HTA
-{
-    meta:
-        description = "ZIP archive contains an HTA file — strong phishing indicator"
-        severity    = "critical"
-
-    strings:
-        $pk = { 50 4B 03 04 }
-        $a = ".hta" fullword
-
-    condition:
-        $pk and $a
-}
-
 rule ZIP_Contains_MSI
 {
     meta:
         description = "ZIP archive contains an MSI installer — uncommon as email attachment"
         severity    = "high"
+        category    = "delivery"
+        mitre       = "T1218.007"
 
     strings:
         $pk = { 50 4B 03 04 }
@@ -118,7 +116,9 @@ rule RAR_Archive_Header
 {
     meta:
         description = "RAR archive detected — commonly used phishing delivery wrapper"
-        severity    = "medium"
+        severity    = "info"
+        category    = "file-type"
+        mitre       = "T1566.001"
 
     strings:
         $rar4 = { 52 61 72 21 1A 07 00 }
@@ -132,7 +132,9 @@ rule SevenZip_Archive_Header
 {
     meta:
         description = "7-Zip archive detected — sometimes used to bypass gateway extension filters"
-        severity    = "medium"
+        severity    = "info"
+        category    = "file-type"
+        mitre       = "T1566.001"
 
     strings:
         $a = { 37 7A BC AF 27 1C }
@@ -146,6 +148,8 @@ rule Archive_Double_Extension
     meta:
         description = "Archive file contains a double-extension filename — masquerade attempt"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1036.007"
 
     strings:
         $pk = { 50 4B 03 04 }
@@ -171,11 +175,12 @@ rule ISO_IMG_Disk_Image
     meta:
         description = "ISO 9660 disk image — used to bypass Mark-of-the-Web protections"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1553.005"
 
     strings:
-        $iso = "CD001"
+        $iso = "CD001" ascii
 
     condition:
-        $iso
+        $iso at 32769 or $iso at 34817
 }
-

@@ -962,8 +962,16 @@ class MachoRenderer {
           }
         }
       } else if (blobMagic === 0xFADE0B01) {
-        // CMS signature blob
+        // CMS signature blob — extract X.509 certificates
         info.hasCMSSignature = true;
+        try {
+          const blobLen = this._u32be(b, blobStart + 4);
+          if (blobLen > 8 && blobStart + blobLen <= b.length) {
+            const cmsBytes = b.subarray(blobStart + 8, blobStart + blobLen);
+            const result = X509Renderer.parseCertificatesFromCMS(cmsBytes);
+            if (result.certs.length) info.certificates = result.certs;
+          }
+        } catch (_) { /* cert parsing is best-effort */ }
       } else if (blobMagic === 0xFADE7172) {
         // Entitlements
         if (blobStart + 8 <= b.length) {
@@ -1223,7 +1231,7 @@ class MachoRenderer {
   _renderSection(title, contentEl, rowCount) {
     const sec = document.createElement('details');
     sec.className = 'macho-section';
-    const collapse = rowCount && rowCount > 100;
+    const collapse = rowCount && rowCount > 50;
     sec.open = !collapse;
     const sum = document.createElement('summary');
     sum.innerHTML = this._esc(title) + (collapse ? ` <span class="bin-collapse-note">${rowCount} rows — click to expand</span>` : '');
@@ -1391,6 +1399,18 @@ class MachoRenderer {
           }
         );
         segDetails.appendChild(table);
+      } else {
+        // Segment with no sections — show segment properties as info
+        const info = document.createElement('div');
+        info.className = 'macho-seg-info';
+        info.innerHTML =
+          `<span class="macho-seg-info-item">File Offset: <strong>${this._hex(seg.fileoff, 8)}</strong></span>` +
+          `<span class="macho-seg-info-item">File Size: <strong>${seg.filesize.toLocaleString()}</strong></span>` +
+          `<span class="macho-seg-info-item">VM Size: <strong>${seg.vmsize.toLocaleString()}</strong></span>` +
+          `<span class="macho-seg-info-item">Init Prot: <strong>${seg.initprotStr}</strong></span>` +
+          `<span class="macho-seg-info-item">Max Prot: <strong>${seg.maxprotStr}</strong></span>` +
+          (seg.filesize === 0 ? '<span class="macho-seg-info-note">No file content — virtual memory reservation only</span>' : '');
+        segDetails.appendChild(info);
       }
 
       div.appendChild(segDetails);
@@ -1518,11 +1538,43 @@ class MachoRenderer {
     ];
     if (info.cdVersion) rows.push(['CodeDirectory Version', info.cdVersion]);
     if (info.teamId) rows.push(['Team ID', info.teamId]);
-    if (info.hasCMSSignature) rows.push(['CMS Signature', 'Present (Apple / third-party signed)']);
+    if (info.hasCMSSignature) rows.push(['CMS Signature', 'Present (Apple / third-party signed)' + (info.certificates ? ` — ${info.certificates.length} certificate(s)` : '')]);
     if (info.hardenedRuntime) rows.push(['Hardened Runtime', '✅ Enabled']);
     if (info.libraryValidation) rows.push(['Library Validation', '✅ Enabled']);
 
     div.appendChild(this._buildTable(['Field', 'Value'], rows));
+
+    // Certificates
+    if (info.certificates && info.certificates.length > 0) {
+      for (let i = 0; i < info.certificates.length; i++) {
+        const c = info.certificates[i];
+        const label = c.subject.CN || c.subjectStr || '(unnamed)';
+        const now = new Date();
+        let status = '✅ Valid';
+        if (c.notAfter && now > c.notAfter) status = '❌ Expired';
+        else if (c.notBefore && now < c.notBefore) status = '⏳ Not Yet Valid';
+        let pk = c.publicKeyAlgorithm || '';
+        if (c.publicKeySize) pk += ' ' + c.publicKeySize + '-bit';
+        if (c.publicKeyCurve) pk += ' (' + c.publicKeyCurve + ')';
+        const certRows = [
+          ['Subject', c.subjectStr || '(empty)'],
+          ['Issuer', c.issuerStr || '(empty)'],
+          ['Serial', c.serialNumber || '(none)'],
+          ['Validity', `${status}  ·  ${c.notBeforeStr || '?'} → ${c.notAfterStr || '?'}`],
+          ['Public Key', pk],
+          ['Signature', c.signatureAlgorithm || '(unknown)'],
+        ];
+        if (c.isSelfSigned) certRows.push(['Self-Signed', 'Yes']);
+        if (c.isCA) certRows.push(['CA', 'Yes']);
+        const ekuExt = c.extensions.find(e => e.oid === '2.5.29.37');
+        if (ekuExt && ekuExt.value) certRows.push(['Extended Key Usage', ekuExt.value]);
+        const heading = document.createElement('div');
+        heading.style.cssText = 'font-weight:600;margin:12px 0 4px;';
+        heading.textContent = `Certificate ${i + 1}: ${label}`;
+        div.appendChild(heading);
+        div.appendChild(this._buildTable(['Field', 'Value'], certRows));
+      }
+    }
 
     // Entitlements
     if (info.entitlements) {
@@ -1546,6 +1598,39 @@ class MachoRenderer {
   _renderStrings(mo) {
     const div = document.createElement('div');
     div.className = 'macho-strings-container';
+
+    // Save/Copy pill group for strings
+    const pillBar = document.createElement('div');
+    pillBar.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px;';
+    const pillGroup = document.createElement('div');
+    pillGroup.className = 'btn-pill-group';
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'tb-btn tb-action-btn';
+    saveBtn.textContent = '💾 Save';
+    saveBtn.title = 'Save strings as .txt';
+    saveBtn.addEventListener('click', () => {
+      const blob = new Blob([mo.strings.join('\n')], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'strings.txt'; a.click();
+      URL.revokeObjectURL(url);
+    });
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'tb-btn tb-action-btn';
+    copyBtn.textContent = '📋 Copy';
+    copyBtn.title = 'Copy all strings to clipboard';
+    copyBtn.addEventListener('click', () => {
+      const text = mo.strings.join('\n');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+      }
+    });
+    pillGroup.appendChild(saveBtn);
+    pillGroup.appendChild(copyBtn);
+    pillBar.appendChild(pillGroup);
+    div.appendChild(pillBar);
 
     const list = document.createElement('div');
     list.className = 'macho-strings-list';
@@ -1967,21 +2052,15 @@ class MachoRenderer {
 
       // ── Extract IOCs from strings ──────────────────────────────────
       const allStrings = mo.strings.join('\n');
-      if (typeof IOC !== 'undefined') {
-        const urlMatch = allStrings.match(IOC.PATTERN);
-        if (urlMatch) {
-          const unique = [...new Set(urlMatch)];
-          for (const url of unique.slice(0, 50)) {
-            findings.interestingStrings.push({ type: 'url', url });
-          }
-        }
-        const uncMatch = allStrings.match(IOC.UNC_PATH);
-        if (uncMatch) {
-          const unique = [...new Set(uncMatch)];
-          for (const unc of unique.slice(0, 20)) {
-            findings.interestingStrings.push({ type: 'unc_path', url: unc });
-          }
-        }
+      const _urlRx = /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g;
+      const _uncRx = /\\\\[\w.\-]{2,}(?:\\[\w.\-]+)+/g;
+      const urlMatches = [...new Set([...allStrings.matchAll(_urlRx)].map(m => m[0]))];
+      for (const url of urlMatches.slice(0, 50)) {
+        findings.interestingStrings.push({ type: IOC.URL, url, severity: 'info' });
+      }
+      const uncMatches = [...new Set([...allStrings.matchAll(_uncRx)].map(m => m[0]))];
+      for (const unc of uncMatches.slice(0, 20)) {
+        findings.interestingStrings.push({ type: IOC.UNC_PATH, url: unc, severity: 'medium' });
       }
 
       // ── Risk assessment ────────────────────────────────────────────

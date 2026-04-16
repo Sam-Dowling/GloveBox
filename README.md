@@ -74,6 +74,8 @@ SOC analysts, incident responders, and security-conscious users need a way to sa
 | **Windows** | `.lnk` (Shell Link) · `.hta` (HTML Application) · `.url` `.webloc` (Internet shortcuts) · `.reg` (Registry) · `.inf` (Setup Information) · `.sct` (Script Component) · `.msi` (Installer) · `.exe` `.dll` `.sys` `.scr` `.cpl` `.ocx` `.drv` (PE executables) |
 | **Linux / IoT** | ELF binaries (`.so` shared libraries, `.o` object files, extensionless executables) — ELF32/ELF64, LE/BE |
 | **macOS** | Mach-O binaries (`.dylib` dynamic libraries, `.bundle` plugins, extensionless executables, Fat/Universal) — 32/64-bit |
+| **macOS Scripts** | `.applescript` `.scpt` `.jxa` (AppleScript source, compiled AppleScript, JavaScript for Automation) — source display, compiled binary string extraction, macOS-specific security analysis |
+| **macOS Property Lists** | `.plist` (XML and binary plist) — tree view with expandable nested structures, LaunchAgent/Daemon detection, persistence key analysis, suspicious pattern flagging, 21 YARA rules for plist threats |
 | **Certificates** | `.pem` `.der` `.crt` `.cer` (X.509 certificates) · `.p12` `.pfx` (PKCS#12 containers) |
 | **Java** | `.jar` `.war` `.ear` (Java archives) · `.class` (Java bytecode) — MANIFEST.MF parsing, class file analysis, constant pool string extraction, dependency analysis |
 | **Scripts** | `.wsf` `.wsc` `.wsh` (Windows Script Files — parsed) · `.vbs` `.ps1` `.bat` `.cmd` `.js` |
@@ -152,6 +154,12 @@ The [`examples/`](examples/) directory contains sample files for every supported
 - [`example-selfsigned.pem`](examples/example-selfsigned.pem) — self-signed X.509 certificate with suspicious SANs
 - [`example-malicious.svg`](examples/example-malicious.svg) — SVG with embedded scripts, foreignObject phishing form, event handlers, and data URI payloads
 - [`example-with-key.pem`](examples/example-with-key.pem) — certificate with embedded private key + weak 1024-bit RSA key
+- [`example.jar`](examples/example.jar) — Java archive with class files, MANIFEST.MF, and constant pool analysis
+- [`pe-Windows-x64-cmd`](examples/pe-Windows-x64-cmd) — Windows PE executable with imports, sections, and security features
+- [`elf-Linux-x64-bash`](examples/elf-Linux-x64-bash) — Linux ELF binary with symbols, segments, and security checks
+- [`MachO-OSX-x64-ls`](examples/MachO-OSX-x64-ls) — macOS Mach-O binary with load commands and code signature
+- [`example.plist`](examples/example.plist) — macOS property list with LaunchAgent/persistence key detection
+- [`example.applescript`](examples/example.applescript) — AppleScript source with macOS-specific security analysis
 
 ---
 

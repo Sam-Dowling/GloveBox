@@ -40,8 +40,33 @@ YARA_FILES = [
     'src/rules/macho-threats.yar',
     'src/rules/jar-threats.yar',
     'src/rules/svg-threats.yar',
+    'src/rules/osascript-threats.yar',
+    'src/rules/plist-threats.yar',
 ]
-yar_rules = '\n'.join(read(f) for f in YARA_FILES)
+YARA_CATEGORIES = {
+    'src/rules/office-macros.yar': 'Office Macros',
+    'src/rules/script-threats.yar': 'Script',
+    'src/rules/document-threats.yar': 'Document',
+    'src/rules/windows-threats.yar': 'Windows',
+    'src/rules/archive-threats.yar': 'Archive',
+    'src/rules/encoding-threats.yar': 'Encoding',
+    'src/rules/network-indicators.yar': 'Network Indicators',
+    'src/rules/suspicious-patterns.yar': 'Suspicious Patterns',
+    'src/rules/file-analysis.yar': 'File Analysis',
+    'src/rules/pe-threats.yar': 'PE',
+    'src/rules/elf-threats.yar': 'ELF',
+    'src/rules/macho-threats.yar': 'Mach-O',
+    'src/rules/jar-threats.yar': 'JAR',
+    'src/rules/svg-threats.yar': 'SVG',
+    'src/rules/osascript-threats.yar': 'AppleScript/JXA',
+    'src/rules/plist-threats.yar': 'Property List',
+}
+yar_parts = []
+for f in YARA_FILES:
+    cat = YARA_CATEGORIES.get(f, 'Other')
+    yar_parts.append(f'// @category: {cat}')
+    yar_parts.append(read(f))
+yar_rules = '\n'.join(yar_parts)
 # Escape backticks and backslashes for JS template literal
 yar_rules_escaped = yar_rules.replace('\\', '\\\\').replace('`', '\\`').replace('${', '\\${')
 default_yara_js = f'const DEFAULT_YARA_RULES = `{yar_rules_escaped}`;\n'
@@ -90,6 +115,8 @@ JS_FILES = [
     'src/renderers/x509-renderer.js',
     'src/renderers/jar-renderer.js',
     'src/renderers/svg-renderer.js',
+    'src/renderers/osascript-renderer.js',
+    'src/renderers/plist-renderer.js',
     'src/renderers/image-renderer.js',
     'src/renderers/plaintext-renderer.js',
     'src/app/app-core.js',
@@ -133,7 +160,7 @@ HTML = f"""<!DOCTYPE html>
     <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>
     <button class="tb-btn tb-icon-btn" id="btn-help" title="Help &amp; About (?)">?</button>
     <button class="tb-btn tb-icon-btn" id="btn-theme" title="Toggle dark mode">🌙</button>
-    <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.ppt,.odt,.odp,.csv,.tsv,.doc,.msg,.eml,.lnk,.hta,.rtf,.pdf,.zip,.gz,.gzip,.tar,.tgz,.rar,.7z,.cab,.iso,.img,.one,.url,.webloc,.iqy,.slk,.wsf,.wsc,.wsh,.reg,.inf,.sct,.msi,.html,.htm,.mht,.xml,.vbs,.vbe,.js,.jse,.ps1,.bat,.cmd,.ics,.vcf,.txt,.log,.json,.ini,.cfg,.yml,.yaml,.jpg,.jpeg,.png,.gif,.bmp,.webp,.ico,.tif,.tiff,.avif,.svg,.evtx,.sqlite,.db,.exe,.dll,.sys,.scr,.cpl,.ocx,.drv,.com,.elf,.so,.o,.dylib,.bundle,.pem,.der,.crt,.cer,.p12,.pfx,.jar,.war,.ear,.class" style="display:none">
+    <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.ppt,.odt,.odp,.csv,.tsv,.doc,.msg,.eml,.lnk,.hta,.rtf,.pdf,.zip,.gz,.gzip,.tar,.tgz,.rar,.7z,.cab,.iso,.img,.one,.url,.webloc,.iqy,.slk,.wsf,.wsc,.wsh,.reg,.inf,.sct,.msi,.html,.htm,.mht,.xml,.vbs,.vbe,.js,.jse,.ps1,.bat,.cmd,.ics,.vcf,.txt,.log,.json,.ini,.cfg,.yml,.yaml,.jpg,.jpeg,.png,.gif,.bmp,.webp,.ico,.tif,.tiff,.avif,.svg,.evtx,.sqlite,.db,.exe,.dll,.sys,.scr,.cpl,.ocx,.drv,.com,.elf,.so,.o,.dylib,.bundle,.pem,.der,.crt,.cer,.p12,.pfx,.jar,.war,.ear,.class,.applescript,.jxa,.scpt,.scptd,.plist" style="display:none">
   </div>
 
   <!-- ── Main area (viewer + sidebar side-by-side) ──────────────────── -->
@@ -143,8 +170,11 @@ HTML = f"""<!DOCTYPE html>
     <div id="viewer">
       <div id="viewer-toolbar" class="hidden">
         <div class="vt-group">
-          <button class="tb-btn tb-action-btn" id="btn-save" title="Save source content">💾 Save</button>
-          <button class="tb-btn tb-action-btn" id="btn-copy" title="Copy source content">📋 Copy</button>
+          <div class="btn-pill-group">
+            <button class="tb-btn tb-action-btn" id="btn-save" title="Save source content">💾 Save</button>
+            <button class="tb-btn tb-action-btn" id="btn-copy" title="Copy source content">📋 Copy</button>
+          </div>
+          <button class="tb-btn tb-action-btn tb-accent-btn" id="btn-copy-analysis" title="Copy structured analysis report for AI/SOC">⚡ Analysis</button>
         </div>
         <div class="vt-search">
           <input type="text" id="doc-search" placeholder="Search content…" spellcheck="false">
@@ -162,7 +192,7 @@ HTML = f"""<!DOCTYPE html>
       <div id="drop-zone">
         <span class="dz-icon">📄</span>
         <div class="dz-text">Drop a file here to analyse</div>
-        <div class="dz-sub">docx · xlsx · pptx · pdf · doc · eml · rtf · zip · iso · odt · one · lnk · hta · and any file · 100% offline</div>
+        <div class="dz-sub">Office · PDFs · executables · emails · archives · certificates · scripts · binaries · Java · SVG · and 60+ formats · 100% offline</div>
       </div>
       <div id="page-container"></div>
     </div>

@@ -16,8 +16,11 @@ class YaraEngine {
   static parseRules(source) {
     const rules = [];
     const errors = [];
-    // Strip C-style comments
-    const cleaned = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    // Strip comments while preserving string literals (don't strip // inside "...")
+    const cleaned = source.replace(/"(?:[^"\\]|\\.)*"|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (m) => {
+      if (m[0] === '"') return m;  // keep string literals intact
+      return '';                    // strip comments
+    });
 
     // Match rule blocks:  rule <name> [: <tags>] { ... }
     const ruleRx = /\brule\s+(\w+)\s*(?::\s*([\w\s]+?))?\s*\{([\s\S]*?)\n\}/g;
@@ -38,13 +41,194 @@ class YaraEngine {
   }
 
   /**
-   * Validate YARA source without scanning.
+   * Validate YARA source with structural and semantic checks.
    * @param {string} source
-   * @returns {{ valid: boolean, errors: string[], ruleCount: number }}
+   * @returns {{ valid: boolean, errors: string[], warnings: string[], ruleCount: number }}
    */
   static validate(source) {
     const { rules, errors } = YaraEngine.parseRules(source);
-    return { valid: errors.length === 0 && rules.length > 0, errors, ruleCount: rules.length };
+    const warnings = [];
+
+    // Re-parse rule blocks for structural validation on raw body text
+    // Use original source (not comment-stripped) to avoid corrupting URL strings containing //
+    const ruleRx2 = /\brule\s+(\w+)\s*(?::\s*([\w\s]+?))?\s*\{([\s\S]*?)\n\}/g;
+    let m;
+    while ((m = ruleRx2.exec(source)) !== null) {
+      const sv = YaraEngine._validateRuleStructure(m[1], m[3]);
+      for (const e of sv.errors)   errors.push(e);
+      for (const w of sv.warnings) warnings.push(w);
+    }
+
+    // Validate each successfully parsed rule object
+    for (const rule of rules) {
+      const rv = YaraEngine._validateParsedRule(rule);
+      for (const e of rv.errors)   errors.push(e);
+      for (const w of rv.warnings) warnings.push(w);
+    }
+
+    // Duplicate rule names
+    const seen = new Set();
+    for (const rule of rules) {
+      if (seen.has(rule.name)) errors.push('Duplicate rule name "' + rule.name + '"');
+      seen.add(rule.name);
+    }
+
+    return { valid: errors.length === 0 && rules.length > 0, errors, warnings, ruleCount: rules.length };
+  }
+
+  // ── Internal: Structural validation of raw rule body text ─────────────────
+
+  /**
+   * Validate the raw body text of a rule for structural issues.
+   * @param {string} name  Rule name
+   * @param {string} body  Raw text between rule { and closing }
+   * @returns {{ errors: string[], warnings: string[] }}
+   */
+  static _validateRuleStructure(name, body) {
+    const errors = [];
+    const warnings = [];
+    const p = 'Rule "' + name + '": ';
+
+    // Rule name cannot start with a digit
+    if (/^\d/.test(name)) {
+      errors.push(p + 'name cannot start with a digit');
+    }
+
+    // ── Missing colons after section keywords ────────────────────────────
+    const hasMetaColon    = /\bmeta\s*:/i.test(body);
+    const hasStringsColon = /\bstrings\s*:/i.test(body);
+    const hasCondColon    = /\bcondition\s*:/i.test(body);
+
+    if (!hasMetaColon && /^\s*meta\s*$/im.test(body)) {
+      errors.push(p + 'missing colon after "meta" \u2014 should be "meta:"');
+    }
+    if (!hasStringsColon && /^\s*strings\s*$/im.test(body)) {
+      errors.push(p + 'missing colon after "strings" \u2014 should be "strings:"');
+    }
+    if (!hasCondColon) {
+      if (/^\s*condition\s*$/im.test(body)) {
+        errors.push(p + 'missing colon after "condition" \u2014 should be "condition:"');
+      } else {
+        errors.push(p + 'missing required "condition:" section');
+      }
+    }
+
+    // ── Empty condition body ─────────────────────────────────────────────
+    if (hasCondColon) {
+      const cm = body.match(/\bcondition\s*:([\s\S]*?)$/i);
+      if (cm && !cm[1].trim()) {
+        errors.push(p + 'empty condition body');
+      }
+    }
+
+    // ── Unclosed string literals (per-line assignment = "..." check) ─────
+    const lines = body.split('\n');
+    const assignQt = /(?:\$\w+|\w+)\s*=\s*"/g;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim().startsWith('//')) continue; // skip comment lines
+      assignQt.lastIndex = 0;
+      let qm;
+      while ((qm = assignQt.exec(lines[i])) !== null) {
+        let closed = false;
+        for (let j = qm.index + qm[0].length; j < lines[i].length; j++) {
+          if (lines[i][j] === '\\') { j++; continue; }
+          if (lines[i][j] === '"') { closed = true; assignQt.lastIndex = j + 1; break; }
+        }
+        if (!closed) {
+          const snip = lines[i].trim();
+          errors.push(p + 'unclosed string literal: ' +
+            (snip.length > 60 ? snip.slice(0, 60) + '\u2026' : snip));
+          break; // one error per line
+        }
+      }
+    }
+
+    // ── Unclosed hex patterns (= { without matching }) ───────────────────
+    const hexOpenRx = /=\s*\{/g;
+    let hm;
+    while ((hm = hexOpenRx.exec(body)) !== null) {
+      const rest = body.substring(hm.index + hm[0].length);
+      if (rest.indexOf('}') === -1) {
+        errors.push(p + 'unclosed hex pattern \u2014 missing closing "}"');
+        break; // remaining opens are subsumed by this
+      }
+    }
+
+    return { errors, warnings };
+  }
+
+  // ── Internal: Validation of a parsed rule object ──────────────────────────
+
+  /**
+   * Validate a successfully parsed rule for semantic issues.
+   * @param {object} rule  Parsed rule from _parseRuleBody
+   * @returns {{ errors: string[], warnings: string[] }}
+   */
+  static _validateParsedRule(rule) {
+    const errors = [];
+    const warnings = [];
+    const p = 'Rule "' + rule.name + '": ';
+
+    // ── Duplicate string identifiers ─────────────────────────────────────
+    const ids = new Set();
+    for (const s of rule.strings) {
+      if (ids.has(s.id)) errors.push(p + 'duplicate string identifier "' + s.id + '"');
+      ids.add(s.id);
+    }
+
+    // ── Condition references to undefined strings ($var, #var, @var) ─────
+    const defined = new Set(rule.strings.map(s => s.id.toLowerCase()));
+    const cond = rule.condition || '';
+    const refRx = /(\$\w+\*?|#\w+|@\w+)/g;
+    let cv;
+    const checked = new Set();
+    while ((cv = refRx.exec(cond)) !== null) {
+      const ref = cv[1];
+      if (ref.endsWith('*')) continue; // wildcard prefix \u2014 skip
+      const vid = (ref[0] === '$' ? ref : '$' + ref.substring(1)).toLowerCase();
+      if (checked.has(vid)) continue;
+      checked.add(vid);
+      if (!defined.has(vid)) {
+        errors.push(p + 'condition references undefined string "' + ref + '"');
+      }
+    }
+
+    // ── Invalid severity value ───────────────────────────────────────────
+    if (rule.meta && rule.meta.severity) {
+      const sev = rule.meta.severity.toLowerCase();
+      if (!['critical', 'high', 'medium', 'low', 'info'].includes(sev)) {
+        warnings.push(p + 'unknown severity "' + rule.meta.severity +
+          '" \u2014 expected: critical, high, medium, low, info');
+      }
+    }
+
+    // ── Hex pattern token validation ─────────────────────────────────────
+    for (const s of rule.strings) {
+      if (s.type === 'hex') {
+        const inner = s.pattern.replace(/[{}]/g, '').trim();
+        if (!inner) { errors.push(p + 'empty hex pattern in ' + s.id); continue; }
+        const tokens = inner.split(/\s+/);
+        for (const tok of tokens) {
+          if (!tok) continue;
+          if (tok === '??' || tok === '?') continue;                            // wildcard
+          if (/^[0-9a-fA-F]{2}$/.test(tok)) continue;                          // valid byte
+          if (/^\[[\d\-]+\]$/.test(tok)) continue;                             // jump range
+          if (/^[()]$/.test(tok) || tok === '|' || tok === '~') continue;       // alternation
+          if (/^[0-9a-fA-F]\?$/.test(tok) || /^\?[0-9a-fA-F]$/.test(tok)) continue; // nibble
+          errors.push(p + 'invalid hex token "' + tok + '" in ' + s.id);
+        }
+      }
+    }
+
+    // ── Regex compilation check ──────────────────────────────────────────
+    for (const s of rule.strings) {
+      if (s.type === 'regex') {
+        try { new RegExp(s.pattern, (s.flags || '').replace(/[^gimsuy]/g, '')); }
+        catch (e) { errors.push(p + 'invalid regex ' + s.id + ': ' + e.message); }
+      }
+    }
+
+    return { errors, warnings };
   }
 
   /**

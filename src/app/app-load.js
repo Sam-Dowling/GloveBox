@@ -90,6 +90,9 @@ Object.assign(App.prototype, {
       const buffer = await file.arrayBuffer();
       // Store buffer for YARA scanning
       this._fileBuffer = buffer;
+      // Reset YARA state from previous file to prevent stale results bleeding over
+      this._yaraBuffer = null;
+      this._yaraResults = null;
       let docEl, analyzer = null;
 
       // Store file metadata for sidebar display
@@ -285,6 +288,20 @@ Object.assign(App.prototype, {
         const r = new MachoRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
         docEl = r.render(buffer, file.name);
+      } else if (ext === 'plist') {
+        const r = new PlistRenderer();
+        this.findings = r.analyzeForSecurity(buffer, file.name);
+        if (this.findings.augmentedBuffer) {
+          this._yaraBuffer = this.findings.augmentedBuffer;
+        }
+        docEl = r.render(buffer, file.name);
+      } else if (['applescript', 'jxa', 'scpt', 'scptd'].includes(ext)) {
+        const r = new OsascriptRenderer();
+        this.findings = r.analyzeForSecurity(buffer, file.name);
+        if (this.findings.augmentedBuffer) {
+          this._yaraBuffer = this.findings.augmentedBuffer;
+        }
+        docEl = r.render(buffer, file.name);
       } else {
         // ── Content-based detection fallback for extensionless/unknown files ──
         // Detect file type by magic bytes when extension is missing or unrecognized
@@ -460,6 +477,20 @@ Object.assign(App.prototype, {
         } else if (detectedType === 'macho') {
           const r = new MachoRenderer();
           this.findings = r.analyzeForSecurity(buffer, file.name);
+          docEl = r.render(buffer, file.name);
+        } else if (detectedType === 'scpt') {
+          const r = new OsascriptRenderer();
+          this.findings = r.analyzeForSecurity(buffer, file.name);
+          if (this.findings.augmentedBuffer) {
+            this._yaraBuffer = this.findings.augmentedBuffer;
+          }
+          docEl = r.render(buffer, file.name);
+        } else if (detectedType === 'plist') {
+          const r = new PlistRenderer();
+          this.findings = r.analyzeForSecurity(buffer, file.name);
+          if (this.findings.augmentedBuffer) {
+            this._yaraBuffer = this.findings.augmentedBuffer;
+          }
           docEl = r.render(buffer, file.name);
         } else {
           // Catch-all: plain text or hex dump for any unrecognised format
@@ -676,6 +707,10 @@ Object.assign(App.prototype, {
     // OneNote magic
     if (bytes.length >= 16 && bytes[0] === 0xE4 && bytes[1] === 0x52 && bytes[2] === 0x5C && bytes[3] === 0x7B)
       return { hex: h(4), label: 'OneNote Document' };
+    // Binary plist: "bplist"
+    if (bytes.length >= 8 && bytes[0] === 0x62 && bytes[1] === 0x70 && bytes[2] === 0x6C &&
+        bytes[3] === 0x69 && bytes[4] === 0x73 && bytes[5] === 0x74)
+      return { hex: h(8), label: 'Binary Property List (bplist)' };
     // PEM certificate (text-based: -----BEGIN ...)
     if (head.startsWith('-----BEGIN '))
       return { hex: h(11), label: 'PEM Encoded Data' };
@@ -815,6 +850,15 @@ Object.assign(App.prototype, {
     if (bytes.length >= 16 && bytes[0] === 0xE4 && bytes[1] === 0x52 && bytes[2] === 0x5C && bytes[3] === 0x7B)
       return 'onenote';
     
+    // Binary plist: "bplist" (0x62 0x70 0x6C 0x69 0x73 0x74)
+    if (bytes.length >= 8 && bytes[0] === 0x62 && bytes[1] === 0x70 && bytes[2] === 0x6C &&
+        bytes[3] === 0x69 && bytes[4] === 0x73 && bytes[5] === 0x74)
+      return 'plist';
+    
+    // Compiled AppleScript (FasTX magic: 0x46 0x61 0x73 0x54)
+    if (bytes[0] === 0x46 && bytes[1] === 0x61 && bytes[2] === 0x73 && bytes[3] === 0x54)
+      return 'scpt';
+    
     // Text-based detection (check first 20 bytes as string)
     const head = String.fromCharCode(...bytes.subarray(0, Math.min(20, bytes.length)));
     
@@ -856,6 +900,13 @@ Object.assign(App.prototype, {
     // INF Setup Information files
     if (head.startsWith('[Version]') || head.startsWith('[version]'))
       return 'inf';
+    
+    // XML plist (text-based — check for <plist or <!DOCTYPE plist)
+    if (head.startsWith('<?xml') || head.startsWith('<plist') || head.startsWith('<!DOCTYPE')) {
+      const head500 = String.fromCharCode(...bytes.subarray(0, Math.min(500, bytes.length)));
+      if (/<plist[\s>]/i.test(head500) || /<!DOCTYPE\s+plist/i.test(head500))
+        return 'plist';
+    }
     
     return null; // Unknown - will fall through to PlainTextRenderer
   },

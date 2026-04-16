@@ -98,6 +98,7 @@ Object.assign(App.prototype, {
       '7z': '7-Zip Archive', wsf: 'Windows Script File', url: 'Internet Shortcut',
       svg: 'SVG Image', iqy: 'Internet Query File', slk: 'Symbolic Link File',
       evtx: 'Windows Event Log', sqlite: 'SQLite Database', db: 'SQLite Database',
+      plist: 'Property List',
     };
     const meta = this._fileMeta || {};
     body.appendChild(this._sec('File Properties'));
@@ -874,6 +875,16 @@ Object.assign(App.prototype, {
         const strong = document.createElement('strong');
         strong.textContent = ref._yaraRuleName.replace(/_/g, ' ');
         td2.appendChild(strong);
+        // "View YARA rule" button — opens rule viewer filtered to this rule
+        const viewBtn = document.createElement('button');
+        viewBtn.className = 'yara-view-rule-btn';
+        viewBtn.textContent = '\u{1F4D0}';
+        viewBtn.title = 'View YARA rule';
+        viewBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this._openYaraDialog(ref._yaraRuleName);
+        });
+        td2.appendChild(viewBtn);
         if (ref.url) {
           const rest = document.createElement('span');
           rest.textContent = ' — ' + ref.url;

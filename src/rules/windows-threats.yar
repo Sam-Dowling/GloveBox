@@ -6,6 +6,8 @@ rule HTA_File_With_Script
     meta:
         description = "HTA file with script block and execution capability"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1218.005"
 
     strings:
         $hta = "<HTA:APPLICATION" nocase
@@ -25,6 +27,8 @@ rule HTA_Download_Execute
     meta:
         description = "HTA downloads and executes a remote payload"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1218.005"
 
     strings:
         $hta = "<HTA:APPLICATION" nocase
@@ -44,7 +48,9 @@ rule HTA_Any_Presence
 {
     meta:
         description = "File contains HTA application tag — always suspicious as email attachment"
-        severity    = "high"
+        severity    = "medium"
+        category    = "execution"
+        mitre       = "T1218.005"
 
     strings:
         $a = "<HTA:APPLICATION" nocase
@@ -58,6 +64,8 @@ rule HTA_MSHTA_Inline_Script
     meta:
         description = "HTA invoked with mshta inline vbscript or javascript — fileless delivery"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1218.005"
 
     strings:
         $a = "mshta" nocase
@@ -74,6 +82,8 @@ rule URL_Shortcut_Suspicious
     meta:
         description = "Windows .url shortcut with SMB reference or remote icon (credential theft)"
         severity    = "high"
+        category    = "credential-access"
+        mitre       = "T1187"
 
     strings:
         $header = "[InternetShortcut]"
@@ -91,6 +101,8 @@ rule URL_Shortcut_UNC_Icon
     meta:
         description = "URL shortcut with UNC path icon reference — NTLM hash theft via SMB"
         severity    = "critical"
+        category    = "credential-access"
+        mitre       = "T1187"
 
     strings:
         $header = "[InternetShortcut]"
@@ -104,7 +116,9 @@ rule URL_Shortcut_Any_Presence
 {
     meta:
         description = "Any .url internet shortcut file — uncommon as legitimate email attachment"
-        severity    = "medium"
+        severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $a = "[InternetShortcut]"
@@ -119,6 +133,8 @@ rule URL_Shortcut_To_Script_Handler
     meta:
         description = "URL shortcut pointing to script protocol handler (javascript/vbscript/mshta)"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $header = "[InternetShortcut]"
@@ -136,6 +152,8 @@ rule LNK_Suspicious_CommandLine
     meta:
         description = "LNK shortcut with references to suspicious LOLBins (PowerShell, cmd, mshta, etc.)"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $lnk = { 4C 00 00 00 }
@@ -159,6 +177,8 @@ rule LNK_Double_Extension
     meta:
         description = "LNK file containing a double-extension string — file masquerade technique"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1036.007"
 
     strings:
         $lnk = { 4C 00 00 00 }
@@ -178,6 +198,8 @@ rule LNK_Extended_LOLBins
     meta:
         description = "LNK shortcut references less common LOLBins — forfiles, pcalua, explorer abuse"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1218"
 
     strings:
         $lnk = { 4C 00 00 00 }
@@ -201,6 +223,8 @@ rule LNK_Script_Target
     meta:
         description = "LNK shortcut targets a script file directly (.js, .vbs, .hta, .bat, .ps1)"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $lnk = { 4C 00 00 00 }
@@ -223,6 +247,8 @@ rule LNK_Environment_Variable_Abuse
     meta:
         description = "LNK shortcut uses environment variable paths — evasion of static path analysis"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $lnk = { 4C 00 00 00 }
@@ -242,6 +268,8 @@ rule WSF_MultiEngine_Script
     meta:
         description = "Windows Script File (.wsf) with embedded script — bypasses script policy"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $a = "<job" nocase
@@ -258,6 +286,8 @@ rule VHD_Disk_Image
     meta:
         description = "VHD/VHDX virtual disk image — MotW bypass, mounts as drive on double-click"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1553.005"
 
     strings:
         $a = "conectix"
@@ -272,6 +302,8 @@ rule MSI_Installer_Suspicious
     meta:
         description = "MSI Windows Installer — uncommon as legitimate email attachment"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1218.007"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -288,6 +320,8 @@ rule MSIX_APPX_Installer
     meta:
         description = "MSIX/APPX package — abused for sideloading malware via ms-appinstaller"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1218"
 
     strings:
         $pk = { 50 4B 03 04 }
@@ -304,6 +338,8 @@ rule CMSTP_INF_Bypass
     meta:
         description = "INF file designed for CMSTP.exe bypass — UAC evasion via connection manager"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1218.003"
 
     strings:
         $a = "[version]" nocase
@@ -321,6 +357,8 @@ rule Info_Contains_MachO_Binary
     meta:
         description = "File contains a Mach-O binary header (macOS/iOS executable)"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $macho32    = { CE FA ED FE }
@@ -336,6 +374,8 @@ rule Info_Contains_Java_JAR
     meta:
         description = "File contains a Java JAR archive (ZIP with META-INF/MANIFEST.MF)"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $pk       = { 50 4B 03 04 }
@@ -350,6 +390,8 @@ rule Info_Contains_Java_Class
     meta:
         description = "File contains a compiled Java .class file (magic bytes CAFEBABE)"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $magic = { CA FE BA BE 00 }
@@ -363,6 +405,8 @@ rule Info_Contains_DotNet_Assembly
     meta:
         description = "File contains .NET CLR assembly indicators"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $mz       = { 4D 5A }
@@ -381,6 +425,8 @@ rule Info_Contains_WebAssembly
     meta:
         description = "File contains WebAssembly (WASM) binary module"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $magic = { 00 61 73 6D }
@@ -394,6 +440,8 @@ rule Info_Contains_DLL_Export
     meta:
         description = "File contains DLL export indicators — may be a disguised dynamic library"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $mz      = { 4D 5A }
@@ -412,6 +460,8 @@ rule Info_Email_EML_Format
     meta:
         description = "File is a raw email message (.eml format with standard headers)"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $from    = "From: " nocase
@@ -429,6 +479,8 @@ rule Info_Email_Reply_To_Mismatch_Indicator
     meta:
         description = "Email contains both From and Reply-To headers — analyst should verify they match"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1566"
 
     strings:
         $from    = "From:" nocase
@@ -443,6 +495,8 @@ rule Info_Email_SPF_Fail
     meta:
         description = "Email headers indicate SPF authentication failure"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1566"
 
     strings:
         $a = "spf=fail" nocase
@@ -459,6 +513,8 @@ rule Info_Email_DKIM_Fail
     meta:
         description = "Email headers indicate DKIM signature verification failure"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1566"
 
     strings:
         $a = "dkim=fail" nocase
@@ -474,6 +530,8 @@ rule Info_Email_DMARC_Fail
     meta:
         description = "Email headers indicate DMARC policy failure"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1566"
 
     strings:
         $a = "dmarc=fail" nocase
@@ -488,6 +546,8 @@ rule Info_Email_X_Originating_IP
     meta:
         description = "Email contains X-Originating-IP header — reveals sender's source IP"
         severity    = "info"
+        category    = "discovery"
+        mitre       = ""
 
     strings:
         $a = "X-Originating-IP:" nocase
@@ -501,6 +561,8 @@ rule Info_Email_Multiple_Received_Hops
     meta:
         description = "Email has multiple Received headers — may indicate forwarding or relay chain"
         severity    = "info"
+        category    = "discovery"
+        mitre       = ""
 
     strings:
         $recv = "Received:" nocase
@@ -514,6 +576,8 @@ rule Info_Email_Bulk_Precedence
     meta:
         description = "Email marked as bulk, list, or junk precedence — mass mailing indicator"
         severity    = "info"
+        category    = "phishing"
+        mitre       = ""
 
     strings:
         $a = "Precedence: bulk" nocase
@@ -530,6 +594,8 @@ rule Info_Email_Content_Transfer_Encoding
     meta:
         description = "Email uses base64 or quoted-printable content transfer encoding"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $a = "Content-Transfer-Encoding: base64" nocase
@@ -544,6 +610,8 @@ rule Info_Email_Multipart_Mixed
     meta:
         description = "Email is multipart/mixed — contains attachments alongside body text"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $a = "Content-Type: multipart/mixed" nocase
@@ -557,6 +625,8 @@ rule Info_PNG_Appended_Data
     meta:
         description = "PNG file with data appended after IEND chunk — possible steganography or payload"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1027.001"
 
     strings:
         $png_header = { 89 50 4E 47 0D 0A 1A 0A }
@@ -571,6 +641,8 @@ rule Info_JPEG_Appended_Data
     meta:
         description = "JPEG file with data after the EOI marker — possible hidden payload"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1027.001"
 
     strings:
         $soi = { FF D8 FF }
@@ -585,6 +657,8 @@ rule Info_Image_Only_HTML_Email
     meta:
         description = "HTML content is image-only with no meaningful text — scanner evasion technique"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1566.002"
 
     strings:
         $html  = "<html" nocase
@@ -603,6 +677,8 @@ rule Info_SVG_Image_Present
     meta:
         description = "File contains SVG image markup — review for embedded scripts"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $svg = "<svg" nocase
@@ -617,6 +693,8 @@ rule Info_WMI_Event_Subscription
     meta:
         description = "File references WMI event subscription classes — fileless persistence mechanism"
         severity    = "info"
+        category    = "persistence"
+        mitre       = "T1546.003"
 
     strings:
         $a = "__EventFilter" nocase
@@ -634,6 +712,8 @@ rule Info_Service_Installation
     meta:
         description = "File references Windows service creation or modification"
         severity    = "info"
+        category    = "persistence"
+        mitre       = "T1543.003"
 
     strings:
         $a = "sc create" nocase
@@ -652,6 +732,8 @@ rule Info_BITSAdmin_Reference
     meta:
         description = "File references BITSAdmin — can be abused for stealthy file transfers"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1197"
 
     strings:
         $a = "bitsadmin" nocase
@@ -667,6 +749,8 @@ rule Info_Alternate_Data_Stream
     meta:
         description = "File references NTFS Alternate Data Streams — payload hiding technique"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1564.004"
 
     strings:
         $a = /[a-zA-Z]:\\[^\s:]+:[^\s:]+/ nocase
@@ -682,6 +766,8 @@ rule Info_DLL_Sideload_Indicators
     meta:
         description = "File references known DLL sideloading targets"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1574.002"
 
     strings:
         $a = "version.dll" nocase
@@ -700,6 +786,8 @@ rule Info_Android_APK
     meta:
         description = "File is an Android APK package (ZIP with AndroidManifest.xml)"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $pk       = { 50 4B 03 04 }
@@ -715,6 +803,8 @@ rule Info_iOS_MobileConfig
     meta:
         description = "File is an Apple .mobileconfig profile — can install MDM, VPN, or certs silently"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $plist = "<!DOCTYPE plist" nocase
@@ -732,6 +822,8 @@ rule Info_ICS_Calendar_Invite
     meta:
         description = "File is an iCalendar (.ics) invite — check for phishing URLs in event body"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $begin = "BEGIN:VCALENDAR" nocase
@@ -748,6 +840,8 @@ rule Info_ICS_Calendar_With_URL
     meta:
         description = "Calendar invite (.ics) contains URL — common vector for calendar phishing"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1566.002"
 
     strings:
         $begin = "BEGIN:VCALENDAR" nocase
@@ -765,6 +859,8 @@ rule Info_Apple_Disk_Image_DMG
     meta:
         description = "File is an Apple Disk Image (DMG) — can contain macOS malware"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $a = { 78 01 73 0D 62 62 60 }
@@ -780,6 +876,8 @@ rule Info_Shortcut_WEBLOC
     meta:
         description = "File is a macOS .webloc bookmark — may redirect to phishing URL"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $plist = "<!DOCTYPE plist" nocase
@@ -794,6 +892,8 @@ rule Info_Linux_Desktop_Entry
     meta:
         description = "File is a Linux .desktop application entry — can execute arbitrary commands"
         severity    = "info"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $header = "[Desktop Entry]" nocase
@@ -809,6 +909,8 @@ rule Info_Cloudflare_Workers_URL
     meta:
         description = "File references Cloudflare Workers URL — abused for phishing proxies"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1583.001"
 
     strings:
         $a = ".workers.dev" nocase
@@ -823,6 +925,8 @@ rule Info_Azure_Hosting_URL
     meta:
         description = "File references Azure hosting domains — sometimes abused for phishing infra"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1583.001"
 
     strings:
         $a = ".azurewebsites.net" nocase
@@ -840,6 +944,8 @@ rule Info_AWS_Hosting_URL
     meta:
         description = "File references AWS hosting domains — sometimes abused for phishing infra"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1583.001"
 
     strings:
         $a = ".amazonaws.com" nocase
@@ -856,6 +962,8 @@ rule Info_Google_Cloud_Hosting_URL
     meta:
         description = "File references Google Cloud hosting domains"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1583.001"
 
     strings:
         $a = ".appspot.com" nocase
@@ -873,6 +981,8 @@ rule Info_Firebase_Dynamic_Link
     meta:
         description = "File contains Firebase dynamic link — used to create redirect chains"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1583.001"
 
     strings:
         $a = ".page.link" nocase
@@ -887,6 +997,8 @@ rule Info_Vercel_Netlify_Hosting
     meta:
         description = "File references Vercel or Netlify hosting — abused for disposable phishing sites"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1583.001"
 
     strings:
         $a = ".vercel.app" nocase
@@ -902,6 +1014,8 @@ rule Info_Heroku_Render_Hosting
     meta:
         description = "File references Heroku or Render hosting domains"
         severity    = "info"
+        category    = "phishing"
+        mitre       = "T1583.001"
 
     strings:
         $a = ".herokuapp.com" nocase
@@ -916,6 +1030,8 @@ rule Info_Tracking_Pixel
     meta:
         description = "File contains a 1x1 tracking pixel image — used for open-tracking or canary"
         severity    = "info"
+        category    = "collection"
+        mitre       = "T1114"
 
     strings:
         $a = "width=\"1\" height=\"1\"" nocase
@@ -933,6 +1049,8 @@ rule Info_External_Image_Load
     meta:
         description = "Document or HTML loads an external image — may phone home on open"
         severity    = "info"
+        category    = "collection"
+        mitre       = "T1114"
 
     strings:
         $img_http1 = "<img" nocase
@@ -950,6 +1068,8 @@ rule Info_Unique_Token_In_URL
     meta:
         description = "File contains URL with long unique token — per-recipient tracking link"
         severity    = "info"
+        category    = "collection"
+        mitre       = "T1114"
 
     strings:
         $a = /https?:\/\/[^\s]{10,}[?&][a-zA-Z]+=[-a-zA-Z0-9_]{20,}/
@@ -963,6 +1083,8 @@ rule Info_Web_Beacon_Keywords
     meta:
         description = "File contains web beacon or tracking-related keywords"
         severity    = "info"
+        category    = "collection"
+        mitre       = "T1114"
 
     strings:
         $a = "web beacon" nocase
@@ -981,6 +1103,8 @@ rule Info_UTF7_Encoded_Content
     meta:
         description = "File contains UTF-7 encoded sequences — used to bypass XSS and content filters"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $a = "+ADw-script" nocase
@@ -998,6 +1122,8 @@ rule Info_MIME_Encoded_Words
     meta:
         description = "File contains MIME encoded-word syntax — may hide subject or filename"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $b64  = /=\?[A-Za-z0-9\-]+\?B\?[A-Za-z0-9+\/=]+\?=/
@@ -1012,6 +1138,8 @@ rule Info_Quoted_Printable_Obfuscation
     meta:
         description = "File contains heavy quoted-printable encoding — may obfuscate phishing text"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $qp = /=[0-9A-Fa-f]{2}/
@@ -1025,6 +1153,8 @@ rule Info_HTML_Entity_Obfuscation
     meta:
         description = "File uses heavy HTML entity encoding — evasion of text-based content scanning"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $dec = /&#[0-9]{2,4};/
@@ -1039,6 +1169,8 @@ rule Info_CSS_Content_Injection
     meta:
         description = "HTML uses CSS content property to render text — hides text from parsers"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $a = "content:" nocase
@@ -1055,6 +1187,8 @@ rule Info_Zero_Width_Characters
     meta:
         description = "File contains zero-width Unicode characters — text obfuscation or fingerprinting"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $zwsp  = { E2 80 8B }
@@ -1072,6 +1206,8 @@ rule Info_Punycode_Domain
     meta:
         description = "File contains a Punycode-encoded domain (xn--) — possible homograph attack"
         severity    = "info"
+        category    = "initial-access"
+        mitre       = "T1583.001"
 
     strings:
         $a = "xn--" nocase
@@ -1085,6 +1221,8 @@ rule Info_Data_URI_Scheme
     meta:
         description = "File contains data: URI scheme — may embed content inline to avoid fetching"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $a = "data:text/html" nocase
@@ -1101,6 +1239,8 @@ rule Info_Cobalt_Strike_Indicators
     meta:
         description = "File contains strings associated with Cobalt Strike beacons"
         severity    = "info"
+        category    = "command-and-control"
+        mitre       = "T1071.001"
 
     strings:
         $a = "beacon.dll" nocase
@@ -1119,6 +1259,8 @@ rule Info_Metasploit_Indicators
     meta:
         description = "File contains strings commonly seen in Metasploit payloads"
         severity    = "info"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $a = "meterpreter" nocase
@@ -1137,6 +1279,8 @@ rule Info_Macro_Builder_Artifacts
     meta:
         description = "File contains artifacts from known macro payload builders"
         severity    = "info"
+        category    = "execution"
+        mitre       = "T1059.005"
 
     strings:
         $a = "MacroPack" nocase
@@ -1154,6 +1298,8 @@ rule Info_Mimikatz_Reference
     meta:
         description = "File contains references to Mimikatz credential harvesting tool"
         severity    = "info"
+        category    = "credential-access"
+        mitre       = "T1003.001"
 
     strings:
         $a = "mimikatz" nocase
@@ -1171,6 +1317,8 @@ rule Info_DNS_Over_HTTPS_Reference
     meta:
         description = "File references DNS-over-HTTPS endpoints — can be used for covert C2"
         severity    = "info"
+        category    = "command-and-control"
+        mitre       = "T1071.001"
 
     strings:
         $a = "dns.google/resolve" nocase
@@ -1188,6 +1336,8 @@ rule Info_DNS_TXT_Lookup
     meta:
         description = "File performs DNS TXT record lookups — can smuggle data or instructions"
         severity    = "info"
+        category    = "command-and-control"
+        mitre       = "T1071.004"
 
     strings:
         $a = "nslookup" nocase
@@ -1205,6 +1355,8 @@ rule Info_Exfil_HTTP_POST
     meta:
         description = "File constructs HTTP POST requests with data — possible exfiltration"
         severity    = "info"
+        category    = "exfiltration"
+        mitre       = "T1048"
 
     strings:
         $a = "XMLHttpRequest" nocase
@@ -1224,6 +1376,8 @@ rule Info_Socket_Connection
     meta:
         description = "File creates raw socket or TCP connection — possible reverse shell or C2"
         severity    = "info"
+        category    = "command-and-control"
+        mitre       = "T1095"
 
     strings:
         $a = "TCPClient" nocase
@@ -1242,6 +1396,8 @@ rule Info_Reverse_Shell_Patterns
     meta:
         description = "File contains common reverse shell connection patterns"
         severity    = "info"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $a = "/dev/tcp/" nocase
@@ -1261,6 +1417,8 @@ rule Info_Browser_Credential_Paths
     meta:
         description = "File references browser credential or cookie store paths"
         severity    = "info"
+        category    = "credential-access"
+        mitre       = "T1555.003"
 
     strings:
         $a = "Login Data" nocase
@@ -1280,6 +1438,8 @@ rule Info_Keylogger_Indicators
     meta:
         description = "File contains keylogger-related API calls or patterns"
         severity    = "info"
+        category    = "collection"
+        mitre       = "T1056.001"
 
     strings:
         $a = "GetAsyncKeyState" nocase
@@ -1297,6 +1457,8 @@ rule Info_Screenshot_Capture
     meta:
         description = "File contains screen capture API references"
         severity    = "info"
+        category    = "collection"
+        mitre       = "T1113"
 
     strings:
         $a = "GetDesktopWindow" nocase
@@ -1314,6 +1476,8 @@ rule Info_Webcam_Microphone_Access
     meta:
         description = "File references webcam or microphone access APIs"
         severity    = "info"
+        category    = "collection"
+        mitre       = "T1125"
 
     strings:
         $a = "getUserMedia" nocase
@@ -1332,6 +1496,8 @@ rule Info_Sensitive_File_Extensions
     meta:
         description = "File references sensitive data file extensions (wallets, databases, keys)"
         severity    = "info"
+        category    = "collection"
+        mitre       = "T1005"
 
     strings:
         $a = ".kdbx" nocase
@@ -1353,6 +1519,8 @@ rule Info_Outlook_Credential_Reference
     meta:
         description = "File references Outlook profile credentials or PST/OST archives"
         severity    = "info"
+        category    = "credential-access"
+        mitre       = "T1114.001"
 
     strings:
         $a = ".pst" nocase fullword
@@ -1371,6 +1539,8 @@ rule Info_VM_Detection_Strings
     meta:
         description = "File checks for virtual machine or sandbox environment indicators"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1497.001"
 
     strings:
         $a = "VMware" nocase
@@ -1393,6 +1563,8 @@ rule Info_Debugger_Detection
     meta:
         description = "File checks for debugger presence — anti-analysis technique"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1497.001"
 
     strings:
         $a = "IsDebuggerPresent" nocase
@@ -1411,6 +1583,8 @@ rule Info_Timing_Based_Evasion
     meta:
         description = "File uses timing checks — common sandbox evasion to wait out analysis"
         severity    = "info"
+        category    = "defense-evasion"
+        mitre       = "T1497.003"
 
     strings:
         $a = "GetTickCount" nocase
@@ -1429,6 +1603,8 @@ rule Info_Process_Enumeration
     meta:
         description = "File enumerates running processes — recon or AV-detection technique"
         severity    = "info"
+        category    = "discovery"
+        mitre       = "T1057"
 
     strings:
         $a = "CreateToolhelp32Snapshot" nocase
@@ -1447,6 +1623,8 @@ rule Info_UAC_Bypass_Indicators
     meta:
         description = "File contains references to UAC bypass techniques"
         severity    = "info"
+        category    = "privilege-escalation"
+        mitre       = "T1548.002"
 
     strings:
         $a = "fodhelper" nocase
@@ -1465,6 +1643,8 @@ rule BITSAdmin_Download
     meta:
         description = "BITSAdmin used for file download — LOLBin download technique"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1197"
 
     strings:
         $a     = "bitsadmin" nocase
@@ -1481,6 +1661,8 @@ rule Regsvr32_Remote_SCT
     meta:
         description = "Regsvr32 loads remote scriptlet — Squiblydoo AppLocker bypass"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1218.010"
 
     strings:
         $a     = "regsvr32" nocase
@@ -1499,6 +1681,8 @@ rule MSBuild_Inline_Task
     meta:
         description = "MSBuild XML with inline task — bypasses application whitelisting"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1127.001"
 
     strings:
         $a     = "<Project" nocase
@@ -1517,6 +1701,8 @@ rule CMSTP_CommandLine_Execution
     meta:
         description = "CMSTP.exe INF-based execution — UAC bypass and AppLocker evasion"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1218.003"
 
     strings:
         $a     = "cmstp" nocase
@@ -1534,6 +1720,8 @@ rule Msiexec_Remote_Install
     meta:
         description = "Msiexec loads remote MSI package — payload delivery via Windows Installer"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1218.007"
 
     strings:
         $a     = "msiexec" nocase
@@ -1550,6 +1738,8 @@ rule Rundll32_Script_Proxy
     meta:
         description = "Rundll32 used to proxy-execute JavaScript or DLL exports"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1218.011"
 
     strings:
         $a     = "rundll32" nocase
@@ -1569,6 +1759,8 @@ rule REG_Persistence_Run_Key
     meta:
         description = "Registry file modifies Run/RunOnce autostart keys (persistence)"
         severity    = "critical"
+        category    = "persistence"
+        mitre       = "T1547.001"
 
     strings:
         $header1 = "Windows Registry Editor" nocase
@@ -1587,6 +1779,8 @@ rule REG_Persistence_Winlogon
     meta:
         description = "Registry file modifies Winlogon keys (persistence/credential theft)"
         severity    = "critical"
+        category    = "persistence"
+        mitre       = "T1547.004"
 
     strings:
         $header1 = "Windows Registry Editor" nocase
@@ -1604,6 +1798,8 @@ rule REG_Security_Disable
     meta:
         description = "Registry file disables Windows security features"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1562.001"
 
     strings:
         $header1 = "Windows Registry Editor" nocase
@@ -1625,6 +1821,8 @@ rule REG_IFEO_Debugger
     meta:
         description = "Registry file sets Image File Execution Options debugger (process hijack)"
         severity    = "critical"
+        category    = "persistence"
+        mitre       = "T1546.012"
 
     strings:
         $header1 = "Windows Registry Editor" nocase
@@ -1641,6 +1839,8 @@ rule REG_Service_Creation
     meta:
         description = "Registry file creates or modifies Windows services"
         severity    = "high"
+        category    = "persistence"
+        mitre       = "T1543.003"
 
     strings:
         $header1 = "Windows Registry Editor" nocase
@@ -1658,6 +1858,8 @@ rule REG_UAC_Disable
     meta:
         description = "Registry file disables User Account Control"
         severity    = "critical"
+        category    = "privilege-escalation"
+        mitre       = "T1548.002"
 
     strings:
         $header1 = "Windows Registry Editor" nocase
@@ -1675,6 +1877,8 @@ rule REG_COM_Hijack
     meta:
         description = "Registry file modifies COM class registration (COM hijacking)"
         severity    = "high"
+        category    = "persistence"
+        mitre       = "T1546.015"
 
     strings:
         $header1 = "Windows Registry Editor" nocase
@@ -1692,6 +1896,8 @@ rule REG_Suspicious_Values
     meta:
         description = "Registry file contains suspicious executable references in values"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $header1 = "Windows Registry Editor" nocase
@@ -1719,6 +1925,8 @@ rule REG_File_Association_Hijack
     meta:
         description = "Registry file modifies file associations or shell handlers"
         severity    = "high"
+        category    = "persistence"
+        mitre       = "T1546.001"
 
     strings:
         $header1 = "Windows Registry Editor" nocase
@@ -1738,6 +1946,8 @@ rule REG_Any_Presence
     meta:
         description = "Windows Registry import file detected"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $header1 = "Windows Registry Editor Version 5.00"
@@ -1756,6 +1966,8 @@ rule INF_Command_Execution
     meta:
         description = "INF file with RunPreSetupCommands or RunPostSetupCommands (command execution)"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1218.003"
 
     strings:
         $sec1 = "[RunPreSetupCommands]" nocase
@@ -1772,6 +1984,8 @@ rule INF_CMSTP_Bypass
     meta:
         description = "INF file references CMSTP (UAC bypass technique T1218.003)"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1218.003"
 
     strings:
         $cmstp1 = "cmstp" nocase
@@ -1787,6 +2001,8 @@ rule INF_LOLBin_Reference
     meta:
         description = "INF file references LOLBins (Living-off-the-Land binaries)"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1218"
 
     strings:
         $inf = "[DefaultInstall" nocase
@@ -1807,6 +2023,8 @@ rule INF_Script_Execution
     meta:
         description = "INF file references script interpreters"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $inf = "[DefaultInstall" nocase
@@ -1826,6 +2044,8 @@ rule INF_Registry_Modification
     meta:
         description = "INF file with AddReg/DelReg directives (registry modification)"
         severity    = "medium"
+        category    = "persistence"
+        mitre       = "T1112"
 
     strings:
         $addreg = "AddReg" nocase
@@ -1842,6 +2062,8 @@ rule INF_DLL_Registration
     meta:
         description = "INF file registers DLLs or OCX components"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1218.010"
 
     strings:
         $reg1 = "RegisterDlls" nocase
@@ -1858,6 +2080,8 @@ rule INF_URL_Reference
     meta:
         description = "INF file contains URL references"
         severity    = "medium"
+        category    = "command-and-control"
+        mitre       = "T1105"
 
     strings:
         $url1 = "http://" nocase
@@ -1873,6 +2097,8 @@ rule INF_Any_Presence
     meta:
         description = "Windows Setup Information file detected"
         severity    = "info"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $ver = "[Version]" nocase
@@ -1893,6 +2119,8 @@ rule SCT_Squiblydoo
     meta:
         description = "SCT scriptlet with regsvr32 references (Squiblydoo attack T1218.010)"
         severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1218.010"
 
     strings:
         $sct1 = "<scriptlet" nocase
@@ -1909,6 +2137,8 @@ rule SCT_Script_Execution
     meta:
         description = "SCT scriptlet with embedded script code"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $sct = "<scriptlet" nocase
@@ -1925,6 +2155,8 @@ rule SCT_COM_Object_Creation
     meta:
         description = "SCT scriptlet creates COM objects (code execution)"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $sct = "<scriptlet" nocase
@@ -1943,6 +2175,8 @@ rule SCT_Network_Access
     meta:
         description = "SCT scriptlet with network access capabilities"
         severity    = "high"
+        category    = "command-and-control"
+        mitre       = "T1105"
 
     strings:
         $sct = "<scriptlet" nocase
@@ -1962,6 +2196,8 @@ rule SCT_Shell_Command
     meta:
         description = "SCT scriptlet executes shell commands"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1059"
 
     strings:
         $sct = "<scriptlet" nocase
@@ -1981,6 +2217,8 @@ rule SCT_Any_Presence
     meta:
         description = "Windows Script Component (SCT/WSC scriptlet) detected"
         severity    = "medium"
+        category    = "file-type"
+        mitre       = ""
 
     strings:
         $sct1 = "<scriptlet" nocase
@@ -2000,6 +2238,8 @@ rule MSI_Embedded_PE
     meta:
         description = "MSI installer contains embedded PE executable"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1218.007"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2016,6 +2256,8 @@ rule MSI_Embedded_Script
     meta:
         description = "MSI installer contains embedded script content"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1218.007"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2035,6 +2277,8 @@ rule MSI_Suspicious_CustomAction
     meta:
         description = "MSI installer references CustomAction execution patterns"
         severity    = "high"
+        category    = "execution"
+        mitre       = "T1218.007"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2057,6 +2301,8 @@ rule MSI_Network_Indicators
     meta:
         description = "MSI installer contains network URL references"
         severity    = "medium"
+        category    = "command-and-control"
+        mitre       = "T1105"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2073,6 +2319,8 @@ rule MSI_Encoded_Content
     meta:
         description = "MSI installer contains Base64 or encoded command indicators"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2090,6 +2338,8 @@ rule MSI_Service_Install
     meta:
         description = "MSI installer creates Windows services"
         severity    = "medium"
+        category    = "persistence"
+        mitre       = "T1543.003"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2109,6 +2359,8 @@ rule URL_Encoded_Command
     meta:
         description = "File contains URL-encoded sequences that decode to suspicious commands"
         severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
 
     strings:
         $ps = "%70%6f%77%65%72%73%68%65%6c%6c" nocase
@@ -2130,6 +2382,8 @@ rule ClickOnce_AppRef_MS
     meta:
         description = "ClickOnce .appref-ms application reference — can install .NET malware on click"
         severity    = "critical"
+        category    = "execution"
+        mitre       = "T1204.002"
 
     strings:
         $appref  = ".application#" nocase
@@ -2151,6 +2405,8 @@ rule Scheduled_Task_XML
     meta:
         description = "File contains Windows Scheduled Task XML definition — persistence or execution"
         severity    = "high"
+        category    = "persistence"
+        mitre       = "T1053.005"
 
     strings:
         $task   = "<Task " nocase
@@ -2176,6 +2432,8 @@ rule ISO_Disk_Image
     meta:
         description = "ISO disk image file — bypasses MotW on Windows, mounts on double-click"
         severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1553.005"
 
     strings:
         $cd001 = "CD001" ascii

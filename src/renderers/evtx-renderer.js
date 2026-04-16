@@ -2811,8 +2811,6 @@ class EvtxRenderer {
         document.body.removeChild(ta); this._showToast(bar, 'Copied!');
       }
     });
-    bar.appendChild(copyBtn);
-
     const dlBtn = document.createElement('button');
     dlBtn.className = 'tb-btn csv-export-btn';
     dlBtn.textContent = '💾 Download CSV';
@@ -2826,7 +2824,12 @@ class EvtxRenderer {
       URL.revokeObjectURL(url);
       this._showToast(bar, 'Downloaded!');
     });
-    bar.appendChild(dlBtn);
+
+    const pillGroup = document.createElement('div');
+    pillGroup.className = 'btn-pill-group';
+    pillGroup.appendChild(dlBtn);
+    pillGroup.appendChild(copyBtn);
+    bar.appendChild(pillGroup);
 
     return bar;
   }
