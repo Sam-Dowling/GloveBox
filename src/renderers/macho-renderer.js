@@ -1091,6 +1091,7 @@ class MachoRenderer {
     this._bytes = bytes;
     const wrap = document.createElement('div');
     wrap.className = 'macho-view';
+    let parsedStrings = null;
 
     try {
       // Check for Fat/Universal binary first
@@ -1113,6 +1114,8 @@ class MachoRenderer {
       } else {
         mo = this._parse(bytes, 0);
       }
+
+      parsedStrings = mo.strings;
 
       // ── Banner ─────────────────────────────────────────────────────
       const banner = document.createElement('div');
@@ -1201,6 +1204,13 @@ class MachoRenderer {
       errBox.className = 'macho-error';
       errBox.textContent = 'Mach-O parsing error: ' + err.message;
       wrap.appendChild(errBox);
+    }
+
+    // Expose extracted strings as _rawText so the general IOC extraction
+    // pipeline and EncodedContentDetector scan clean string data instead
+    // of noisy DOM text (table headers, hex addresses, UI chrome, etc.)
+    if (parsedStrings && parsedStrings.length > 0) {
+      wrap._rawText = parsedStrings.join('\n');
     }
 
     return wrap;
@@ -1771,6 +1781,30 @@ class MachoRenderer {
       if (mo.dylibs.length > 0) findings.metadata['Dynamic Libraries'] = mo.dylibs.length.toString();
       if (mo.buildVersion) findings.metadata['Platform'] = `${mo.buildVersion.platform} ${mo.buildVersion.minos}`;
       else if (mo.minVersion) findings.metadata['Platform'] = `${mo.minVersion.platform} ${mo.minVersion.version}`;
+      if (mo.idDylib) findings.metadata['Library ID'] = mo.idDylib;
+      if (mo.sourceVersion) findings.metadata['Source Version'] = mo.sourceVersion;
+
+      // ── Extract embedded Info.plist for Bundle ID ──────────────────
+      try {
+        const plistSec = mo.sections.find(s => s.sectname === '__info_plist' && s.size > 0 && s.offset > 0);
+        if (plistSec && plistSec.offset + plistSec.size <= bytes.length) {
+          const plistData = new TextDecoder('utf-8', { fatal: false }).decode(
+            bytes.subarray(plistSec.offset, plistSec.offset + Math.min(plistSec.size, 65536))
+          );
+          // Extract CFBundleIdentifier from XML plist
+          const idMatch = plistData.match(/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/);
+          if (idMatch) findings.metadata['Bundle ID'] = idMatch[1];
+          // Extract CFBundleName
+          const nameMatch = plistData.match(/<key>CFBundleName<\/key>\s*<string>([^<]+)<\/string>/);
+          if (nameMatch) findings.metadata['Bundle Name'] = nameMatch[1];
+          // Extract CFBundleExecutable
+          const execMatch = plistData.match(/<key>CFBundleExecutable<\/key>\s*<string>([^<]+)<\/string>/);
+          if (execMatch) findings.metadata['Bundle Executable'] = execMatch[1];
+          // Extract CFBundleVersion
+          const verMatch = plistData.match(/<key>CFBundleVersion<\/key>\s*<string>([^<]+)<\/string>/);
+          if (verMatch) findings.metadata['Bundle Version'] = verMatch[1];
+        }
+      } catch (_) { /* plist parsing is best-effort */ }
 
       // ── Security feature checks ────────────────────────────────────
       if (!mo.security.pie && mo.filetype === 2) { // MH_EXECUTE

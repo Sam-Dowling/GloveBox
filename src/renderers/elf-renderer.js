@@ -875,9 +875,11 @@ class ElfRenderer {
     this._bytes = bytes;
     const wrap = document.createElement('div');
     wrap.className = 'elf-view';
+    let parsedStrings = null;
 
     try {
       const elf = this._parse(bytes);
+      parsedStrings = elf.strings;
 
       // ── Banner ─────────────────────────────────────────────────────
       const banner = document.createElement('div');
@@ -963,6 +965,13 @@ class ElfRenderer {
       errBox.className = 'elf-error';
       errBox.textContent = 'ELF parsing error: ' + err.message;
       wrap.appendChild(errBox);
+    }
+
+    // Expose extracted strings as _rawText so the general IOC extraction
+    // pipeline and EncodedContentDetector scan clean string data instead
+    // of noisy DOM text (table headers, hex addresses, UI chrome, etc.)
+    if (parsedStrings && parsedStrings.length > 0) {
+      wrap._rawText = parsedStrings.join('\n');
     }
 
     return wrap;

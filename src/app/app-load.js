@@ -996,6 +996,15 @@ Object.assign(App.prototype, {
     for (const m of full.matchAll(/\\\\[\w.\-]{2,}(?:\\[\w.\-]{1,})+/g)) {
       add(IOC.UNC_PATH, m[0], 'medium', null, { offset: m.index, length: m[0].length });
     }
+    // Unix file paths (e.g. /usr/bin/bash, /etc/passwd, /tmp/payload)
+    // Requires at least 2 path components to avoid false positives on single slashes
+    for (const m of full.matchAll(/\/(?:usr|etc|bin|sbin|tmp|var|opt|home|root|dev|proc|sys|lib|mnt|run|srv|Library|Applications|System|private)\/[\w.\-/]{2,}/g)) {
+      add(IOC.FILE_PATH, m[0], 'info', null, { offset: m.index, length: m[0].length });
+    }
+    // Windows registry keys (e.g. HKEY_LOCAL_MACHINE\SOFTWARE\..., HKLM\...)
+    for (const m of full.matchAll(/\b(?:HKEY_(?:LOCAL_MACHINE|CURRENT_USER|CLASSES_ROOT|USERS|CURRENT_CONFIG)|HK(?:LM|CU|CR|U|CC))\\[\w\-. \\]{4,}/g)) {
+      add(IOC.REGISTRY_KEY, m[0], 'medium', null, { offset: m.index, length: m[0].length });
+    }
 
     // ── Defanged IOC extraction ──────────────────────────────────────────────
     // Detect defanged URLs (hxxp[s][://]...[.]...), IPs (1[.]2[.]3[.]4), and emails (user[@]domain[.]com)

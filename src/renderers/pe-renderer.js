@@ -573,6 +573,15 @@ class PeRenderer {
     // ── Strings ────────────────────────────────────────────────────────
     pe.strings = this._extractStrings(bytes, 6);
 
+    // ── Debug directory (PDB path) ──────────────────────────────────
+    pe.debugInfo = this._parseDebugDirectory(bytes, pe.dataDirectories, pe.sections);
+
+    // ── Version Info (OriginalFilename, ProductName, etc.) ──────────
+    pe.versionInfo = this._parseVersionInfo(bytes, pe.dataDirectories, pe.sections);
+
+    // ── Import hash (Imphash) ───────────────────────────────────────
+    pe.imphash = this._computeImphash(pe.imports);
+
     return pe;
   }
 
@@ -837,6 +846,226 @@ class PeRenderer {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  //  Debug Directory parser (PDB path extraction)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  _parseDebugDirectory(bytes, dataDirs, sections) {
+    if (!dataDirs[6] || dataDirs[6].rva === 0 || dataDirs[6].size === 0) return null;
+    try {
+      const off = this._rvaToOffset(dataDirs[6].rva, sections);
+      const numEntries = Math.floor(dataDirs[6].size / 28);
+
+      for (let i = 0; i < numEntries && i < 16; i++) {
+        const eo = off + i * 28;
+        if (eo + 28 > bytes.length) break;
+        const type = this._u32(bytes, eo + 12);
+        if (type !== 2) continue; // IMAGE_DEBUG_TYPE_CODEVIEW only
+
+        const dataSize = this._u32(bytes, eo + 16);
+        const dataOff = this._u32(bytes, eo + 24); // PointerToRawData (file offset)
+        if (dataOff + 4 > bytes.length || dataSize < 24) continue;
+
+        const sig = this._u32(bytes, dataOff);
+        if (sig === 0x53445352) { // "RSDS" — PDB 7.0
+          const go = dataOff + 4;
+          const d1 = this._u32(bytes, go).toString(16).padStart(8, '0');
+          const d2 = this._u16(bytes, go + 4).toString(16).padStart(4, '0');
+          const d3 = this._u16(bytes, go + 6).toString(16).padStart(4, '0');
+          let d4 = '';
+          for (let j = 0; j < 2; j++) d4 += bytes[go + 8 + j].toString(16).padStart(2, '0');
+          let d5 = '';
+          for (let j = 2; j < 8; j++) d5 += bytes[go + 8 + j].toString(16).padStart(2, '0');
+          const guid = (d1 + '-' + d2 + '-' + d3 + '-' + d4 + '-' + d5).toUpperCase();
+          const age = this._u32(bytes, dataOff + 20);
+          const pdbPath = this._str(bytes, dataOff + 24, Math.min(dataSize - 24, 260));
+          return { pdbPath, guid, age };
+        }
+        if (sig === 0x3031424E) { // "NB10" — PDB 2.0
+          const pdbPath = this._str(bytes, dataOff + 16, Math.min(dataSize - 16, 260));
+          return { pdbPath, guid: null, age: this._u32(bytes, dataOff + 8) };
+        }
+      }
+    } catch (e) { /* best-effort */ }
+    return null;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Version Info parser (OriginalFilename, ProductName, etc.)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  _parseVersionInfo(bytes, dataDirs, sections) {
+    if (!dataDirs[2] || dataDirs[2].rva === 0) return null;
+    try {
+      const resBase = this._rvaToOffset(dataDirs[2].rva, sections);
+      if (resBase + 16 > bytes.length) return null;
+
+      // Level 1: find RT_VERSION (type 16)
+      const l1Named = this._u16(bytes, resBase + 12);
+      const l1Id = this._u16(bytes, resBase + 14);
+      let vDirOff = -1;
+      for (let i = 0; i < l1Named + l1Id && i < 64; i++) {
+        const eo = resBase + 16 + i * 8;
+        if (eo + 8 > bytes.length) break;
+        const id = this._u32(bytes, eo) & 0x7FFFFFFF;
+        const data = this._u32(bytes, eo + 4);
+        if (id === 16 && (data & 0x80000000)) { vDirOff = resBase + (data & 0x7FFFFFFF); break; }
+      }
+      if (vDirOff < 0 || vDirOff + 16 > bytes.length) return null;
+
+      // Navigate level 2 → level 3 → data entry
+      const walkToLeaf = (dirOff) => {
+        if (dirOff + 16 > bytes.length) return null;
+        const n = this._u16(bytes, dirOff + 12) + this._u16(bytes, dirOff + 14);
+        if (n === 0) return null;
+        const d = this._u32(bytes, dirOff + 16 + 4);
+        if (d & 0x80000000) return walkToLeaf(resBase + (d & 0x7FFFFFFF));
+        // Data entry: RVA(4) + Size(4) + CodePage(4) + Reserved(4)
+        const deOff = resBase + d;
+        if (deOff + 16 > bytes.length) return null;
+        return { rva: this._u32(bytes, deOff), size: this._u32(bytes, deOff + 4) };
+      };
+
+      const leaf = walkToLeaf(vDirOff);
+      if (!leaf) return null;
+      const dataOff = this._rvaToOffset(leaf.rva, sections);
+      return this._parseVsVersionStrings(bytes, dataOff, Math.min(leaf.size, 8192));
+    } catch (e) { return null; }
+  }
+
+  _parseVsVersionStrings(bytes, off, size) {
+    if (off + 6 > bytes.length) return null;
+    const end = Math.min(off + size, bytes.length);
+    const result = {};
+    const props = [
+      'CompanyName', 'FileDescription', 'FileVersion', 'InternalName',
+      'LegalCopyright', 'OriginalFilename', 'ProductName', 'ProductVersion',
+    ];
+    for (const prop of props) {
+      const val = this._findVersionString(bytes, off, end, prop);
+      if (val) result[prop] = val;
+    }
+    return Object.keys(result).length > 0 ? result : null;
+  }
+
+  _findVersionString(bytes, start, end, name) {
+    // Build UTF-16LE search needle for the property name
+    const needle = new Uint8Array(name.length * 2 + 2);
+    for (let i = 0; i < name.length; i++) { needle[i * 2] = name.charCodeAt(i); needle[i * 2 + 1] = 0; }
+    // null terminator already zero-filled
+
+    for (let i = start; i < end - needle.length; i++) {
+      let match = true;
+      for (let j = 0; j < needle.length; j++) {
+        if (bytes[i + j] !== needle[j]) { match = false; break; }
+      }
+      if (!match) continue;
+
+      // Found name — skip past it + null terminator, align to DWORD
+      let vo = i + needle.length;
+      if (vo % 4 !== 0) vo += 4 - (vo % 4);
+      if (vo >= end) return null;
+
+      // Read UTF-16LE value
+      let val = '';
+      for (let k = vo; k < end - 1 && val.length < 512; k += 2) {
+        const c = bytes[k] | (bytes[k + 1] << 8);
+        if (c === 0) break;
+        if (c >= 0x20 && c < 0xFFFE) val += String.fromCharCode(c);
+      }
+      return val.trim() || null;
+    }
+    return null;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Import Hash (Imphash) computation
+  // ═══════════════════════════════════════════════════════════════════════
+
+  _computeImphash(imports) {
+    if (!imports || imports.length === 0) return null;
+    const parts = [];
+    for (const imp of imports) {
+      const dll = imp.dllName.toLowerCase().replace(/\.(dll|ocx|sys)$/i, '');
+      for (const fn of imp.functions) {
+        if (fn.ordinal !== undefined && fn.name.startsWith('Ordinal #')) {
+          parts.push(dll + '.ord' + fn.ordinal);
+        } else {
+          parts.push(dll + '.' + fn.name.toLowerCase());
+        }
+      }
+    }
+    if (parts.length === 0) return null;
+    return this._md5(parts.join(','));
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  MD5 (for imphash — compact RFC 1321 implementation)
+  // ═══════════════════════════════════════════════════════════════════════
+
+  _md5(str) {
+    const cmn = (q, a, b, x, s, t) => { a = (a + q + x + t) | 0; return (((a << s) | (a >>> (32 - s))) + b) | 0; };
+    const ff = (a, b, c, d, x, s, t) => cmn((b & c) | (~b & d), a, b, x, s, t);
+    const gg = (a, b, c, d, x, s, t) => cmn((b & d) | (c & ~d), a, b, x, s, t);
+    const hh = (a, b, c, d, x, s, t) => cmn(b ^ c ^ d, a, b, x, s, t);
+    const ii = (a, b, c, d, x, s, t) => cmn(c ^ (b | ~d), a, b, x, s, t);
+
+    // Convert to bytes (ASCII-safe for imphash input)
+    const n = str.length;
+    const buf = new Uint8Array(((n + 72) >>> 6) << 6); // padded to 64-byte blocks
+    for (let i = 0; i < n; i++) buf[i] = str.charCodeAt(i) & 0xFF;
+    buf[n] = 0x80;
+    const bits = n * 8;
+    const lenOff = buf.length - 8;
+    buf[lenOff] = bits & 0xFF; buf[lenOff + 1] = (bits >>> 8) & 0xFF;
+    buf[lenOff + 2] = (bits >>> 16) & 0xFF; buf[lenOff + 3] = (bits >>> 24) & 0xFF;
+    // High 32 bits of length stay 0 (fine for strings < 512 MB)
+
+    let a0 = 0x67452301, b0 = 0xEFCDAB89 | 0, c0 = 0x98BADCFE | 0, d0 = 0x10325476;
+
+    for (let i = 0; i < buf.length; i += 64) {
+      const w = new Int32Array(16);
+      for (let j = 0; j < 16; j++) w[j] = buf[i+j*4] | (buf[i+j*4+1]<<8) | (buf[i+j*4+2]<<16) | (buf[i+j*4+3]<<24);
+      let a = a0, b = b0, c = c0, d = d0;
+      a=ff(a,b,c,d,w[0],7,-680876936);d=ff(d,a,b,c,w[1],12,-389564586);
+      c=ff(c,d,a,b,w[2],17,606105819);b=ff(b,c,d,a,w[3],22,-1044525330);
+      a=ff(a,b,c,d,w[4],7,-176418897);d=ff(d,a,b,c,w[5],12,1200080426);
+      c=ff(c,d,a,b,w[6],17,-1473231341);b=ff(b,c,d,a,w[7],22,-45705983);
+      a=ff(a,b,c,d,w[8],7,1770035416);d=ff(d,a,b,c,w[9],12,-1958414417);
+      c=ff(c,d,a,b,w[10],17,-42063);b=ff(b,c,d,a,w[11],22,-1990404162);
+      a=ff(a,b,c,d,w[12],7,1804603682);d=ff(d,a,b,c,w[13],12,-40341101);
+      c=ff(c,d,a,b,w[14],17,-1502002290);b=ff(b,c,d,a,w[15],22,1236535329);
+      a=gg(a,b,c,d,w[1],5,-165796510);d=gg(d,a,b,c,w[6],9,-1069501632);
+      c=gg(c,d,a,b,w[11],14,643717713);b=gg(b,c,d,a,w[0],20,-373897302);
+      a=gg(a,b,c,d,w[5],5,-701558691);d=gg(d,a,b,c,w[10],9,38016083);
+      c=gg(c,d,a,b,w[15],14,-660478335);b=gg(b,c,d,a,w[4],20,-405537848);
+      a=gg(a,b,c,d,w[9],5,568446438);d=gg(d,a,b,c,w[14],9,-1019803690);
+      c=gg(c,d,a,b,w[3],14,-187363961);b=gg(b,c,d,a,w[8],20,1163531501);
+      a=gg(a,b,c,d,w[13],5,-1444681467);d=gg(d,a,b,c,w[2],9,-51403784);
+      c=gg(c,d,a,b,w[7],14,1735328473);b=gg(b,c,d,a,w[12],20,-1926607734);
+      a=hh(a,b,c,d,w[5],4,-378558);d=hh(d,a,b,c,w[8],11,-2022574463);
+      c=hh(c,d,a,b,w[11],16,1839030562);b=hh(b,c,d,a,w[14],23,-35309556);
+      a=hh(a,b,c,d,w[1],4,-1530992060);d=hh(d,a,b,c,w[4],11,1272893353);
+      c=hh(c,d,a,b,w[7],16,-155497632);b=hh(b,c,d,a,w[10],23,-1094730640);
+      a=hh(a,b,c,d,w[13],4,681279174);d=hh(d,a,b,c,w[0],11,-358537222);
+      c=hh(c,d,a,b,w[3],16,-722521979);b=hh(b,c,d,a,w[6],23,76029189);
+      a=hh(a,b,c,d,w[9],4,-640364487);d=hh(d,a,b,c,w[12],11,-421815835);
+      c=hh(c,d,a,b,w[15],16,530742520);b=hh(b,c,d,a,w[2],23,-995338651);
+      a=ii(a,b,c,d,w[0],6,-198630844);d=ii(d,a,b,c,w[7],10,1126891415);
+      c=ii(c,d,a,b,w[14],15,-1416354905);b=ii(b,c,d,a,w[5],21,-57434055);
+      a=ii(a,b,c,d,w[12],6,1700485571);d=ii(d,a,b,c,w[3],10,-1894986606);
+      c=ii(c,d,a,b,w[10],15,-1051523);b=ii(b,c,d,a,w[1],21,-2054922799);
+      a=ii(a,b,c,d,w[8],6,1873313359);d=ii(d,a,b,c,w[15],10,-30611744);
+      c=ii(c,d,a,b,w[6],15,-1560198380);b=ii(b,c,d,a,w[13],21,1309151649);
+      a=ii(a,b,c,d,w[4],6,-145523070);d=ii(d,a,b,c,w[11],10,-1120210379);
+      c=ii(c,d,a,b,w[2],15,718787259);b=ii(b,c,d,a,w[9],21,-343485551);
+      a0 = (a0+a)|0; b0 = (b0+b)|0; c0 = (c0+c)|0; d0 = (d0+d)|0;
+    }
+
+    const hex = v => { let s=''; for(let i=0;i<4;i++) s+=((v>>>(i*8))&0xFF).toString(16).padStart(2,'0'); return s; };
+    return hex(a0) + hex(b0) + hex(c0) + hex(d0);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   //  Flag decoder helper
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -860,6 +1089,7 @@ class PeRenderer {
 
     try {
       const pe = this._parse(bytes);
+      this._lastStrings = [...pe.strings.ascii, ...pe.strings.unicode];
 
       // ── Banner ─────────────────────────────────────────────────────
       const banner = document.createElement('div');
@@ -927,6 +1157,11 @@ class PeRenderer {
       errBox.className = 'pe-error';
       errBox.textContent = 'PE parsing error: ' + err.message;
       wrap.appendChild(errBox);
+    }
+
+    // Expose extracted strings as _rawText for IOC + EncodedContentDetector
+    if (this._lastStrings) {
+      wrap._rawText = this._lastStrings.join('\n');
     }
 
     return wrap;
@@ -1516,6 +1751,23 @@ class PeRenderer {
       if (pe.exports) {
         findings.metadata['Export DLL Name'] = pe.exports.dllName;
         findings.metadata['Exported Functions'] = pe.exports.numNames.toString();
+      }
+
+      // ── Version info, debug info, imphash ──────────────────────────
+      if (pe.versionInfo) {
+        if (pe.versionInfo.OriginalFilename) findings.metadata['Original Filename'] = pe.versionInfo.OriginalFilename;
+        if (pe.versionInfo.ProductName) findings.metadata['Product Name'] = pe.versionInfo.ProductName;
+        if (pe.versionInfo.FileDescription) findings.metadata['File Description'] = pe.versionInfo.FileDescription;
+        if (pe.versionInfo.CompanyName) findings.metadata['Company Name'] = pe.versionInfo.CompanyName;
+        if (pe.versionInfo.FileVersion) findings.metadata['File Version'] = pe.versionInfo.FileVersion;
+        if (pe.versionInfo.ProductVersion) findings.metadata['Product Version'] = pe.versionInfo.ProductVersion;
+        if (pe.versionInfo.InternalName) findings.metadata['Internal Name'] = pe.versionInfo.InternalName;
+      }
+      if (pe.debugInfo && pe.debugInfo.pdbPath) {
+        findings.metadata['PDB Path'] = pe.debugInfo.pdbPath;
+      }
+      if (pe.imphash) {
+        findings.metadata['Imphash'] = pe.imphash;
       }
 
       // ── Security feature checks ────────────────────────────────────
