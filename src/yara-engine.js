@@ -2,7 +2,8 @@
 // ════════════════════════════════════════════════════════════════════════════
 // yara-engine.js — Lightweight in-browser YARA rule parser and matcher
 // Supports: text strings, hex strings, regex strings, nocase/wide/ascii,
-//           conditions: any/all of them, $var, and/or/not, N of them, #var > N
+//           conditions: any/all of them/set, $var at N, $var in (lo..hi),
+//           N of ($prefix*), uint8/16/32, int8/16/32, filesize, #var, and/or/not
 // ════════════════════════════════════════════════════════════════════════════
 
 class YaraEngine {
@@ -75,7 +76,7 @@ class YaraEngine {
       }
 
       // Evaluate condition
-      const condResult = YaraEngine._evalCondition(rule.condition, stringMatches, rule.strings);
+      const condResult = YaraEngine._evalCondition(rule.condition, stringMatches, rule.strings, bytes);
       if (condResult) {
         const matchDetails = [];
         for (const strDef of rule.strings) {
@@ -270,25 +271,25 @@ class YaraEngine {
 
   // ── Internal: Evaluate condition expression ───────────────────────────────
 
-  static _evalCondition(condition, stringMatches, stringDefs) {
+  static _evalCondition(condition, stringMatches, stringDefs, bytes) {
     const cond = condition.trim().toLowerCase();
 
-    // "any of them"
+    // Fast-path: "any of them"
     if (cond === 'any of them') {
       return Object.values(stringMatches).some(o => o.length > 0);
     }
-    // "all of them"
+    // Fast-path: "all of them"
     if (cond === 'all of them') {
       return stringDefs.length > 0 && stringDefs.every(s => stringMatches[s.id] && stringMatches[s.id].length > 0);
     }
-    // "N of them"
+    // Fast-path: "N of them"
     const nOf = cond.match(/^(\d+)\s+of\s+them$/);
     if (nOf) {
       const needed = parseInt(nOf[1]);
       const matched = Object.values(stringMatches).filter(o => o.length > 0).length;
       return matched >= needed;
     }
-    // "#var > N" or "#var >= N"
+    // Fast-path: "#var > N" (whole-condition shorthand)
     const countCond = cond.match(/^#(\$?\w+)\s*(>=?|<=?|==|!=)\s*(\d+)$/);
     if (countCond) {
       const varId = countCond[1].startsWith('$') ? countCond[1] : '$' + countCond[1];
@@ -304,57 +305,229 @@ class YaraEngine {
       }
     }
 
-    // Complex boolean: tokenize and evaluate
-    return YaraEngine._evalBoolCondition(condition, stringMatches);
+    // Complex boolean: full expression parser
+    return YaraEngine._evalBoolCondition(condition, stringMatches, stringDefs, bytes);
   }
 
-  static _evalBoolCondition(condition, stringMatches) {
-    // Simple recursive descent for: $a and $b, $a or $b, not $a, ($a), true, false
+  // ── Internal: Full YARA condition expression evaluator ─────────────────────
+  // Recursive-descent parser supporting:
+  //   $var, $var at N, $var in (lo..hi), #var (count), N of (set),
+  //   any/all of (set), uint8/16/32(N), int8/16/32(N), filesize,
+  //   boolean and/or/not, comparison operators ==  !=  >  <  >=  <=
+
+  static _evalBoolCondition(condition, stringMatches, stringDefs, bytes) {
+    // Normalise string-match keys to lowercase for consistent lookup
+    const sm = {};
+    for (const key of Object.keys(stringMatches)) sm[key.toLowerCase()] = stringMatches[key];
+    const allIds = stringDefs.map(s => s.id.toLowerCase());
+
+    // ── Tokenise ────────────────────────────────────────────────────────────
     const tokens = [];
-    const rx = /(\$\w+|and|or|not|true|false|\(|\))/gi;
+    const rx = /(\$[\w*]+|#\w+|uint(?:8|16|32)|int(?:8|16|32)|0x[0-9a-fA-F]+|\d+|!=|==|>=|<=|>|<|\.\.|and|or|not|at|of|in|them|any|all|filesize|true|false|[(),])/gi;
     let tm;
-    while ((tm = rx.exec(condition)) !== null) {
-      tokens.push(tm[1].toLowerCase());
-    }
+    while ((tm = rx.exec(condition)) !== null) tokens.push(tm[1]);
 
     let pos = 0;
-    const peek = () => tokens[pos] || null;
-    const next = () => tokens[pos++] || null;
+    const peek = () => pos < tokens.length ? tokens[pos] : null;
+    const next = () => pos < tokens.length ? tokens[pos++] : null;
+    const lc   = (t) => t ? t.toLowerCase() : null;
+
+    // ── Grammar ─────────────────────────────────────────────────────────────
+    //  expr        → or_expr
+    //  or_expr     → and_expr ('or' and_expr)*
+    //  and_expr    → not_expr ('and' not_expr)*
+    //  not_expr    → 'not' not_expr | comparison
+    //  comparison  → value (comp_op value)?
+    //  value       → '(' expr ')' | '$var' ['at' N | 'in' '(' N '..' N ')']
+    //              | '#var' | number ['of' set] | 'any'|'all' 'of' set
+    //              | uint/int func | 'filesize' | 'true' | 'false'
 
     const parseOr = () => {
       let left = parseAnd();
-      while (peek() === 'or') { next(); left = left || parseAnd(); }
+      while (lc(peek()) === 'or') {
+        next();
+        const right = parseAnd();   // always evaluate — never short-circuit token consumption
+        left = left || right;
+      }
       return left;
     };
+
     const parseAnd = () => {
       let left = parseNot();
-      while (peek() === 'and') { next(); left = left && parseNot(); }
+      while (lc(peek()) === 'and') {
+        next();
+        const right = parseNot();   // always evaluate — never short-circuit token consumption
+        left = left && right;
+      }
       return left;
     };
+
     const parseNot = () => {
-      if (peek() === 'not') { next(); return !parseAtom(); }
-      return parseAtom();
+      if (lc(peek()) === 'not') { next(); return !parseNot(); }
+      return parseComparison();
     };
-    const parseAtom = () => {
-      const t = next();
+
+    const parseComparison = () => {
+      const left = parseValue();
+      const op = peek();
+      if (op && /^(!=|==|>=|<=|>|<)$/.test(op)) {
+        next();
+        const right = parseValue();
+        switch (op) {
+          case '==': return left == right;
+          case '!=': return left != right;
+          case '>=': return left >= right;
+          case '<=': return left <= right;
+          case '>':  return left > right;
+          case '<':  return left < right;
+        }
+      }
+      return left;
+    };
+
+    const parseValue = () => {
+      const t = peek();
+      if (t === null) return false;
+      const tl = lc(t);
+
+      // ── Grouping: ( expr ) ──────────────────────────────────────────────
       if (t === '(') {
+        next();
         const val = parseOr();
         if (peek() === ')') next();
         return val;
       }
-      if (t === 'true') return true;
-      if (t === 'false') return false;
-      if (t && t.startsWith('$')) {
-        return (stringMatches[t] || []).length > 0;
+
+      // ── Boolean literals ────────────────────────────────────────────────
+      if (tl === 'true')  { next(); return true; }
+      if (tl === 'false') { next(); return false; }
+
+      // ── String variable: $var [at N | in (lo..hi)] ──────────────────────
+      if (t.startsWith('$') && !t.includes('*')) {
+        next();
+        const varId = tl;
+        const matches = sm[varId] || [];
+
+        // $var at <offset>
+        if (lc(peek()) === 'at') {
+          next();
+          const offset = parseValue();
+          return matches.some(m => m.offset === offset);
+        }
+        // $var in (<lo>..<hi>)
+        if (lc(peek()) === 'in') {
+          next();
+          if (peek() === '(') next();
+          const lo = parseValue();
+          if (lc(peek()) === '..') next();
+          const hi = parseValue();
+          if (peek() === ')') next();
+          return matches.some(m => m.offset >= lo && m.offset <= hi);
+        }
+        // bare $var — true if at least one match
+        return matches.length > 0;
       }
+
+      // ── Count reference: #var ───────────────────────────────────────────
+      if (t.startsWith('#')) {
+        next();
+        const varId = '$' + tl.substring(1);
+        return (sm[varId] || []).length;
+      }
+
+      // ── any of … | all of … ────────────────────────────────────────────
+      if (tl === 'any' || tl === 'all') {
+        next();
+        if (lc(peek()) === 'of') {
+          next();
+          const set = parseOfSet();
+          if (tl === 'any') return set.some(id => (sm[id] || []).length > 0);
+          return set.length > 0 && set.every(id => (sm[id] || []).length > 0);
+        }
+        return false;
+      }
+
+      // ── Numeric literal (may begin "N of …") ───────────────────────────
+      if (/^(0x[0-9a-f]+|\d+)$/i.test(t)) {
+        next();
+        const num = tl.startsWith('0x') ? parseInt(t, 16) : parseInt(t, 10);
+        if (lc(peek()) === 'of') {
+          next();
+          const set = parseOfSet();
+          const count = set.filter(id => (sm[id] || []).length > 0).length;
+          return count >= num;
+        }
+        return num;
+      }
+
+      // ── Integer functions: uint8/16/32(N), int8/16/32(N) ────────────────
+      if (/^u?int(?:8|16|32)$/i.test(tl)) {
+        next();
+        if (peek() === '(') next();
+        const offset = parseValue();
+        if (peek() === ')') next();
+        return YaraEngine._readInt(bytes, tl, offset);
+      }
+
+      // ── filesize ────────────────────────────────────────────────────────
+      if (tl === 'filesize') {
+        next();
+        return bytes ? bytes.length : 0;
+      }
+
+      // Unknown token — skip
+      next();
       return false;
     };
 
+    // Parse set specifier after "of":  them | ($a, $b, …) | ($prefix*)
+    const parseOfSet = () => {
+      if (lc(peek()) === 'them') { next(); return allIds; }
+      if (peek() === '(') {
+        next();
+        const ids = [];
+        while (peek() && peek() !== ')') {
+          const tok = next();
+          if (tok === ',') continue;
+          if (tok && tok.startsWith('$')) {
+            const tokLower = tok.toLowerCase();
+            if (tok.includes('*')) {
+              const prefix = tokLower.replace(/\*+$/, '');
+              for (const id of allIds) { if (id.startsWith(prefix)) ids.push(id); }
+            } else {
+              ids.push(tokLower);
+            }
+          }
+        }
+        if (peek() === ')') next();
+        return ids;
+      }
+      return allIds; // fallback: treat bare "of" without set as "of them"
+    };
+
     try {
-      return tokens.length > 0 ? parseOr() : true;
+      return tokens.length > 0 ? !!parseOr() : true;
     } catch (_) {
       return false;
     }
+  }
+
+  // ── Internal: Read integer from buffer (little-endian, matching YARA) ─────
+
+  static _readInt(bytes, func, offset) {
+    if (!bytes || offset < 0 || offset + 1 > bytes.length) return 0;
+    const f = func.toLowerCase();
+    const signed = f.startsWith('int') && !f.startsWith('uint');
+    const bits = parseInt(f.replace(/^u?int/, ''));
+    try {
+      const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+      switch (bits) {
+        case 8:  return signed ? dv.getInt8(offset) : dv.getUint8(offset);
+        case 16: return signed ? dv.getInt16(offset, true) : dv.getUint16(offset, true);
+        case 32: return signed ? dv.getInt32(offset, true) : dv.getUint32(offset, true);
+      }
+    } catch (_) { /* offset out of bounds */ }
+    return 0;
   }
 
   /**

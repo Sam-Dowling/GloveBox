@@ -221,11 +221,11 @@ rule MachO_Encrypted_Binary {
   strings:
     $magic1 = { CF FA ED FE }
     $magic2 = { CE FA ED FE }
-    $lc_enc32 = { 21 00 00 00 }
-    $lc_enc64 = { 2C 00 00 00 }
+    $lc_enc32 = { 21 00 00 00 14 00 00 00 }
+    $lc_enc64 = { 2C 00 00 00 18 00 00 00 }
   condition:
     ($magic1 at 0 or $magic2 at 0) and
-    (($lc_enc32 in (0..1024)) or ($lc_enc64 in (0..1024)))
+    (($lc_enc32 in (0..4096)) or ($lc_enc64 in (0..4096)))
 }
 
 rule MachO_Cryptominer {
