@@ -38,6 +38,7 @@ YARA_FILES = [
     'src/rules/pe-threats.yar',
     'src/rules/elf-threats.yar',
     'src/rules/macho-threats.yar',
+    'src/rules/jar-threats.yar',
 ]
 yar_rules = '\n'.join(read(f) for f in YARA_FILES)
 # Escape backticks and backslashes for JS template literal
@@ -86,6 +87,7 @@ JS_FILES = [
     'src/renderers/elf-renderer.js',
     'src/renderers/macho-renderer.js',
     'src/renderers/x509-renderer.js',
+    'src/renderers/jar-renderer.js',
     'src/renderers/image-renderer.js',
     'src/renderers/plaintext-renderer.js',
     'src/app/app-core.js',
@@ -129,7 +131,7 @@ HTML = f"""<!DOCTYPE html>
     <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>
     <button class="tb-btn tb-icon-btn" id="btn-help" title="Help &amp; About (?)">?</button>
     <button class="tb-btn tb-icon-btn" id="btn-theme" title="Toggle dark mode">🌙</button>
-    <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.ppt,.odt,.odp,.csv,.tsv,.doc,.msg,.eml,.lnk,.hta,.rtf,.pdf,.zip,.gz,.gzip,.tar,.tgz,.rar,.7z,.cab,.iso,.img,.one,.url,.webloc,.iqy,.slk,.wsf,.wsc,.wsh,.reg,.inf,.sct,.msi,.html,.htm,.mht,.xml,.vbs,.vbe,.js,.jse,.ps1,.bat,.cmd,.ics,.vcf,.txt,.log,.json,.ini,.cfg,.yml,.yaml,.jpg,.jpeg,.png,.gif,.bmp,.webp,.ico,.tif,.tiff,.avif,.svg,.evtx,.sqlite,.db,.exe,.dll,.sys,.scr,.cpl,.ocx,.drv,.com,.elf,.so,.o,.dylib,.bundle,.pem,.der,.crt,.cer,.p12,.pfx" style="display:none">
+    <input type="file" id="file-input" accept=".docx,.docm,.xlsx,.xlsm,.xls,.ods,.pptx,.pptm,.ppt,.odt,.odp,.csv,.tsv,.doc,.msg,.eml,.lnk,.hta,.rtf,.pdf,.zip,.gz,.gzip,.tar,.tgz,.rar,.7z,.cab,.iso,.img,.one,.url,.webloc,.iqy,.slk,.wsf,.wsc,.wsh,.reg,.inf,.sct,.msi,.html,.htm,.mht,.xml,.vbs,.vbe,.js,.jse,.ps1,.bat,.cmd,.ics,.vcf,.txt,.log,.json,.ini,.cfg,.yml,.yaml,.jpg,.jpeg,.png,.gif,.bmp,.webp,.ico,.tif,.tiff,.avif,.svg,.evtx,.sqlite,.db,.exe,.dll,.sys,.scr,.cpl,.ocx,.drv,.com,.elf,.so,.o,.dylib,.bundle,.pem,.der,.crt,.cer,.p12,.pfx,.jar,.war,.ear,.class" style="display:none">
   </div>
 
   <!-- ── Main area (viewer + sidebar side-by-side) ──────────────────── -->

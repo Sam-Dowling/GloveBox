@@ -183,6 +183,18 @@ Object.assign(App.prototype, {
         const r = new RtfRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
         docEl = r.render(buffer, file.name);
+      } else if (['jar', 'war', 'ear', 'class'].includes(ext)) {
+        const r = new JarRenderer();
+        this.findings = await r.analyzeForSecurity(buffer, file.name);
+        docEl = await r.render(buffer, file.name);
+        // Listen for inner-file open events from clickable archive entries
+        docEl.addEventListener('open-inner-file', (e) => {
+          const innerFile = e.detail;
+          if (innerFile) {
+            this._pushNavState(file.name);
+            this._loadFile(innerFile);
+          }
+        });
       } else if (['zip', 'rar', '7z', 'cab', 'gz', 'gzip', 'tar', 'tgz'].includes(ext)) {
         const r = new ZipRenderer();
         this.findings = await r.analyzeForSecurity(buffer, file.name);
@@ -420,6 +432,17 @@ Object.assign(App.prototype, {
           const r = new ElfRenderer();
           this.findings = r.analyzeForSecurity(buffer, file.name);
           docEl = r.render(buffer, file.name);
+        } else if (detectedType === 'jar') {
+          const r = new JarRenderer();
+          this.findings = await r.analyzeForSecurity(buffer, file.name);
+          docEl = await r.render(buffer, file.name);
+          docEl.addEventListener('open-inner-file', (e) => {
+            const innerFile = e.detail;
+            if (innerFile) {
+              this._pushNavState(file.name);
+              this._loadFile(innerFile);
+            }
+          });
         } else if (detectedType === 'macho') {
           const r = new MachoRenderer();
           this.findings = r.analyzeForSecurity(buffer, file.name);
@@ -583,8 +606,11 @@ Object.assign(App.prototype, {
       return { hex: h(4), label: 'Mach-O Binary (64-bit)' };
     if (bytes[0] === 0xCE && bytes[1] === 0xFA && bytes[2] === 0xED && bytes[3] === 0xFE)
       return { hex: h(4), label: 'Mach-O Binary (32-bit)' };
-    if (bytes[0] === 0xCA && bytes[1] === 0xFE && bytes[2] === 0xBA && bytes[3] === 0xBE)
+    if (bytes[0] === 0xCA && bytes[1] === 0xFE && bytes[2] === 0xBA && bytes[3] === 0xBE) {
+      if (typeof JarRenderer !== 'undefined' && JarRenderer.isJavaClass(bytes))
+        return { hex: h(4), label: 'Java Class File' };
       return { hex: h(4), label: 'Mach-O Fat/Universal Binary' };
+    }
     if (bytes[0] === 0x52 && bytes[1] === 0x61 && bytes[2] === 0x72)
       return { hex: h(3), label: 'RAR Archive' };
     if (bytes[0] === 0x37 && bytes[1] === 0x7A && bytes[2] === 0xBC && bytes[3] === 0xAF)
@@ -743,11 +769,17 @@ Object.assign(App.prototype, {
     if (bytes[0] === 0x7F && bytes[1] === 0x45 && bytes[2] === 0x4C && bytes[3] === 0x46)
       return 'elf';
     
-    // Mach-O Binary (64-bit LE: CF FA ED FE, 32-bit LE: CE FA ED FE, Fat/Universal: CA FE BA BE)
+    // Mach-O Binary (64-bit LE: CF FA ED FE, 32-bit LE: CE FA ED FE)
     if ((bytes[0] === 0xCF && bytes[1] === 0xFA && bytes[2] === 0xED && bytes[3] === 0xFE) ||
-        (bytes[0] === 0xCE && bytes[1] === 0xFA && bytes[2] === 0xED && bytes[3] === 0xFE) ||
-        (bytes[0] === 0xCA && bytes[1] === 0xFE && bytes[2] === 0xBA && bytes[3] === 0xBE))
+        (bytes[0] === 0xCE && bytes[1] === 0xFA && bytes[2] === 0xED && bytes[3] === 0xFE))
       return 'macho';
+    
+    // CA FE BA BE — shared by Java class files and Mach-O Fat/Universal binaries
+    if (bytes[0] === 0xCA && bytes[1] === 0xFE && bytes[2] === 0xBA && bytes[3] === 0xBE) {
+      if (typeof JarRenderer !== 'undefined' && JarRenderer.isJavaClass(bytes))
+        return 'jar';
+      return 'macho';
+    }
     
     // Gzip
     if (bytes[0] === 0x1F && bytes[1] === 0x8B)
@@ -871,6 +903,12 @@ Object.assign(App.prototype, {
       this._reRenderMsi(state, pc);
     }
 
+    // Re-attach click handlers on JAR entries (innerHTML loses event listeners)
+    const jarView = pc.querySelector('.jar-view');
+    if (jarView && state.fileBuffer) {
+      this._reRenderJar(state, pc);
+    }
+
     // Re-render sidebar
     this._renderSidebar(state.parentName, null);
 
@@ -900,6 +938,23 @@ Object.assign(App.prototype, {
       const r = new MsiRenderer();
       const buf = state.fileBuffer;
       const docEl = r.render(buf, state.parentName);
+      docEl.addEventListener('open-inner-file', (e) => {
+        const innerFile = e.detail;
+        if (innerFile) {
+          this._pushNavState(state.parentName);
+          this._loadFile(innerFile);
+        }
+      });
+      pc.innerHTML = '';
+      pc.appendChild(docEl);
+    } catch (_) { /* fallback: static HTML already set */ }
+  },
+
+  async _reRenderJar(state, pc) {
+    try {
+      const r = new JarRenderer();
+      const buf = state.fileBuffer;
+      const docEl = await r.render(buf, state.parentName);
       docEl.addEventListener('open-inner-file', (e) => {
         const innerFile = e.detail;
         if (innerFile) {

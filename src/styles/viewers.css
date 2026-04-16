@@ -4562,3 +4562,438 @@ body.dark .x509-hex, body.dark .x509-hex pre {
 body.dark .x509-hex-details > summary {
   color: #8899aa;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   JAR / Java Class Viewer
+   ═══════════════════════════════════════════════════════════════════════════ */
+.jar-view {
+  padding: 18px 24px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  color: #1a1a2e;
+  line-height: 1.5;
+}
+body.dark .jar-view {
+  color: #e0e0e0;
+}
+
+/* Banner */
+.jar-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px 20px;
+  background: linear-gradient(135deg, #e8f0fe 0%, #fce4ec 100%);
+  border-radius: 10px;
+  margin-bottom: 16px;
+  border: 1px solid #c5cae9;
+}
+body.dark .jar-banner {
+  background: linear-gradient(135deg, #1a237e33 0%, #4a148c33 100%);
+  border-color: #3949ab55;
+}
+.jar-banner-error {
+  background: linear-gradient(135deg, #ffebee 0%, #fce4ec 100%);
+  border-color: #ef9a9a;
+}
+body.dark .jar-banner-error {
+  background: linear-gradient(135deg, #b71c1c22 0%, #880e4f22 100%);
+  border-color: #ef9a9a44;
+}
+.jar-banner-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+.jar-banner strong {
+  font-size: 15px;
+}
+
+/* Badges */
+.jar-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  background: #e0e0e0;
+  color: #424242;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+body.dark .jar-badge {
+  background: #424242;
+  color: #e0e0e0;
+}
+.jar-badge-java {
+  background: #fff3e0;
+  color: #e65100;
+}
+body.dark .jar-badge-java {
+  background: #e6510033;
+  color: #ffab40;
+}
+.jar-badge-type {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+body.dark .jar-badge-type {
+  background: #1565c033;
+  color: #64b5f6;
+}
+.jar-badge-main {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+body.dark .jar-badge-main {
+  background: #2e7d3233;
+  color: #81c784;
+}
+.jar-badge-warn {
+  background: #fff3e0;
+  color: #e65100;
+  animation: jar-pulse 2s ease-in-out infinite;
+}
+body.dark .jar-badge-warn {
+  background: #e6510033;
+  color: #ffab40;
+}
+@keyframes jar-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+/* Sections (collapsible) */
+.jar-section {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+body.dark .jar-section {
+  border-color: #424242;
+}
+.jar-section > summary {
+  padding: 10px 16px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  background: #fafafa;
+  border-bottom: 1px solid #e0e0e0;
+  user-select: none;
+}
+body.dark .jar-section > summary {
+  background: #2a2a3a;
+  border-bottom-color: #424242;
+}
+.jar-section[open] > summary {
+  border-bottom: 1px solid #e0e0e0;
+}
+body.dark .jar-section[open] > summary {
+  border-bottom-color: #424242;
+}
+.jar-section-body {
+  padding: 12px 16px;
+  overflow-x: auto;
+}
+
+/* Tables */
+.jar-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.jar-table th, .jar-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid #eee;
+  text-align: left;
+  white-space: nowrap;
+}
+body.dark .jar-table th, body.dark .jar-table td {
+  border-bottom-color: #333;
+}
+.jar-table th {
+  font-weight: 600;
+  color: #555;
+  background: #f9f9f9;
+  position: sticky;
+  top: 0;
+}
+body.dark .jar-table th {
+  color: #aaa;
+  background: #252535;
+}
+.jar-table td {
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+}
+.jar-class-table td:first-child {
+  max-width: 350px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.jar-manifest-table th {
+  width: 200px;
+  min-width: 140px;
+}
+.jar-manifest-security {
+  background: #fff8e1 !important;
+}
+body.dark .jar-manifest-security {
+  background: #f9a82533 !important;
+}
+
+/* String constants */
+.jar-string-list {
+  max-height: 500px;
+  overflow-y: auto;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 11.5px;
+}
+.jar-string-entry {
+  padding: 2px 8px;
+  border-bottom: 1px solid #f5f5f5;
+  word-break: break-all;
+}
+body.dark .jar-string-entry {
+  border-bottom-color: #2a2a3a;
+}
+.jar-string-entry:hover {
+  background: #f5f5f5;
+}
+body.dark .jar-string-entry:hover {
+  background: #333344;
+}
+.jar-string-suspicious {
+  background: #fff3e0 !important;
+  border-left: 3px solid #ff9800;
+}
+body.dark .jar-string-suspicious {
+  background: #ff980022 !important;
+  border-left-color: #ff9800;
+}
+.jar-string-url {
+  background: #e3f2fd !important;
+  border-left: 3px solid #2196f3;
+}
+body.dark .jar-string-url {
+  background: #2196f322 !important;
+  border-left-color: #2196f3;
+}
+.jar-cp-index {
+  color: #999;
+  font-size: 10px;
+  margin-right: 4px;
+}
+body.dark .jar-cp-index {
+  color: #666;
+}
+
+/* Class references */
+.jar-class-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.jar-ref-group {
+  margin-bottom: 6px;
+}
+.jar-ref-group strong {
+  display: block;
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 2px;
+}
+body.dark .jar-ref-group strong {
+  color: #999;
+}
+.jar-ref-class {
+  display: inline-block;
+  padding: 1px 6px;
+  background: #f0f0f0;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  margin: 1px 2px;
+}
+body.dark .jar-ref-class {
+  background: #333;
+}
+
+/* Suspicious findings */
+.jar-suspicious-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.jar-suspicious-item {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border-left: 4px solid #ccc;
+  background: #fafafa;
+}
+body.dark .jar-suspicious-item {
+  background: #1e1e2e;
+}
+.jar-sev-critical { border-left-color: #d32f2f; background: #ffebee; }
+.jar-sev-high     { border-left-color: #f57c00; background: #fff3e0; }
+.jar-sev-medium   { border-left-color: #fbc02d; background: #fffde7; }
+.jar-sev-low      { border-left-color: #66bb6a; background: #e8f5e9; }
+body.dark .jar-sev-critical { background: #d32f2f18; }
+body.dark .jar-sev-high     { background: #f57c0018; }
+body.dark .jar-sev-medium   { background: #fbc02d18; }
+body.dark .jar-sev-low      { background: #66bb6a18; }
+.jar-sev-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  color: #fff;
+  margin-right: 6px;
+}
+.jar-sev-badge-critical { background: #d32f2f; }
+.jar-sev-badge-high     { background: #f57c00; }
+.jar-sev-badge-medium   { background: #fbc02d; color: #333; }
+.jar-sev-badge-low      { background: #66bb6a; }
+.jar-mitre {
+  font-size: 10px;
+  color: #888;
+  margin-left: 6px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+}
+.jar-suspicious-value {
+  margin-top: 4px;
+  font-size: 11px;
+  opacity: 0.8;
+}
+.jar-suspicious-value code {
+  word-break: break-all;
+}
+
+/* Dependencies */
+.jar-deps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.jar-dep-group strong {
+  font-size: 12px;
+}
+.jar-dep-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+.jar-dep-pkg {
+  display: inline-block;
+  padding: 2px 8px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+}
+body.dark .jar-dep-pkg {
+  background: #333;
+}
+
+/* Obfuscation list */
+.jar-obfuscation-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.jar-obfuscation-list li {
+  padding: 4px 8px;
+  border-left: 3px solid #ff9800;
+  background: #fff3e0;
+  margin-bottom: 4px;
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+}
+body.dark .jar-obfuscation-list li {
+  background: #ff980022;
+}
+
+/* Open button */
+.jar-open-btn {
+  padding: 2px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 11px;
+}
+.jar-open-btn:hover {
+  background: #e3f2fd;
+  border-color: #90caf9;
+}
+body.dark .jar-open-btn {
+  background: #333;
+  border-color: #555;
+  color: #ddd;
+}
+body.dark .jar-open-btn:hover {
+  background: #1565c033;
+  border-color: #64b5f6;
+}
+
+/* XML source */
+.jar-xml-source {
+  font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 11.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 400px;
+  overflow-y: auto;
+  background: #f9f9f9;
+  padding: 12px;
+  border-radius: 4px;
+}
+body.dark .jar-xml-source {
+  background: #1e1e2e;
+}
+
+/* Truncated notice */
+.jar-truncated {
+  text-align: center;
+  padding: 8px;
+  color: #888;
+  font-size: 12px;
+  font-style: italic;
+}
+
+/* Manifest sections */
+.jar-manifest-sections {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #f5f5f5;
+  border-radius: 4px;
+  font-size: 12px;
+}
+body.dark .jar-manifest-sections {
+  background: #2a2a3a;
+}
+
+/* Search bar */
+.jar-search-bar {
+  margin-bottom: 12px;
+}
+.jar-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #fff;
+  box-sizing: border-box;
+}
+body.dark .jar-search-input {
+  background: #2a2a3a;
+  border-color: #444;
+  color: #e0e0e0;
+}
+.jar-search-input:focus {
+  outline: none;
+  border-color: #64b5f6;
+  box-shadow: 0 0 0 2px #64b5f622;
+}
