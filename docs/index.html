@@ -5986,6 +5986,10 @@ body.dark .bin-tooltip-mitre { color: #777; border-top-color: rgba(255,255,255,0
 body.dark .bin-risk-toggle { border-color: #8b6914; color: #d4a017; }
 body.dark .bin-risk-toggle:hover { background: rgba(212,160,23,0.15); }
 body.dark .bin-risk-toggle.active { background: #c0392b; color: #fff; border-color: #e74c3c; }
+.bin-risk-toggle:disabled { opacity: 0.4; cursor: not-allowed; border-color: #999; color: #999; }
+.bin-risk-toggle:disabled:hover { background: transparent; }
+body.dark .bin-risk-toggle:disabled { border-color: #555; color: #666; }
+body.dark .bin-risk-toggle:disabled:hover { background: transparent; }
 
 /* Tab bar for string types */
 .bin-tab-bar {
@@ -7479,7 +7483,7 @@ relevance:0}),e.C_NUMBER_MODE]}}})();hljs.registerLanguage("vbscript",e)})();
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
   <script>
-const GLOVEBOX_VERSION = '20260416.1625';
+const GLOVEBOX_VERSION = '20260416.1636';
 const DEFAULT_YARA_RULES = `// ─── Office Macros ───
 // 33 rules
 
@@ -32279,11 +32283,20 @@ class PeRenderer {
     input.addEventListener('input', applyFilter);
     if (riskBtn) {
       riskBtn.addEventListener('click', () => {
+        if (riskBtn.disabled) return;
         riskOnly = !riskOnly;
         riskBtn.classList.toggle('active', riskOnly);
         container.classList.toggle('risk-filter-active', riskOnly);
         applyFilter();
       });
+      setTimeout(() => {
+        const items = getItems();
+        const hasRisky = items.some(item => item.querySelector(riskSelector) || item.matches(riskSelector));
+        if (!hasRisky) {
+          riskBtn.disabled = true;
+          riskBtn.title = 'No risky items detected';
+        }
+      }, 0);
     }
 
     container.insertBefore(wrap, container.firstChild);
@@ -33862,10 +33875,19 @@ class ElfRenderer {
     input.addEventListener('input', applyFilter);
     if (riskBtn) {
       riskBtn.addEventListener('click', () => {
+        if (riskBtn.disabled) return;
         riskOnly = !riskOnly;
         riskBtn.classList.toggle('active', riskOnly);
         applyFilter();
       });
+      setTimeout(() => {
+        const items = getItems();
+        const hasRisky = items.some(item => item.querySelector(riskSelector) || item.matches(riskSelector));
+        if (!hasRisky) {
+          riskBtn.disabled = true;
+          riskBtn.title = 'No risky items detected';
+        }
+      }, 0);
     }
     container.insertBefore(wrap, container.firstChild);
     return wrap;
@@ -35789,10 +35811,19 @@ class MachoRenderer {
     input.addEventListener('input', applyFilter);
     if (riskBtn) {
       riskBtn.addEventListener('click', () => {
+        if (riskBtn.disabled) return;
         riskOnly = !riskOnly;
         riskBtn.classList.toggle('active', riskOnly);
         applyFilter();
       });
+      setTimeout(() => {
+        const items = getItems();
+        const hasRisky = items.some(item => item.querySelector(riskSelector) || item.matches(riskSelector));
+        if (!hasRisky) {
+          riskBtn.disabled = true;
+          riskBtn.title = 'No risky items detected';
+        }
+      }, 0);
     }
     container.insertBefore(wrap, container.firstChild);
     return wrap;

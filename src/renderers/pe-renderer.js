@@ -1675,11 +1675,20 @@ class PeRenderer {
     input.addEventListener('input', applyFilter);
     if (riskBtn) {
       riskBtn.addEventListener('click', () => {
+        if (riskBtn.disabled) return;
         riskOnly = !riskOnly;
         riskBtn.classList.toggle('active', riskOnly);
         container.classList.toggle('risk-filter-active', riskOnly);
         applyFilter();
       });
+      setTimeout(() => {
+        const items = getItems();
+        const hasRisky = items.some(item => item.querySelector(riskSelector) || item.matches(riskSelector));
+        if (!hasRisky) {
+          riskBtn.disabled = true;
+          riskBtn.title = 'No risky items detected';
+        }
+      }, 0);
     }
 
     container.insertBefore(wrap, container.firstChild);
