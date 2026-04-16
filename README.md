@@ -165,8 +165,6 @@ GloveBox is designed to be safe to use on potentially malicious files:
 | **Sandboxed HTML** | HTML files are rendered in a heavily sandboxed iframe with scripts and network disabled |
 | **Offline by design** | Works identically with Wi-Fi off or in an air-gapped environment |
 
-> ⚠️ GloveBox is a **triage and inspection tool**, not a sandbox. It does not execute macros, JavaScript from PDFs, or scripts embedded in files — it extracts and displays them for human review.
-
 ---
 
 ## 🌐 Browser Compatibility

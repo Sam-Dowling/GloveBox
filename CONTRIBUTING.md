@@ -1,7 +1,7 @@
 # Contributing to GloveBox
 
 > Developer guide for GloveBox. See [README.md](README.md) for end-user documentation.
-> For AI coding agents, see [`.clinerules`](.clinerules) and [`CODEMAP.md`](CODEMAP.md).
+> For AI coding agents see [`CODEMAP.md`](CODEMAP.md).
 
 ---
 
@@ -80,7 +80,7 @@ src/renderers/sqlite-renderer.js       # SqliteRenderer — SQLite + browser his
 src/renderers/doc-renderer.js          # DocBinaryRenderer — legacy .doc text extraction
 src/renderers/msg-renderer.js          # MsgRenderer — Outlook .msg email view
 src/renderers/eml-renderer.js          # EmlRenderer — RFC 5322/MIME email parser
-src/renderers/lnk-renderer.js         # LnkRenderer — Windows Shell Link (.lnk) parser
+src/renderers/lnk-renderer.js          # LnkRenderer — Windows Shell Link (.lnk) parser
 src/renderers/hta-renderer.js          # HtaRenderer — HTA source viewer + security scanner
 src/renderers/html-renderer.js         # HtmlRenderer — sandboxed HTML preview + source view
 src/renderers/pdf-renderer.js          # PdfRenderer — PDF page renderer + security scanner
@@ -105,18 +105,17 @@ Vendor libraries (`vendor/jszip.min.js`, `vendor/xlsx.full.min.js`, `vendor/pdf.
 GloveBox/
 ├── build.py                        # Build script — reads src/, writes docs/index.html
 ├── generate-codemap.py             # Generates CODEMAP.md (AI agent navigation map)
-├── .clinerules                     # AI coding agent instructions
 ├── CODEMAP.md                      # Auto-generated code map with line-level symbol index
 ├── README.md
 ├── CONTRIBUTING.md
 ├── docs/
-│   └── index.html                  # Built output (GitHub Pages) — DO NOT EDIT
+│   └── index.html                   # Built output (GitHub Pages) — DO NOT EDIT
 ├── vendor/
 │   ├── jszip.min.js                # JSZip — ZIP parsing for DOCX/XLSX/PPTX
 │   ├── xlsx.full.min.js            # SheetJS — spreadsheet parsing
 │   ├── pdf.min.js                  # pdf.js — PDF rendering (Mozilla)
 │   ├── pdf.worker.min.js           # pdf.js worker — PDF parsing backend
-│   └── highlight.min.js            # highlight.js — syntax highlighting
+│   └── highlight.min.js             # highlight.js — syntax highlighting
 ├── src/
 │   ├── styles/                     # CSS (split for manageable file sizes)
 │   │   ├── core.css                # Base theme, toolbar, sidebar, dialogs (1,751 lines)
@@ -173,14 +172,14 @@ GloveBox/
 │   │   ├── pe-renderer.js          # PeRenderer — PE32/PE32+ executable analyser
 │   │   ├── elf-renderer.js         # ElfRenderer — ELF32/ELF64 binary analyser
 │   │   ├── image-renderer.js       # ImageRenderer — image preview + stego detection
-│   │   └── plaintext-renderer.js   # PlainTextRenderer
+│   │   └── plaintext-renderer.js    # PlainTextRenderer
 │   └── app/
 │       ├── app-core.js             # App class definition + setup methods
 │       ├── app-load.js             # File loading, hashing, IOC extraction
 │       ├── app-sidebar.js          # Sidebar rendering (risk bar + collapsible panes)
 │       ├── app-yara.js             # YARA rule editor, scanning, result display
-│       └── app-ui.js               # UI helpers + DOMContentLoaded bootstrap
-└── examples/                       # Sample files for testing various formats
+│       └── app-ui.js                # UI helpers + DOMContentLoaded bootstrap
+└── examples/                        # Sample files for testing various formats
 ```
 
 ---
@@ -189,7 +188,6 @@ GloveBox/
 
 GloveBox is optimised for AI coding agents (Cline, Cursor, Copilot Workspace, etc.):
 
-- **`.clinerules`** — Instructions for AI agents: architecture overview, patterns to follow, files to avoid, and context budget tips.
 - **`CODEMAP.md`** — Auto-generated code map with precise line numbers for every class, method, CSS section, and YARA rule. Agents can read this file first (~24K tokens) and then use `read_file(path, start_line=X, end_line=Y)` for surgical edits without consuming their entire context window.
 - **`generate-codemap.py`** — Regenerate `CODEMAP.md` after any code changes: `python generate-codemap.py`
 - **Split CSS/YARA** — CSS and YARA rules are split into multiple files by category, keeping each file manageable. No single file dominates the context budget.
