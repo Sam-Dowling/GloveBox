@@ -131,61 +131,76 @@ class HtmlRenderer {
     previewPane.appendChild(dragShield);
     container.appendChild(previewPane);
 
-    // ── Source pane (line-numbered with syntax highlighting) ──────────────
+    // ── Source pane ─────────────────────────────────────────────────────
+    //
+    // Rendered as a `.plaintext-table` (one row per line) — the same layout
+    // used by `PlainTextRenderer._buildTextPane` — so the shared sidebar
+    // highlight machinery (`_highlightMatchesInline`) can wrap per-line
+    // <mark> elements around YARA/IOC matches. `container._rawText` is
+    // the authoritative character-offset surface those matches refer to.
     const sourcePane = document.createElement('div');
     sourcePane.className = 'html-source-pane hidden';
 
-    const lines = text.split('\n');
+    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = normalizedText.split('\n');
     const maxLines = 100000;
-    const pre = document.createElement('pre');
-    pre.className = 'plaintext-code';
-    const gutter = document.createElement('span');
-    gutter.className = 'line-gutter';
-    const code = document.createElement('span');
-    code.className = 'line-code';
     const lineCount = Math.min(lines.length, maxLines);
-    const gutterLines = [];
 
-    // Apply syntax highlighting if available (limit to 100KB for performance)
-    let highlightedCode = null;
-    if (typeof hljs !== 'undefined' && text.length < 100 * 1024) {
+    // Apply XML syntax highlighting if available (limit to 100KB for performance)
+    let highlightedLines = null;
+    if (typeof hljs !== 'undefined' && normalizedText.length < 100 * 1024) {
       try {
-        const result = hljs.highlight(text, { language: 'xml', ignoreIllegals: true });
-        highlightedCode = result.value;
+        const result = hljs.highlight(normalizedText, { language: 'xml', ignoreIllegals: true });
+        highlightedLines = result.value.split('\n');
       } catch (_) { /* fallback to plain */ }
     }
 
+    const scroll = document.createElement('div');
+    scroll.className = 'plaintext-scroll';
+
+    const table = document.createElement('table');
+    table.className = 'plaintext-table';
+
     for (let i = 0; i < lineCount; i++) {
-      gutterLines.push(String(i + 1));
+      const tr = document.createElement('tr');
+      const tdNum = document.createElement('td');
+      tdNum.className = 'plaintext-ln';
+      tdNum.textContent = i + 1;
+      const tdCode = document.createElement('td');
+      tdCode.className = 'plaintext-code';
+      if (highlightedLines && highlightedLines[i] !== undefined) {
+        tdCode.innerHTML = highlightedLines[i] || '';
+      } else {
+        tdCode.textContent = lines[i];
+      }
+      tr.appendChild(tdNum);
+      tr.appendChild(tdCode);
+      table.appendChild(tr);
     }
 
-    gutter.textContent = gutterLines.join('\n');
-
-    if (highlightedCode) {
-      // Use highlighted HTML (already escaped by highlight.js)
-      let codeContent = highlightedCode;
-      if (lines.length > maxLines) {
-        // Find where to truncate in the highlighted output
-        const truncatedLines = highlightedCode.split('\n').slice(0, lineCount);
-        codeContent = truncatedLines.join('\n') + `\n… truncated (${lines.length - maxLines} more lines)`;
-      }
-      code.innerHTML = codeContent;
-    } else {
-      // Fallback to escaped plain text
-      const codeLines = [];
-      for (let i = 0; i < lineCount; i++) {
-        codeLines.push(this._escHtml(lines[i]));
-      }
-      if (lines.length > maxLines) {
-        codeLines.push(`\n… truncated (${lines.length - maxLines} more lines)`);
-      }
-      code.innerHTML = codeLines.join('\n');
+    if (lines.length > maxLines) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 2;
+      td.className = 'plaintext-truncated';
+      td.textContent = `… truncated (${lines.length - maxLines} more lines)`;
+      tr.appendChild(td);
+      table.appendChild(tr);
     }
 
-    pre.appendChild(gutter);
-    pre.appendChild(code);
-    sourcePane.appendChild(pre);
+    scroll.appendChild(table);
+    sourcePane.appendChild(scroll);
     container.appendChild(sourcePane);
+
+    // Expose raw text + source-pane helper so the sidebar can auto-switch
+    // from Preview → Source before trying to highlight.
+    container._rawText = normalizedText;
+    container._showSourcePane = () => {
+      if (sourcePane.classList.contains('hidden')) {
+        sourceBtn.click();
+      }
+    };
+
 
     // ── Hidden div with DOM-extracted text for scanning ──────────────────
     const domInfo = this._extractDomContent(text);

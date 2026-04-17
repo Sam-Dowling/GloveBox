@@ -1032,26 +1032,33 @@ Object.assign(App.prototype, {
   },
 
   // ── Navigate to finding in content view ─────────────────────────────────
+  //
+  // Two unified click flows (see _highlightMatchesInline for the mechanics):
+  //   • YARA match: highlight every string match returned by the engine.
+  //   • IOC (URL / IP / hash / path / …): scan the rendered source text for
+  //     every occurrence of the IOC value and highlight them all.
+  // First click = highlight all + scroll-only-if-nothing-in-view.
+  // Subsequent clicks (within 5 s) cycle `ref._currentMatchIndex` and always
+  // scroll the current match into view. A 5 s no-click timer clears the
+  // highlights and resets the index so the next click counts as "first" again.
   _navigateToFinding(ref, rowEl) {
     // Visual feedback — flash the clicked row
     rowEl.classList.add('ioc-flash');
     setTimeout(() => rowEl.classList.remove('ioc-flash'), 600);
 
     const pc = document.getElementById('page-container');
+    const containerEl = pc && pc.firstElementChild;
+
+    // Renderers with a Preview/Source toggle (HTML, SVG) expose
+    // `_showSourcePane()` so the highlight surface is actually visible before
+    // we try to scroll a <mark> into view.
+    if (containerEl && typeof containerEl._showSourcePane === 'function') {
+      try { containerEl._showSourcePane(); } catch (_) { /* best effort */ }
+    }
 
     // ── YARA match: highlight ALL matches with click cycling ───────────────
-    //
-    // Click behaviour:
-    //   • First click (no active highlights):
-    //       - Reset index to 0, highlight *all* matches, scroll to the first
-    //         match *only if none are currently in view*.
-    //   • Subsequent clicks (while highlights still active):
-    //       - Advance index, re-highlight *all* matches, always scroll the
-    //         newly focused match into view.
-    //   • Highlights clear automatically ~5s after the last click.
     if (ref.type === IOC.YARA && ref._yaraMatches && ref._yaraMatches.length > 0) {
-      const docEl = pc && pc.firstElementChild;
-      const sourceText = docEl && docEl._rawText;
+      const sourceText = containerEl && containerEl._rawText;
       const plaintextTable = pc && pc.querySelector('.plaintext-table');
       const matches = ref._yaraMatches;
       const totalMatches = matches.length;
@@ -1070,8 +1077,9 @@ Object.assign(App.prototype, {
       this._toast(`Match ${focusIdx + 1}/${totalMatches}: ${focusMatch.stringId}`);
 
       if (plaintextTable && sourceText) {
-        this._highlightYaraMatchesInline(
-          plaintextTable, sourceText, matches, focusIdx, /* forceScroll = */ !isFirstClick, ref
+        this._highlightMatchesInline(
+          plaintextTable, sourceText, matches, focusIdx,
+          /* forceScroll = */ !isFirstClick, ref, 'yara'
         );
         return;
       }
@@ -1229,65 +1237,42 @@ Object.assign(App.prototype, {
       }
     }
 
-    // ── Plaintext view with offset-based line highlighting ──────────────────
-    // Check if we have a plaintext view with _rawText for precise highlighting
-    const docEl = pc && pc.firstElementChild;
-    const sourceText = docEl && docEl._rawText;
+    // ── IOC highlighting with click-cycle semantics ─────────────────────────
+    //
+    // Mirrors the YARA flow: find every occurrence of the IOC value in the
+    // rendered source text, highlight all, first click scroll-only-if-none-in-
+    // view, subsequent clicks cycle `ref._currentMatchIndex`, auto-clear 5 s
+    // after the last click.
+    //
+    // Falls back silently when there is no source text surface available
+    // (visual-only renderers like images, PDF pages, archive listings).
+    const sourceText = containerEl && containerEl._rawText;
     const plaintextTable = pc && pc.querySelector('.plaintext-table');
-
     if (plaintextTable && sourceText) {
-      // Determine what text to search for:
-      // - For SafeLinks, use _highlightText (the wrapper URL) if available
-      // - Otherwise use the IOC value itself
-      const highlightText = ref._highlightText || ref.url;
+      const iocMatches = this._findIOCMatches(ref, sourceText);
+      if (iocMatches.length) {
+        const totalMatches = iocMatches.length;
+        const isFirstClick = (ref._currentMatchIndex === undefined);
+        if (isFirstClick) {
+          ref._currentMatchIndex = 0;
+        } else {
+          ref._currentMatchIndex = (ref._currentMatchIndex + 1) % totalMatches;
+        }
+        const focusIdx = ref._currentMatchIndex;
+        const focusValue = iocMatches[focusIdx].value || ref.url;
+        this._toast(`Match ${focusIdx + 1}/${totalMatches}: ${focusValue}`);
 
-      // Try offset-based highlighting first (most accurate)
-      if (ref._sourceOffset !== undefined && ref._sourceLength) {
-        const offset = ref._sourceOffset;
-        const length = ref._sourceLength;
-
-        // Calculate line numbers from offset
-        const beforeText = sourceText.substring(0, offset);
-        const startLine = (beforeText.match(/\n/g) || []).length + 1;
-        const matchedText = sourceText.substring(offset, offset + length);
-        const lineSpan = (matchedText.match(/\n/g) || []).length;
-        const endLine = startLine + lineSpan;
-
-        // Use the encoded content highlight mechanism (already implemented)
-        this._highlightIOCInPlaintext(plaintextTable, startLine, endLine);
+        this._highlightMatchesInline(
+          plaintextTable, sourceText, iocMatches, focusIdx,
+          /* forceScroll = */ !isFirstClick, ref, 'ioc'
+        );
         return;
-      }
-
-      // Fallback: search for the text in sourceText and calculate line numbers
-      const searchText = highlightText || ref.url;
-      if (searchText) {
-        const idx = sourceText.indexOf(searchText);
-        if (idx >= 0) {
-          const beforeText = sourceText.substring(0, idx);
-          const startLine = (beforeText.match(/\n/g) || []).length + 1;
-          const matchedText = sourceText.substring(idx, idx + searchText.length);
-          const lineSpan = (matchedText.match(/\n/g) || []).length;
-          const endLine = startLine + lineSpan;
-
-          this._highlightIOCInPlaintext(plaintextTable, startLine, endLine);
-          return;
-        }
-        // Try case-insensitive search
-        const idxLower = sourceText.toLowerCase().indexOf(searchText.toLowerCase());
-        if (idxLower >= 0) {
-          const beforeText = sourceText.substring(0, idxLower);
-          const startLine = (beforeText.match(/\n/g) || []).length + 1;
-          const matchedText = sourceText.substring(idxLower, idxLower + searchText.length);
-          const lineSpan = (matchedText.match(/\n/g) || []).length;
-          const endLine = startLine + lineSpan;
-
-          this._highlightIOCInPlaintext(plaintextTable, startLine, endLine);
-          return;
-        }
       }
     }
 
     // ── Fallback for non-plaintext content: TreeWalker-based highlighting ──
+    // Best effort: flash the first occurrence of the IOC value anywhere in
+    // the rendered DOM. No cycling / no inline marks persisting.
     if (pc && ref.url) {
       // For SafeLinks, search for the wrapper URL if available
       const searchText = ref._highlightText || ref.url;
@@ -1310,7 +1295,7 @@ Object.assign(App.prototype, {
               node.parentElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
               // Flash highlight effect
               const mark = document.createElement('mark');
-              mark.className = 'ioc-highlight-flash';
+              mark.className = 'ioc-highlight ioc-highlight-flash';
               try { range.surroundContents(mark); } catch (_) { /* cross-boundary */ }
               setTimeout(() => {
                 if (mark.parentNode) {
@@ -1323,61 +1308,88 @@ Object.assign(App.prototype, {
         } catch (_) { /* best effort */ }
       }
     }
+    // Last resort: nothing visible to highlight. Fail silently — the sidebar
+    // row-flash already gave click feedback.
   },
 
-  // ── Highlight IOC lines in plaintext view ───────────────────────────────
-  _highlightIOCInPlaintext(table, startLine, endLine) {
-    // Clear any existing IOC highlights
-    this._clearIOCHighlight();
+  // ── Build list of IOC occurrences in source text ────────────────────────
+  //
+  // Returns an array of {offset, length, value} entries covering every
+  // occurrence of the IOC's highlight text within `sourceText`. Case-
+  // insensitive search is used as a fallback if the exact-case search
+  // yields no hits. The renderer-provided _sourceOffset/_sourceLength is
+  // always included (deduped) so at least one guaranteed match is present.
+  _findIOCMatches(ref, sourceText) {
+    const matches = [];
+    const seen = new Set(); // offsets already recorded
 
-    const rows = table.rows;
-    const start = startLine - 1;  // Convert to 0-indexed
-    const end = endLine - 1;
+    const push = (offset, length, value) => {
+      if (offset == null || length <= 0) return;
+      if (offset < 0 || offset + length > sourceText.length) return;
+      if (seen.has(offset)) return;
+      seen.add(offset);
+      matches.push({ offset, length, value: value || sourceText.substring(offset, offset + length) });
+    };
 
-    for (let i = start; i <= end && i < rows.length; i++) {
-      rows[i].classList.add('ioc-highlight-line');
-      rows[i].classList.add('ioc-highlight-flash');
+    // 1. Authoritative location supplied by renderer, if any.
+    if (ref._sourceOffset !== undefined && ref._sourceLength) {
+      push(ref._sourceOffset, ref._sourceLength, null);
     }
 
-    // Scroll the first highlighted row into view
-    if (start < rows.length) {
-      rows[start].scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-
-    // Remove flash effect after animation, but keep the highlight briefly
-    setTimeout(() => {
-      for (let i = start; i <= end && i < rows.length; i++) {
-        rows[i].classList.remove('ioc-highlight-flash');
+    // 2. Every occurrence of the IOC value (or SafeLink wrapper).
+    const searchText = ref._highlightText || ref.url;
+    if (searchText && searchText.length > 0 && searchText.length <= 2048) {
+      // Exact-case first.
+      let from = 0;
+      while (from <= sourceText.length) {
+        const idx = sourceText.indexOf(searchText, from);
+        if (idx === -1) break;
+        push(idx, searchText.length, searchText);
+        from = idx + Math.max(1, searchText.length);
       }
-    }, 2000);
-
-    // Remove highlight entirely after a longer delay
-    setTimeout(() => {
-      this._clearIOCHighlight();
-    }, 4000);
-  },
-
-  // ── Clear IOC line highlights ───────────────────────────────────────────
-  _clearIOCHighlight() {
-    const pc = document.getElementById('page-container');
-    if (!pc) return;
-    const highlighted = pc.querySelectorAll('.ioc-highlight-line');
-    for (const el of highlighted) {
-      el.classList.remove('ioc-highlight-line', 'ioc-highlight-flash');
+      // If nothing hit exact-case (common for URLs re-cased in HTML), try CI.
+      if (matches.length === 0 || (matches.length === 1 && ref._sourceOffset !== undefined)) {
+        const haystack = sourceText.toLowerCase();
+        const needle = searchText.toLowerCase();
+        let fromL = 0;
+        while (fromL <= haystack.length) {
+          const idx = haystack.indexOf(needle, fromL);
+          if (idx === -1) break;
+          push(idx, searchText.length,
+            sourceText.substring(idx, idx + searchText.length));
+          fromL = idx + Math.max(1, searchText.length);
+        }
+      }
     }
+
+    // Sort by offset so cycling walks the document top-to-bottom.
+    matches.sort((a, b) => a.offset - b.offset);
+    return matches;
   },
 
-  // ── Highlight ALL YARA matches inline (character-level precision) ──────
+  // ── Highlight ALL matches inline (character-level precision) ──────────
   //
   // `matches` is the full array of {offset, length, stringId, ...} entries.
   // `focusIdx` is the index of the match that should be scrolled to.
   // `forceScroll` is true when the user has cycled (always scroll the focus
   //   match into view); when false (first click), we only scroll if *no*
   //   currently-wrapped match is already visible in the viewport.
-  // `ref` is the IOC ref so the 5-second timer can reset _currentMatchIndex.
-  _highlightYaraMatchesInline(table, sourceText, matches, focusIdx, forceScroll, ref) {
-    // Clear any existing YARA highlights + pending clear-timer first.
-    this._clearYaraHighlight();
+  // `ref` is the YARA/IOC ref so the 5-second timer can reset _currentMatchIndex.
+  // `kind` is 'yara' | 'ioc' and selects the CSS classes used for the
+  //   inline <mark>s and the line-background highlight.
+  _highlightMatchesInline(table, sourceText, matches, focusIdx, forceScroll, ref, kind) {
+    // Clear any existing match highlights + pending clear-timer first.
+    this._clearMatchHighlight();
+
+    // Resolve CSS classes for this highlight kind.
+    // yara → blue marks + blue line bg; ioc → yellow marks + yellow line bg.
+    const isIoc = kind === 'ioc';
+    const markClass   = isIoc ? 'ioc-highlight'      : 'yara-highlight';
+    const flashClass  = isIoc ? 'ioc-highlight-flash' : 'yara-highlight-flash';
+    const lineClass   = isIoc ? 'ioc-highlight-line'  : 'yara-line-highlight';
+    const dataAttr    = isIoc ? 'data-ioc-match'      : 'data-yara-match';
+    const datasetKey  = isIoc ? 'iocMatch'            : 'yaraMatch';
+
 
     const rows = table.rows;
 
@@ -1402,8 +1414,9 @@ Object.assign(App.prototype, {
 
     // ── 2. For each affected line, insert <mark> elements for every match.
     //    Sort by charPos so we can walk the line text left-to-right.
-    //    The generated <mark>s are tagged with data-yara-match="<matchIdx>"
-    //    so we can later locate the focus match for scrolling.
+    //    The generated <mark>s are tagged with the kind-specific data-attr
+    //    (data-yara-match / data-ioc-match) so we can later locate the
+    //    focus match for scrolling.
     const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
     for (const [lineIndex, lineMatches] of matchesByLine) {
@@ -1429,7 +1442,7 @@ Object.assign(App.prototype, {
         // in reverse order so earlier offsets stay valid.
         for (let i = nonOverlapping.length - 1; i >= 0; i--) {
           const lm = nonOverlapping[i];
-          this._highlightInHtmlNode(codeCell, lm.charPos, lm.length, lm.matchIdx);
+          this._highlightInHtmlNode(codeCell, lm.charPos, lm.length, lm.matchIdx, kind);
         }
       } else {
         // Plain text cell: build a single innerHTML in one pass.
@@ -1441,14 +1454,14 @@ Object.assign(App.prototype, {
           const end = Math.min(lm.charPos + lm.length, cellText.length);
           if (lm.charPos > pos) out += esc(cellText.substring(pos, lm.charPos));
           const matchedText = cellText.substring(lm.charPos, end);
-          out += `<mark class="yara-highlight yara-highlight-flash" data-yara-match="${lm.matchIdx}">${esc(matchedText)}</mark>`;
+          out += `<mark class="${markClass} ${flashClass}" ${dataAttr}="${lm.matchIdx}">${esc(matchedText)}</mark>`;
           pos = end;
         }
         if (pos < cellText.length) out += esc(cellText.substring(pos));
         codeCell.innerHTML = out;
       }
 
-      row.classList.add('yara-line-highlight');
+      row.classList.add(lineClass);
     }
 
     // ── 3. Determine whether to scroll. ──────────────────────────────────
@@ -1456,8 +1469,8 @@ Object.assign(App.prototype, {
     //    currently visible in the viewport. On subsequent clicks we always
     //    scroll the focused match.
     const pc = document.getElementById('page-container');
-    const allMarks = Array.from((pc || document).querySelectorAll('mark.yara-highlight'));
-    const focusMark = allMarks.find(m => m.dataset.yaraMatch === String(focusIdx)) || allMarks[0];
+    const allMarks = Array.from((pc || document).querySelectorAll('mark.' + markClass));
+    const focusMark = allMarks.find(m => m.dataset[datasetKey] === String(focusIdx)) || allMarks[0];
 
     let shouldScroll = forceScroll;
     if (!forceScroll) {
@@ -1480,20 +1493,26 @@ Object.assign(App.prototype, {
     //    top of this method). When it fires, we remove all highlights and
     //    reset the ref's _currentMatchIndex so the NEXT click counts as a
     //    fresh "first click".
-    this._yaraHighlightTimer = setTimeout(() => {
-      this._clearYaraHighlight();
+    this._matchHighlightTimer = setTimeout(() => {
+      this._clearMatchHighlight();
       if (ref) ref._currentMatchIndex = undefined;
-      this._yaraHighlightTimer = null;
+      this._matchHighlightTimer = null;
     }, 5000);
   },
+
 
 
   // ── Highlight within syntax-highlighted HTML content ────────────────────
   //
   // Optional `matchIdx` is stamped on the resulting <mark> as
-  // `data-yara-match="<idx>"` so _highlightYaraMatchesInline can locate the
-  // focus match for scrolling.
-  _highlightInHtmlNode(container, charPos, length, matchIdx) {
+  // `data-yara-match="<idx>"` (or `data-ioc-match` for kind='ioc') so
+  // _highlightMatchesInline can locate the focus match for scrolling.
+  _highlightInHtmlNode(container, charPos, length, matchIdx, kind) {
+    const isIoc = kind === 'ioc';
+    const markClass  = isIoc ? 'ioc-highlight'       : 'yara-highlight';
+    const flashClass = isIoc ? 'ioc-highlight-flash' : 'yara-highlight-flash';
+    const datasetKey = isIoc ? 'iocMatch'            : 'yaraMatch';
+
     // Walk through text nodes to find the correct position
     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
     let currentPos = 0;
@@ -1525,11 +1544,12 @@ Object.assign(App.prototype, {
 
     const makeMark = (text) => {
       const mark = document.createElement('mark');
-      mark.className = 'yara-highlight yara-highlight-flash';
-      if (matchIdx !== undefined) mark.dataset.yaraMatch = String(matchIdx);
+      mark.className = markClass + ' ' + flashClass;
+      if (matchIdx !== undefined) mark.dataset[datasetKey] = String(matchIdx);
       mark.textContent = text;
       return mark;
     };
+
 
     // If start and end are in the same node, simple case
     if (startNode === endNode) {
@@ -1560,27 +1580,34 @@ Object.assign(App.prototype, {
   },
 
 
-  // ── Clear YARA inline highlights ────────────────────────────────────────
-  _clearYaraHighlight() {
-    // Cancel any pending auto-clear timer so it doesn't fire later and
+  // ── Clear YARA + IOC inline highlights ──────────────────────────────────
+  //
+  // Single clear-all for both YARA (blue) and IOC (yellow) match highlights.
+  // Cancels any pending auto-clear timer (both legacy `_yaraHighlightTimer`
+  // used by the CSV path and the newer unified `_matchHighlightTimer`).
+  _clearMatchHighlight() {
+    // Cancel any pending auto-clear timers so they don't fire later and
     // reset an unrelated ref's _currentMatchIndex.
     if (this._yaraHighlightTimer) {
       clearTimeout(this._yaraHighlightTimer);
       this._yaraHighlightTimer = null;
     }
+    if (this._matchHighlightTimer) {
+      clearTimeout(this._matchHighlightTimer);
+      this._matchHighlightTimer = null;
+    }
 
     const pc = document.getElementById('page-container');
     if (!pc) return;
 
-    // Remove line highlights
-    const highlighted = pc.querySelectorAll('.yara-line-highlight');
-    for (const el of highlighted) {
-      el.classList.remove('yara-line-highlight');
+    // Remove line-background highlights (both kinds)
+    const highlightedLines = pc.querySelectorAll('.yara-line-highlight, .ioc-highlight-line');
+    for (const el of highlightedLines) {
+      el.classList.remove('yara-line-highlight', 'ioc-highlight-line');
     }
 
-
-    // Remove inline mark elements and restore text
-    const marks = pc.querySelectorAll('mark.yara-highlight');
+    // Remove inline <mark> elements and restore text (both kinds)
+    const marks = pc.querySelectorAll('mark.yara-highlight, mark.ioc-highlight');
     for (const mark of marks) {
       const textNode = document.createTextNode(mark.textContent);
       mark.parentNode.replaceChild(textNode, mark);
@@ -1604,6 +1631,10 @@ Object.assign(App.prototype, {
       cell.normalize();
     }
   },
+
+  // Backwards-compatible alias used by CSV highlighter and other callers.
+  _clearYaraHighlight() { this._clearMatchHighlight(); },
+
 
   // ── Highlight YARA matches in CSV detail pane ──────────────────────────
   //

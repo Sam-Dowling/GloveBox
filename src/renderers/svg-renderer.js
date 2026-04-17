@@ -118,34 +118,61 @@ class SvgRenderer {
     container.appendChild(previewPane);
 
     // ── Source pane ──────────────────────────────────────────────────────
+    //
+    // Rendered as a `.plaintext-table` so the shared sidebar highlight
+    // machinery (`_highlightMatchesInline`) can wrap per-line <mark>
+    // elements around YARA/IOC matches using character offsets in the
+    // `container._rawText` surface exposed below.
     const sourcePane = document.createElement('div');
     sourcePane.className = 'svg-source-pane';
     sourcePane.style.display = 'none';
 
-    // Line-numbered source
-    const lines = text.split('\n');
-    const gutterW = String(lines.length).length;
-    let sourceHtml;
-    if (typeof hljs !== 'undefined' && text.length <= 200000) {
+    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const lines = normalizedText.split('\n');
+
+    let highlightedLines = null;
+    if (typeof hljs !== 'undefined' && normalizedText.length <= 200000) {
       try {
-        const highlighted = hljs.highlight(text, { language: 'xml' }).value;
-        const hLines = highlighted.split('\n');
-        sourceHtml = hLines.map((line, i) => {
-          const num = String(i + 1).padStart(gutterW, ' ');
-          return `<span class="svg-ln">${num}</span>${line}`;
-        }).join('\n');
-      } catch (_) {
-        sourceHtml = this._plainSource(lines, gutterW);
-      }
-    } else {
-      sourceHtml = this._plainSource(lines, gutterW);
+        const result = hljs.highlight(normalizedText, { language: 'xml', ignoreIllegals: true });
+        highlightedLines = result.value.split('\n');
+      } catch (_) { /* fallback to plain */ }
     }
 
-    const pre = document.createElement('pre');
-    pre.className = 'svg-source-code';
-    pre.innerHTML = sourceHtml;
-    sourcePane.appendChild(pre);
+    const scroll = document.createElement('div');
+    scroll.className = 'plaintext-scroll';
+    const table = document.createElement('table');
+    table.className = 'plaintext-table';
+
+    for (let i = 0; i < lines.length; i++) {
+      const tr = document.createElement('tr');
+      const tdNum = document.createElement('td');
+      tdNum.className = 'plaintext-ln';
+      tdNum.textContent = i + 1;
+      const tdCode = document.createElement('td');
+      tdCode.className = 'plaintext-code';
+      if (highlightedLines && highlightedLines[i] !== undefined) {
+        tdCode.innerHTML = highlightedLines[i] || '';
+      } else {
+        tdCode.textContent = lines[i];
+      }
+      tr.appendChild(tdNum);
+      tr.appendChild(tdCode);
+      table.appendChild(tr);
+    }
+
+    scroll.appendChild(table);
+    sourcePane.appendChild(scroll);
     container.appendChild(sourcePane);
+
+    // Expose raw text + source-pane helper so the sidebar can auto-switch
+    // from Preview → Source before trying to highlight.
+    container._rawText = normalizedText;
+    container._showSourcePane = () => {
+      if (sourcePane.style.display === 'none') {
+        sourceBtn.click();
+      }
+    };
+
 
     // ── Tab switching ───────────────────────────────────────────────────
     previewBtn.addEventListener('click', () => {

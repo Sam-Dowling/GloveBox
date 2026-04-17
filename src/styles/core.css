@@ -1086,12 +1086,47 @@ body.dark .ext-table tr.ioc-clickable:hover td {
   }
 }
 
-mark.ioc-highlight-flash {
-  background: rgba(255, 220, 50, .7);
-  animation: ioc-highlight-fade 2s ease-out forwards;
-  padding: 1px 2px;
-  border-radius: 2px;
+/* Persistent IOC inline mark — companion to mark.yara-highlight.
+   Same zero-padding / zero-border / font:inherit contract so wrapping text
+   in a mark on click cannot re-flow surrounding content. Yellow tint
+   matches the row-level ioc-highlight-line so the two signals read as one. */
+mark.ioc-highlight {
+  background: rgba(255, 200, 50, .45);
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
 }
+
+body.dark mark.ioc-highlight {
+  background: rgba(255, 200, 50, .35);
+}
+
+/* Flash variant — pulses once, then settles to the persistent background
+   defined above. Used for first-click feedback and for the TreeWalker
+   fallback path on non-plaintext viewers. */
+mark.ioc-highlight-flash {
+  animation: ioc-highlight-pulse 2.5s ease-out forwards;
+}
+
+
+@keyframes ioc-highlight-pulse {
+  0%   { background: rgba(255, 220, 50, .85); box-shadow: 0 0 8px rgba(255, 200, 50, .55); }
+  30%  { background: rgba(255, 220, 50, .65); box-shadow: 0 0 4px rgba(255, 200, 50, .35); }
+  100% { background: rgba(255, 220, 50, .4);  box-shadow: none; }
+}
+
+body.dark mark.ioc-highlight-flash {
+  animation: ioc-highlight-pulse-dark 2.5s ease-out forwards;
+}
+
+@keyframes ioc-highlight-pulse-dark {
+  0%   { background: rgba(255, 200, 50, .75); box-shadow: 0 0 8px rgba(255, 200, 50, .45); }
+  30%  { background: rgba(255, 200, 50, .55); box-shadow: 0 0 4px rgba(255, 200, 50, .25); }
+  100% { background: rgba(255, 200, 50, .3);  box-shadow: none; }
+}
+
 
 body.dark .ext-table th {
   background: rgba(255, 255, 255, .04);
