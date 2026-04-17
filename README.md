@@ -1,6 +1,6 @@
 # 🕵🏻 Loupe
 
-**A 100% offline, single-file security analyser for suspicious files.**  
+**A 100% offline, single-file security analyser for suspicious files.**
 No server, no uploads, no tracking — just drop a file and inspect it.
 
 > **<a href="https://loupe.tools/" target="_blank">▶ Try it online here</a>**
@@ -19,26 +19,13 @@ No server, no uploads, no tracking — just drop a file and inspect it.
 
 ---
 
-## 📑 Table of Contents
-
-- [Why Loupe?](#-why-loupe)
-- [Quick Start](#-quick-start)
-- [Features](#-features)
-- [Try It Yourself](#-try-it-yourself)
-- [Limitations](#-limitations)
-- [Security Model](#-security-model)
-- [Browser Compatibility](#-browser-compatibility)
-- [Get Involved](#-get-involved)
-
----
-
 ## 🤔 Why Loupe?
 
 SOC analysts, incident responders, and security-conscious users need a way to safely inspect suspicious files without uploading them to third-party services or spinning up a sandbox. Loupe runs entirely in your browser — **nothing ever leaves your machine**.
 
 - **Zero network access** — a strict Content-Security-Policy blocks all external fetches.
 - **Single HTML file** — no install, no dependencies, works on any OS with a modern browser.
-- **Broad format coverage** — Office documents, PDFs, emails, archives, images, scripts, and more.
+- **Broad format coverage** — Office documents, PDFs, emails, archives, native binaries (PE/ELF/Mach-O), certificates, scripts, images, and more.
 
 ---
 
@@ -46,141 +33,66 @@ SOC analysts, incident responders, and security-conscious users need a way to sa
 
 [⬇️ **Download latest loupe.html**](https://github.com/Loupe-tools/Loupe/releases/latest/download/loupe.html)
 
-> `build.py` generates `docs/index.html` — the complete, ready-to-use application served by GitHub Pages (see [CONTRIBUTING.md](CONTRIBUTING.md) for rebuild instructions).
-
 1. **Download** — grab `loupe.html` from the release link above, or clone the repo and open `docs/index.html`.
-2. **Open** — double-click the file or open it in any modern browser (Chrome, Firefox, Edge, Safari). No server needed.
+2. **Open** — double-click the file in any modern browser (2023+: Chrome, Firefox, Edge, Safari). No server needed.
 3. **Drop a file** — drag a suspicious file onto the drop zone, click **📁 Open File**, or paste with **Ctrl+V**.
-4. **Inspect** — the file renders in the viewer. Press **S** to toggle the security sidebar with risk assessment, IOCs, and YARA matches. Press **Y** to open the YARA rule editor. Use **🌙** to switch themes.
+4. **Inspect** — press **S** to toggle the security sidebar with risk assessment, IOCs, and YARA matches. Press **Y** to open the YARA rules dialog (upload custom `.yar` files, validate, re-scan). Press **?** for all shortcuts.
 
 ---
 
-## 🛡 Features
-
-### Supported Formats
+## 🛡 Supported Formats
 
 | Category | Extensions |
 |---|---|
-| **Office (modern)** | `.docx` `.docm` `.xlsx` `.xlsm` `.pptx` `.pptm` `.ods` |
-| **Office (legacy)** | `.doc` `.xls` `.ppt` |
-| **OpenDocument** | `.odt` (text) · `.odp` (presentation) |
-| **RTF** | `.rtf` — text extraction + OLE/exploit analysis |
-| **PDF** | `.pdf` |
+| **Office** | `.docx` `.docm` `.xlsx` `.xlsm` `.pptx` `.pptm` `.ods` `.doc` `.xls` `.ppt` `.odt` `.odp` `.rtf` |
+| **Documents** | `.pdf` `.one` |
 | **Email** | `.eml` `.msg` |
-| **HTML** | `.html` `.htm` `.mht` — sandboxed preview + source view |
-| **Archives** | `.zip` `.gz` `.tar` `.tar.gz`/`.tgz` `.rar` `.7z` `.cab` — content listing, threat flagging, clickable entry extraction, gzip decompression, TAR parsing, ZipCrypto decryption, hex dump fallback for unsupported formats |
-| **Disk images** | `.iso` `.img` — ISO 9660 filesystem listing |
-| **OneNote** | `.one` — embedded object extraction + phishing detection |
-| **Windows** | `.lnk` (Shell Link) · `.hta` (HTML Application) · `.url` `.webloc` (Internet shortcuts) · `.reg` (Registry) · `.inf` (Setup Information) · `.sct` (Script Component) · `.msi` (Installer) · `.exe` `.dll` `.sys` `.scr` `.cpl` `.ocx` `.drv` (PE executables) |
-| **Linux / IoT** | ELF binaries (`.so` shared libraries, `.o` object files, extensionless executables) — ELF32/ELF64, LE/BE |
-| **macOS** | Mach-O binaries (`.dylib` dynamic libraries, `.bundle` plugins, extensionless executables, Fat/Universal) — 32/64-bit |
-| **macOS Scripts** | `.applescript` `.scpt` `.jxa` (AppleScript source, compiled AppleScript, JavaScript for Automation) — source display, compiled binary string extraction, macOS-specific security analysis |
-| **macOS Property Lists** | `.plist` (XML and binary plist) — tree view with expandable nested structures, LaunchAgent/Daemon detection, persistence key analysis, suspicious pattern flagging, 21 YARA rules for plist threats |
-| **Certificates** | `.pem` `.der` `.crt` `.cer` (X.509 certificates) · `.p12` `.pfx` (PKCS#12 containers) |
-| **OpenPGP** | `.pgp` `.gpg` `.asc` `.sig` — ASCII-armored & binary OpenPGP packet streams (RFC 4880 / RFC 9580); `.key` auto-disambiguated between OpenPGP and X.509 private keys |
-| **Java** | `.jar` `.war` `.ear` (Java archives) · `.class` (Java bytecode) — MANIFEST.MF parsing, class file analysis, constant pool string extraction, dependency analysis |
-| **Scripts** | `.wsf` `.wsc` `.wsh` (Windows Script Files — parsed) · `.vbs` `.ps1` `.bat` `.cmd` `.js` |
-| **Forensics** | `.evtx` (Windows Event Log) · `.sqlite` `.db` (SQLite — Chrome/Firefox/Edge history auto-detect) |
-| **Data** | `.csv` `.tsv` · `.iqy` (Internet Query) · `.slk` (Symbolic Link) |
-| **Images** | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` — preview + steganography/polyglot detection |
-| **SVG** | `.svg` — sandboxed preview + source view, deep SVG-specific security analysis (script extraction, foreignObject/form detection, event handlers, data URI payloads, animate href manipulation, XXE, obfuscation) |
-| **Catch-all** | *Any file* — plain-text view with line numbers, or hex dump for binary data |
+| **Web** | `.html` `.htm` `.mht` `.svg` |
+| **Archives** | `.zip` `.gz` `.tar` `.tgz` `.rar` `.7z` `.cab` `.iso` `.img` |
+| **Windows** | `.lnk` `.hta` `.url` `.reg` `.inf` `.sct` `.msi` `.exe` `.dll` `.sys` `.scr` `.cpl` `.ocx` `.drv` |
+| **Linux / IoT** | ELF binaries (`.so`, `.o`, extensionless) |
+| **macOS** | Mach-O binaries (`.dylib`, `.bundle`, Fat/Universal) · `.applescript` `.scpt` `.jxa` `.plist` `.webloc` |
+| **Certificates** | `.pem` `.der` `.crt` `.cer` `.p12` `.pfx` `.key` *(auto-disambiguated against PGP)* |
+| **OpenPGP** | `.pgp` `.gpg` `.asc` `.sig` |
+| **Java** | `.jar` `.war` `.ear` `.class` |
+| **Scripts** | `.wsf` `.wsc` `.wsh` `.vbs` `.ps1` `.bat` `.cmd` `.js` |
+| **Forensics** | `.evtx` `.sqlite` `.db` |
+| **Data** | `.csv` `.tsv` `.iqy` `.slk` |
+| **Images** | `.jpg` `.png` `.gif` `.bmp` `.webp` `.ico` `.tif` `.avif` |
+| **Catch-all** | *Any file* — text or hex dump view |
 
-### Security Analysis
+Every format gets risk assessment, IOC extraction, and YARA scanning on top of the format-specific parser. See **[FEATURES.md](FEATURES.md)** for the full capability reference.
 
-| Capability | Detail |
-|---|---|
-| **Risk assessment** | Colour-coded risk bar (low / medium / high / critical) with finding summary |
-| **Document search** | In-toolbar search with match highlighting, match counter, and `Enter`/`Shift+Enter` navigation (`Ctrl+F` to focus) |
-| **YARA rule engine** | In-browser YARA rule parser and matcher — load/edit/save `.yar` rules, scan any loaded file with text, hex, and regex string support. Ships with default detection rules that auto-scan on file load |
-| **File hashes** | MD5 · SHA-1 · SHA-256 computed in-browser, with one-click VirusTotal lookup |
-| **IOC extraction** | URLs, email addresses, IP addresses, file paths, and UNC paths pulled from document content and VBA source |
-| **VBA / macro analysis** | Extracts and syntax-highlights VBA source; flags auto-execute entry points (`AutoOpen`, `Workbook_Open`, `Shell`, etc.) |
-| **Macro download** | Download decoded VBA as `.txt`, or the raw `vbaProject.bin` for offline analysis with olevba / oledump |
-| **PDF scanning** | Detects `/JavaScript`, `/OpenAction`, `/Launch`, `/EmbeddedFile`, URIs, XFA forms, and other risky operators via YARA rules |
-| **EML / email analysis** | Full RFC 5322/MIME parser — headers, multipart body, attachments, SPF/DKIM/DMARC auth results, tracking pixel detection |
-| **LNK inspection** | MS-SHLLINK binary parser — target path, arguments, timestamps, dangerous-command detection, UNC credential-theft patterns, TrackerDataBlock machine-ID + MAC extraction, per-field IOC emission (each path/argument surfaces as its own sidebar row) |
-| **HTA analysis** | Script extraction, `<HTA:APPLICATION>` attribute parsing, obfuscation detection, 40+ suspicious pattern checks |
-| **Script scanning** | Catch-all viewer scans `.vbs`, `.ps1`, `.bat`, `.rtf` and other script types for dangerous execution patterns + YARA matching |
-| **Image analysis** | Steganography indicators, polyglot file detection, and hex header inspection for embedded payloads |
-| **EVTX analysis** | Parses Windows Event Log binary format (ElfFile header, chunks, BinXml records); extracts Event ID, Level, Provider, Channel, Computer, timestamps, and EventData; flags suspicious events (4688, 4624/4625, 1102, 7045, 4104); extracts IOCs: usernames (`DOMAIN\User`), hostnames, IPs, process paths, command lines, hashes, URLs, file/UNC paths; Copy/Download as CSV |
-| **SQLite / browser history** | Reads SQLite binary format (B-tree pages, schema, cell data); auto-detects Chrome/Edge/Firefox history databases; extracts URLs, titles, visit counts, timestamps; generic table browser for non-history SQLite files; Copy/Download as CSV |
-| **PE / executable analysis** | Parses PE32/PE32+ (EXE, DLL, SYS, etc.) — DOS/COFF/Optional headers, section table with entropy analysis, imports with suspicious API flagging (~140 APIs across injection, anti-debug, credential theft, networking categories), exports, resources, Rich header, string extraction; security feature detection (ASLR, DEP, CFG, SEH, Authenticode); 27 YARA rules for packers (UPX, Themida, VMProtect), malware toolkits (Cobalt Strike, Mimikatz, Metasploit), and suspicious API patterns |
-| **ELF / Linux binary analysis** | Parses ELF32/ELF64 (LE/BE) — ELF header, program headers (segments), section headers, dynamic linking (NEEDED libraries, SONAME, RPATH/RUNPATH), symbol tables (imported/exported with suspicious symbol flagging), note sections (.note.gnu.build-id, .note.ABI-tag); security feature detection (RELRO, Stack Canary, NX, PIE, FORTIFY_SOURCE, RPATH/RUNPATH); 17 YARA rules for Mirai botnet, cryptominers, reverse shells, LD_PRELOAD hijacking, rootkits, container escapes, and packed binaries |
-| **Mach-O / macOS binary analysis** | Parses Mach-O 32/64-bit and Fat/Universal binaries — header, load commands, segments with section-level entropy, symbol tables (imported/exported with suspicious symbol flagging for ~30 macOS APIs), dynamic libraries, RPATH, code signature (CodeDirectory, entitlements, CMS), LC_BUILD_VERSION; security feature detection (PIE, NX Stack/Heap, Stack Canary, ARC, Code Signature, Hardened Runtime, Library Validation, Encrypted); 18 YARA rules for macOS stealers (Atomic, AMOS), reverse shells, RATs, privilege escalation, persistence (LaunchAgent/LoginItem), anti-debug/VM detection, and packed binaries |
-| **X.509 certificate analysis** | Parses PEM/DER X.509 certificates and PKCS#12 containers — subject/issuer DN, validity period with expiry status, public key details (algorithm, key size, curve), extensions (SAN, Key Usage, Extended Key Usage, Basic Constraints, AKI/SKI, CRL Distribution Points, Authority Info Access, Certificate Policies), serial number, signature algorithm, SHA-1/SHA-256 fingerprints; flags self-signed certificates, expired/not-yet-valid, weak keys (<2048-bit RSA), weak signature algorithms (SHA-1/MD5), long validity periods, missing SAN, embedded private keys; IOC extraction from SANs, CRL/AIA URIs |
-| **OpenPGP key analysis** | Parses ASCII-armored and binary OpenPGP data (RFC 4880 / RFC 9580) — enumerates packets (Public-Key, Secret-Key, Public/Secret-Subkey, User ID, Signature, etc.), extracts key IDs and fingerprints, user IDs with embedded email addresses, subkeys, self-signatures and subkey bindings; decodes public-key algorithm (RSA/DSA/ECDSA/ECDH/EdDSA/X25519/Ed25519), key size and ECC curve; validates ASCII-armor CRC-24 checksums; flags unencrypted secret keys (S2K usage = 0), passphrase-protected private keys present in file, weak key sizes (<1024, <2048), deprecated Elgamal-sign-or-encrypt (algo 20), v3 legacy keys, revoked/expired primary keys, long-lived keys without expiry, SHA-1 as preferred hash; extracts email IOCs from User IDs. Parse-only — no signature verification, no decryption of protected secret keys |
-| **JAR / Java analysis** | Parses JAR/WAR/EAR archives and standalone `.class` files — Java class file header (magic, version, constant pool), MANIFEST.MF with Main-Class and permissions, class listing with package tree, dependency extraction, constant pool string analysis with ~45 suspicious Java API patterns (deserialization, JNDI, reflection, command execution, networking) mapped to MITRE ATT&CK; obfuscation detection (Allatori, ZKM, ProGuard, short-name heuristics); clickable inner file extraction; 18 YARA rules for deserialization gadgets, JNDI injection, reverse shells, RAT patterns, cryptominers, security manager bypass, and credential theft |
-| **SVG security analysis** | Parses SVG as XML with regex fallback — embedded `<script>` extraction (inline + external href), `<foreignObject>` detection (credential harvesting forms, password fields, iframes, embedded HTML), event handler scanning (~30 on* attributes), Base64/data URI payload analysis (script MIME types, decoded content inspection), URL extraction from attributes + `<style>` blocks, SVG-specific vectors (`<use>` external refs, `<animate>`/`<set>` href manipulation, `<feImage>` external filters), XML entity/DTD/XXE detection, JavaScript obfuscation patterns (eval, atob, fromCharCode, document.cookie, location redirect, fetch/XHR), meta refresh redirects; 19 YARA rules for SVG phishing (script injection, foreignObject forms, credential harvesting, Base64 payloads, event handlers, obfuscation, cookie theft, redirects, external resource loading, animate href manipulation, XXE, multi-indicator phishing) |
-| **Encoded content detection** | Scans for Base64, hex, Base32 encoded blobs and compressed streams (gzip/zlib/deflate); decodes, classifies payloads (PE, script, URL list, etc.), extracts IOCs, and offers "Load for analysis" to drill into decoded content |
-| **Archive drill-down** | Click entries inside ZIP/archive listings to open and analyse inner files, with Back navigation |
-| **Document metadata** | Author, title, dates, revision count extracted from `docProps/core.xml` |
+---
 
-### User Interface
+## 🔍 What It Finds
 
-| Feature | Detail |
-|---|---|
-| **Midnight Glass theme** | Premium dark mode with frosted-glass panels, gradient surfaces, and cyan accent highlights |
-| **Light / dark toggle** | Switch between dark and light themes with one click (🌙 / ☀) |
-| **Floating zoom controls** | Zoom 50–200% via a floating control that stays out of the way |
-| **Click-and-drag panning** | Grab and drag to pan around rendered documents |
-| **Collapsible sidebar** | Single-pane sidebar with collapsible `<details>` sections: File Info, Macros, Signatures & IOCs |
-| **Resizable sidebar** | Drag the sidebar edge to resize (33–50% of the viewport) |
-| **Keyboard shortcuts** | `S` toggle sidebar · `Y` YARA dialog · `?`/`H` help & about · `Ctrl+F` search document · `Ctrl+V` paste file for analysis |
-| **Loading overlay** | Spinner with status message while parsing large files |
-| **Toast notifications** | Non-intrusive feedback for downloads, clipboard operations, and errors |
+- **YARA rule engine** — 450+ default rules auto-scan every file; upload your own `.yar` files to extend detection
+- **IOC extraction** — URLs, IPs, emails, file paths, UNC paths (including refanged `hxxp://` / `1[.]2[.]3[.]4`)
+- **File hashes** — MD5, SHA-1, SHA-256 with one-click VirusTotal lookup
+- **Macro / VBA analysis** — decoded source, auto-exec entry points, downloadable as `.txt` or raw `vbaProject.bin`
+- **Encoded payload detection** — Base64, hex, Base32, gzip/zlib/deflate; decodes and recursively drills in
+- **Native binary analysis** — PE, ELF and Mach-O with imports, sections, entropy, security features, code signatures
+- **Certificate & PGP inspection** — X.509 / PKCS#12 / OpenPGP with weak-key and expiry flagging
+- **Archive drill-down** — click any entry inside a ZIP / TAR / ISO / MSI to open it with full analysis
+
+Plus a Midnight Glass UI with light/dark toggle, floating zoom, drag-pan, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
 
 ---
 
 ## 🎬 Try It Yourself
 
-The [`examples/`](examples/) directory contains sample files for every supported format — grouped by category — try dropping them into Loupe to explore:
+Drop one of these into Loupe to see it in action — the [`examples/`](examples/) directory has many more.
 
-**Encoded payloads** ([`examples/encoded-payloads/`](examples/encoded-payloads/))
-- [`nested-double-b64-ip.txt`](examples/encoded-payloads/nested-double-b64-ip.txt) — double Base64-encoded PowerShell with hidden C2 IP
-- [`encoded-zlib-base64.txt`](examples/encoded-payloads/encoded-zlib-base64.txt) — nested encoded content with compressed payloads
-- [`mixed-obfuscations.txt`](examples/encoded-payloads/mixed-obfuscations.txt) — kitchen-sink sample combining many obfuscation techniques
+- [`examples/encoded-payloads/nested-double-b64-ip.txt`](examples/encoded-payloads/nested-double-b64-ip.txt) — double Base64 hiding a C2 IP (recursive decode drill-down)
+- [`examples/email/phishing-example.eml`](examples/email/phishing-example.eml) — SPF/DKIM/DMARC failures + tracking pixel
+- [`examples/windows-shell/example.lnk`](examples/windows-shell/example.lnk) — Shell Link with per-field IOC extraction, MAC/MachineID
+- [`examples/pe/signed-example.dll`](examples/pe/signed-example.dll) — Authenticode-signed DLL showing PE analysis + cert chain
+- [`examples/forensics/example-security.evtx`](examples/forensics/example-security.evtx) — Windows security event log (auto-flags 4688 / 4624 / 1102)
+- [`examples/macos-scripts/example.scpt`](examples/macos-scripts/example.scpt) — compiled AppleScript with string extraction from opaque bytecode
+- [`examples/web/example-malicious.svg`](examples/web/example-malicious.svg) — script injection + foreignObject phishing form
 
-**Office** ([`examples/office/`](examples/office/))
-- [`example.docm`](examples/office/example.docm) — macro-enabled Word document with AutoOpen + Shell VBA
-- [`example.xlsm`](examples/office/example.xlsm) — macro-enabled Excel workbook with VBA
-- [`example.pptm`](examples/office/example.pptm) — macro-enabled PowerPoint with VBA
-
-**PDF & email** ([`examples/pdf/`](examples/pdf/), [`examples/email/`](examples/email/))
-- [`javascript-example.pdf`](examples/pdf/javascript-example.pdf) — PDF with `/OpenAction` triggering embedded JavaScript
-- [`example.eml`](examples/email/example.eml) — email with MIME parts and headers
-- [`phishing-example.eml`](examples/email/phishing-example.eml) — phishing email with SPF/DKIM/DMARC failures and a tracking pixel
-
-**Windows shell & forensics** ([`examples/windows-shell/`](examples/windows-shell/), [`examples/forensics/`](examples/forensics/))
-- [`example.lnk`](examples/windows-shell/example.lnk) — Windows shortcut with suspicious target path
-- [`example.hta`](examples/windows-shell/example.hta) — HTML Application with embedded scripts
-- [`example.evtx`](examples/forensics/example.evtx) / [`example-security.evtx`](examples/forensics/example-security.evtx) — Windows Event Logs (general + security events)
-- [`chromehistory-example.sqlite`](examples/forensics/chromehistory-example.sqlite) — Chrome browsing history database
-
-**Native binaries** ([`examples/pe/`](examples/pe/), [`examples/elf/`](examples/elf/), [`examples/macho/`](examples/macho/))
-- [`pe/example.exe`](examples/pe/example.exe) — Windows PE executable with imports, sections, and security features
-- [`pe/signed-example.dll`](examples/pe/signed-example.dll) — Authenticode-signed DLL
-- [`elf/example`](examples/elf/example) — Linux ELF binary with symbols, segments, and security checks
-- [`macho/example`](examples/macho/example) — macOS Mach-O binary with load commands and code signature
-
-**macOS scripts** ([`examples/macos-scripts/`](examples/macos-scripts/))
-- [`example.plist`](examples/macos-scripts/example.plist) — macOS property list with LaunchAgent/persistence key detection
-- [`example.applescript`](examples/macos-scripts/example.applescript) — AppleScript source with macOS-specific security analysis
-
-**Certificates & PGP** ([`examples/certificates/`](examples/certificates/), [`examples/pgp/`](examples/pgp/))
-- [`example-selfsigned.pem`](examples/certificates/example-selfsigned.pem) — self-signed X.509 certificate with suspicious SANs
-- [`example-with-key.pem`](examples/certificates/example-with-key.pem) — certificate with embedded private key + weak 1024-bit RSA key
-- [`example-expired.crt`](examples/certificates/example-expired.crt) — expired X.509 certificate
-- [`example.key`](examples/pgp/example.key) — OpenPGP key block (auto-detected via packet-header heuristics; `.key` is shared with X.509 PEM private keys)
-
-**Web, Java & images** ([`examples/web/`](examples/web/), [`examples/java/`](examples/java/), [`examples/images/`](examples/images/))
-- [`example-malicious.svg`](examples/web/example-malicious.svg) — SVG with embedded scripts, foreignObject phishing form, event handlers, and data URI payloads
-- [`example.jar`](examples/java/example.jar) — Java archive with class files, MANIFEST.MF, and constant pool analysis
-- [`polyglot-example.png`](examples/images/polyglot-example.png) — PNG with a ZIP appended past the IEND marker
-
-**Archives & MSI** ([`examples/archives/`](examples/archives/), [`examples/msi/`](examples/msi/))
-- [`example.zip`](examples/archives/example.zip), [`example.tar`](examples/archives/example.tar), [`example.tar.gz`](examples/archives/example.tar.gz), [`example.gz`](examples/archives/example.gz), [`example.iso`](examples/archives/example.iso) — archive/disk-image samples
-- [`example.msi`](examples/msi/example.msi) — Windows Installer package
+Full guided tour: **[FEATURES.md → Example Files](FEATURES.md#-example-files-guided-tour)**.
 
 ---
 
@@ -192,35 +104,21 @@ Loupe is a **static-analysis triage tool** — it extracts, decodes, and display
 
 ## 🔒 Security Model
 
-Loupe is designed to be safe to use on potentially malicious files:
+Loupe is designed to be safe to use on potentially malicious files. Defence-in-depth layers:
 
-| Layer | Protection |
-|---|---|
-| **No network** | CSP `default-src 'none'` — zero external requests, ever |
-| **No eval** | No dynamic code execution; all parsing is structural |
-| **No file system** | Browser sandbox — cannot read or write anything beyond the dropped file |
-| **Sanitised rendering** | HTML content is escaped and sanitised; images use `data:` / `blob:` URLs only |
-| **Sandboxed HTML** | HTML files are rendered in a heavily sandboxed iframe with scripts and network disabled |
-| **Offline by design** | Works identically with Wi-Fi off or in an air-gapped environment |
+- **Zero network** — strict `Content-Security-Policy` (`default-src 'none'`) blocks every outbound request. No telemetry, no CDNs, no analytics.
+- **No code execution** — no `eval`, no `new Function`, no inline handlers from untrusted content. All parsing is structural.
+- **Sandboxed previews** — HTML and SVG render inside `<iframe sandbox>` with an inner CSP of `default-src 'none'`, plus an always-active drag shield.
+- **Zip-bomb & timeout defences** — centralised parser limits cap nesting depth (32), decompressed size (50 MB), per-entry compression ratio (100×), archive entry count (10 000), and wall-clock time (60 s per file).
+- **Offline by design** — works identically with Wi-Fi off or in an air-gapped environment.
 
----
-
-## 🌐 Browser Compatibility
-
-Tested and working in:
-
-- Google Chrome / Chromium 90+
-- Mozilla Firefox 90+
-- Microsoft Edge 90+
-- Safari 15+
-
-Requires support for Web Crypto API (SHA-1/SHA-256), `async`/`await`, and `<canvas>`.
+Full threat model and vulnerability reporting: **[SECURITY.md](SECURITY.md)**.
 
 ---
 
 ## 🤝 Get Involved
 
-Loupe is open source under the [GNU General Public License v3.0](LICENSE). Contributions are welcome!
+Loupe is open source under the [GNU General Public License v3.0](LICENSE).
 
 - ⭐ **Star the repo** — helps others discover the project
 - 🐛 **Open an issue** — bug reports, feature requests, and format support suggestions

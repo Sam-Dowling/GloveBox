@@ -1,5 +1,11 @@
 # Security Policy
 
+> - For end-user documentation see [README.md](README.md).
+> - For the full format / capability / example reference see [FEATURES.md](FEATURES.md).
+> - For build instructions and developer docs see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
 ## Threat Model
 
 Loupe is a **100 % offline, single-file HTML security analyser**. Its threat
@@ -34,8 +40,8 @@ receives security fixes. There are no LTS branches.
 
 ## Reporting a Vulnerability
 
-Security reports are taken seriously but are
-handled as time permits.
+Security reports are handled on a best-effort basis by a small maintainer team —
+please allow reasonable time for triage.
 
 Please report vulnerabilities **privately** via one of:
 
@@ -85,7 +91,7 @@ LCTQfYKVR/BsSTwCXga1BV1w3RMf1vaMWhB0nJQSRgEA2wjBKwwepSNHlarD
 | Decision | Rationale |
 |----------|-----------|
 | Vanilla JS, no npm runtime deps | Zero supply-chain surface from transitive dependencies |
-| Vendored libraries committed with pinned SHAs | Auditable, reproducible, air-gap friendly |
+| Vendored libraries pinned by SHA-256 in [`VENDORED.md`](VENDORED.md) | Tamper-evident; upgrades require hash rotation in review |
 | `Content-Security-Policy` meta tag | Defence-in-depth even when served from `file://` (no HTTP headers) |
 | `<iframe sandbox="">` for untrusted previews | Strongest browser-native isolation for rendered HTML/SVG |
 | `PARSER_LIMITS` constants | Single source of truth for all safety thresholds; easy to audit and tighten |

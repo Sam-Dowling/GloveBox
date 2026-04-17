@@ -1,7 +1,10 @@
 # Contributing to Loupe
 
-> Developer guide for Loupe. See [README.md](README.md) for end-user documentation.
-> For AI coding agents see [`CODEMAP.md`](CODEMAP.md).
+> Developer guide for Loupe.
+> - For end-user documentation see [README.md](README.md).
+> - For the full format / capability / example reference see [FEATURES.md](FEATURES.md).
+> - For the threat model and vulnerability reporting see [SECURITY.md](SECURITY.md).
+> - For AI coding agents see [`CODEMAP.md`](CODEMAP.md).
 
 ---
 
@@ -53,7 +56,8 @@ src/rules/plist-threats.yar            # Property list threats: LaunchAgent, per
 The application code is concatenated in dependency order:
 
 ```
-src/constants.js                       # Namespace constants, DOM helpers, unit converters
+src/constants.js                       # Namespace constants, DOM helpers, unit converters, PARSER_LIMITS
+src/parser-watchdog.js                 # ParserWatchdog — wraps sync/async parsers with a 60s timeout guard
 src/vba-utils.js                       # Shared VBA binary decoder + auto-exec pattern scanner
 src/yara-engine.js                     # YaraEngine — in-browser YARA rule parser + matcher
 src/decompressor.js                    # Decompressor — gzip/deflate/raw decompression via DecompressionStream
@@ -103,7 +107,7 @@ src/renderers/plaintext-renderer.js    # PlainTextRenderer — catch-all text/he
 src/app/app-core.js                    # App class — constructor, init, drop-zone, toolbar
 src/app/app-load.js                    # File loading, hashing (MD5/SHA), IOC extraction
 src/app/app-sidebar.js                 # Sidebar rendering — risk bar + collapsible panes
-src/app/app-yara.js                    # YARA rule editor dialog, scanning, result display
+src/app/app-yara.js                    # YARA rules dialog — upload, validate, save, scan, result display
 src/app/app-ui.js                      # UI helpers (zoom, theme, pan, toast) + bootstrap
 ```
 
@@ -149,7 +153,8 @@ Loupe/
 │   │   ├── svg-threats.yar          # SVG threats
 │   │   ├── osascript-threats.yar    # AppleScript/JXA threats
 │   │   └── plist-threats.yar        # Property list threats
-│   ├── constants.js                 # Shared constants, DOM helpers, unit converters, sanitizers
+│   ├── constants.js                 # Shared constants, DOM helpers, unit converters, PARSER_LIMITS
+│   ├── parser-watchdog.js           # ParserWatchdog — 60s timeout guard for parser invocations
 │   ├── vba-utils.js                 # Shared VBA binary decoder + auto-exec pattern scanner
 │   ├── yara-engine.js               # YaraEngine — in-browser YARA rule parser + matcher
 │   ├── decompressor.js              # Decompressor — gzip/deflate/raw via DecompressionStream
@@ -201,7 +206,7 @@ Loupe/
 │       ├── app-core.js              # App class definition + setup methods
 │       ├── app-load.js              # File loading, hashing, IOC extraction
 │       ├── app-sidebar.js           # Sidebar rendering (risk bar + collapsible panes)
-│       ├── app-yara.js              # YARA rule editor, scanning, result display
+│       ├── app-yara.js              # YARA rules dialog (upload/validate/save/scan)
 │       └── app-ui.js                # UI helpers + DOMContentLoaded bootstrap
 └── examples/                        # Sample files for testing various formats
 ```
@@ -223,7 +228,7 @@ Loupe is optimised for AI coding agents (Cline, Cursor, Copilot Workspace, etc.)
 - **Single output file** — `build.py` inlines all CSS and JavaScript so the viewer works by opening one `.html` file with zero external dependencies.
 - **No eval, no network** — the Content-Security-Policy (`default-src 'none'`) blocks all external fetches; images are rendered only from `data:` and `blob:` URLs.
 - **App class split** — `App` is defined in `app-core.js`; additional methods are attached via `Object.assign(App.prototype, {...})` in `app-load.js`, `app-sidebar.js`, `app-yara.js`, and `app-ui.js`, keeping each file focused.
-- **YARA-based detection** — all threat detection is driven by YARA rules. Default rules are split across `src/rules/*.yar` by threat category and auto-scanned on file load. Users can edit, load, and save custom rules via the built-in YARA editor (`Y` key).
+- **YARA-based detection** — all threat detection is driven by YARA rules. Default rules are split across `src/rules/*.yar` by threat category and auto-scanned on file load. Users can upload (or drag-and-drop) their own `.yar` files, validate them, and save the combined rule set back out via the YARA dialog (`Y` key). There is no in-browser rule-editing surface — rule source is authored in an external editor and loaded as files; uploaded rules persist in `localStorage`.
 - **Shared VBA helpers** — `parseVBAText()` and `autoExecPatterns` live in `vba-utils.js` and are reused by `DocxParser`, `XlsxRenderer`, and `PptxRenderer`.
 - **OLE/CFB parser** — `OleCfbParser` is shared by `DocBinaryRenderer` (`.doc`), `MsgRenderer` (`.msg`), and `PptRenderer` (`.ppt`) for reading compound binary files.
 - **PDF rendering** — `PdfRenderer` uses Mozilla's pdf.js for canvas rendering plus raw-byte scanning for dangerous PDF operators. Hidden text layers enable IOC extraction from rendered pages.
@@ -238,7 +243,7 @@ Loupe is optimised for AI coding agents (Cline, Cursor, Copilot Workspace, etc.)
 - **ELF analysis** — `ElfRenderer` parses ELF32/ELF64 binaries (LE/BE) — ELF header, program headers, section headers, dynamic linking (NEEDED, SONAME, RPATH/RUNPATH), symbol tables with suspicious symbol flagging, note sections, and security feature detection (RELRO, Stack Canary, NX, PIE, FORTIFY_SOURCE).
 - **Mach-O analysis** — `MachoRenderer` parses Mach-O 32/64-bit and Fat/Universal binaries — header, load commands, segments with section-level entropy, symbol tables with suspicious symbol flagging (~30 macOS APIs), dynamic libraries, RPATH, code signature (CodeDirectory, entitlements, CMS), and security feature detection (PIE, NX, Stack Canary, ARC, Hardened Runtime, Library Validation).
 - **X.509 certificate analysis** — `X509Renderer` provides a pure-JS ASN.1/DER parser with ~80 OID mappings. Parses PEM/DER certificates and PKCS#12 containers — subject/issuer DN, validity period, public key details, extensions (SAN, Key Usage, EKU, CRL Distribution Points, AIA), fingerprints. Flags self-signed, expired, weak keys/signatures, and extracts IOCs from SANs and CRL/AIA URIs.
-- **OpenPGP analysis** — `PgpRenderer` parses OpenPGP data (RFC 4880 / RFC 9580) in both ASCII-armored and binary forms: enumerates packets (Public-Key, Secret-Key, subkey variants, User ID, Signature, etc.), extracts key IDs, fingerprints, user IDs, subkeys, self-signatures and subkey bindings, and decodes public-key algorithm, key size, and ECC curve. Validates armor CRC-24 checksums. Flags unencrypted secret keys (S2K usage = 0), passphrase-protected private keys present in file, weak key sizes, deprecated Elgamal-sign-or-encrypt (algo 20), v3 legacy keys, revoked/expired keys, long-lived keys without expiry, and SHA-1-preferred hash. Parse-only — no signature verification, no secret-key decryption. The `.key` extension is disambiguated between OpenPGP and X.509 PEM private keys via `_looksLikePgp()` in `app-load.js`, which inspects ASCII-armor headers and OpenPGP packet-tag bytes (0x99/0xC6 Public-Key, 0x95/0xC5 Secret-Key, etc.).
+- **OpenPGP analysis** — `PgpRenderer` parses OpenPGP data (RFC 4880 / RFC 9580) in both ASCII-armored and binary forms. It enumerates packets, extracts key IDs, fingerprints, user IDs, subkeys, self-signatures and subkey bindings, decodes public-key algorithm / key size / ECC curve, and validates armor CRC-24 checksums. Flags unencrypted secret keys, weak key sizes, deprecated Elgamal-sign-or-encrypt, v3 legacy keys, revoked/expired keys, long-lived keys without expiry, and SHA-1 as preferred hash. Parse-only — no signature verification, no secret-key decryption. The `.key` extension is disambiguated between OpenPGP and X.509 PEM private keys via `_looksLikePgp()` in `app-load.js`, which inspects ASCII-armor headers and OpenPGP packet-tag bytes (0x99/0xC6 Public-Key, 0x95/0xC5 Secret-Key, etc.).
 - **JAR / Java analysis** — `JarRenderer` parses JAR/WAR/EAR archives and standalone `.class` files — class file headers, MANIFEST.MF, package tree, dependency extraction, constant pool string analysis with ~45 suspicious Java API patterns mapped to MITRE ATT&CK, obfuscation detection, and clickable inner file extraction.
 - **SVG analysis** — `SvgRenderer` provides a sandboxed iframe preview and source-code view with line numbers. `analyzeForSecurity()` performs deep SVG-specific analysis: `<script>` extraction, `<foreignObject>` detection, event handler scanning, Base64/data URI payload analysis, SVG-specific vectors (`<use>`, `<animate>`/`<set>` href manipulation, `<feImage>` external filters), XXE detection, and JavaScript obfuscation patterns. Augmented buffer is stored separately in `_yaraBuffer` to avoid contaminating Copy/Save.
 - **AppleScript / JXA analysis** — `OsascriptRenderer` handles `.applescript` source files (syntax-highlighted display), compiled `.scpt` binaries (string extraction from binary data), and `.jxa` JavaScript for Automation files. Security analysis flags shell command execution (`do shell script`), application targeting, file system access, and macOS-specific persistence/privilege escalation patterns.
