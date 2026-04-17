@@ -50,6 +50,100 @@ class SvgRenderer {
     { pattern: /setInterval\s*\(\s*['"`]/gi, label: 'setInterval with string' },
   ];
 
+  // ── Magic-byte signatures for decoded data-URI/base64 blob identification ─
+  // Sniffed against the first bytes of a base64-decoded attribute value.
+  // Mirrors the table in onenote-renderer.js / encoded-content-detector.js.
+  static MIME_SIGS = [
+    { magic: [0x4D, 0x5A],                     type: 'PE Executable',       sev: 'critical' },
+    { magic: [0x7F, 0x45, 0x4C, 0x46],         type: 'ELF Binary',          sev: 'critical' },
+    { magic: [0xCF, 0xFA, 0xED, 0xFE],         type: 'Mach-O Binary',       sev: 'critical' },
+    { magic: [0xCA, 0xFE, 0xBA, 0xBE],         type: 'Java Class',          sev: 'critical' },
+    { magic: [0xD0, 0xCF, 0x11, 0xE0],         type: 'OLE/CFB Document',    sev: 'high' },
+    { magic: [0x50, 0x4B, 0x03, 0x04],         type: 'ZIP/Office Archive',  sev: 'high' },
+    { magic: [0x52, 0x61, 0x72, 0x21],         type: 'RAR Archive',         sev: 'high' },
+    { magic: [0x37, 0x7A, 0xBC, 0xAF],         type: '7-Zip Archive',       sev: 'high' },
+    { magic: [0x25, 0x50, 0x44, 0x46],         type: 'PDF Document',        sev: 'high' },
+    { magic: [0x1F, 0x8B],                     type: 'Gzip Compressed',     sev: 'high' },
+    { magic: [0x78, 0x9C],                     type: 'Zlib (default)',      sev: 'medium' },
+    { magic: [0x78, 0xDA],                     type: 'Zlib (best)',         sev: 'medium' },
+    { magic: [0x78, 0x01],                     type: 'Zlib (no/low)',       sev: 'medium' },
+    { magic: [0x4C, 0x00, 0x00, 0x00],         type: 'Windows Shortcut',    sev: 'critical' },
+    { magic: [0x89, 0x50, 0x4E, 0x47],         type: 'PNG Image',           sev: 'info' },
+    { magic: [0xFF, 0xD8, 0xFF],               type: 'JPEG Image',          sev: 'info' },
+    { magic: [0x47, 0x49, 0x46, 0x38],         type: 'GIF Image',           sev: 'info' },
+    { magic: [0x42, 0x4D],                     type: 'BMP Image',           sev: 'info' },
+    { magic: [0x52, 0x49, 0x46, 0x46],         type: 'RIFF (WAV/WebP)',     sev: 'info' },
+  ];
+
+  // ── Forcepoint X-Labs obfuscation fingerprints (SVG phishing loaders) ───
+  // Patterns observed repeatedly in 2024–2025 SVG phishing campaigns where
+  // the SVG itself is a self-decrypting loader for an HTML phishing page.
+  // Each entry fires once per document; we attach a metadata counter.
+  //
+  // Categories:
+  //   aes      — CryptoJS-style AES decryption of the real payload
+  //   xor      — per-byte XOR loop with a key constant
+  //   reverse  — String reversal chain (classic "hide from string scanners")
+  //   replace  — no-op .replace() chains used to strip marker chars from a
+  //              hex/base64 buffer (e.g. ".replace(/_/g,'')")
+  //   chararr  — large String.fromCharCode(...) array with many args
+  //   unesc    — unescape + %u/%x sequences feeding eval/Function
+  static OBFUSCATION_FINGERPRINTS = [
+    { key: 'aes', label: 'AES decryption (CryptoJS-style)',
+      patterns: [
+        /CryptoJS\s*\.\s*AES/i,
+        /\bAES\s*\.\s*(?:encrypt|decrypt)\s*\(/i,
+        /CryptoJS\s*\.\s*enc\s*\.\s*(?:Utf8|Hex|Base64)/i,
+        /\bWordArray\s*\.\s*create/i,
+      ]
+    },
+    { key: 'xor', label: 'Per-byte XOR loop',
+      patterns: [
+        /\.charCodeAt\s*\([^)]*\)\s*\^/,
+        /String\.fromCharCode\s*\([^)]*\^[^)]*\)/,
+        /\^\s*0x[0-9a-f]{2}\b/i,
+        /\bfor\b[^{]*\{[^}]*\^=\s*[^;]*;[^}]*charCodeAt/,
+      ]
+    },
+    { key: 'reverse', label: 'String reversal chain',
+      patterns: [
+        /\.split\s*\(\s*['"`]['"`]\s*\)\s*\.\s*reverse\s*\(\s*\)\s*\.\s*join\s*\(/,
+        /\.\s*reverse\s*\(\s*\)\s*\.\s*join\s*\(\s*['"`]['"`]\s*\)/,
+      ]
+    },
+    { key: 'replace', label: 'No-op .replace() chain (marker-char stripper)',
+      patterns: [
+        /(?:\.replace\s*\(\s*\/[^/\n]{1,20}\/g?\s*,\s*['"`][^'"`]{0,5}['"`]\s*\)\s*){2,}/,
+        /\.replace\s*\(\s*\/[^/\n]{1,4}\/g\s*,\s*['"`]['"`]\s*\)\s*\.\s*replace\s*\(/,
+      ]
+    },
+    { key: 'chararr', label: 'String.fromCharCode with large numeric array',
+      patterns: [
+        /String\.fromCharCode\s*\(\s*(?:\d{1,3}\s*,\s*){8,}\d{1,3}\s*\)/,
+        /String\.fromCharCode\.apply\s*\(\s*(?:null|this)\s*,\s*\[/,
+      ]
+    },
+    { key: 'unesc', label: 'unescape() of %u/%xx escape sequence',
+      patterns: [
+        /unescape\s*\(\s*['"`](?:%u[0-9a-f]{4}|%[0-9a-f]{2}){4,}/i,
+        /decodeURIComponent\s*\(\s*['"`](?:%[0-9a-f]{2}){6,}/i,
+      ]
+    },
+    { key: 'b64eval', label: 'atob() fed directly to eval/Function',
+      patterns: [
+        /eval\s*\(\s*atob\s*\(/i,
+        /(?:Function|new\s+Function)\s*\(\s*atob\s*\(/i,
+        /(?:setTimeout|setInterval)\s*\(\s*atob\s*\(/i,
+      ]
+    },
+    { key: 'dottedeval', label: 'Indirect eval via window/this[\'ev\'+\'al\']',
+      patterns: [
+        /(?:window|self|this|globalThis)\s*\[\s*['"`](?:ev|eva|e)['"`]\s*\+\s*['"`](?:al|l)['"`]\s*\]/i,
+        /['"`]ev['"`]\s*\+\s*['"`]al['"`]/i,
+      ]
+    },
+  ];
+
   /**
    * Render SVG file with sandboxed preview + source view + security findings.
    * @param {ArrayBuffer} buffer
@@ -383,7 +477,13 @@ class SvgRenderer {
       setRisk('medium');
     }
 
-    // ── 4. Base64-encoded payloads in attributes ─────────────────────────
+    // ── 4. Base64-encoded payloads in attributes + magic-byte sniffing ───
+    // Scan both data: URIs AND bare long base64 literals (phishing loaders
+    // commonly store the real payload as a JS string constant, not a data:
+    // URI — e.g. `var p = "TVqQA..."; var b = atob(p);`).
+    const sniffedBlobTypes = [];
+    const seenBlobPrefix = new Set();
+
     const dataUriRegex = /data:\s*([^;,\s]+)(?:;([^,\s]+))?\s*,\s*([A-Za-z0-9+/=]{20,})/g;
     let dataMatch;
     while ((dataMatch = dataUriRegex.exec(text)) !== null) {
@@ -412,8 +512,63 @@ class SvgRenderer {
             });
             setRisk('critical');
           }
+          // Magic-byte sniff of the decoded bytes
+          const sniff = this._sniffBase64(payload);
+          if (sniff && !seenBlobPrefix.has(payload.substring(0, 8))) {
+            seenBlobPrefix.add(payload.substring(0, 8));
+            sniffedBlobTypes.push(sniff.type);
+            refs.push({
+              type: IOC.PATTERN,
+              url: `Data URI base64 blob decodes to ${sniff.type} (${payload.length} chars of base64)`,
+              severity: sniff.sev
+            });
+            setRisk(sniff.sev);
+          }
         } catch (_) { /* invalid base64 — skip */ }
+      } else if (encoding === 'base64' && /^image\/(?:png|jpe?g|gif|webp|bmp)$/i.test(mimeType)) {
+        // Even image/* data URIs can be polyglots — sniff if the declared
+        // MIME doesn't match the decoded magic (e.g. image/png but MZ header).
+        try {
+          const sniff = this._sniffBase64(payload);
+          if (sniff && !/image|info/i.test(sniff.sev)) {
+            const declaredExt = mimeType.split('/')[1] || '';
+            const actualLower = sniff.type.toLowerCase();
+            if (!actualLower.includes(declaredExt.toLowerCase())) {
+              refs.push({
+                type: IOC.PATTERN,
+                url: `Polyglot: declared ${mimeType} but decodes to ${sniff.type}`,
+                severity: 'critical'
+              });
+              setRisk('critical');
+              sniffedBlobTypes.push(`POLYGLOT:${sniff.type}`);
+            }
+          }
+        } catch (_) { }
       }
+    }
+
+    // Bare long base64 literals inside <script> or JS strings
+    const bareB64Regex = /[A-Za-z0-9+/]{120,}={0,2}/g;
+    let bareMatch;
+    let bareScanned = 0;
+    while ((bareMatch = bareB64Regex.exec(text)) !== null && bareScanned < 50) {
+      bareScanned++;
+      const b64 = bareMatch[0];
+      const prefix = b64.substring(0, 8);
+      if (seenBlobPrefix.has(prefix)) continue;
+      try {
+        const sniff = this._sniffBase64(b64);
+        if (sniff) {
+          seenBlobPrefix.add(prefix);
+          sniffedBlobTypes.push(sniff.type);
+          refs.push({
+            type: IOC.PATTERN,
+            url: `Bare base64 literal decodes to ${sniff.type} (${b64.length} chars, prefix "${prefix}…")`,
+            severity: sniff.sev
+          });
+          setRisk(sniff.sev);
+        }
+      } catch (_) { }
     }
 
     // ── 5. URL extraction from SVG attributes ────────────────────────────
@@ -545,6 +700,37 @@ class SvgRenderer {
     const textWithoutScripts = text.replace(/<script[\s>][^]*?<\/script>/gi, '');
     this._checkJsSuspicious(textWithoutScripts, refs, setRisk, true);
 
+    // ── 8b. Forcepoint X-Labs obfuscation fingerprints ───────────────────
+    // Runs across the entire SVG source (including <script> content) because
+    // these loader patterns are often *inside* a script block.
+    const obfuscationHits = [];
+    for (const fp of SvgRenderer.OBFUSCATION_FINGERPRINTS) {
+      for (const pat of fp.patterns) {
+        pat.lastIndex = 0;
+        const m = pat.exec(text);
+        if (m) {
+          obfuscationHits.push(fp.key);
+          refs.push({
+            type: IOC.PATTERN,
+            url: `Obfuscation fingerprint [${fp.key}]: ${fp.label} — "${this._truncate(m[0], 80)}"`,
+            severity: 'high'
+          });
+          setRisk('high');
+          break; // one hit per fingerprint category is enough
+        }
+      }
+    }
+    // Multiple independent obfuscation categories in one file is a strong
+    // phishing-loader signal — escalate to critical.
+    if (obfuscationHits.length >= 2) {
+      refs.push({
+        type: IOC.PATTERN,
+        url: `Multi-layer obfuscation: ${obfuscationHits.length} distinct categories (${obfuscationHits.join(', ')}) — likely phishing loader`,
+        severity: 'critical'
+      });
+      setRisk('critical');
+    }
+
     // ── 9. Meta refresh / redirect in foreignObject ──────────────────────
     const metaRefreshRegex = /<meta[^>]+http-equiv\s*=\s*["']?refresh[^>]+content\s*=\s*["']?\d+;\s*url\s*=\s*([^"'\s>]+)/gi;
     let metaMatch;
@@ -599,6 +785,8 @@ class SvgRenderer {
     if (foCount) metadata.foreignObjects = foCount;
     if (handlerCount) metadata.eventHandlers = handlerCount;
     if (urls.size) metadata.externalUrls = urls.size;
+    if (sniffedBlobTypes.length) metadata.sniffedBlobTypes = Array.from(new Set(sniffedBlobTypes));
+    if (obfuscationHits.length) metadata.obfuscationFingerprints = obfuscationHits;
 
     return {
       risk,
@@ -633,6 +821,32 @@ class SvgRenderer {
         setRisk('high');
       }
     }
+  }
+
+  /**
+   * Decode the first ~64 bytes of a base64 string and sniff against MIME_SIGS.
+   * Returns { type, sev } or null if no magic-byte match.
+   * Silently returns null on invalid base64 / short decodes / image-noise.
+   */
+  _sniffBase64(b64) {
+    if (!b64 || b64.length < 16) return null;
+    // Trim to a safe prefix and pad to a multiple of 4 so atob() accepts it
+    let prefix = b64.substring(0, 64).replace(/[^A-Za-z0-9+/]/g, '');
+    while (prefix.length % 4 !== 0) prefix += '=';
+    let decoded;
+    try { decoded = atob(prefix); } catch (_) { return null; }
+    if (decoded.length < 4) return null;
+    const b0 = decoded.charCodeAt(0);
+    const b1 = decoded.charCodeAt(1);
+    const b2 = decoded.charCodeAt(2);
+    const b3 = decoded.charCodeAt(3);
+    for (const sig of SvgRenderer.MIME_SIGS) {
+      const m = sig.magic;
+      if (m.length === 2 && b0 === m[0] && b1 === m[1]) return sig;
+      if (m.length === 3 && b0 === m[0] && b1 === m[1] && b2 === m[2]) return sig;
+      if (m.length === 4 && b0 === m[0] && b1 === m[1] && b2 === m[2] && b3 === m[3]) return sig;
+    }
+    return null;
   }
 
   /** Build plain-text source with line numbers (fallback when no hljs) */

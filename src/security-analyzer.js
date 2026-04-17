@@ -197,6 +197,24 @@ const YARA_SUPPRESS_IF_STRUCTURAL = new Map([
   ['PDF_XFA_Form',                 /XFA form/i],
   ['PDF_SubmitForm_Action',        /\/SubmitForm action/i],
   ['PDF_GoToR_Remote_Link',        /\/GoToR remote jump/i],
+
+  // ── SVG structural ────────────────────────────────────────────────────────
+  // SvgRenderer now emits richer findings (element-aware, with decoded
+  // handler values and sniffed blob types). Suppress the shallower YARA
+  // rules when the equivalent structural finding is present.
+  ['SVG_Embedded_Script',          /Embedded <script> element|<script> block detected|<foreignObject> contains <script>/i],
+  ['SVG_ForeignObject_Form',       /<foreignObject> contains HTML form|Phishing form/i],
+  ['SVG_ForeignObject_Password',   /Credential harvesting|password input field/i],
+  ['SVG_ForeignObject_Iframe',     /<foreignObject> contains <iframe>/i],
+  ['SVG_Event_Handler_OnLoad',     /Event handler onload\b|Event handler in raw SVG:[^"]*onload/i],
+  ['SVG_Event_Handler_Mouse',      /Event handler on(?:click|mouseover|mouseenter|mousedown)\b/i],
+  ['SVG_Event_Handler_Error',      /Event handler onerror\b|Event handler in raw SVG:[^"]*onerror/i],
+  ['SVG_Base64_Script_Payload',    /Data URI with script MIME type: data:(?:text|application)\/(?:java|ecma)script/i],
+  ['SVG_Data_URI_HTML',            /Data URI with script MIME type: data:text\/html|data:text\/html/i],
+  ['SVG_External_Use_Reference',   /<use> element loads external resource/i],
+  ['SVG_Animate_Href_Manipulation',/<(?:animate|set|animateTransform)> animates "(?:href|xlink:href|src|action|data)"/i],
+  ['SVG_Meta_Refresh_Redirect',    /Meta refresh redirect to:/i],
+  ['SVG_XXE_Entity',               /XML entity declaration|DOCTYPE with SYSTEM reference/i],
 ]);
 
 
