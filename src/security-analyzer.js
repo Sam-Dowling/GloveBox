@@ -167,17 +167,38 @@ class OoxmlRelScanner {
 // YARA rules whose structural detection is now fully covered by renderer
 // findings — suppressed to avoid duplicate sidebar noise. Used by
 // app-yara.js when filtering scan results.
-// When a YARA rule in this set matches a file for which the corresponding
-// structural finding was emitted, the YARA match is dropped from
-// findings.externalRefs (but still visible in the YARA results dialog).
-const YARA_SUPPRESS_IF_STRUCTURAL = new Set([
-  // OOXML rels — SecurityAnalyzer._externalRefs + OoxmlRelScanner emit
-  // equivalent structural findings with richer target/severity context.
-  'Office_Remote_Template_Injection',
-  'Office_External_OLE_Link',
-  'Office_External_Relationship',
-  'Office_ExternalLink_Formula',
+// When a YARA rule in this map matches a file for which the corresponding
+// structural-finding note pattern is present in findings.externalRefs, the
+// YARA match is dropped from findings.externalRefs (but still visible in
+// the YARA results dialog).
+//   key   = YARA rule name
+//   value = regex (case-insensitive) tested against externalRef.note /
+//           externalRef.url; suppress only if any ref matches.
+const YARA_SUPPRESS_IF_STRUCTURAL = new Map([
+  // ── OOXML rels ────────────────────────────────────────────────────────────
+  // SecurityAnalyzer._externalRefs + OoxmlRelScanner emit equivalent
+  // structural findings with richer target/severity context.
+  ['Office_Remote_Template_Injection',
+    /attachedtemplate|oleobject|externallink|externallinkpath|subdocument|frame|package/i],
+  ['Office_External_OLE_Link',
+    /attachedtemplate|oleobject|externallink|externallinkpath|subdocument|frame|package/i],
+  ['Office_External_Relationship',
+    /attachedtemplate|oleobject|externallink|externallinkpath|subdocument|frame|package/i],
+  ['Office_ExternalLink_Formula',
+    /attachedtemplate|oleobject|externallink|externallinkpath|subdocument|frame|package/i],
+
+  // ── PDF structural ────────────────────────────────────────────────────────
+  // PdfRenderer now emits richer action/embedded-file findings.
+  ['PDF_URI_Link',                 /\/URI action|Annotation \/URI/i],
+  ['PDF_AutoOpen_Action',          /OpenAction present|AA additional-actions/i],
+  ['PDF_Launch_Action',            /\/Launch action target|\/Launch \/Win target/i],
+  ['PDF_Embedded_File_Attachment', /\/EmbeddedFile/i],
+  ['PDF_JavaScript_Execution',     /\/JS or \/JavaScript object/i],
+  ['PDF_XFA_Form',                 /XFA form/i],
+  ['PDF_SubmitForm_Action',        /\/SubmitForm action/i],
+  ['PDF_GoToR_Remote_Link',        /\/GoToR remote jump/i],
 ]);
+
 
 
 class SecurityAnalyzer {
