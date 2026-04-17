@@ -24,7 +24,7 @@ No server, no uploads, no tracking — just drop a file and inspect it.
 - [Why Loupe?](#-why-loupe)
 - [Quick Start](#-quick-start)
 - [Features](#-features)
-- [In Action](#-in-action)
+- [Try It Yourself](#-try-it-yourself)
 - [Limitations](#-limitations)
 - [Security Model](#-security-model)
 - [Browser Compatibility](#-browser-compatibility)
@@ -130,21 +130,11 @@ SOC analysts, incident responders, and security-conscious users need a way to sa
 
 ---
 
-## 🎬 In Action
-
-### Nested Encoding Detection — Double Base64 C2 Discovery
-
-Loupe automatically peels back layers of encoding to reveal hidden threats. In this demo a double Base64-encoded PowerShell download cradle is loaded — Loupe decodes both layers, reconstructs the original command, and extracts the embedded C2 IP address as an IOC, all entirely in the browser.
-
-<p align="center">
-<img src="screenshots/usage.gif" alt="Loupe in action — nested Base64 decoding and C2 IP extraction" width="800">
-</p>
-
-### Try It Yourself
+## 🎬 Try It Yourself
 
 The [`examples/`](examples/) directory contains sample files for every supported format — try dropping them into Loupe to explore:
 
-- [`nested-double-b64-ip.txt`](examples/nested-double-b64-ip.txt) — double Base64-encoded PowerShell with hidden C2 IP (as shown in the demo above)
+- [`nested-double-b64-ip.txt`](examples/nested-double-b64-ip.txt) — double Base64-encoded PowerShell with hidden C2 IP
 - [`encoded-zlib-base64.txt`](examples/encoded-zlib-base64.txt) — nested encoded content with compressed payloads
 - [`example.lnk`](examples/example.lnk) — Windows shortcut with suspicious target path
 - [`example.xlsm`](examples/example.xlsm) — macro-enabled Excel workbook with VBA
