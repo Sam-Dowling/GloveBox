@@ -19,7 +19,7 @@ jobs:
       - name: Extract version
         id: version
         run: |
-          VER=$(grep -oP "GLOVEBOX_VERSION = '\K[^']+" docs/index.html)
+          VER=$(grep -oP "LOUPE_VERSION = '\K[^']+" docs/index.html)
           echo "version=v${VER}" >> "$GITHUB_OUTPUT"
 
       - name: Check if tag exists
@@ -33,12 +33,12 @@ jobs:
 
       - name: Prepare release asset
         if: steps.check.outputs.exists == 'false'
-        run: cp docs/index.html glovebox.html
+        run: cp docs/index.html loupe.html
 
       - name: Create Release
         if: steps.check.outputs.exists == 'false'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
-          files: glovebox.html
+          files: loupe.html
           generate_release_notes: true
