@@ -33,12 +33,22 @@ class LnkRenderer {
         ['Relative Path', info.relativePath || '(none)'],
         ['Description', info.name || '(none)'],
         ['Show Command', info.showCommand],
+        ['HotKey', info.hotKey || '(none)'],
         ['File Size', info.fileSize != null ? info.fileSize.toLocaleString() + ' bytes' : '—'],
         ['File Attributes', info.attrStr || '—'],
         ['Created', info.creationTime || '—'],
         ['Modified', info.writeTime || '—'],
         ['Accessed', info.accessTime || '—'],
       ];
+      if (info.tracker) {
+        if (info.tracker.machineId) rows.push(['Machine ID', info.tracker.machineId]);
+        if (info.tracker.mac) rows.push(['Droplet MAC', info.tracker.mac]);
+        else if (info.tracker.birthMac) rows.push(['Droplet MAC', info.tracker.birthMac]);
+        if (info.tracker.droidFile) rows.push(['File Droid', info.tracker.droidFile]);
+        if (info.tracker.birthFile && info.tracker.birthFile !== info.tracker.droidFile)
+          rows.push(['Birth File Droid', info.tracker.birthFile]);
+      }
+      if (info.darwinProduct) rows.push(['MSI Product Code', info.darwinProduct]);
       for (const [lbl, val] of rows) {
         const tr = document.createElement('tr');
         const tdL = document.createElement('td');
@@ -79,6 +89,43 @@ class LnkRenderer {
         wrap.appendChild(ep);
       }
 
+      // Icon environment path
+      if (info.iconEnvPath) {
+        const ih = document.createElement('div');
+        ih.className = 'lnk-section-hdr';
+        ih.textContent = 'Icon Environment Path';
+        wrap.appendChild(ih);
+        const ip = document.createElement('pre');
+        ip.className = 'lnk-cmdline';
+        ip.textContent = info.iconEnvPath;
+        wrap.appendChild(ip);
+      }
+
+      // Shell-item chain (LinkTargetIDList)
+      if (info.shellItems && info.shellItems.length) {
+        const sh = document.createElement('div');
+        sh.className = 'lnk-section-hdr';
+        sh.textContent = 'Shell Item Chain (Target ID List)';
+        wrap.appendChild(sh);
+        const sp = document.createElement('pre');
+        sp.className = 'lnk-cmdline';
+        sp.textContent = info.shellItems.map((it, i) =>
+          `[${i}] ${it.kind}: ${it.label}`).join('\n');
+        wrap.appendChild(sp);
+      }
+
+      // ExtraData block summary
+      if (info.extraBlocks && info.extraBlocks.length) {
+        const eh = document.createElement('div');
+        eh.className = 'lnk-section-hdr';
+        eh.textContent = 'ExtraData Blocks';
+        wrap.appendChild(eh);
+        const ep = document.createElement('pre');
+        ep.className = 'lnk-cmdline';
+        ep.textContent = info.extraBlocks.map(b => `• ${b}`).join('\n');
+        wrap.appendChild(ep);
+      }
+
     } catch (e) {
       const eb = document.createElement('div');
       eb.className = 'error-box';
@@ -108,8 +155,15 @@ class LnkRenderer {
       if (info.targetPath || info.localBasePath) f.metadata.target = info.targetPath || info.localBasePath;
       if (info.arguments) f.metadata.arguments = info.arguments;
       if (info.workingDir) f.metadata.workingDir = info.workingDir;
+      if (info.iconLocation) f.metadata.iconLocation = info.iconLocation;
+      if (info.hotKey) f.metadata.hotKey = info.hotKey;
       if (info.creationTime) f.metadata.created = info.creationTime;
       if (info.writeTime) f.metadata.modified = info.writeTime;
+      if (info.tracker && info.tracker.machineId) f.metadata.machineId = info.tracker.machineId;
+      if (info.tracker && (info.tracker.mac || info.tracker.birthMac))
+        f.metadata.dropletMac = info.tracker.mac || info.tracker.birthMac;
+      if (info.tracker && info.tracker.droidFile) f.metadata.droidFile = info.tracker.droidFile;
+      if (info.darwinProduct) f.metadata.msiProductCode = info.darwinProduct;
 
       const dangers = this._findDangers(info);
       for (const d of dangers) {
@@ -118,12 +172,67 @@ class LnkRenderer {
         else if (d.sev === 'medium' && f.risk !== 'high') f.risk = 'medium';
       }
 
-      // Check for UNC paths (credential theft)
-      const allPaths = [info.targetPath, info.localBasePath, info.iconLocation, info.workingDir,
-      info.netSharePath, info.envPath].filter(Boolean).join('\n');
+      // Check for UNC paths (credential theft) in any parsed path string
+      const pathSources = [info.targetPath, info.localBasePath, info.iconLocation,
+      info.workingDir, info.netSharePath, info.envPath, info.iconEnvPath].filter(Boolean);
+      // also include shell item labels that look like UNC/URI
+      if (info.shellItems) {
+        for (const it of info.shellItems) {
+          if (it && it.label) pathSources.push(it.label);
+        }
+      }
+      const allPaths = pathSources.join('\n');
+      const uncSeen = new Set();
       for (const m of allPaths.matchAll(/\\\\[^\s\\]+\\[^\s]+/g)) {
+        if (uncSeen.has(m[0])) continue;
+        uncSeen.add(m[0]);
         f.externalRefs.push({ type: IOC.UNC_PATH, url: m[0], severity: 'medium' });
         if (f.risk === 'low') f.risk = 'medium';
+      }
+
+      // Icon pulled from UNC or HTTP(S) — known credential-theft / staging technique
+      for (const src of [info.iconLocation, info.iconEnvPath]) {
+        if (!src) continue;
+        if (/^\\\\/.test(src)) {
+          f.externalRefs.push({
+            type: IOC.UNC_PATH, url: src, severity: 'high',
+            note: 'Icon fetched from UNC (credential-theft/SMB beacon)'
+          });
+          f.risk = 'high';
+        } else if (/^https?:\/\//i.test(src)) {
+          const u = sanitizeUrl(src);
+          if (u) {
+            f.externalRefs.push({
+              type: IOC.URL, url: u, severity: 'high',
+              note: 'Icon fetched from remote URL'
+            });
+            f.risk = 'high';
+          }
+        }
+      }
+
+      // URI shell items (rare, but seen in exploit kits)
+      if (info.shellItems) {
+        for (const it of info.shellItems) {
+          if (!it || !it.label) continue;
+          if (/^https?:\/\//i.test(it.label)) {
+            const u = sanitizeUrl(it.label);
+            if (u) {
+              f.externalRefs.push({ type: IOC.URL, url: u, severity: 'medium' });
+              if (f.risk === 'low') f.risk = 'medium';
+            }
+          }
+        }
+      }
+
+      // HotKey assignment on a shortcut is unusual outside the Start Menu
+      if (info.hotKey) {
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: 'HotKey assigned: ' + info.hotKey,
+          severity: 'low',
+          note: 'Shortcut has a keyboard HotKey (unusual for droppers)'
+        });
       }
 
     } catch (_) { /* parse failed — non-fatal */ }
@@ -143,6 +252,10 @@ class LnkRenderer {
     const flags = dv.getUint32(20, true);
     const attrs = dv.getUint32(24, true);
 
+    // HotKey at offset 0x40 (64) — u16: low=vkey, high=modifiers
+    const hkRaw = dv.getUint16(0x40, true);
+    const hotKey = hkRaw ? this._hotkey(hkRaw & 0xFF, (hkRaw >> 8) & 0xFF) : null;
+
     const info = {
       flags,
       hasLinkTargetIDList: !!(flags & 0x01),
@@ -155,17 +268,23 @@ class LnkRenderer {
       isUnicode: !!(flags & 0x80),
       fileSize: dv.getUint32(52, true),
       showCommand: this._showCmd(dv.getUint32(60, true)),
+      hotKey,
       attrStr: this._attrStr(attrs),
       creationTime: this._fileTime(dv, 28),
       accessTime: this._fileTime(dv, 36),
       writeTime: this._fileTime(dv, 44),
+      shellItems: [],
+      extraBlocks: [],
     };
 
     let off = 76;
 
-    // LinkTargetIDList
+    // LinkTargetIDList — walk shell items instead of skipping
     if (info.hasLinkTargetIDList && off + 2 <= bytes.length) {
       const idListSize = dv.getUint16(off, true);
+      if (idListSize > 0 && off + 2 + idListSize <= bytes.length) {
+        info.shellItems = this._walkIdList(bytes, off + 2, idListSize);
+      }
       off += 2 + idListSize;
     }
 
@@ -232,31 +351,293 @@ class LnkRenderer {
     if (info.relativePath && !info.targetPath) {
       info.targetPath = info.relativePath;
     }
+    // Fallback: reconstruct from shell items if target still empty
+    if (!info.targetPath && info.shellItems && info.shellItems.length) {
+      info.targetPath = this._reconstructFromShellItems(info.shellItems);
+    }
 
-    // ExtraData — scan for EnvironmentVariableDataBlock
+    // ExtraData — full dispatcher
     while (off + 8 <= bytes.length) {
       const blockSize = dv.getUint32(off, true);
-      if (blockSize < 4) break;
+      if (blockSize < 4 || blockSize === 0) break;
+      if (off + blockSize > bytes.length) break;
       const sig = dv.getUint32(off + 4, true);
-      if (sig === 0xA0000001 && off + 268 <= bytes.length) {
-        // EnvironmentVariableDataBlock: ANSI at +8 (260 bytes)
-        info.envPath = this._readAnsiStr(bytes, off + 8);
-        // Unicode at +268 (520 bytes) if available
-        if (off + 788 <= bytes.length) {
-          const uPath = this._readUnicodeStrFixed(bytes, off + 268, 260);
-          if (uPath) info.envPath = uPath;
-        }
+      const label = this._extraBlockLabel(sig);
+      let detail = '';
+      switch (sig) {
+        case 0xA0000001: // EnvironmentVariableDataBlock
+          if (blockSize >= 0x0C + 260) {
+            info.envPath = this._readAnsiStr(bytes, off + 8);
+            if (blockSize >= 0x10C + 520) {
+              const u = this._readUnicodeStrFixed(bytes, off + 0x10C, 260);
+              if (u) info.envPath = u;
+            }
+            detail = info.envPath || '';
+          }
+          break;
+        case 0xA0000002: // ConsoleDataBlock
+          detail = 'console properties';
+          break;
+        case 0xA0000003: // TrackerDataBlock — MAC, MachineID
+          info.tracker = this._extractTrackerData(bytes, off, blockSize);
+          if (info.tracker) {
+            const parts = [];
+            if (info.tracker.machineId) parts.push('machine=' + info.tracker.machineId);
+            if (info.tracker.mac) parts.push('mac=' + info.tracker.mac);
+            else if (info.tracker.birthMac) parts.push('mac=' + info.tracker.birthMac);
+            detail = parts.join(' ');
+          }
+          break;
+        case 0xA0000004: // ConsoleFEDataBlock
+          detail = 'console codepage';
+          break;
+        case 0xA0000005: // SpecialFolderDataBlock
+          if (blockSize >= 0x10) {
+            const sfId = dv.getUint32(off + 8, true);
+            detail = 'CSIDL=0x' + sfId.toString(16);
+          }
+          break;
+        case 0xA0000006: // DarwinDataBlock — MSI product code
+          if (blockSize >= 0x0C + 260) {
+            const ansi = this._readAnsiStr(bytes, off + 8);
+            let uni = '';
+            if (blockSize >= 0x10C + 520) {
+              uni = this._readUnicodeStrFixed(bytes, off + 0x10C, 260);
+            }
+            info.darwinProduct = uni || ansi || '';
+            detail = info.darwinProduct;
+          }
+          break;
+        case 0xA0000007: // IconEnvironmentDataBlock — icon env var
+          if (blockSize >= 0x0C + 260) {
+            info.iconEnvPath = this._readAnsiStr(bytes, off + 8);
+            if (blockSize >= 0x10C + 520) {
+              const u = this._readUnicodeStrFixed(bytes, off + 0x10C, 260);
+              if (u) info.iconEnvPath = u;
+            }
+            detail = info.iconEnvPath || '';
+          }
+          break;
+        case 0xA0000008: // ShimDataBlock
+          if (blockSize > 8) detail = this._readUnicodeStrFixed(bytes, off + 8, 64) || '';
+          break;
+        case 0xA0000009: // PropertyStoreDataBlock
+          detail = 'property store (' + (blockSize - 8) + ' bytes)';
+          break;
+        case 0xA000000B: // KnownFolderDataBlock
+          if (blockSize >= 0x1C) {
+            const guid = this._guid(bytes, off + 8);
+            const idx = dv.getUint32(off + 0x18, true);
+            detail = 'KnownFolder ' + (this._knownGuid(guid) || guid) + ' @' + idx;
+          }
+          break;
+        case 0xA000000C: // VistaAndAboveIDListDataBlock
+          detail = 'Vista+ IDList (' + (blockSize - 8) + ' bytes)';
+          break;
+        default:
+          detail = '';
       }
+      info.extraBlocks.push(detail ? `${label}: ${detail}` : label);
       off += blockSize;
     }
 
     return info;
   }
 
+  // ── Shell Item (TargetIDList) walker ────────────────────────────────────
+
+  _walkIdList(bytes, off, listSize) {
+    const items = [];
+    const end = Math.min(off + listSize, bytes.length);
+    let p = off;
+    let guard = 0;
+    while (p + 2 <= end && guard++ < 256) {
+      const sz = bytes[p] | (bytes[p + 1] << 8);
+      if (sz === 0) break;          // terminator
+      if (sz < 2 || p + sz > end) break;
+      const it = this._parseShellItem(bytes, p + 2, sz - 2);
+      if (it) items.push(it);
+      p += sz;
+    }
+    return items;
+  }
+
+  _parseShellItem(bytes, off, len) {
+    if (len < 1) return null;
+    const type = bytes[off];
+    const cls = type & 0x70;
+
+    // Root/My Computer — CLSID follows at +2
+    if ((type === 0x1F || cls === 0x10) && len >= 18) {
+      const guid = this._guid(bytes, off + 2);
+      return { kind: 'Root', label: this._knownGuid(guid) || ('{' + guid + '}') };
+    }
+    // Volume / drive letter — "C:\" at +1 (ANSI, 3 bytes)
+    if (cls === 0x20 && len >= 4) {
+      const drv = this._readAnsiFixed(bytes, off + 1, 22) || '';
+      return { kind: 'Drive', label: drv.trim() };
+    }
+    // File or folder (0x30..0x3F) — ANSI primary name at +14
+    if (cls === 0x30 && len >= 14) {
+      const isFile = (type & 0x02) === 0x02 || (type & 0x01) === 0x00 && (type & 0x02);
+      let name = '';
+      for (let i = off + 14; i < off + len; i++) {
+        const c = bytes[i];
+        if (c === 0) break;
+        name += String.fromCharCode(c);
+      }
+      // Unicode extension block sometimes follows; try a UTF-16 pass if ANSI looked truncated
+      if (!name || /[\x00-\x08\x0E-\x1F]/.test(name)) {
+        const u = this._readUnicodeStr(bytes, off + 14);
+        if (u) name = u;
+      }
+      return { kind: (type & 0x01) ? 'Dir' : 'File', label: name || '(unnamed)' };
+    }
+    // Network location or URI
+    if (cls === 0x40 && len >= 5) {
+      let s = '';
+      for (let i = off + 5; i < off + len; i++) {
+        const c = bytes[i];
+        if (c === 0) break;
+        s += String.fromCharCode(c);
+      }
+      const kind = /^https?:|^ftp:|^mailto:/i.test(s) ? 'URI' : 'Network';
+      return { kind, label: s || '(empty)' };
+    }
+    // Control Panel / GUID-based (Vista+ property bag delegate)
+    if (type === 0x71 || type === 0x74) {
+      if (len >= 18) {
+        const guid = this._guid(bytes, off + len - 16);
+        return { kind: 'KnownFolder', label: this._knownGuid(guid) || ('{' + guid + '}') };
+      }
+    }
+    // Delegate / shell extension (0x2E, 0x74)
+    if (type === 0x2E && len >= 20) {
+      const guid = this._guid(bytes, off + 4);
+      return { kind: 'ShellExt', label: this._knownGuid(guid) || ('{' + guid + '}') };
+    }
+    return { kind: '0x' + type.toString(16).padStart(2, '0'), label: `(${len}B)` };
+  }
+
+  _reconstructFromShellItems(items) {
+    const parts = [];
+    for (const it of items) {
+      if (!it || !it.label) continue;
+      if (it.kind === 'Root' || it.kind === 'ShellExt' || it.kind === 'KnownFolder') continue;
+      if (it.kind === 'Drive') parts.push(it.label.replace(/\\$/, ''));
+      else if (it.kind === 'File' || it.kind === 'Dir') parts.push(it.label);
+    }
+    return parts.join('\\');
+  }
+
+  // ── TrackerDataBlock (sig 0xA0000003) ───────────────────────────────────
+  // Layout (relative to block start):
+  //   0x00  u32 BlockSize (0x60)
+  //   0x04  u32 Signature (0xA0000003)
+  //   0x08  u32 Length (0x58)
+  //   0x0C  u32 Version
+  //   0x10  16B MachineID (ANSI NetBIOS, null-padded)
+  //   0x20  16B Droid[0]        — birth volume GUID
+  //   0x30  16B Droid[1]        — birth object GUID (UUID v1: last 6B = MAC)
+  //   0x40  16B DroidBirth[0]   — volume GUID
+  //   0x50  16B DroidBirth[1]   — object GUID (UUID v1: last 6B = MAC)
+  _extractTrackerData(bytes, off, blockSize) {
+    if (blockSize < 0x60 || off + 0x60 > bytes.length) return null;
+    const machineId = this._readAnsiFixed(bytes, off + 0x10, 16);
+    const droidVolume = this._guid(bytes, off + 0x20);
+    const droidFile = this._guid(bytes, off + 0x30);
+    const birthVolume = this._guid(bytes, off + 0x40);
+    const birthFile = this._guid(bytes, off + 0x50);
+    // MAC = last 6 bytes (node field of UUID v1)
+    const mac = this._mac(bytes, off + 0x30 + 10);
+    const birthMac = this._mac(bytes, off + 0x50 + 10);
+    return { machineId, droidVolume, droidFile, birthVolume, birthFile, mac, birthMac };
+  }
+
+  _mac(bytes, off) {
+    if (off + 6 > bytes.length) return null;
+    const parts = [];
+    let zero = 0, ff = 0;
+    for (let i = 0; i < 6; i++) {
+      const b = bytes[off + i];
+      if (b === 0x00) zero++;
+      if (b === 0xFF) ff++;
+      parts.push(b.toString(16).padStart(2, '0'));
+    }
+    if (zero === 6 || ff === 6) return null;
+    return parts.join(':');
+  }
+
+  _guid(bytes, off) {
+    if (off + 16 > bytes.length) return '';
+    const h2 = b => b.toString(16).padStart(2, '0');
+    const le4 = o => h2(bytes[o + 3]) + h2(bytes[o + 2]) + h2(bytes[o + 1]) + h2(bytes[o]);
+    const le2 = o => h2(bytes[o + 1]) + h2(bytes[o]);
+    const be2 = o => h2(bytes[o]) + h2(bytes[o + 1]);
+    let node = '';
+    for (let i = 10; i < 16; i++) node += h2(bytes[off + i]);
+    return `${le4(off)}-${le2(off + 4)}-${le2(off + 6)}-${be2(off + 8)}-${node}`;
+  }
+
+  _knownGuid(g) {
+    const map = {
+      '20d04fe0-3aea-1069-a2d8-08002b30309d': 'My Computer',
+      '450d8fba-ad25-11d0-98a8-0800361b1103': 'My Documents',
+      '208d2c60-3aea-1069-a2d7-08002b30309d': 'My Network Places',
+      '871c5380-42a0-1069-a2ea-08002b30309d': 'Internet Explorer',
+      '21ec2020-3aea-1069-a2dd-08002b30309d': 'Control Panel',
+      'de974d24-d9c6-4d3e-bf91-f4455120b917': 'Common Files',
+      '2559a1f2-21d7-11d4-bdaf-00c04f60b9f0': 'Search',
+      '00021401-0000-0000-c000-000000000046': 'ShellLink',
+      'b4bfcc3a-db2c-424c-b029-7fe99a87c641': 'Desktop',
+      'f02c1a0d-be21-4350-88b0-7367fc96ef3c': 'Network',
+      '0ac0837c-bbf8-452a-850d-79d08e667ca7': 'Computer',
+      '4336a54d-038b-4685-ab02-99bb52d3fb8b': 'Samples',
+      '1f4de370-d627-11d1-ba4f-00a0c91eedba': 'Search Results',
+      'cc48e737-e74d-4d58-8e20-8dd0b8554f31': 'Documents',
+      '088e3905-0323-4b02-9826-5d99428e115f': 'Downloads',
+    };
+    return map[g.toLowerCase()];
+  }
+
+  _extraBlockLabel(sig) {
+    switch (sig) {
+      case 0xA0000001: return 'EnvironmentVariableDataBlock';
+      case 0xA0000002: return 'ConsoleDataBlock';
+      case 0xA0000003: return 'TrackerDataBlock';
+      case 0xA0000004: return 'ConsoleFEDataBlock';
+      case 0xA0000005: return 'SpecialFolderDataBlock';
+      case 0xA0000006: return 'DarwinDataBlock';
+      case 0xA0000007: return 'IconEnvironmentDataBlock';
+      case 0xA0000008: return 'ShimDataBlock';
+      case 0xA0000009: return 'PropertyStoreDataBlock';
+      case 0xA000000B: return 'KnownFolderDataBlock';
+      case 0xA000000C: return 'VistaAndAboveIDListDataBlock';
+      default: return 'ExtraData 0x' + sig.toString(16);
+    }
+  }
+
+  // ── HotKey decode ───────────────────────────────────────────────────────
+
+  _hotkey(low, high) {
+    if (!low) return null;
+    const mods = [];
+    if (high & 0x01) mods.push('Shift');
+    if (high & 0x02) mods.push('Ctrl');
+    if (high & 0x04) mods.push('Alt');
+    if (high & 0x08) mods.push('ExtKey');
+    let keyName;
+    if (low >= 0x30 && low <= 0x39) keyName = String.fromCharCode(low);          // 0-9
+    else if (low >= 0x41 && low <= 0x5A) keyName = String.fromCharCode(low);      // A-Z
+    else if (low >= 0x70 && low <= 0x87) keyName = 'F' + (low - 0x6F);            // F1-F24
+    else keyName = '0x' + low.toString(16).toUpperCase();
+    return (mods.length ? mods.join('+') + '+' : '') + keyName;
+  }
+
   _findDangers(info) {
     const dangers = [];
     const allText = [info.targetPath, info.arguments, info.localBasePath,
-    info.workingDir, info.iconLocation, info.envPath, info.relativePath]
+    info.workingDir, info.iconLocation, info.envPath, info.iconEnvPath, info.relativePath]
       .filter(Boolean).join(' ').toLowerCase();
 
     const suspExes = [
@@ -287,9 +668,18 @@ class LnkRenderer {
     }
 
     // Hidden/system file attributes
-    const attrs = info.flags != null ? (new DataView(new ArrayBuffer(4))).getUint32(0, true) : 0;
     if (info.attrStr && (info.attrStr.includes('Hidden') || info.attrStr.includes('System'))) {
       dangers.push({ label: 'Hidden/System file attributes', detail: info.attrStr, sev: 'medium' });
+    }
+
+    // Icon from UNC/URL — staging / credential theft
+    for (const src of [info.iconLocation, info.iconEnvPath]) {
+      if (!src) continue;
+      if (/^\\\\/.test(src)) {
+        dangers.push({ label: 'Icon from UNC', detail: src, sev: 'high' });
+      } else if (/^https?:\/\//i.test(src)) {
+        dangers.push({ label: 'Icon from remote URL', detail: src, sev: 'high' });
+      }
     }
 
     return dangers;
@@ -332,6 +722,16 @@ class LnkRenderer {
     let s = '';
     for (let i = off; i < bytes.length && bytes[i] !== 0; i++) {
       s += String.fromCharCode(bytes[i]);
+    }
+    return s;
+  }
+
+  _readAnsiFixed(bytes, off, len) {
+    let s = '';
+    for (let i = 0; i < len && off + i < bytes.length; i++) {
+      const c = bytes[off + i];
+      if (c === 0) break;
+      s += String.fromCharCode(c);
     }
     return s;
   }
