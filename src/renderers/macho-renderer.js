@@ -1208,11 +1208,9 @@ class MachoRenderer {
       }
 
     } catch (err) {
-      const errBox = document.createElement('div');
-      errBox.className = 'macho-error';
-      errBox.textContent = 'Mach-O parsing error: ' + err.message;
-      wrap.appendChild(errBox);
+      parsedStrings = this._renderFallback(wrap, bytes, err, fileName);
     }
+
 
     // Expose extracted strings as _rawText so the general IOC extraction
     // pipeline and EncodedContentDetector scan clean string data instead
@@ -1222,6 +1220,79 @@ class MachoRenderer {
     }
 
     return wrap;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Graceful fallback for malformed / truncated Mach-O binaries
+  // ═══════════════════════════════════════════════════════════════════════
+
+  _renderFallback(wrap, bytes, err, fileName) {
+    const notice = document.createElement('div');
+    notice.className = 'bin-fallback-notice';
+    const magic = bytes.length >= 4
+      ? Array.from(bytes.slice(0, 4)).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+      : '—';
+    notice.innerHTML =
+      `<div class="bin-fallback-title"><strong>⚠ Mach-O parsing failed — showing raw fallback view</strong></div>` +
+      `<div class="bin-fallback-reason"><code>${this._esc(err.message)}</code></div>` +
+      `<div class="bin-fallback-sub">The file appears to be truncated or malformed, so structural ` +
+      `analysis (header, load commands, segments, symbols, …) isn't available. Extracted strings and ` +
+      `a raw hex dump are shown below so IOC extraction and YARA rules can still run against the bytes.</div>` +
+      `<div class="bin-fallback-info">` +
+        `<span class="doc-meta-tag">${this._esc(fileName || 'unknown')}</span> ` +
+        `<span class="doc-meta-tag">${bytes.length.toLocaleString()} bytes</span> ` +
+        `<span class="doc-meta-tag">Magic: ${magic}</span>` +
+      `</div>`;
+    wrap.appendChild(notice);
+
+    // Generic string scan — the normal _extractStrings requires a parsed
+    // Mach-O object (it uses mo.sections), so we scan the raw buffer directly.
+    const strings = this._rawStringScan(bytes);
+    if (strings.length > 0) {
+      const fakeMo = { strings };
+      wrap.appendChild(this._renderSection(
+        '🔤 Strings (' + strings.length + ')',
+        this._renderStrings(fakeMo)
+      ));
+    }
+
+    // Raw hex dump — reuse the same helper normally used by section rows.
+    if (bytes.length > 0) {
+      const hexContent = document.createElement('div');
+      hexContent.appendChild(this._renderHexDump(0, bytes.length));
+      wrap.appendChild(this._renderSection(
+        '📄 Raw Hex Dump (' + bytes.length.toLocaleString() + ' bytes)',
+        hexContent
+      ));
+    }
+
+    return strings;
+  }
+
+  // Byte-scan fallback used when no parsed Mach-O structure is available.
+  _rawStringScan(bytes) {
+    const strings = [];
+    const seen = new Set();
+    const minLen = 4;
+    const maxStrings = 10000;
+    const maxScan = Math.min(bytes.length, 8 * 1024 * 1024);
+    let current = '';
+    for (let i = 0; i < maxScan && strings.length < maxStrings; i++) {
+      const c = bytes[i];
+      if (c >= 0x20 && c < 0x7F) {
+        current += String.fromCharCode(c);
+      } else {
+        if (current.length >= minLen && !seen.has(current)) {
+          seen.add(current);
+          strings.push(current);
+        }
+        current = '';
+      }
+    }
+    if (current.length >= minLen && !seen.has(current) && strings.length < maxStrings) {
+      strings.push(current);
+    }
+    return strings;
   }
 
   // ═══════════════════════════════════════════════════════════════════════

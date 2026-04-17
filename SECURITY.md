@@ -95,3 +95,5 @@ LCTQfYKVR/BsSTwCXga1BV1w3RMf1vaMWhB0nJQSRgEA2wjBKwwepSNHlarD
 | `Content-Security-Policy` meta tag | Defence-in-depth even when served from `file://` (no HTTP headers) |
 | `<iframe sandbox="">` for untrusted previews | Strongest browser-native isolation for rendered HTML/SVG |
 | `PARSER_LIMITS` constants | Single source of truth for all safety thresholds; easy to audit and tighten |
+| EML / MSG anchor tags rendered as inert `<span class="eml-link-inert">` with the original `href` preserved only in a `title` tooltip | Loupe is a forensic viewer — an analyst triaging a phishing sample must be able to inspect a hostile URL without the risk of accidentally navigating to it. `<a href>` is stripped during HTML sanitisation in `src/renderers/eml-renderer.js` |
+

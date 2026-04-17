@@ -9,9 +9,9 @@ class App {
   }
 
   init() {
-    document.body.classList.add('dark');
-    document.getElementById('btn-theme').textContent = '☀';
+    this._initTheme();    // applies persisted theme (localStorage) or default
     this._setupDrop();
+
     this._setupToolbar();
     this._setupSidebarResize();
     this._setupViewerPan();

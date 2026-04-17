@@ -192,6 +192,107 @@ body.dark .tb-separator {
   background: rgba(255, 255, 255, .1);
 }
 
+/* ── Theme dropdown (vertical menu anchored under #btn-theme) ──────────
+   The trigger `#btn-theme` is wrapped in `.tb-menu-wrap` so the menu can
+   position-absolute relative to it. JS in app-ui.js toggles `.hidden` on
+   `#theme-menu` and adds/removes `.tb-menu-item-active` on the row that
+   matches the persisted `localStorage['loupe_theme']` choice. */
+.tb-menu-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.tb-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 4px;
+  border: 1px solid #c3c7cf;
+  border-radius: 10px;
+  background: #f7f8fa;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .15);
+}
+
+.tb-menu.hidden {
+  display: none;
+}
+
+body.dark .tb-menu {
+  background: rgba(22, 23, 34, .96);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-color: rgba(255, 255, 255, .1);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .6);
+}
+
+.tb-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s ease, color .12s ease;
+}
+
+.tb-menu-item:hover {
+  background: rgba(0, 0, 0, .06);
+}
+
+body.dark .tb-menu-item:hover {
+  background: rgba(34, 211, 238, .12);
+  color: #22d3ee;
+}
+
+.tb-menu-icon {
+  flex: 0 0 auto;
+  width: 18px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.tb-menu-label {
+  flex: 1;
+}
+
+.tb-menu-check {
+  flex: 0 0 auto;
+  width: 14px;
+  text-align: center;
+  opacity: 0;
+  color: #1a73e8;
+  font-weight: 700;
+}
+
+.tb-menu-item-active .tb-menu-check {
+  opacity: 1;
+}
+
+body.dark .tb-menu-check {
+  color: #22d3ee;
+}
+
+.tb-menu-item-active {
+  background: rgba(26, 115, 232, .08);
+}
+
+body.dark .tb-menu-item-active {
+  background: rgba(34, 211, 238, .1);
+  color: #22d3ee;
+}
+
 /* Toolbar button group */
 .tb-group {
   display: flex;
@@ -395,14 +496,14 @@ body.dark .vt-search-nav:active {
 
 #doc-search-count {
   font-size: 11px;
-  color: #888;
+  color: #666;
   white-space: nowrap;
   min-width: 55px;
   font-variant-numeric: tabular-nums;
 }
 
 body.dark #doc-search-count {
-  color: rgba(255, 255, 255, .45);
+  color: rgba(255, 255, 255, .62);
 }
 
 .vt-spacer {
@@ -446,7 +547,7 @@ body.dark .vt-zoom-btn:hover {
 }
 
 body.dark #zoom-level {
-  color: rgba(255, 255, 255, .45);
+  color: rgba(255, 255, 255, .62);
 }
 
 /* Nav back button for archive drill-down — blue-tinted */
@@ -558,7 +659,17 @@ body.sb-resizing {
   display: none;
 }
 
+/* JAR/WAR/EAR/CLASS viewer benefits from a wider content pane — the jar-view
+   has dense tables, a file tree, and a tab strip that need horizontal room.
+   Clamp the sidebar tighter for Java archives so the viewer keeps comfortable
+   left & right breathing room. Combined with the existing `min-width: 33vw`
+   this effectively pins the sidebar at ~33vw when a JAR is loaded. */
+body.jar-active #sidebar {
+  max-width: 33vw;
+}
+
 body.dark #sidebar {
+
   background: rgba(14, 15, 22, .92);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
@@ -632,7 +743,7 @@ body.dark .risk-critical {
 }
 
 body.dark .sb-details {
-  border-color: rgba(255, 255, 255, .06);
+  border-color: rgba(255, 255, 255, .1);
 }
 
 .sb-details-summary {
@@ -678,7 +789,7 @@ body.dark .sb-details-summary::before {
 }
 
 body.dark .sb-details-summary {
-  color: rgba(255, 255, 255, .5);
+  color: rgba(255, 255, 255, .68);
 }
 
 body.dark .sb-details-summary:hover {
@@ -702,8 +813,8 @@ body.dark .sb-details-summary:hover {
 }
 
 body.dark .sb-section {
-  color: rgba(255, 255, 255, .4);
-  border-color: rgba(255, 255, 255, .08);
+  color: rgba(255, 255, 255, .6);
+  border-color: rgba(255, 255, 255, .1);
 }
 
 .hash-table {
@@ -973,7 +1084,7 @@ body.dark .ext-search {
 }
 
 body.dark .ioc-decoded-from {
-  color: rgba(255, 255, 255, .38);
+  color: rgba(255, 255, 255, .58);
 }
 
 /* ── Per-type IOC visual accents ──────────────────────── */
@@ -1446,7 +1557,97 @@ body.dark .enc-decoded-preview {
   color: rgba(74, 222, 128, .7);
 }
 
-/* ── Raw encoded snippet fallback (neutral grey) ── */
+/* ── Decode-depth separators + deepest-layer preview ───────────────────
+   The "Deobfuscation" finding card can stack up to three preview blocks:
+   grey (raw encoded snippet) → green (.enc-decoded-preview, one layer) →
+   purple (.enc-deepest-preview, "all the way" output). `.enc-decode-depth-
+   sep` is the thin labelled divider that sits between each pair. Base
+   variant is neutral (grey→green); `.enc-depth-sep-deep` recolours the
+   lower divider to match the purple deepest preview. */
+.enc-decode-depth-sep {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px 0;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: rgba(100, 116, 139, .75);   /* muted slate-grey */
+  text-transform: uppercase;
+}
+
+.enc-decode-depth-sep::before,
+.enc-decode-depth-sep::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(100, 116, 139, .22);
+}
+
+/* Purple variant — sits between green and purple blocks. */
+.enc-decode-depth-sep.enc-depth-sep-deep {
+  color: rgba(107, 33, 168, .75);    /* muted purple */
+}
+
+.enc-decode-depth-sep.enc-depth-sep-deep::before,
+.enc-decode-depth-sep.enc-depth-sep-deep::after {
+  background: rgba(168, 85, 247, .25);
+}
+
+.enc-decode-depth-label {
+  flex: 0 0 auto;
+  padding: 0 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 80%;
+}
+
+.enc-deepest-preview {
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+  background: rgba(168, 85, 247, .06);
+  border: 1px solid rgba(168, 85, 247, .18);
+  border-radius: 4px;
+  padding: 5px 8px;
+  margin: 0 0 4px 0;
+  word-break: break-all;
+  white-space: pre-wrap;
+  line-height: 1.5;
+  color: #6b21a8;
+  max-height: 80px;
+  overflow: hidden;
+}
+
+body.dark .enc-decode-depth-sep {
+  color: rgba(203, 213, 225, .55);   /* muted slate on dark */
+}
+
+body.dark .enc-decode-depth-sep::before,
+body.dark .enc-decode-depth-sep::after {
+  background: rgba(148, 163, 184, .22);
+}
+
+body.dark .enc-decode-depth-sep.enc-depth-sep-deep {
+  color: rgba(216, 180, 254, .7);
+}
+
+body.dark .enc-decode-depth-sep.enc-depth-sep-deep::before,
+body.dark .enc-decode-depth-sep.enc-depth-sep-deep::after {
+  background: rgba(216, 180, 254, .2);
+}
+
+body.dark .enc-deepest-preview {
+  background: rgba(168, 85, 247, .08);
+  border-color: rgba(216, 180, 254, .18);
+  color: rgba(216, 180, 254, .78);
+}
+
+/* ── Raw encoded snippet (grey, first tier of the 3-tier preview stack) ──
+   Matches the height / character cap of `.enc-decoded-preview` (green) and
+   `.enc-deepest-preview` (purple) so all three boxes stay visually uniform.
+   JS enforces the character cap via the shared `truncate(maxLen)` helper in
+   `_renderEncodedContentSection` (app-sidebar.js). */
 .enc-snippet {
   font-family: 'Fira Code', 'Consolas', monospace;
   font-size: 10px;
@@ -1456,9 +1657,10 @@ body.dark .enc-decoded-preview {
   padding: 5px 8px;
   margin: 4px 0;
   word-break: break-all;
+  white-space: pre-wrap;
   line-height: 1.5;
   color: #555;
-  max-height: 54px;
+  max-height: 80px;
   overflow: hidden;
 }
 

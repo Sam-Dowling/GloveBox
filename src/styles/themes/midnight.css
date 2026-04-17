@@ -1,0 +1,65 @@
+/* ══════════════════════════════════════════════════════
+   Theme: Midnight (OLED pure-black)
+   ──────────────────────────────────────────────────────
+   An overlay that sits on top of `body.dark`. Flattens the
+   layered dark gradient to true black (#000) for OLED /
+   low-ambient-light use, and bumps border/text contrast
+   modestly so UI chrome doesn't melt into the void.
+
+   Activation: <body class="dark theme-midnight">
+   Registry:   src/app/app-ui.js → THEMES
+   ══════════════════════════════════════════════════════ */
+
+body.theme-midnight {
+  background: #000;
+  background-image: none;
+  color: #e5e5ec;
+}
+
+/* Toolbar / viewer-toolbar — no blur halo, solid near-black */
+body.theme-midnight #toolbar {
+  background: rgba(0, 0, 0, .92);
+  border-bottom-color: rgba(255, 255, 255, .12);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .04);
+}
+
+body.theme-midnight #viewer-toolbar {
+  background: rgba(0, 0, 0, .9);
+  border-color: rgba(255, 255, 255, .12);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .04);
+}
+
+/* Sidebar — pure black, crisper separator */
+body.theme-midnight #sidebar {
+  background: #000;
+  border-left-color: rgba(255, 255, 255, .12);
+}
+
+/* Stronger hairlines so section dividers stay visible on #000 */
+body.theme-midnight .sb-details               { border-color: rgba(255, 255, 255, .1); }
+body.theme-midnight .sb-section               { border-color: rgba(255, 255, 255, .12); }
+body.theme-midnight .hash-table td,
+body.theme-midnight .meta-table td,
+body.theme-midnight .ext-table td             { border-color: rgba(255, 255, 255, .1); }
+body.theme-midnight .ext-table th             { border-bottom-color: rgba(255, 255, 255, .14); }
+body.theme-midnight .tb-separator             { background: rgba(255, 255, 255, .14); }
+
+/* Toolbar buttons — slightly brighter outline so they read off pure black */
+body.theme-midnight .tb-btn {
+  background: rgba(255, 255, 255, .03);
+  border-color: rgba(255, 255, 255, .12);
+  color: rgba(255, 255, 255, .82);
+}
+
+/* Legibility bumps — lift muted greys a touch on pure black */
+body.theme-midnight .sb-details-summary       { color: rgba(255, 255, 255, .7); }
+body.theme-midnight .sb-section               { color: rgba(255, 255, 255, .55); }
+body.theme-midnight #zoom-level,
+body.theme-midnight #doc-search-count         { color: rgba(255, 255, 255, .62); }
+body.theme-midnight .ioc-decoded-from         { color: rgba(255, 255, 255, .55); }
+
+/* Drop zone — match the flat black base */
+body.theme-midnight #drop-zone {
+  background: rgba(255, 255, 255, .02);
+  border-color: rgba(255, 255, 255, .18);
+}

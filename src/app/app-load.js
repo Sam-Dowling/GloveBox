@@ -187,9 +187,15 @@ Object.assign(App.prototype, {
         this.findings = r.analyzeForSecurity(buffer, file.name);
         docEl = r.render(buffer, file.name);
       } else if (['jar', 'war', 'ear', 'class'].includes(ext)) {
+        // Mark the body so core.css can clamp the sidebar to 33vw (vs the
+        // default 50vw ceiling). JAR viewers have dense tables, a file tree,
+        // and a tab strip that need horizontal room; this is done before
+        // `_renderSidebar()` runs so the width-lock captures the clamped value.
+        document.body.classList.add('jar-active');
         const r = new JarRenderer();
         this.findings = await r.analyzeForSecurity(buffer, file.name);
         docEl = await r.render(buffer, file.name);
+
         // Listen for inner-file open events from clickable archive entries
         docEl.addEventListener('open-inner-file', (e) => {
           const innerFile = e.detail;
@@ -267,7 +273,15 @@ Object.assign(App.prototype, {
       } else if (ext === 'pdf') {
         const r = new PdfRenderer();
         this.findings = await r.analyzeForSecurity(buffer, file.name);
-        docEl = await r.render(buffer);
+        docEl = await r.render(buffer, file.name, this.findings);
+        // Listen for inner-file open events from embedded /Filespec attachments
+        docEl.addEventListener('open-inner-file', (e) => {
+          const innerFile = e.detail;
+          if (innerFile) {
+            this._pushNavState(file.name);
+            this._loadFile(innerFile);
+          }
+        });
       } else if (['pgp', 'gpg', 'asc', 'sig'].includes(ext) ||
                  (['key', 'pem', 'crt', 'cer', 'der'].includes(ext) &&
                   this._looksLikePgp(new Uint8Array(buffer)))) {
@@ -329,7 +343,14 @@ Object.assign(App.prototype, {
         } else if (detectedType === 'pdf') {
           const r = new PdfRenderer();
           this.findings = await r.analyzeForSecurity(buffer, file.name);
-          docEl = await r.render(buffer);
+          docEl = await r.render(buffer, file.name, this.findings);
+          docEl.addEventListener('open-inner-file', (e) => {
+            const innerFile = e.detail;
+            if (innerFile) {
+              this._pushNavState(file.name);
+              this._loadFile(innerFile);
+            }
+          });
         } else if (detectedType === 'zip') {
           // ZIP could be DOCX, XLSX, PPTX, ODT, ODP, ODS, or plain ZIP
           // Try to identify OOXML/ODF by checking internal structure
@@ -463,9 +484,13 @@ Object.assign(App.prototype, {
           this.findings = r.analyzeForSecurity(buffer, file.name);
           docEl = r.render(buffer, file.name);
         } else if (detectedType === 'jar') {
+          // See the extension-based branch above — same rationale for
+          // clamping the sidebar for JAR content.
+          document.body.classList.add('jar-active');
           const r = new JarRenderer();
           this.findings = await r.analyzeForSecurity(buffer, file.name);
           docEl = await r.render(buffer, file.name);
+
           docEl.addEventListener('open-inner-file', (e) => {
             const innerFile = e.detail;
             if (innerFile) {
@@ -1002,15 +1027,40 @@ Object.assign(App.prototype, {
     const pc = document.getElementById('page-container');
     const docEl = pc && pc.firstElementChild;
 
-    // Detach the live node (removes it from the DOM but keeps all handlers,
-    // child state, and scroll intact). scrollTop/scrollLeft are saved as a
-    // belt-and-braces measure for cases where the browser resets them on
-    // re-attach (rare, but observed with some overflow containers).
-    let pageNode = null;
+    // CAPTURE ORDER MATTERS: we must read #viewer.scrollTop and walk the
+    // live DOM for a scroll anchor *before* detaching the JAR view,
+    // because removeChild() empties #page-container which instantly
+    // clamps #viewer.scrollTop to 0 and detaches every element we would
+    // want to anchor on (detached elements report zero-sized bounding
+    // rects). If we read after the detach we save garbage (scroll=0,
+    // anchor=null), leaving Back navigation unable to restore position.
+    //
+    // In addition to the numeric scrollTop we capture a DOM *anchor*: a
+    // direct reference to the element that was sitting at the top of the
+    // viewport, plus its offset from the pane top. When we restore, the
+    // re-rendered sidebar can cause #viewer to change width by a few pixels,
+    // which reflows the JAR view and makes the saved scrollTop point at a
+    // slightly different visual row. Scrolling the anchor element into view
+    // instead locks onto the same row regardless of reflow.
+    const viewerEl = document.getElementById('viewer');
+    const sbBodyEl = document.getElementById('sb-body');
+    const viewerScroll = viewerEl ? { top: viewerEl.scrollTop, left: viewerEl.scrollLeft } : null;
+    const sbBodyScroll = sbBodyEl ? { top: sbBodyEl.scrollTop, left: sbBodyEl.scrollLeft } : null;
+    const viewerAnchor = this._captureScrollAnchor(viewerEl, docEl);
+    const sbBodyAnchor = this._captureScrollAnchor(sbBodyEl, sbBodyEl);
+
+    // Also snapshot scroll of every scrollable descendant of the JAR view
+    // itself (inner tab panes, search results list, etc.) before detaching.
     let scrollSnapshot = null;
+    if (docEl) scrollSnapshot = this._snapshotScroll(docEl);
+
+    // NOW detach the live node (removes it from the DOM but keeps all
+    // handlers, child state, and scroll intact). scrollTop/scrollLeft are
+    // saved as a belt-and-braces measure for cases where the browser resets
+    // them on re-attach (rare, but observed with some overflow containers).
+    let pageNode = null;
     if (docEl) {
       try {
-        scrollSnapshot = this._snapshotScroll(docEl);
         pageNode = pc.removeChild(docEl);
       } catch (e) {
         console.warn('Failed to detach page node for nav state:', e);
@@ -1026,11 +1076,59 @@ Object.assign(App.prototype, {
       yaraResults: this._yaraResults,
       pageNode,                 // detached live DOM node (preferred)
       scrollSnapshot,           // Map<element,{top,left}> for restoration
+      viewerScroll,             // #viewer scroll position (outer pane)
+      sbBodyScroll,             // #sb-body scroll position (sidebar pane)
+      viewerAnchor,             // { el, offset } — anchor for reflow-robust restore
+      sbBodyAnchor,             // { el, offset } — anchor for reflow-robust restore
       rawText: (docEl && docEl._rawText) || null,
       fileInfoText: document.getElementById('file-info').textContent,
       parentName,
     });
   },
+
+  // Capture a DOM anchor for reflow-robust scroll restoration. Finds the
+  // element closest to the top edge of `container` (but not above it) and
+  // records both the element reference and its current pixel offset from
+  // the container top. On restore we scrollIntoView() the anchor and apply
+  // the offset — this survives reflows that change scrollHeight, unlike
+  // a naive scrollTop assignment.
+  _captureScrollAnchor(container, subtreeRoot) {
+    if (!container || !container.isConnected) return null;
+    if (!container.scrollTop) return null;
+    const root = subtreeRoot || container;
+    const containerRect = container.getBoundingClientRect();
+    const containerTop = containerRect.top;
+    let best = null;
+    let bestDist = Infinity;
+    try {
+      // Walk the subtree breadth-first, looking at elements only (not text).
+      // Cap at ~500 nodes so huge archive trees don't stall the push.
+      const queue = [root];
+      let examined = 0;
+      while (queue.length && examined < 500) {
+        const el = queue.shift();
+        if (!el || !el.getBoundingClientRect) continue;
+        examined++;
+        const r = el.getBoundingClientRect();
+        // Skip hidden/zero-sized elements
+        if (r.height === 0 && r.width === 0) continue;
+        // Only consider elements whose top edge is at or below the container top
+        // (positive offset). Take the one closest to the top edge.
+        const dist = r.top - containerTop;
+        if (dist >= 0 && dist < bestDist) {
+          bestDist = dist;
+          best = { el, offset: dist };
+          // Perfect match (flush with top) — stop walking
+          if (dist < 1) break;
+        }
+        // Enqueue children
+        const kids = el.children;
+        if (kids) for (let i = 0; i < kids.length; i++) queue.push(kids[i]);
+      }
+    } catch (_) { /* best-effort */ }
+    return best;
+  },
+
 
   _navBack() {
     if (!this._navStack || !this._navStack.length) return;
@@ -1080,9 +1178,38 @@ Object.assign(App.prototype, {
     // Re-render sidebar
     this._renderSidebar(state.parentName, null);
 
+    // Restore scroll positions on the outer viewer and sidebar panes. These
+    // live *outside* the detached docEl subtree so they weren't touched by
+    // _restoreScroll(state.scrollSnapshot) above. The JAR viewer in
+    // particular measures its page-container height progressively after
+    // re-attach (tab-strip layout, tree expansion sync, etc.), so a single
+    // rAF isn't enough — the scrollTop assignment would clamp to a
+    // momentarily-smaller scrollHeight and leave the user slightly above
+    // where they were. _stickyRestoreScroll keeps re-applying the target
+    // across multiple frames + a ResizeObserver until it sticks.
+    //
+    // We also pass the DOM anchor (captured in _pushNavState) — this is
+    // the element that was flush with the pane top when the user drilled
+    // in. The sticky restore uses it as a fallback whenever the numeric
+    // scrollTop can't converge, which happens when sidebar re-render
+    // reflows #viewer to a slightly different width and the JAR view's
+    // rows wrap differently. Anchor-based restore locks onto the same
+    // visual row regardless of reflow.
+    try {
+      if (state.viewerScroll) {
+        const v = document.getElementById('viewer');
+        if (v) this._stickyRestoreScroll(v, state.viewerScroll, state.viewerAnchor);
+      }
+      if (state.sbBodyScroll) {
+        const sb = document.getElementById('sb-body');
+        if (sb) this._stickyRestoreScroll(sb, state.sbBodyScroll, state.sbBodyAnchor);
+      }
+    } catch (_) { /* best-effort */ }
+
     // Update back button visibility
     this._updateNavBackButton();
   },
+
 
   // Snapshot scroll positions of the root node and every scrollable
   // descendant, keyed by element reference (which remains valid because we
@@ -1105,16 +1232,120 @@ Object.assign(App.prototype, {
 
   _restoreScroll(snap) {
     if (!snap || typeof snap.forEach !== 'function') return;
-    // Restore on next frame so layout has settled after re-attach
+    // Restore on next frame so layout has settled after re-attach. We also
+    // apply the sticky-retry logic to each scrollable descendant so that
+    // panes whose content is measured asynchronously (e.g. JAR tab panes
+    // that only lay out after the tab becomes visible) still land on the
+    // saved offset instead of being clamped to a smaller scrollHeight.
     requestAnimationFrame(() => {
       try {
         snap.forEach((pos, el) => {
           if (!el || !el.isConnected) return;
-          el.scrollTop = pos.top;
-          el.scrollLeft = pos.left;
+          this._stickyRestoreScroll(el, pos);
         });
       } catch (_) { /* best-effort */ }
     });
+  },
+
+  // Apply a saved scroll offset to `el` and keep re-applying it across
+  // multiple animation frames / timeouts until either the target sticks
+  // (scrollTop within 1px of target) or a ~500ms budget elapses. If a
+  // ResizeObserver is available, also re-apply whenever the element's
+  // scrollable content grows — this covers the case where the #viewer's
+  // page-container or a sidebar section measures its height
+  // asynchronously after re-attach / re-render. Without this, the initial
+  // scrollTop assignment gets clamped to (scrollHeight - clientHeight) when
+  // the content is momentarily shorter than the saved offset, leaving the
+  // user above where they were when they drilled into the inner file.
+  _stickyRestoreScroll(el, pos, anchor) {
+    if (!el || !pos) return;
+    const targetTop = pos.top || 0;
+    const targetLeft = pos.left || 0;
+
+    // Numeric-offset application. Returns true if converged to within 1 px.
+    const applyNumeric = () => {
+      if (!el.isConnected) return false;
+      el.scrollTop = targetTop;
+      el.scrollLeft = targetLeft;
+      return Math.abs(el.scrollTop - targetTop) <= 1 && Math.abs(el.scrollLeft - targetLeft) <= 1;
+    };
+
+    // Anchor-based application. Places `anchor.el`'s top edge at
+    // `anchor.offset` px below the container top. Returns true if the anchor
+    // is actually connected and reachable (so caller knows it was usable).
+    const applyAnchor = () => {
+      if (!anchor || !anchor.el || !anchor.el.isConnected || !el.isConnected) return false;
+      try {
+        const containerRect = el.getBoundingClientRect();
+        const anchorRect = anchor.el.getBoundingClientRect();
+        const currentOffset = anchorRect.top - containerRect.top;
+        // Positive delta means the anchor is below where we want it → scroll down more.
+        const delta = currentOffset - (anchor.offset || 0);
+        if (Math.abs(delta) <= 1) return true;
+        el.scrollTop = Math.max(0, el.scrollTop + delta);
+        el.scrollLeft = targetLeft;
+        return true;
+      } catch (_) { return false; }
+    };
+
+    // One pass: try numeric first, then anchor if numeric didn't stick and
+    // clamped to a smaller scrollHeight. This makes anchor the winner
+    // whenever reflow changed content height.
+    const applyBoth = () => {
+      const numericStuck = applyNumeric();
+      if (numericStuck) return true;
+      // Numeric was clamped — fall through to anchor-based.
+      return applyAnchor();
+    };
+
+    // Immediate apply (may be clamped if content hasn't laid out yet).
+    applyBoth();
+
+    // Retry on the next few frames, then a couple of longer timeouts.
+    const schedule = [
+      (cb) => requestAnimationFrame(cb),
+      (cb) => requestAnimationFrame(() => requestAnimationFrame(cb)),
+      (cb) => setTimeout(cb, 0),
+      (cb) => setTimeout(cb, 50),
+      (cb) => setTimeout(cb, 150),
+      (cb) => setTimeout(cb, 350),
+      (cb) => setTimeout(cb, 600),
+    ];
+    let done = false;
+    const settle = () => { done = true; if (ro) try { ro.disconnect(); } catch (_) { /* noop */ } };
+    schedule.forEach(s => s(() => {
+      if (done) return;
+      // Prefer anchor on every retry after the first — reflow is the usual
+      // culprit when we didn't converge immediately, and anchor is robust
+      // against reflow while numeric is not.
+      const ok = applyAnchor() || applyNumeric();
+      if (ok && anchor && anchor.el && anchor.el.isConnected) {
+        // Final check: if anchor is usable, confirm it landed in place.
+        const containerRect = el.getBoundingClientRect();
+        const anchorRect = anchor.el.getBoundingClientRect();
+        if (Math.abs((anchorRect.top - containerRect.top) - (anchor.offset || 0)) <= 1) settle();
+      } else if (ok) {
+        settle();
+      }
+    }));
+
+    // Observe content growth: if the scrollable child's size changes and
+    // we haven't reached the target yet, re-apply. Disconnect once we
+    // succeed or after a hard 1 s ceiling.
+    let ro = null;
+    if (typeof ResizeObserver !== 'undefined') {
+      try {
+        ro = new ResizeObserver(() => {
+          if (done) return;
+          applyAnchor() || applyNumeric();
+        });
+        const target = el.firstElementChild || el;
+        ro.observe(target);
+        // Also observe the element itself in case its clientHeight changes.
+        if (target !== el) ro.observe(el);
+      } catch (_) { ro = null; }
+    }
+    setTimeout(settle, 1200);
   },
 
   async _reRenderZip(state, pc) {

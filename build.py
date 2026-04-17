@@ -17,11 +17,18 @@ pdf_js       = read('vendor/pdf.min.js')
 pdf_wrk_js   = read('vendor/pdf.worker.min.js')
 highlight_js = read('vendor/highlight.min.js')
 
-# CSS files — concatenated in order
+# CSS files — concatenated in order.
+# Each optional theme overlay lives in src/styles/themes/<id>.css and contains
+# `body.theme-<id> { … }` rules that layer on top of the base palette.
+# To add a new theme: drop a file here AND add a row to the THEMES array in
+# src/app/app-ui.js. No other wiring required.
 CSS_FILES = [
     'src/styles/core.css',
     'src/styles/viewers.css',
+    'src/styles/themes/midnight.css',
+    'src/styles/themes/solarized.css',
 ]
+
 css = ''.join(read(f) for f in CSS_FILES)
 
 # Default YARA rules — split by category, concatenated and injected as a JS constant
@@ -179,8 +186,12 @@ HTML = f"""<!DOCTYPE html>
     <div class="tb-separator"></div>
     <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>
     <button class="tb-btn tb-icon-btn" id="btn-help" title="Help &amp; About (?)">?</button>
-    <button class="tb-btn tb-icon-btn" id="btn-theme" title="Toggle dark mode">🌙</button>
+    <div class="tb-menu-wrap">
+      <button class="tb-btn tb-icon-btn" id="btn-theme" title="Theme — click to change" aria-haspopup="menu" aria-expanded="false">🌙</button>
+      <div class="tb-menu hidden" id="theme-menu" role="menu"></div>
+    </div>
     <input type="file" id="file-input" accept="{accept_attr}" style="display:none">
+
   </div>
 
   <!-- ── Main area (viewer + sidebar side-by-side) ──────────────────── -->

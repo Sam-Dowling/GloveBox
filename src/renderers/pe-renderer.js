@@ -1183,19 +1183,68 @@ class PeRenderer {
       }
 
     } catch (err) {
-      const errBox = document.createElement('div');
-      errBox.className = 'pe-error';
-      errBox.textContent = 'PE parsing error: ' + err.message;
-      wrap.appendChild(errBox);
+      this._renderFallback(wrap, bytes, err, fileName);
     }
 
-    // Expose extracted strings as _rawText for IOC + EncodedContentDetector
+    // Expose extracted strings as _rawText for IOC + EncodedContentDetector.
+    // On parse failure we still populate this from the fallback string scan
+    // so sidebar YARA / IOC extraction keep working on truncated binaries.
     if (this._lastStrings) {
       wrap._rawText = this._lastStrings.join('\n');
+    } else if (wrap._fallbackStrings) {
+      wrap._rawText = wrap._fallbackStrings.join('\n');
     }
 
     return wrap;
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Fallback view — used when PE parsing fails (truncated/malformed files).
+  //  Still shows extracted strings + a raw hex dump so IOC/YARA scans work.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  _renderFallback(wrap, bytes, err, fileName) {
+    const notice = document.createElement('div');
+    notice.className = 'bin-fallback-notice';
+    const magic = bytes.length >= 4
+      ? Array.from(bytes.slice(0, 4)).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+      : '—';
+    notice.innerHTML =
+      `<div class="bin-fallback-title"><strong>⚠ PE parsing failed — showing raw fallback view</strong></div>` +
+      `<div class="bin-fallback-reason"><code>${this._esc(err.message)}</code></div>` +
+      `<div class="bin-fallback-sub">The file appears to be truncated or malformed, so structural ` +
+      `analysis (headers, imports, sections, …) isn't available. Extracted strings and a raw hex ` +
+      `dump are shown below so IOC extraction and YARA rules can still run against the bytes.</div>` +
+      `<div class="bin-fallback-info">` +
+        `<span class="doc-meta-tag">${this._esc(fileName || 'unknown')}</span> ` +
+        `<span class="doc-meta-tag">${bytes.length.toLocaleString()} bytes</span> ` +
+        `<span class="doc-meta-tag">Magic: ${magic}</span>` +
+      `</div>`;
+    wrap.appendChild(notice);
+
+    // Strings — reuse the normal extractor; it only needs the raw byte buffer.
+    const strings = this._extractStrings(bytes, 6);
+    const totalStrings = strings.ascii.length + strings.unicode.length;
+    this._lastStrings = [...strings.ascii, ...strings.unicode];
+    wrap._fallbackStrings = this._lastStrings;
+    if (totalStrings > 0) {
+      wrap.appendChild(this._renderSection(
+        '🔤 Strings (' + totalStrings + ')',
+        this._renderStrings({ strings })
+      ));
+    }
+
+    // Raw hex dump (existing helper auto-caps at 4 KB with a Show-more button).
+    if (bytes.length > 0) {
+      const hexContent = document.createElement('div');
+      hexContent.appendChild(this._renderHexDump(0, bytes.length));
+      wrap.appendChild(this._renderSection(
+        '📄 Raw Hex Dump (' + bytes.length.toLocaleString() + ' bytes)',
+        hexContent
+      ));
+    }
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════
   //  Section renderers (DOM builders)

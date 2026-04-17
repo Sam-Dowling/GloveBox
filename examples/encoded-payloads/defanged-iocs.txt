@@ -1,0 +1,11 @@
+# DEFANGED IOCS
+
+## URL
+hxxp[://]www[.]example[.]com/lemon[.]asp?q=435123
+$c2="www[.]evil[.]com"
+
+### IP
+69[.]111[.]77[.]33
+
+## EMAIL
+bob[@]evil[.]com

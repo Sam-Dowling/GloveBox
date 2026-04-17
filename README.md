@@ -72,11 +72,28 @@ Every format gets risk assessment, IOC extraction, and YARA scanning on top of t
 - **File hashes** — MD5, SHA-1, SHA-256 with one-click VirusTotal lookup
 - **Macro / VBA analysis** — decoded source, auto-exec entry points, downloadable as `.txt` or raw `vbaProject.bin`
 - **Encoded payload detection** — Base64, hex, Base32, gzip/zlib/deflate; decodes and recursively drills in
-- **Native binary analysis** — PE, ELF and Mach-O with imports, sections, entropy, security features, code signatures
+- **PDF JavaScript & attachment extraction** — pulls every `/JS` body (literal, hex, indirect stream) with per-script hash/size/trigger + suspicious-API hints; click any `/EmbeddedFile` attachment to open it in a new analysis frame, exactly like an archive entry
+- **Native binary analysis** — PE, ELF and Mach-O with imports, sections, entropy, security features, code signatures (plus a graceful strings + hex-dump fallback when a binary is truncated so YARA/IOC scanning keeps working)
 - **Certificate & PGP inspection** — X.509 / PKCS#12 / OpenPGP with weak-key and expiry flagging
 - **Archive drill-down** — click any entry inside a ZIP / TAR / ISO / MSI to open it with full analysis
 
-Plus a Midnight Glass UI with light/dark toggle, floating zoom, drag-pan, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
+Plus a Midnight Glass UI with a 4-theme picker (Light / Dark / Midnight OLED / Solarized — your choice persists), floating zoom, drag-pan, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
+
+---
+
+## 🎨 Themes
+
+Four built-in themes, one click apart — your choice persists via `localStorage`.
+
+<p align="center">
+<img src="screenshots/light.png"     alt="Loupe — Light theme"     width="400">
+<img src="screenshots/dark.png"      alt="Loupe — Dark theme"      width="400">
+<br>
+<img src="screenshots/midnight.png"  alt="Loupe — Midnight (OLED)" width="400">
+<img src="screenshots/solarized.png" alt="Loupe — Solarized Dark"  width="400">
+<br>
+<em>Light · Dark (default) · Midnight (OLED pure-black) · Solarized Dark</em>
+</p>
 
 ---
 

@@ -1,0 +1,146 @@
+/* ══════════════════════════════════════════════════════
+   Theme: Solarized Dark
+   ──────────────────────────────────────────────────────
+   Overlay on top of `body.dark` using Ethan Schoonover's
+   Solarized palette (https://ethanschoonover.com/solarized/):
+
+     base03  #002b36   deepest background
+     base02  #073642   panel background
+     base01  #586e75   muted text
+     base00  #657b83
+     base0   #839496   primary text
+     base1   #93a1a1   emphasised text
+     yellow  #b58900   primary accent (replaces cyan)
+     cyan    #2aa198   secondary accent (kept for IOC flashes)
+
+   Warm, low-glare hybrid — easier on the eyes than the
+   default dark palette for long SOC shifts.
+
+   Activation: <body class="dark theme-solarized">
+   Registry:   src/app/app-ui.js → THEMES
+   ══════════════════════════════════════════════════════ */
+
+body.theme-solarized {
+  background: #002b36;
+  background-image: linear-gradient(160deg, #002b36 0%, #073642 60%, #002b36 100%);
+  color: #93a1a1;
+}
+
+/* ── Toolbar / viewer-toolbar ─────────────────────────────────────── */
+body.theme-solarized #toolbar {
+  background: rgba(7, 54, 66, .92);
+  border-bottom-color: rgba(147, 161, 161, .14);
+  box-shadow: 0 1px 16px rgba(0, 0, 0, .35);
+}
+
+body.theme-solarized #viewer-toolbar {
+  background: rgba(7, 54, 66, .9);
+  border-color: rgba(147, 161, 161, .14);
+}
+
+body.theme-solarized #app-title   { color: #eee8d5; }
+body.theme-solarized #file-info   { color: rgba(238, 232, 213, .85); }
+
+/* ── Toolbar buttons (warm-accent variant of the default cyan hover) ── */
+body.theme-solarized .tb-btn {
+  background: rgba(147, 161, 161, .06);
+  border-color: rgba(147, 161, 161, .14);
+  color: #93a1a1;
+}
+
+body.theme-solarized .tb-btn:hover {
+  background: rgba(181, 137, 0, .15);
+  border-color: rgba(181, 137, 0, .4);
+  color: #b58900;
+  box-shadow: 0 0 12px rgba(181, 137, 0, .12);
+}
+
+body.theme-solarized .tb-btn:active {
+  background: rgba(181, 137, 0, .22);
+}
+
+body.theme-solarized .tb-separator { background: rgba(147, 161, 161, .18); }
+
+/* Accent "⚡ Analysis" button — solarized yellow */
+body.theme-solarized .tb-accent-btn {
+  background: rgba(181, 137, 0, .15);
+  border-color: rgba(181, 137, 0, .4);
+  color: #b58900;
+}
+
+body.theme-solarized .tb-accent-btn:hover {
+  background: rgba(181, 137, 0, .28);
+  border-color: rgba(181, 137, 0, .6);
+  color: #cb9f1e;
+  box-shadow: 0 0 16px rgba(181, 137, 0, .18);
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────── */
+body.theme-solarized #sidebar {
+  background: rgba(0, 43, 54, .94);
+  border-left-color: rgba(147, 161, 161, .12);
+}
+
+body.theme-solarized .sb-details            { border-color: rgba(147, 161, 161, .1); }
+body.theme-solarized .sb-section            { color: rgba(147, 161, 161, .62); border-color: rgba(147, 161, 161, .14); }
+body.theme-solarized .sb-details-summary    { color: rgba(238, 232, 213, .7); }
+body.theme-solarized .sb-details-summary:hover { background: rgba(147, 161, 161, .05); }
+body.theme-solarized .sb-details-summary::before { color: rgba(147, 161, 161, .5); }
+
+/* Tables — warmer hairlines, lifted column-1 colour */
+body.theme-solarized .hash-table td,
+body.theme-solarized .meta-table td,
+body.theme-solarized .ext-table td          { border-color: rgba(147, 161, 161, .1); color: #93a1a1; }
+body.theme-solarized .hash-table td:first-child,
+body.theme-solarized .meta-table td:first-child { color: rgba(147, 161, 161, .72); }
+body.theme-solarized .hash-val              { color: #eee8d5; }
+body.theme-solarized .ext-table th {
+  background: rgba(147, 161, 161, .06);
+  border-color: rgba(147, 161, 161, .14);
+  color: rgba(238, 232, 213, .7);
+}
+
+/* Muted labels in toolbar */
+body.theme-solarized #zoom-level,
+body.theme-solarized #doc-search-count      { color: rgba(147, 161, 161, .75); }
+body.theme-solarized .ioc-decoded-from      { color: rgba(147, 161, 161, .65); }
+
+/* Search input / extension search — warm surface */
+body.theme-solarized .vt-search input,
+body.theme-solarized .ext-search {
+  background: rgba(7, 54, 66, .6);
+  border-color: rgba(147, 161, 161, .18);
+  color: #eee8d5;
+}
+
+body.theme-solarized .vt-search input:focus,
+body.theme-solarized .ext-search:focus {
+  border-color: #b58900;
+  box-shadow: 0 0 0 3px rgba(181, 137, 0, .18);
+}
+
+/* Sidebar resize handle — solarized yellow on hover/active */
+body.theme-solarized #sidebar-resize:hover,
+body.theme-solarized.sb-resizing #sidebar-resize {
+  background: #b58900;
+  box-shadow: 0 0 8px rgba(181, 137, 0, .35);
+}
+
+/* Scrollbars */
+body.theme-solarized ::-webkit-scrollbar-thumb       { background: rgba(147, 161, 161, .2); }
+body.theme-solarized ::-webkit-scrollbar-thumb:hover { background: rgba(181, 137, 0, .45); }
+
+/* Drop zone */
+body.theme-solarized #drop-zone {
+  border-color: rgba(147, 161, 161, .25);
+  background: rgba(147, 161, 161, .04);
+  color: #93a1a1;
+}
+
+body.theme-solarized #drop-zone:hover,
+body.theme-solarized #drop-zone.drag-over {
+  border-color: #b58900;
+  background: rgba(181, 137, 0, .06);
+  color: #eee8d5;
+  box-shadow: 0 0 30px rgba(181, 137, 0, .08);
+}

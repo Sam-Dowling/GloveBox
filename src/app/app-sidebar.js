@@ -55,6 +55,11 @@ Object.assign(App.prototype, {
       this._renderMacrosSection(body, analyzer);
     }
 
+    // 4b. PDF JavaScript (only if the PDF renderer extracted any script bodies)
+    if (f.metadata && f.metadata.pdfJavaScripts && f.metadata.pdfJavaScripts.length) {
+      this._renderPdfJavaScriptSection(body, fileName);
+    }
+
     // 5. Deobfuscation (only if detected)
     if (f.encodedContent && f.encodedContent.length) {
       this._renderEncodedContentSection(body, f.encodedContent, fileName);
@@ -302,6 +307,92 @@ Object.assign(App.prototype, {
     container.appendChild(det);
   },
 
+  // ── PDF JavaScript section ─────────────────────────────────────────────
+  // Surfaces JS bodies extracted from /JS, /JavaScript, document-level and
+  // per-page actions (see pdf-renderer.js::_attachJavaScripts). Each script
+  // is an independent download — we don't concat them into a single blob
+  // because each one represents a distinct trigger (OpenAction vs. an
+  // /AA entry on a specific annotation, for example) and forensic analysts
+  // usually want to review them separately. A "Download all" convenience
+  // button (_downloadPdfScripts in app-ui.js) joins them for bulk export.
+  _renderPdfJavaScriptSection(container, fileName) {
+    const f = this.findings;
+    const scripts = (f.metadata && f.metadata.pdfJavaScripts) || [];
+    if (!scripts.length) return;
+
+    const det = document.createElement('details');
+    det.className = 'sb-details';
+    det.open = true;  // always auto-open — any extracted PDF JS is high signal
+
+    const sum = document.createElement('summary');
+    sum.className = 'sb-details-summary';
+    sum.textContent = `📜 PDF JavaScript (${scripts.length})`;
+    const badge = document.createElement('span');
+    badge.className = 'badge badge-high';
+    badge.style.marginLeft = '6px';
+    badge.textContent = '⚠ extracted';
+    sum.appendChild(badge);
+    det.appendChild(sum);
+
+    const body = document.createElement('div');
+    body.className = 'sb-details-body';
+
+    // Download-all button (mirrors Macros section)
+    const dl = document.createElement('button'); dl.className = 'tb-btn';
+    dl.style.cssText = 'font-size:11px;margin-bottom:10px;width:100%;display:block;';
+    dl.textContent = '💾 Download all scripts (.js)';
+    dl.addEventListener('click', () => this._downloadPdfScripts());
+    body.appendChild(dl);
+
+    // Per-script blocks: trigger + suspicious-hint badges + source pre
+    const baseName = (fileName || 'pdf').replace(/\.[^.]+$/, '');
+    scripts.forEach((s, idx) => {
+      const modDet = document.createElement('details');
+      modDet.open = (scripts.length === 1);
+
+      const modSum = document.createElement('summary');
+      modSum.style.cssText = 'cursor:pointer;font-weight:600;font-size:11px;padding:4px 0;';
+      modSum.textContent = `📜 ${s.trigger}`;
+
+      // Hint badges (e.g. eval, unescape, launchURL) — flag suspicious APIs
+      if (s.suspicious && s.suspicious.length) {
+        for (const hint of s.suspicious.slice(0, 5)) {
+          const b = document.createElement('span');
+          b.className = 'badge badge-high';
+          b.style.marginLeft = '4px';
+          b.textContent = hint;
+          modSum.appendChild(b);
+        }
+      }
+
+      // Size hint at right
+      const sizeEl = document.createElement('span');
+      sizeEl.style.cssText = 'margin-left:8px;color:#888;font-weight:normal;';
+      sizeEl.textContent = this._fmtBytes(s.size);
+      modSum.appendChild(sizeEl);
+      modDet.appendChild(modSum);
+
+      // Per-script body: source only. Per-script download has been replaced
+      // by the "🔍 Open" action in the viewer banner (which routes the script
+      // through the inner-child loader for full analysis). The sidebar's
+      // top-level "Download all scripts (.js)" button still covers bulk export.
+      const sBody = document.createElement('div');
+      sBody.style.cssText = 'margin-top:6px;';
+
+      const pre = document.createElement('pre');
+      pre.className = 'vba-code';
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.textContent = s.source;
+      sBody.appendChild(pre);
+
+      modDet.appendChild(sBody);
+      body.appendChild(modDet);
+    });
+
+    det.appendChild(body);
+    container.appendChild(det);
+  },
+
   // ── Encoded Content section ────────────────────────────────────────────
   _renderEncodedContentSection(container, encodedFindings, fileName) {
     // Determine if we have a plaintext view with accessible source text for highlighting
@@ -386,7 +477,11 @@ Object.assign(App.prototype, {
 
       // Store DOM reference for bidirectional cross-flash linking
       finding._cardEl = card;
-      finding._iocRows = [];
+      // Keep any rows already registered by _renderIocsSection (which runs
+      // BEFORE this section — see _renderSidebar ordering). Overwriting with
+      // a fresh `[]` here would wipe those registrations and break the
+      // "IOCs: N URL" click-to-flash handler below.
+      finding._iocRows = finding._iocRows || [];
 
       // Header line: severity badge + encoding type
       const header = document.createElement('div');
@@ -444,45 +539,236 @@ Object.assign(App.prototype, {
       details.appendChild(meta);
 
       // Decoded/deobfuscated content preview (prioritized over raw snippet —
-      // hovering the card already highlights the encoded source in the view)
-      let _decodedPreview = null;
-      if (finding._deobfuscatedText) {
-        _decodedPreview = finding._deobfuscatedText;
-      } else if (finding.decodedBytes && finding.decodedBytes.length > 0) {
-        try {
-          const t = new TextDecoder('utf-8', { fatal: true }).decode(finding.decodedBytes.slice(0, 800));
-          const cc = [...t].filter(c => { const cp = c.codePointAt(0); return cp < 32 && cp !== 9 && cp !== 10 && cp !== 13; }).length;
-          if (cc <= t.length * 0.1) _decodedPreview = t;
-        } catch (_) { /* binary content — no text preview */ }
+      // hovering the card already highlights the encoded source in the view).
+      // Shared helper so the "deepest layer" block below can reuse the same
+      // UTF-8-safe text-extraction rules.
+      const _extractTextPreview = (f) => {
+        if (f._deobfuscatedText) return f._deobfuscatedText;
+        if (f.decodedBytes && f.decodedBytes.length > 0) {
+          try {
+            const t = new TextDecoder('utf-8', { fatal: true }).decode(f.decodedBytes.slice(0, 800));
+            const cc = [...t].filter(c => { const cp = c.codePointAt(0); return cp < 32 && cp !== 9 && cp !== 10 && cp !== 13; }).length;
+            if (cc <= t.length * 0.1) return t;
+          } catch (_) { /* binary content — no text preview */ }
+        }
+        return null;
+      };
+
+      // ─── 3-tier preview stack ────────────────────────────────────────────
+      // 1. GREY   — raw encoded snippet as it appears in the source
+      // 2. GREEN  — finding's immediate decoded output (one layer peeled)
+      // 3. PURPLE — deepest decoded layer ("all the way" output)
+      // Each pair is separated by a small `.enc-decode-depth-sep` divider
+      // that names the layer(s) being peeled. Any tier can be skipped
+      // independently (e.g. no source text → no grey; binary decode → no
+      // green; single-layer encoding → no purple). The purple tier may
+      // decode asynchronously — see the lazyDecode branch below.
+      //
+      // All three previews share the same HARD character cap (`maxLen`) via
+      // the `truncate()` helper — keeps card heights consistent and prevents
+      // one oversized layer from dominating the sidebar.
+      const maxLen = 200;
+      const truncate = s => (s.length > maxLen ? s.substring(0, maxLen) + '\u2026' : s);
+
+      const _greenText = _extractTextPreview(finding);
+
+
+      // Small helper: build a separator with the given label + optional
+      // `deep` styling (purple tint) or base (muted grey) styling.
+      const mkSep = (labelText, deep) => {
+        const sep = document.createElement('div');
+        sep.className = 'enc-decode-depth-sep' + (deep ? ' enc-depth-sep-deep' : '');
+        const sepLabel = document.createElement('span');
+        sepLabel.className = 'enc-decode-depth-label';
+        sepLabel.textContent = labelText;
+        sep.title = labelText;
+        sep.appendChild(sepLabel);
+        return sep;
+      };
+
+      // ── 1. GREY — raw encoded snippet ─────────────────────────────────
+      // Previously only rendered as a fallback when no green preview was
+      // available. Now always shown (when source text is available) so the
+      // analyst can see both the encoded source AND the decoded payload
+      // side-by-side. `.snippet` from the detector wins over slicing
+      // _sourceText because the detector already trims & formats it.
+      //
+      // Truncated through the shared `truncate(maxLen)` helper so the grey,
+      // green, and purple blocks all obey the same hard character cap.
+      const _rawSnippet = finding.snippet || (_sourceText && finding.length
+        ? _sourceText.substring(finding.offset, finding.offset + finding.length)
+        : null);
+      if (_rawSnippet) {
+        const snippetEl = document.createElement('div');
+        snippetEl.className = 'enc-snippet';
+        snippetEl.textContent = truncate(_rawSnippet);
+        if (_canLocate) {
+          snippetEl.title = 'Click to locate in view';
+          snippetEl.style.cursor = 'pointer';
+          snippetEl.addEventListener('click', () => this._highlightEncodedInView(finding, true));
+        }
+        details.appendChild(snippetEl);
       }
-      if (_decodedPreview) {
-        const previewEl = document.createElement('div');
-        previewEl.className = 'enc-decoded-preview';
-        const maxLen = 200;
-        previewEl.textContent = _decodedPreview.length > maxLen
-          ? _decodedPreview.substring(0, maxLen) + '\u2026'
-          : _decodedPreview;
-        details.appendChild(previewEl);
-      } else {
-        // Fallback: show raw encoded snippet when decoded preview isn't available
-        // (e.g. binary decoded content, pending decompression, or decode failure)
-        const _snippetText = finding.snippet || (_sourceText && finding.length
-          ? _sourceText.substring(finding.offset, finding.offset + Math.min(finding.length, 120))
-          : null);
+      // Preserve previous variable name used further below as a
+      // presence flag for rendering the grey/green separator.
+      const _snippetText = _rawSnippet;
+
+      // ── 2. GREEN — immediate decoded text (one layer peeled) ──────────
+      let greenEl = null;
+      if (_greenText) {
+        // Insert a separator between grey and green ONLY when both exist.
+        // Label describes what was peeled: the finding's encoding +
+        // classification (e.g. "↓ 1 layer · Base64 → text").
         if (_snippetText) {
-          const snippetEl = document.createElement('div');
-          snippetEl.className = 'enc-snippet';
-          snippetEl.textContent = _snippetText.length < (finding.length || Infinity)
-            ? _snippetText + '\u2026'
-            : _snippetText;
-          if (_canLocate) {
-            snippetEl.title = 'Click to locate in view';
-            snippetEl.style.cursor = 'pointer';
-            snippetEl.addEventListener('click', () => this._highlightEncodedInView(finding, true));
+          const firstChain = (finding.chain && finding.chain.length)
+            ? finding.chain.join(' → ')
+            : (finding.encoding || 'decoded');
+          details.appendChild(mkSep(`\u2193 1 layer · ${firstChain}`, false));
+        }
+        greenEl = document.createElement('div');
+        greenEl.className = 'enc-decoded-preview';
+        greenEl.textContent = truncate(_greenText);
+        details.appendChild(greenEl);
+      }
+
+      // ── 3. PURPLE — deepest "all the way" output ──────────────────────
+      // Three content modes, in priority order:
+      //   (a) Deepest decoded layer's text (binary → hex → text, etc.)
+      //   (b) The deepest finding's own classification / snippet
+      //   (c) IOC-driven fallback: if the detector extracted any IOCs from
+      //       the chain, list them here ("IOCs ARE the ultimate payload")
+      //
+      // Rendered whenever EITHER there's a distinct deeper layer OR the
+      // finding produced IOCs. An IOC-only finding (single-layer encoding
+      // that yielded a URL, etc.) still gets a purple block because the
+      // IOCs themselves are what an analyst cares about seeing.
+      const _hasIOCs = finding.iocs && finding.iocs.length > 0;
+      const _hasDeepPath = finding.innerFindings && finding.innerFindings.length;
+      if (_hasDeepPath || _hasIOCs) {
+        const deepest = _hasDeepPath ? this._getDeepestFinding(finding) : null;
+        const distinctDeep = deepest && deepest !== finding;
+
+        // Build separator label. Prefer a chain-aware label when we have a
+        // distinct deeper layer; otherwise fall back to an IOC summary.
+        let sepLabel;
+        if (distinctDeep) {
+          const parentLen = (finding.chain && finding.chain.length) || 0;
+          const innerChain = (deepest.chain && deepest.chain.length > parentLen)
+            ? deepest.chain.slice(parentLen)
+            : (deepest.chain || []);
+          const extraLayers = innerChain.length || 1;
+          const chainStr = innerChain.length
+            ? innerChain.join(' \u2192 ')
+            : (deepest.encoding || 'deeper layer');
+          sepLabel = `\u2193 ${extraLayers} more layer${extraLayers !== 1 ? 's' : ''} \u00b7 ${chainStr}`;
+        } else if (_hasIOCs) {
+          sepLabel = `\u2193 all the way \u00b7 ${finding.iocs.length} IOC${finding.iocs.length !== 1 ? 's' : ''} extracted`;
+        }
+
+        // Helper: format IOCs as one-per-line text for the purple block.
+        // Deduped (type+value), capped at 20 entries / 800 chars for sanity.
+        const _iocsAsText = () => {
+          if (!_hasIOCs) return null;
+          const seen = new Set();
+          const lines = [];
+          for (const ioc of finding.iocs) {
+            const key = (ioc.type || '') + '\u0000' + (ioc.url || '');
+            if (seen.has(key)) continue;
+            seen.add(key);
+            lines.push(`${ioc.type}: ${ioc.url}`);
+            if (lines.length >= 20) break;
           }
-          details.appendChild(snippetEl);
+          return lines.join('\n');
+        };
+
+        // Track whether we've already rendered a purple block so the async
+        // retry path doesn't double up on top of a sync-rendered block.
+        let purpleRendered = false;
+
+        // Closure that appends (purple separator + preview). Idempotent;
+        // safe to call from sync path AND lazyDecode handlers. Returns true
+        // if a block was actually appended.
+        //
+        // NOTE: we deliberately DO NOT guard on `details.isConnected` — in
+        // the sync path `details` is still detached (card.appendChild runs
+        // further below). appendChild on a detached element is valid and
+        // the node becomes connected when the card is attached to body.
+        const appendPurple = () => {
+          if (purpleRendered) return true;
+          let text = null;
+          let title = 'Final decoded output after following the entire encoding chain';
+
+          if (distinctDeep) {
+            const deepText = _extractTextPreview(deepest);
+            if (deepText && deepText !== _greenText) {
+              text = truncate(deepText);
+            }
+          }
+          // Fall back to IOC list when we have no usable deeper text.
+          if (!text && _hasIOCs) {
+            text = _iocsAsText();
+            title = 'Indicators extracted from the deepest decoded layer';
+          }
+          if (!text) return false;
+
+          details.appendChild(mkSep(sepLabel, /* deep = */ true));
+          const deepEl = document.createElement('div');
+          deepEl.className = 'enc-deepest-preview';
+          deepEl.title = title;
+          deepEl.textContent = text;
+          details.appendChild(deepEl);
+          purpleRendered = true;
+          return true;
+        };
+
+        // Last-ditch: if we still have no purple text, show the deepest
+        // rawCandidate (or finding.snippet) with a note so the 3rd tier is
+        // never empty when a deeper chain exists. Rendered as a plain
+        // `.enc-deepest-preview` so it visually matches the successful
+        // path — analyst still sees "deep something" even if we couldn't
+        // decode it.
+        const appendPurpleRaw = () => {
+          if (purpleRendered) return true;
+          let rawText = null;
+          if (distinctDeep && deepest.rawCandidate) {
+            rawText = truncate(String(deepest.rawCandidate));
+          } else if (distinctDeep && deepest.snippet) {
+            rawText = truncate(String(deepest.snippet));
+          }
+          if (!rawText) return false;
+          details.appendChild(mkSep(sepLabel || '\u2193 deepest layer (encoded)', true));
+          const deepEl = document.createElement('div');
+          deepEl.className = 'enc-deepest-preview';
+          deepEl.title = 'Deepest layer (still encoded — click "All the way ⏩" to decode)';
+          deepEl.textContent = rawText;
+          details.appendChild(deepEl);
+          purpleRendered = true;
+          return true;
+        };
+
+        // Try synchronous render first. If it produced nothing AND the
+        // deepest node needs decoding, lazy-decode it and retry. We retry
+        // appendPurple on BOTH resolve and reject so the IOC-fallback branch
+        // gets a chance even when lazyDecode succeeds but yields binary.
+        // If all three strategies fail, appendPurpleRaw shows the deepest
+        // rawCandidate as a visual confirmation that depth exists.
+        if (!appendPurple()) {
+          const deepNeedsDecode = distinctDeep && deepest.rawCandidate && !deepest.decodedBytes;
+          if (deepNeedsDecode) {
+            const finishAsync = () => {
+              if (!appendPurple()) appendPurpleRaw();
+            };
+            try {
+              const detector = new EncodedContentDetector();
+              detector.lazyDecode(deepest).then(finishAsync).catch(finishAsync);
+            } catch (_) { finishAsync(); }
+          } else {
+            // No lazy work to do — try the raw fallback immediately.
+            appendPurpleRaw();
+          }
         }
       }
+
 
       // Decoded type
       if (finding.classification && finding.classification.type) {
@@ -683,27 +969,12 @@ Object.assign(App.prototype, {
 
       if (actions.children.length > 0) card.appendChild(actions);
 
-      // Inner findings (recursive)
-      if (finding.innerFindings && finding.innerFindings.length) {
-        const innerDet = document.createElement('details');
-        innerDet.className = 'enc-inner-findings';
-        const innerSum = document.createElement('summary');
-        innerSum.style.cssText = 'cursor:pointer;font-size:10px;font-weight:600;color:#888;margin-top:6px;';
-        innerSum.textContent = `${finding.innerFindings.length} nested encoded layer${finding.innerFindings.length !== 1 ? 's' : ''} detected`;
-        innerDet.appendChild(innerSum);
-        for (const inner of finding.innerFindings) {
-          const innerCard = document.createElement('div');
-          innerCard.className = 'enc-finding-inner-card';
-          innerCard.textContent = `${inner.encoding}: ${inner.chain.join(' → ')}`;
-          if (inner.classification && inner.classification.type) {
-            innerCard.textContent += ` → ${inner.classification.type}`;
-          }
-          innerDet.appendChild(innerCard);
-        }
-        card.appendChild(innerDet);
-      }
+      // Nested-layer info previously rendered as a <details> dropdown is now
+      // covered by the 3-tier preview stack above (grey → green → purple,
+      // with labelled dividers showing the chain). No separate dropdown.
 
       // Hover-to-highlight in view pane
+
       if (_canLocate) {
         card.setAttribute('data-locatable', '');
         card.addEventListener('mouseenter', () => this._highlightEncodedInView(finding, false));
@@ -939,9 +1210,13 @@ Object.assign(App.prototype, {
       // Click-to-navigate: apply filter in EVTX view or scroll to match in content
       tr.addEventListener('click', () => this._navigateToFinding(ref, tr));
 
-      // Register IOC row back to parent encoded finding for cross-flash
-      if (ref._encodedFinding && ref._encodedFinding._iocRows) {
-        ref._encodedFinding._iocRows.push(tr);
+      // Register IOC row back to parent encoded finding for cross-flash.
+      // Lazy-init _iocRows here because the IOCs table is rendered BEFORE
+      // the Deobfuscation section (see _renderSidebar ordering) — otherwise
+      // rows registered here would be dropped and "IOCs: N URL" clicks on a
+      // Deobfuscation card would silently do nothing on first render.
+      if (ref._encodedFinding) {
+        (ref._encodedFinding._iocRows ||= []).push(tr);
       }
 
       tbody.appendChild(tr);

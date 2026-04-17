@@ -173,17 +173,108 @@ class EmlRenderer {
       if (email.subject) f.metadata.subject = email.subject;
       if (email.messageId) f.metadata.messageId = email.messageId;
 
-      // Suspicious: Reply-To different from From
-      if (email.replyTo && email.from && email.replyTo !== email.from) {
-        f.externalRefs.push({
-          type: IOC.PATTERN,
-          url: `Reply-To (${email.replyTo}) differs from From (${email.from})`,
-          severity: 'medium'
-        });
-        if (f.risk === 'low') f.risk = 'medium';
+      // ── Dedup helpers ──────────────────────────────────────────────────
+      const seenEmails = new Set();
+      const seenUrls = new Set();
+      const seenIps = new Set();
+      const pushEmail = (addr, note, severity) => {
+        if (!addr) return;
+        const key = addr.toLowerCase();
+        if (seenEmails.has(key)) return;
+        seenEmails.add(key);
+        f.externalRefs.push({ type: IOC.EMAIL, url: addr, severity: severity || 'info', note });
+      };
+      const pushUrl = (url, note, severity) => {
+        if (!url) return;
+        // Strip common trailing punctuation that is usually not part of the URL
+        const clean = url.replace(/[.,;:!?)\]>'"]+$/, '');
+        const key = clean.toLowerCase();
+        if (seenUrls.has(key)) return;
+        seenUrls.add(key);
+        f.externalRefs.push({ type: IOC.URL, url: clean, severity: severity || 'medium', note });
+      };
+      const pushIp = (ip, note, severity) => {
+        if (!ip || seenIps.has(ip)) return;
+        seenIps.add(ip);
+        f.externalRefs.push({ type: IOC.IP, url: ip, severity: severity || 'medium', note });
+      };
+
+      const EMAIL_RE  = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+      const URL_RE    = /https?:\/\/[^\s"'<>()]+/gi;
+      const IPV4_RE   = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+
+      // ── 1. Sender IP from Received chain ───────────────────────────────
+      // Received headers live in the raw header block; walk every Received
+      // line, pull any IPv4 inside [brackets] or (parens) which is where MTAs
+      // record the peer address.
+      const norm = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+      const headerBlock = (() => {
+        const i = norm.indexOf('\n\n');
+        return i >= 0 ? norm.substring(0, i) : norm;
+      })();
+      const unfoldedHeaders = headerBlock.replace(/\n[ \t]+/g, ' ');
+      for (const line of unfoldedHeaders.split('\n')) {
+        if (!/^Received:/i.test(line)) continue;
+        const ips = line.match(IPV4_RE) || [];
+        for (const ip of ips) {
+          // Skip obvious non-routable noise
+          if (/^(0\.|127\.|255\.)/.test(ip)) continue;
+          pushIp(ip, 'Received header', 'medium');
+        }
       }
 
-      // Dangerous attachments
+      // ── 2. Header addresses (From / To / Cc / Reply-To) ────────────────
+      const headerMap = [
+        ['From', email.from],
+        ['To', email.to],
+        ['Cc', email.cc],
+        ['Reply-To', email.replyTo],
+      ];
+      for (const [label, raw] of headerMap) {
+        if (!raw) continue;
+        const addrs = raw.match(EMAIL_RE) || [];
+        for (const a of addrs) pushEmail(a, label, 'info');
+      }
+
+      // ── 3. Suspicious: Reply-To different from From (detection) ────────
+      let replyToMismatch = false;
+      if (email.replyTo && email.from) {
+        const fromAddr = (email.from.match(EMAIL_RE) || [])[0] || email.from;
+        const rtAddr   = (email.replyTo.match(EMAIL_RE) || [])[0] || email.replyTo;
+        if (fromAddr.toLowerCase() !== rtAddr.toLowerCase()) {
+          replyToMismatch = true;
+          f.externalRefs.push({
+            type: IOC.PATTERN,
+            url: `Reply-To (${rtAddr}) differs from From (${fromAddr})`,
+            severity: 'medium'
+          });
+          if (f.risk === 'low') f.risk = 'medium';
+        }
+      }
+
+      // ── 4. URLs and emails in body (plain + HTML) ──────────────────────
+      const bodies = [email.bodyText || '', email.bodyHtml || ''];
+      for (const body of bodies) {
+        if (!body) continue;
+        for (const m of body.match(URL_RE) || []) {
+          pushUrl(m, 'in body', 'medium');
+        }
+        for (const m of body.match(EMAIL_RE) || []) {
+          pushEmail(m, 'in body', 'info');
+        }
+      }
+
+      // Also extract href= targets in HTML — catches cases where the visible
+      // text differs from the target anchor.
+      if (email.bodyHtml) {
+        const hrefs = email.bodyHtml.match(/href\s*=\s*["']([^"']+)["']/gi) || [];
+        for (const h of hrefs) {
+          const m = h.match(/href\s*=\s*["']([^"']+)["']/i);
+          if (m && /^https?:\/\//i.test(m[1])) pushUrl(m[1], 'href target', 'medium');
+        }
+      }
+
+      // ── 5. Dangerous attachments ───────────────────────────────────────
       const dangerExts = /\.(exe|scr|com|pif|bat|cmd|vbs|vbe|js|jse|wsf|wsh|ps1|hta|lnk|cpl|msi|dll|reg|inf|sct|gadget)$/i;
       for (const att of email.attachments) {
         if (dangerExts.test(att.filename)) {
@@ -196,22 +287,32 @@ class EmlRenderer {
         }
       }
 
-      // Check for tracking pixels in HTML body
+      // ── 6. Tracking pixels in HTML body ────────────────────────────────
+      // Emitted as IOC.URL (not PATTERN) so they land in the IOCs pane with
+      // the same click-to-copy / navigate behaviour as every other URL.
       if (email.bodyHtml) {
         const imgMatches = email.bodyHtml.match(/<img[^>]+>/gi) || [];
         for (const img of imgMatches) {
-          if (/width\s*[=:]\s*["']?1(?:px)?["']?/i.test(img) &&
-            /height\s*[=:]\s*["']?1(?:px)?["']?/i.test(img)) {
-            f.externalRefs.push({
-              type: IOC.PATTERN,
-              url: (img.match(/src\s*=\s*["']?([^"'\s>]+)/i) || ['', '(embedded)'])[1],
-              severity: 'info'
-            });
+          if (/width\s*[=:]\s*["']?[01](?:px)?["']?/i.test(img) &&
+              /height\s*[=:]\s*["']?[01](?:px)?["']?/i.test(img)) {
+            const srcM = img.match(/src\s*=\s*["']?([^"'\s>]+)/i);
+            if (srcM && /^https?:\/\//i.test(srcM[1])) {
+              // Override any earlier in-body push with the richer note
+              const clean = srcM[1].replace(/[.,;:!?)\]>'"]+$/, '');
+              const existing = f.externalRefs.find(r => r.type === IOC.URL && r.url === clean);
+              if (existing) {
+                existing.note = 'Tracking pixel (1x1 image)';
+                existing.severity = 'medium';
+              } else {
+                pushUrl(clean, 'Tracking pixel (1x1 image)', 'medium');
+              }
+              if (f.risk === 'low') f.risk = 'medium';
+            }
           }
         }
       }
 
-      // Auth results
+      // ── 7. Auth results (detection) ────────────────────────────────────
       if (email.authResults) {
         const ar = email.authResults.toLowerCase();
         if (ar.includes('fail') || ar.includes('none')) {
@@ -224,10 +325,16 @@ class EmlRenderer {
         }
       }
 
+      // ── Risk escalation ────────────────────────────────────────────────
+      // URLs in the body + Reply-To mismatch is the classic phishing combo.
+      const hasBodyUrl = f.externalRefs.some(r => r.type === IOC.URL);
+      if (replyToMismatch && hasBodyUrl && f.risk !== 'high') f.risk = 'high';
+
     } catch (_) { /* parse failed — non-fatal */ }
 
     return f;
   }
+
 
   // ── MIME parser ─────────────────────────────────────────────────────────
 
@@ -407,7 +514,14 @@ class EmlRenderer {
   }
 
   _sanitize(html, container) {
-    // Sanitize HTML: strip scripts, event handlers, dangerous elements
+    // Sanitize HTML: strip scripts, event handlers, dangerous elements.
+    //
+    // NOTE: <a href> is deliberately *not* passed through as a live link.
+    // Loupe is a forensic viewer — an analyst clicking a phishing URL in a
+    // sample they are triaging would be a real-world safety problem. Anchors
+    // are rewritten to inert <span class="eml-link-inert" title="<url>"> so
+    // the visible text and the underlying href stay inspectable but nothing
+    // navigates.
     const allowedTags = new Set([
       'p', 'br', 'div', 'span', 'b', 'i', 'u', 'em', 'strong', 'a', 'ul', 'ol', 'li',
       'table', 'tr', 'td', 'th', 'thead', 'tbody', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -416,10 +530,10 @@ class EmlRenderer {
     ]);
     // Dangerous elements to completely remove (not just strip tag)
     const dangerousTags = new Set(['script', 'style', 'meta', 'link', 'object', 'iframe', 'embed', 'svg', 'math', 'base', 'form']);
-    const allowedAttrs = new Set(['style', 'class', 'align', 'valign', 'width', 'height', 'colspan', 'rowspan', 'dir', 'color', 'size', 'face', 'href']);
+    const allowedAttrs = new Set(['style', 'class', 'align', 'valign', 'width', 'height', 'colspan', 'rowspan', 'dir', 'color', 'size', 'face']);
 
     const doc = new DOMParser().parseFromString(html, 'text/html');
-    
+
     function walk(node, target) {
       for (const child of Array.from(node.childNodes)) {
         if (child.nodeType === 3) { // text node
@@ -431,7 +545,21 @@ class EmlRenderer {
         
         // Completely skip dangerous elements
         if (dangerousTags.has(tag)) continue;
-        
+
+        // ── Anchor → inert span ─────────────────────────────────────────
+        // Rewrite every <a> as <span class="eml-link-inert"> so analysts
+        // see the link text (and can hover to see the real href via the
+        // title attribute) but a click cannot navigate anywhere.
+        if (tag === 'a') {
+          const span = document.createElement('span');
+          span.className = 'eml-link-inert';
+          const hrefAttr = child.getAttribute('href');
+          if (hrefAttr) span.title = hrefAttr;
+          walk(child, span);
+          target.appendChild(span);
+          continue;
+        }
+
         // If not in allowed list, unwrap (keep children but not the tag)
         if (!allowedTags.has(tag)) {
           walk(child, target);
@@ -446,14 +574,9 @@ class EmlRenderer {
           // Skip event handlers
           if (name.startsWith('on')) continue;
           if (!allowedAttrs.has(name)) continue;
-          
-          if (name === 'href') {
-            const url = sanitizeUrl(attr.value);
-            // Block data: and javascript: URLs
-            if (url && !url.toLowerCase().startsWith('data:') && !url.toLowerCase().startsWith('javascript:')) {
-              el.setAttribute(name, url);
-            }
-          } else if (name === 'style') {
+
+          if (name === 'style') {
+
             // Comprehensive CSS XSS sanitization
             const cleanStyle = attr.value
               .replace(/expression\s*\(/gi, '')

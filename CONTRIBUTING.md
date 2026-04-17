@@ -28,7 +28,15 @@ The build script reads CSS files from `src/styles/`, YARA rules from `src/rules/
 ```
 src/styles/core.css                    # Base theme, toolbar, sidebar, dialogs ("Midnight Glass")
 src/styles/viewers.css                 # All format-specific viewer styles
+src/styles/themes/midnight.css         # Optional theme overlay — Midnight (OLED pure-black)
+src/styles/themes/solarized.css        # Optional theme overlay — Solarized Dark
 ```
+
+Light and Dark are the baseline palettes and live in `core.css` (`body` / `body.dark`
+selectors). Each extra theme is a pure-overlay file under `src/styles/themes/<id>.css`
+scoped to `body.theme-<id>` and layered on top of `body.dark`. Register a new theme in
+the `THEMES` array in `src/app/app-ui.js` and add the CSS path to `CSS_FILES` in
+`build.py` — see the "Add a new theme" recipe below.
 
 ### YARA Rule Files
 
@@ -134,8 +142,11 @@ Loupe/
 │   └── highlight.min.js             # highlight.js — syntax highlighting
 ├── src/
 │   ├── styles/                      # CSS (split for manageable file sizes)
-│   │   ├── core.css                 # Base theme, toolbar, sidebar, dialogs
-│   │   └── viewers.css              # Format-specific viewer styles
+│   │   ├── core.css                 # Base theme (Light + Dark), toolbar, sidebar, dialogs
+│   │   ├── viewers.css              # Format-specific viewer styles
+│   │   └── themes/                  # Optional theme overlays (body.theme-<id>)
+│   │       ├── midnight.css         # Midnight (OLED pure-black) — dark-based
+│   │       └── solarized.css        # Solarized Dark — warm low-glare, dark-based
 │   ├── rules/                       # YARA rules (split by threat category)
 │   │   ├── office-macros.yar        # Office/VBA macro detection
 │   │   ├── script-threats.yar       # PS, JS, VBS, CMD, Python threats
@@ -231,7 +242,7 @@ Loupe is optimised for AI coding agents (Cline, Cursor, Copilot Workspace, etc.)
 - **YARA-based detection** — all threat detection is driven by YARA rules. Default rules are split across `src/rules/*.yar` by threat category and auto-scanned on file load. Users can upload (or drag-and-drop) their own `.yar` files, validate them, and save the combined rule set back out via the YARA dialog (`Y` key). There is no in-browser rule-editing surface — rule source is authored in an external editor and loaded as files; uploaded rules persist in `localStorage`.
 - **Shared VBA helpers** — `parseVBAText()` and `autoExecPatterns` live in `vba-utils.js` and are reused by `DocxParser`, `XlsxRenderer`, and `PptxRenderer`.
 - **OLE/CFB parser** — `OleCfbParser` is shared by `DocBinaryRenderer` (`.doc`), `MsgRenderer` (`.msg`), and `PptRenderer` (`.ppt`) for reading compound binary files.
-- **PDF rendering** — `PdfRenderer` uses Mozilla's pdf.js for canvas rendering plus raw-byte scanning for dangerous PDF operators. Hidden text layers enable IOC extraction from rendered pages.
+- **PDF rendering** — `PdfRenderer` uses Mozilla's pdf.js for canvas rendering plus raw-byte scanning for dangerous PDF operators. Hidden text layers enable IOC extraction from rendered pages. JavaScript bodies from `/JS` actions (literal, hex, and indirect-stream with `/FlateDecode`) are extracted with per-script trigger / size / SHA-256 / suspicious-API hints; XFA form packets are pulled out for inspection; and `/EmbeddedFile` / `/Filespec` attachments emit `open-inner-file` CustomEvents handled by `app-load.js` — the same mechanism `ZipRenderer` uses for recursive drill-down, so analysts can click a PDF attachment and have it re-analysed in a new frame with Back navigation preserved.
 - **EML parsing** — Full RFC 5322/MIME parser with multipart support, quoted-printable and base64 decoding, attachment extraction, and authentication header analysis.
 - **LNK parsing** — Implements the MS-SHLLINK binary format, extracting target paths, arguments, timestamps, and environment variable paths. Flags dangerous executables and evasion patterns.
 - **HTA analysis** — Treats `.hta` files as inherently high-risk, extracting embedded scripts, `<HTA:APPLICATION>` attributes, and scanning against 40+ suspicious patterns including obfuscation techniques.

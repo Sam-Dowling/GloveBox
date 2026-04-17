@@ -1,7 +1,26 @@
 // ════════════════════════════════════════════════════════════════════════════
 // App — UI utilities: tabs, sidebar toggle, downloads, clipboard, zoom, theme
 // ════════════════════════════════════════════════════════════════════════════
+
+// ── Theme registry ──────────────────────────────────────────────────────────
+// Single source of truth for every available theme. To add a new theme:
+//   1. Drop a `src/styles/themes/<id>.css` file containing
+//      `body.theme-<id> { … overrides … }`.
+//   2. Add the file to CSS_FILES in build.py.
+//   3. Add a row to this array — no other wiring required.
+// `dark: true` toggles the legacy `body.dark` class so the ~150 existing dark
+// rules across core.css / viewers.css act as the baseline the overlay refines.
+const THEMES = [
+  { id: 'light',     label: 'Light',           icon: '☀',  dark: false },
+  { id: 'dark',      label: 'Dark',            icon: '🌙', dark: true  },
+  { id: 'midnight',  label: 'Midnight (OLED)', icon: '🌑', dark: true  },
+  { id: 'solarized', label: 'Solarized',       icon: '🟡', dark: true  },
+];
+const _THEME_PREF_KEY = 'loupe_theme';
+const _DEFAULT_THEME = 'dark';
+
 Object.assign(App.prototype, {
+
 
   // ── Helper: section heading ──────────────────────────────────────────────
   _sec(label) {
@@ -174,7 +193,17 @@ Object.assign(App.prototype, {
     }
 
     // ═══════ 6. Deobfuscated Findings ════════════════════════════════════
-    const encoded = f.encodedContent || [];
+    // Walk the full innerFindings tree — every decoded layer (including
+    // deeper ones like Base64 → gzip → PowerShell) becomes its own section
+    // so the analyst / LLM sees the actual payload, not just the outer
+    // encoding. Duplicates are deduped by (chain + first 120 chars of
+    // decoded text) so re-packaged identical payloads aren't emitted twice.
+    const _flattenEncoded = (ef, out) => {
+      out.push(ef);
+      for (const inner of (ef.innerFindings || [])) _flattenEncoded(inner, out);
+      return out;
+    };
+    const encoded = (f.encodedContent || []).reduce((a, ef) => _flattenEncoded(ef, a), []);
     const meaningful = encoded.filter(ef => {
       if (ef._deobfuscatedText) return true;
       if (ef.decodedBytes && ef.decodedBytes.length) {
@@ -185,9 +214,24 @@ Object.assign(App.prototype, {
       }
       return false;
     });
-    if (meaningful.length) {
+    // Dedupe identical chain+payload so nested re-wrappings don't double up.
+    const _seenLayers = new Set();
+    const uniqueLayers = [];
+    for (const ef of meaningful) {
+      const keyText = ef._deobfuscatedText
+        || (ef.decodedBytes ? (() => {
+          try { return new TextDecoder('utf-8', { fatal: true }).decode(ef.decodedBytes.slice(0, 120)); }
+          catch (_) { return ''; }
+        })() : '');
+      const key = ((ef.chain || []).join('→')) + '|' + keyText.slice(0, 120);
+      if (_seenLayers.has(key)) continue;
+      _seenLayers.add(key);
+      uniqueLayers.push(ef);
+    }
+    if (uniqueLayers.length) {
       let d = '\n## Deobfuscated Findings\n';
-      for (const ef of meaningful) {
+      for (const ef of uniqueLayers) {
+
         const chain = (ef.chain && ef.chain.length) ? ef.chain.join(' → ') : ef.encoding || 'decoded';
         d += `### ${chain}\n`;
         if (ef.severity && ef.severity !== 'info') d += `**Severity:** ${ef.severity}\n`;
@@ -780,6 +824,40 @@ Object.assign(App.prototype, {
     } else { this._toast('No macro data available', 'error'); }
   },
 
+  // Download every script extracted from the current PDF as a single .js
+  // file, with each script separated by a banner comment naming its trigger
+  // (e.g. "/OpenAction", "Page 3: K"). Mirrors _downloadMacros' layout so
+  // analysts can diff or grep across both macro and PDF-JS dumps the same
+  // way. Per-script downloads live on the individual rows in the PDF JS
+  // sidebar section — this button is the bulk-export convenience.
+  _downloadPdfScripts() {
+    const f = this.findings;
+    const scripts = (f.metadata && f.metadata.pdfJavaScripts) || [];
+    if (!scripts.length) { this._toast('No PDF JavaScript to download', 'error'); return; }
+    const info = document.getElementById('file-info').textContent;
+    const base = info.split('·')[0].trim().replace(/\.[^.]+$/, '') || 'pdf';
+    const sep = '='.repeat(60);
+    const lines = [];
+    scripts.forEach((s, idx) => {
+      lines.push(`// ${sep}`);
+      lines.push(`// PDF JavaScript #${idx + 1} — ${s.trigger}`);
+      lines.push(`// size: ${s.size} bytes · hash: ${s.hash}`);
+      if (s.suspicious && s.suspicious.length) {
+        lines.push(`// suspicious: ${s.suspicious.join(', ')}`);
+      }
+      lines.push(`// ${sep}`);
+      lines.push(s.source);
+      lines.push('');
+    });
+    const blob = new Blob([lines.join('\n')], { type: 'text/javascript;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = base + '_pdf_javascript.js';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    this._toast(`${scripts.length} PDF script${scripts.length !== 1 ? 's' : ''} downloaded`);
+  },
+
   _downloadExtracted(refs, fileName) {
     const base = (fileName || 'extracted').replace(/\.[^.]+$/, '');
     const lines = ['Type\tValue\tSeverity', ...refs.map(r => `${r.type}\t${r.url}\t${r.severity}`)];
@@ -819,9 +897,13 @@ Object.assign(App.prototype, {
     document.getElementById('viewer-toolbar').classList.add('hidden');
     document.getElementById('doc-search').value = '';
     if (this._clearSearch) this._clearSearch();
-    // Close sidebar and clear its content; reset locked width for fresh auto-sizing
+    // Close sidebar and clear its content; reset locked width for fresh auto-sizing.
+    // Also clear the JAR-specific sidebar-clamp marker so the next (non-JAR) file
+    // gets the regular 50vw ceiling back.
     if (this.sidebarOpen) this._toggleSidebar();
+    document.body.classList.remove('jar-active');
     document.getElementById('sidebar').style.width = '';
+
     document.getElementById('sb-body').innerHTML = '';
     document.getElementById('sb-risk').className = 'sb-risk risk-low';
     document.getElementById('sb-risk-title').textContent = 'No threats detected';
@@ -888,20 +970,251 @@ Object.assign(App.prototype, {
       isPanning = false;
       viewer.classList.remove('panning');
     });
+
+    // ── Double-click to select whole non-whitespace token ─────────────────
+    // Browsers stop word-selection at punctuation (/, ., :, -, _, =), which
+    // splits URLs, hashes, base64 blobs, file paths, registry keys, etc.
+    // In "codey" viewers (monospace font) we expand the native selection
+    // outward to the nearest whitespace/block boundary so the full token
+    // highlights even when it wraps across multiple visual lines via
+    // word-break: break-all.
+    this._setupViewerDoubleClickSelect(viewer);
+  },
+
+  // ── Double-click whole-token select in monospace viewers ─────────────────
+  _setupViewerDoubleClickSelect(viewer) {
+    const WS_RE = /[\s\u00a0\u200b\u200c\u200d]/;
+
+    const isBoundaryEl = el => {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.tagName === 'BR' || el.tagName === 'HR') return true;
+      const d = getComputedStyle(el).display;
+      return d && d !== 'inline' && d !== 'inline-block' && d !== 'inline-flex' && d !== 'contents';
+    };
+
+    const findBlockAncestor = (el, root) => {
+      let cur = el;
+      while (cur && cur !== root) {
+        if (cur.nodeType === 1) {
+          const t = cur.tagName;
+          if (t === 'PRE' || t === 'CODE' || t === 'TD' || t === 'TH' || t === 'LI' ||
+              t === 'P'   || t === 'DT'   || t === 'DD' || t === 'BLOCKQUOTE') return cur;
+          const d = getComputedStyle(cur).display;
+          if (d && d !== 'inline' && d !== 'inline-block' && d !== 'inline-flex' && d !== 'contents') return cur;
+        }
+        cur = cur.parentNode;
+      }
+      return root;
+    };
+
+    // Walk to previous text node in document order, bounded by `block`.
+    // Returns null if a block/BR boundary is crossed first.
+    const prevTextInBlock = (node, block) => {
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_ALL);
+      walker.currentNode = node;
+      let cur;
+      while ((cur = walker.previousNode())) {
+        if (cur.nodeType === 1 && isBoundaryEl(cur)) return null;
+        if (cur.nodeType === Node.TEXT_NODE) return cur;
+      }
+      return null;
+    };
+
+    const nextTextInBlock = (node, block) => {
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_ALL);
+      walker.currentNode = node;
+      let cur;
+      while ((cur = walker.nextNode())) {
+        if (cur.nodeType === 1 && isBoundaryEl(cur)) return null;
+        if (cur.nodeType === Node.TEXT_NODE) return cur;
+      }
+      return null;
+    };
+
+    viewer.addEventListener('dblclick', e => {
+      const target = e.target;
+      if (!target || target.nodeType !== 1) return;
+
+      // Skip form controls — they have their own selection model.
+      const tag = target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (target.isContentEditable || target.closest('[contenteditable="true"]')) return;
+
+      // Skip the hex dump: there, a single byte/offset is the useful unit.
+      if (target.closest('.hex-dump')) return;
+
+      // Only apply in "codey" contexts — elements rendered in a monospace
+      // font. This covers URLs in IOCs, hashes, paths, registry keys,
+      // base64 blobs, plaintext viewer, pre/code blocks, table cells in
+      // evtx/csv/sqlite detail panes, PGP/x509 fingerprints, etc.
+      const ff = getComputedStyle(target).fontFamily || '';
+      if (!/mono|consolas|menlo|monaco|courier|fira|sf mono/i.test(ff)) return;
+
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0) return;
+      const range = sel.getRangeAt(0);
+      if (range.collapsed) return;
+
+      const block = findBlockAncestor(target, viewer);
+
+      // Expand start backward through non-whitespace.
+      let startNode = range.startContainer;
+      let startOffset = range.startOffset;
+      while (startNode && startNode.nodeType === Node.TEXT_NODE) {
+        const data = startNode.data;
+        while (startOffset > 0 && !WS_RE.test(data[startOffset - 1])) startOffset--;
+        if (startOffset > 0) break;
+        const prev = prevTextInBlock(startNode, block);
+        if (!prev) break;
+        startNode = prev;
+        startOffset = prev.data.length;
+      }
+
+      // Expand end forward through non-whitespace.
+      let endNode = range.endContainer;
+      let endOffset = range.endOffset;
+      while (endNode && endNode.nodeType === Node.TEXT_NODE) {
+        const data = endNode.data;
+        while (endOffset < data.length && !WS_RE.test(data[endOffset])) endOffset++;
+        if (endOffset < data.length) break;
+        const next = nextTextInBlock(endNode, block);
+        if (!next) break;
+        endNode = next;
+        endOffset = 0;
+      }
+
+      try {
+        const newRange = document.createRange();
+        newRange.setStart(startNode, startOffset);
+        newRange.setEnd(endNode, endOffset);
+        sel.removeAllRanges();
+        sel.addRange(newRange);
+      } catch (_) { /* bail quietly on any DOM hiccup */ }
+    });
   },
 
   // ── Zoom / theme / loading / toast ────────────────────────────────────────
+
   _setZoom(z) {
     this.zoom = Math.min(200, Math.max(50, z));
     document.getElementById('zoom-level').textContent = `${this.zoom}%`;
     document.getElementById('page-container').style.transform = `scale(${this.zoom / 100})`;
   },
 
-  _toggleTheme() {
-    this.dark = !this.dark;
-    document.body.classList.toggle('dark', this.dark);
-    document.getElementById('btn-theme').textContent = this.dark ? '☀' : '🌙';
+  // ── Theme system ─────────────────────────────────────────────────────────
+  // Apply a theme by id. Looks the theme up in THEMES, wipes any previous
+  // `theme-*` + `dark` classes, then re-applies the new ones. Persists the
+  // choice to localStorage (same pattern as uploaded YARA rules) so the user
+  // sees the same theme across reloads.
+  _setTheme(id) {
+    const theme = THEMES.find(t => t.id === id) || THEMES.find(t => t.id === _DEFAULT_THEME);
+    const body = document.body;
+    // Remove any previously-applied theme-* class
+    for (const cls of Array.from(body.classList)) {
+      if (cls.startsWith('theme-')) body.classList.remove(cls);
+    }
+    body.classList.add('theme-' + theme.id);
+    body.classList.toggle('dark', !!theme.dark);
+    this.dark = !!theme.dark;     // kept for any legacy callers
+    this._themeId = theme.id;
+
+    // Reflect the active theme in the toolbar button icon
+    const btn = document.getElementById('btn-theme');
+    if (btn) {
+      btn.textContent = theme.icon;
+      btn.setAttribute('title', `Theme: ${theme.label} — click to change`);
+    }
+
+    // Mark the active row in the dropdown (if built)
+    const menu = document.getElementById('theme-menu');
+    if (menu) {
+      for (const item of menu.querySelectorAll('.tb-menu-item')) {
+        item.classList.toggle('tb-menu-item-active', item.dataset.themeId === theme.id);
+      }
+    }
+
+    try { localStorage.setItem(_THEME_PREF_KEY, theme.id); } catch (_) { /* storage blocked */ }
   },
+
+  // Build the theme dropdown once from the THEMES registry. Subsequent calls
+  // no-op — the menu's visibility is toggled via .hidden, not rebuilt.
+  _buildThemeMenu() {
+    const menu = document.getElementById('theme-menu');
+    if (!menu || menu.dataset.built === '1') return;
+    menu.dataset.built = '1';
+    menu.setAttribute('role', 'menu');
+    for (const t of THEMES) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'tb-menu-item';
+      item.dataset.themeId = t.id;
+      item.setAttribute('role', 'menuitemradio');
+      item.innerHTML =
+        `<span class="tb-menu-icon">${t.icon}</span>` +
+        `<span class="tb-menu-label">${t.label}</span>` +
+        `<span class="tb-menu-check">✓</span>`;
+      item.addEventListener('click', () => {
+        this._setTheme(t.id);
+        this._closeThemeMenu();
+      });
+      menu.appendChild(item);
+    }
+  },
+
+  _openThemeMenu() {
+    this._buildThemeMenu();
+    const menu = document.getElementById('theme-menu');
+    const btn = document.getElementById('btn-theme');
+    if (!menu || !btn) return;
+    menu.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+    // Re-mark the active row in case it changed elsewhere
+    for (const item of menu.querySelectorAll('.tb-menu-item')) {
+      item.classList.toggle('tb-menu-item-active', item.dataset.themeId === this._themeId);
+    }
+    // Dismiss on outside click / Escape
+    const onDocDown = e => {
+      if (menu.contains(e.target) || btn.contains(e.target)) return;
+      this._closeThemeMenu();
+    };
+    const onEsc = e => { if (e.key === 'Escape') this._closeThemeMenu(); };
+    this._themeMenuDismiss = () => {
+      document.removeEventListener('mousedown', onDocDown, true);
+      document.removeEventListener('keydown', onEsc, true);
+      this._themeMenuDismiss = null;
+    };
+    // Defer to avoid catching the originating click
+    setTimeout(() => {
+      document.addEventListener('mousedown', onDocDown, true);
+      document.addEventListener('keydown', onEsc, true);
+    }, 0);
+  },
+
+  _closeThemeMenu() {
+    const menu = document.getElementById('theme-menu');
+    const btn = document.getElementById('btn-theme');
+    if (menu) menu.classList.add('hidden');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    if (this._themeMenuDismiss) this._themeMenuDismiss();
+  },
+
+  _toggleThemeMenu() {
+    const menu = document.getElementById('theme-menu');
+    if (menu && !menu.classList.contains('hidden')) this._closeThemeMenu();
+    else this._openThemeMenu();
+  },
+
+  // Apply the persisted theme on startup. Call this in App.init().
+  _initTheme() {
+    let saved = null;
+    try { saved = localStorage.getItem(_THEME_PREF_KEY); } catch (_) { /* storage blocked */ }
+    const id = (saved && THEMES.some(t => t.id === saved)) ? saved : _DEFAULT_THEME;
+    this._setTheme(id);
+  },
+
+  // Deprecated — kept as a thin alias so any external callers still work.
+  _toggleTheme() { this._toggleThemeMenu(); },
+
 
   _setLoading(on) {
     document.getElementById('loading').classList.toggle('hidden', !on);

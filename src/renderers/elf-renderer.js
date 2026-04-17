@@ -961,21 +961,96 @@ class ElfRenderer {
       }
 
     } catch (err) {
-      const errBox = document.createElement('div');
-      errBox.className = 'elf-error';
-      errBox.textContent = 'ELF parsing error: ' + err.message;
-      wrap.appendChild(errBox);
+      parsedStrings = this._renderFallback(wrap, bytes, err, fileName);
     }
 
     // Expose extracted strings as _rawText so the general IOC extraction
     // pipeline and EncodedContentDetector scan clean string data instead
     // of noisy DOM text (table headers, hex addresses, UI chrome, etc.)
+    // On parse failure we still populate from the fallback scan so YARA
+    // and IOC extraction keep running on truncated binaries.
     if (parsedStrings && parsedStrings.length > 0) {
       wrap._rawText = parsedStrings.join('\n');
     }
 
     return wrap;
   }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Fallback view — used when ELF parsing fails (truncated/malformed).
+  //  Still shows extracted strings + a raw hex dump so IOC/YARA scans work.
+  //  Returns the extracted strings array so caller can expose _rawText.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  _renderFallback(wrap, bytes, err, fileName) {
+    const notice = document.createElement('div');
+    notice.className = 'bin-fallback-notice';
+    const magic = bytes.length >= 4
+      ? Array.from(bytes.slice(0, 4)).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join(' ')
+      : '—';
+    notice.innerHTML =
+      `<div class="bin-fallback-title"><strong>⚠ ELF parsing failed — showing raw fallback view</strong></div>` +
+      `<div class="bin-fallback-reason"><code>${this._esc(err.message)}</code></div>` +
+      `<div class="bin-fallback-sub">The file appears to be truncated or malformed, so structural ` +
+      `analysis (headers, segments, sections, …) isn't available. Extracted strings and a raw hex ` +
+      `dump are shown below so IOC extraction and YARA rules can still run against the bytes.</div>` +
+      `<div class="bin-fallback-info">` +
+        `<span class="doc-meta-tag">${this._esc(fileName || 'unknown')}</span> ` +
+        `<span class="doc-meta-tag">${bytes.length.toLocaleString()} bytes</span> ` +
+        `<span class="doc-meta-tag">Magic: ${magic}</span>` +
+      `</div>`;
+    wrap.appendChild(notice);
+
+    // Generic string scan — the normal _extractStrings requires a parsed elf
+    // object (it uses section offsets), so we scan the raw buffer directly.
+    const strings = this._rawStringScan(bytes);
+    if (strings.length > 0) {
+      const fakeElf = { strings };
+      wrap.appendChild(this._renderSection(
+        '🔤 Strings (' + strings.length + ')',
+        this._renderStrings(fakeElf)
+      ));
+    }
+
+    // Raw hex dump — reuse the same helper normally used by section rows.
+    if (bytes.length > 0) {
+      const hexContent = document.createElement('div');
+      hexContent.appendChild(this._renderHexDump(0, bytes.length));
+      wrap.appendChild(this._renderSection(
+        '📄 Raw Hex Dump (' + bytes.length.toLocaleString() + ' bytes)',
+        hexContent
+      ));
+    }
+
+    return strings;
+  }
+
+  // Byte-scan fallback used when no parsed ELF structure is available.
+  _rawStringScan(bytes) {
+    const strings = [];
+    const seen = new Set();
+    const minLen = 4;
+    const maxStrings = 10000;
+    const maxScan = Math.min(bytes.length, 8 * 1024 * 1024);
+    let current = '';
+    for (let i = 0; i < maxScan && strings.length < maxStrings; i++) {
+      const c = bytes[i];
+      if (c >= 0x20 && c < 0x7F) {
+        current += String.fromCharCode(c);
+      } else {
+        if (current.length >= minLen && !seen.has(current)) {
+          seen.add(current);
+          strings.push(current);
+        }
+        current = '';
+      }
+    }
+    if (current.length >= minLen && !seen.has(current) && strings.length < maxStrings) {
+      strings.push(current);
+    }
+    return strings;
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════
   //  Section renderers (DOM builders)
