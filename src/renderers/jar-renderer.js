@@ -483,9 +483,11 @@ class JarRenderer {
       return wrap;
     }
 
+    const analysis = this._analyzeStrings(parsed.strings);
+
     // Banner
     const simpleName = parsed.thisClass.replace(/\//g, '.').replace(/.*\./, '');
-    wrap.innerHTML = `<div class="jar-banner">
+    const bannerHTML = `<div class="jar-banner">
       <span class="jar-banner-icon">☕</span>
       <div>
         <strong>${this._esc(simpleName)}</strong>
@@ -495,26 +497,46 @@ class JarRenderer {
       </div>
     </div>`;
 
-    // Class info section
-    wrap.innerHTML += this._renderSection('Class Information', this._buildClassInfoHTML(parsed), true);
+    // Header grid: Class Info (left) + Findings (right, or empty-state)
+    const findingsHTML = analysis.suspicious.length > 0
+      ? this._buildSuspiciousHTML(analysis.suspicious)
+      : `<div class="jar-findings-empty">✓ No suspicious API usage detected in constant pool.</div>`;
+    const headerGridHTML = `<div class="jar-header-grid">
+      <section class="jar-pane jar-manifest-pane" aria-label="Class Information">
+        <header class="jar-pane-header">📋 Class Information</header>
+        <div class="jar-pane-body">${this._buildClassInfoHTML(parsed)}</div>
+      </section>
+      <section class="jar-pane jar-findings-pane" aria-label="Security Findings">
+        <header class="jar-pane-header">⚠️ Security Findings${analysis.suspicious.length ? ` <span class="jar-pane-count">${analysis.suspicious.length}</span>` : ''}</header>
+        <div class="jar-pane-body">${findingsHTML}</div>
+      </section>
+    </div>`;
 
-    // String constants
-    const analysis = this._analyzeStrings(parsed.strings);
-    wrap.innerHTML += this._renderSection('String Constants', this._buildStringConstantsHTML(parsed.strings, analysis), true);
-
-    // Class references
+    // Tabs: Strings + (optional) Class References
+    const tabs = [];
+    tabs.push({
+      key: 'strings',
+      label: `🔤 Strings`,
+      count: parsed.strings.length,
+      html: this._buildStringConstantsHTML(parsed.strings, analysis)
+    });
     if (parsed.classRefs.length > 0) {
-      wrap.innerHTML += this._renderSection('Class References', this._buildClassRefsHTML(parsed.classRefs), false);
+      tabs.push({
+        key: 'refs',
+        label: '🔗 Class References',
+        count: parsed.classRefs.length,
+        html: this._buildClassRefsHTML(parsed.classRefs)
+      });
     }
+    const tabsHTML = this._buildTabsHTML(tabs);
 
-    // Suspicious findings
-    if (analysis.suspicious.length > 0) {
-      wrap.innerHTML += this._renderSection('⚠️ Suspicious API Usage', this._buildSuspiciousHTML(analysis.suspicious), true);
-    }
+    wrap.innerHTML = bannerHTML + headerGridHTML + tabsHTML;
 
     this._addSearchBar(wrap);
+    this._wireTabs(wrap);
     return wrap;
   }
+
 
   // ═════════════════════════════════════════════════════════════════════════
   //  Render JAR/WAR/EAR contents
@@ -601,67 +623,105 @@ class JarRenderer {
     bannerHTML += `<br><span style="opacity:0.7">${classEntries.length} classes · ${resourceEntries.length + configEntries.length} resources · ${entries.filter(e => e.dir).length} directories · ${this._fmtBytes(totalSize)} uncompressed</span>`;
     if (classEntries.length > classLimit) bannerHTML += `<br><span style="opacity:0.6; font-size:0.85em">⚡ Analyzed first ${classLimit} of ${classEntries.length} class files</span>`;
     bannerHTML += `</div></div>`;
-    wrap.innerHTML = bannerHTML;
 
-    // ── MANIFEST.MF ─────────────────────────────────────────────────────
-    if (manifest) {
-      wrap.innerHTML += this._renderSection('MANIFEST.MF', this._buildManifestHTML(manifest), true);
+    // ── Header grid: Manifest (left) + Security Findings (right) ────────
+    const manifestHTML = manifest
+      ? this._buildManifestHTML(manifest)
+      : `<div class="jar-findings-empty">No MANIFEST.MF found.</div>`;
+
+    let findingsBodyHTML = '';
+    const findingsCount = stringAnalysis.suspicious.length + obfuscation.length;
+    if (stringAnalysis.suspicious.length > 0) findingsBodyHTML += this._buildSuspiciousHTML(stringAnalysis.suspicious);
+    if (obfuscation.length > 0) {
+      findingsBodyHTML += '<h4 class="jar-findings-subhead">🔒 Obfuscation Indicators</h4><ul class="jar-obfuscation-list">';
+      for (const o of obfuscation) findingsBodyHTML += `<li>${this._esc(o)}</li>`;
+      findingsBodyHTML += '</ul>';
     }
+    if (findingsCount === 0) findingsBodyHTML = `<div class="jar-findings-empty">✓ No suspicious API usage, obfuscation, or gadget classes detected.</div>`;
 
-    // ── Suspicious findings ─────────────────────────────────────────────
-    if (stringAnalysis.suspicious.length > 0 || obfuscation.length > 0) {
-      let html = '';
-      if (stringAnalysis.suspicious.length > 0) html += this._buildSuspiciousHTML(stringAnalysis.suspicious);
-      if (obfuscation.length > 0) {
-        html += '<h4 style="margin:12px 0 6px">🔒 Obfuscation Indicators</h4><ul class="jar-obfuscation-list">';
-        for (const o of obfuscation) html += `<li>${this._esc(o)}</li>`;
-        html += '</ul>';
-      }
-      wrap.innerHTML += this._renderSection('⚠️ Security Findings', html, true);
-    }
+    const headerGridHTML = `<div class="jar-header-grid">
+      <section class="jar-pane jar-manifest-pane" aria-label="MANIFEST.MF">
+        <header class="jar-pane-header">📄 MANIFEST.MF</header>
+        <div class="jar-pane-body">${manifestHTML}</div>
+      </section>
+      <section class="jar-pane jar-findings-pane" aria-label="Security Findings">
+        <header class="jar-pane-header">⚠️ Security Findings${findingsCount ? ` <span class="jar-pane-count">${findingsCount}</span>` : ''}</header>
+        <div class="jar-pane-body">${findingsBodyHTML}</div>
+      </section>
+    </div>`;
 
-    // ── Class listing ───────────────────────────────────────────────────
-    if (parsedClasses.length > 0) {
-      wrap.innerHTML += this._renderSection(`Classes (${classEntries.length})`, this._buildClassListHTML(parsedClasses, classEntries.length > classLimit), false);
-    }
-
-    // ── Dependencies ────────────────────────────────────────────────────
-    if (stringAnalysis.imports.length > 0) {
-      wrap.innerHTML += this._renderSection('Package Dependencies', this._buildDependenciesHTML(stringAnalysis.imports), false);
-    }
-
-    // ── String Constants (interesting ones) ──────────────────────────────
+    // ── Tabs: Classes / Dependencies / Strings / Resources / web.xml ────
     const interestingStrings = allStrings.filter(s => {
       const v = s.value;
       if (!v || v.length < 4 || v.length > 500) return false;
-      // Filter out common noise: descriptors, internal names
       if (/^\([A-Z\[;/()]*\)[A-Z\[;/()VIJFDLBCSZa-z]*$/.test(v)) return false;
       if (/^<(init|clinit)>$/.test(v)) return false;
       if (/^(Code|LineNumberTable|SourceFile|StackMapTable|InnerClasses|Exceptions|Signature|Deprecated|ConstantValue|LocalVariableTable|LocalVariableTypeTable|BootstrapMethods|RuntimeVisibleAnnotations|RuntimeInvisibleAnnotations|EnclosingMethod|NestMembers|NestHost|PermittedSubclasses|Record)$/.test(v)) return false;
       return true;
     });
+
+    const tabs = [];
+    if (parsedClasses.length > 0) {
+      tabs.push({
+        key: 'classes',
+        label: '☕ Classes',
+        count: classEntries.length,
+        html: this._buildClassListHTML(parsedClasses, classEntries.length > classLimit)
+      });
+    }
+    if (stringAnalysis.imports.length > 0) {
+      tabs.push({
+        key: 'deps',
+        label: '📦 Dependencies',
+        count: stringAnalysis.imports.length,
+        html: this._buildDependenciesHTML(stringAnalysis.imports)
+      });
+    }
     if (interestingStrings.length > 0) {
-      const displayStrings = interestingStrings.slice(0, 500);
-      wrap.innerHTML += this._renderSection(`String Constants (${interestingStrings.length})`, this._buildStringConstantsHTML(displayStrings, stringAnalysis), false);
+      tabs.push({
+        key: 'strings',
+        label: '🔤 Strings',
+        count: interestingStrings.length,
+        html: this._buildStringConstantsHTML(interestingStrings.slice(0, 500), stringAnalysis)
+      });
     }
-
-    // ── Resources / config files ────────────────────────────────────────
     if (configEntries.length > 0 || resourceEntries.length > 0) {
-      wrap.innerHTML += this._renderSection('Resources & Configuration', this._buildResourcesHTML(configEntries, resourceEntries), false);
+      tabs.push({
+        key: 'resources',
+        label: '🗂 Resources',
+        count: configEntries.length + resourceEntries.length,
+        html: this._buildResourcesHTML(configEntries, resourceEntries)
+      });
     }
-
-    // ── WAR: web.xml ────────────────────────────────────────────────────
     if (webXmlContent) {
-      wrap.innerHTML += this._renderSection('web.xml', `<pre class="jar-xml-source">${this._esc(webXmlContent)}</pre>`, false);
+      tabs.push({
+        key: 'webxml',
+        label: '🌐 web.xml',
+        count: null,
+        html: `<pre class="jar-xml-source">${this._esc(webXmlContent)}</pre>`
+      });
     }
+    const tabsHTML = this._buildTabsHTML(tabs);
 
-    // ── All entries (collapsible) ───────────────────────────────────────
-    wrap.innerHTML += this._renderSection(`All Entries (${entries.length})`, this._buildAllEntriesHTML(entries, zip), false);
+    // ── File tree (all entries, nested) ─────────────────────────────────
+    const treeHTML = `<section class="jar-pane jar-tree-pane" aria-label="File tree">
+      <header class="jar-pane-header">📁 Archive Contents <span class="jar-pane-count">${entries.filter(e => !e.dir).length}</span>
+        <span class="jar-pane-actions">
+          <button type="button" class="jar-tree-toggle-all" data-action="expand">Expand all</button>
+          <button type="button" class="jar-tree-toggle-all" data-action="collapse">Collapse all</button>
+        </span>
+      </header>
+      <div class="jar-pane-body jar-tree-body">${this._buildFileTreeHTML(entries)}</div>
+    </section>`;
 
-    // Inner file open listener
+    wrap.innerHTML = bannerHTML + headerGridHTML + tabsHTML + treeHTML;
+
+    // Inner file open listener (for tree Open buttons, resource tables, etc.)
     wrap.addEventListener('click', async (e) => {
       const btn = e.target.closest('[data-jar-open]');
       if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
       const path = btn.getAttribute('data-jar-open');
       const entry = zip.file(path);
       if (!entry) return;
@@ -673,9 +733,12 @@ class JarRenderer {
       } catch {}
     });
 
+    this._wireTabs(wrap);
+    this._wireFileTree(wrap);
     this._addSearchBar(wrap);
     return wrap;
   }
+
 
   // ═════════════════════════════════════════════════════════════════════════
   //  HTML building helpers
@@ -855,46 +918,281 @@ class JarRenderer {
     return html;
   }
 
-  _buildAllEntriesHTML(entries, zip) {
-    let html = `<table class="jar-table jar-entries-table">
-      <thead><tr><th>Path</th><th>Size</th><th>Compressed</th><th>Date</th><th></th></tr></thead><tbody>`;
-    for (const e of entries) {
-      const icon = e.dir ? '📁' : e.path.endsWith('.class') ? '☕' : '📄';
-      html += `<tr>
-        <td>${icon} ${this._esc(e.path)}</td>
-        <td>${e.dir ? '' : this._fmtBytes(e.size)}</td>
-        <td>${e.dir ? '' : this._fmtBytes(e.compressedSize)}</td>
-        <td>${e.date ? e.date.toISOString().replace('T', ' ').slice(0, 19) : ''}</td>
-        <td>${!e.dir ? `<button class="jar-open-btn" data-jar-open="${this._esc(e.path)}">Open</button>` : ''}</td>
-      </tr>`;
+  // ═════════════════════════════════════════════════════════════════════════
+  //  Tabs (bin-style)
+  // ═════════════════════════════════════════════════════════════════════════
+  _buildTabsHTML(tabs) {
+    if (!tabs || tabs.length === 0) {
+      return '<div class="jar-tabs jar-tabs-empty"><em>No tabbed content available for this archive.</em></div>';
     }
-    html += '</tbody></table>';
-    return html;
+    let bar = '<div class="jar-tab-bar" role="tablist">';
+    let panes = '<div class="jar-tab-panes">';
+    tabs.forEach((t, i) => {
+      const active = i === 0 ? ' active' : '';
+      const countHTML = t.count != null ? ` <span class="jar-tab-count">${t.count}</span>` : '';
+      bar += `<button type="button" class="jar-tab-btn${active}" role="tab" data-jar-tab="${t.key}" aria-selected="${i === 0}">${t.label}${countHTML}<span class="jar-tab-hits" hidden></span></button>`;
+      panes += `<div class="jar-tab-pane${active}" role="tabpanel" data-jar-tab-pane="${t.key}"${i === 0 ? '' : ' hidden'}>${t.html}</div>`;
+    });
+    bar += '</div>';
+    panes += '</div>';
+    return `<div class="jar-tabs">${bar}${panes}</div>`;
+  }
+
+  _wireTabs(wrap) {
+    const bar = wrap.querySelector('.jar-tab-bar');
+    if (!bar) return;
+    bar.addEventListener('click', (e) => {
+      const btn = e.target.closest('.jar-tab-btn');
+      if (!btn) return;
+      const key = btn.getAttribute('data-jar-tab');
+      // Buttons
+      bar.querySelectorAll('.jar-tab-btn').forEach(b => {
+        const on = b === btn;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-selected', on ? 'true' : 'false');
+      });
+      // Panes
+      wrap.querySelectorAll('.jar-tab-pane').forEach(p => {
+        const on = p.getAttribute('data-jar-tab-pane') === key;
+        p.classList.toggle('active', on);
+        if (on) p.removeAttribute('hidden');
+        else p.setAttribute('hidden', '');
+      });
+    });
   }
 
   // ═════════════════════════════════════════════════════════════════════════
-  //  Search bar
+  //  File tree (nested archive browser)
+  // ═════════════════════════════════════════════════════════════════════════
+  _buildFileTreeHTML(entries) {
+    // Build nested tree from flat entry list.
+    // Root is a synthetic folder; children keyed by path segment.
+    const root = { children: new Map(), files: [] };
+    // Sort so parent dirs precede children, and folders first within a level.
+    const sorted = [...entries].sort((a, b) => a.path.localeCompare(b.path));
+    for (const e of sorted) {
+      if (e.dir) continue; // skip explicit dir entries; we synthesise folders from file paths
+      const parts = e.path.split('/').filter(Boolean);
+      if (parts.length === 0) continue;
+      let node = root;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const seg = parts[i];
+        if (!node.children.has(seg)) node.children.set(seg, { children: new Map(), files: [] });
+        node = node.children.get(seg);
+      }
+      node.files.push({ name: parts[parts.length - 1], entry: e });
+    }
+    // Render recursively. Folders are collapsed by default.
+    const renderNode = (node, pathPrefix, depth) => {
+      let html = '';
+      // Folder children first (sorted by name)
+      const folderNames = [...node.children.keys()].sort((a, b) => a.localeCompare(b));
+      for (const name of folderNames) {
+        const child = node.children.get(name);
+        const childPath = pathPrefix ? pathPrefix + '/' + name : name;
+        const fileCount = this._countFilesInNode(child);
+        html += `<li class="jar-tree-folder" data-jar-folder-path="${this._esc(childPath)}">
+          <div class="jar-tree-row jar-tree-folder-row" tabindex="0" role="button" aria-expanded="false">
+            <span class="jar-tree-caret" aria-hidden="true">▸</span>
+            <span class="jar-tree-icon" aria-hidden="true">📁</span>
+            <span class="jar-tree-name">${this._esc(name)}</span>
+            <span class="jar-tree-meta">${fileCount} item${fileCount === 1 ? '' : 's'}</span>
+          </div>
+          <ul class="jar-tree-children" hidden>${renderNode(child, childPath, depth + 1)}</ul>
+        </li>`;
+      }
+      // Files (sorted by name)
+      const files = [...node.files].sort((a, b) => a.name.localeCompare(b.name));
+      for (const f of files) {
+        const icon = f.name.toLowerCase().endsWith('.class') ? '☕'
+          : /\.(xml|properties|yml|yaml|json|txt|mf)$/i.test(f.name) ? '📝'
+          : /\.(jar|war|ear|zip)$/i.test(f.name) ? '📦'
+          : /\.(png|jpe?g|gif|bmp|svg|ico)$/i.test(f.name) ? '🖼'
+          : '📄';
+        html += `<li class="jar-tree-file" data-jar-file-name="${this._esc(f.name)}">
+          <div class="jar-tree-row jar-tree-file-row">
+            <span class="jar-tree-caret" aria-hidden="true"></span>
+            <span class="jar-tree-icon" aria-hidden="true">${icon}</span>
+            <span class="jar-tree-name" title="${this._esc(f.entry.path)}">${this._esc(f.name)}</span>
+            <span class="jar-tree-meta">${this._fmtBytes(f.entry.size)}</span>
+            <button type="button" class="jar-open-btn" data-jar-open="${this._esc(f.entry.path)}">Open</button>
+          </div>
+        </li>`;
+      }
+      return html;
+    };
+    const body = renderNode(root, '', 0);
+    if (!body) return '<div class="jar-findings-empty">Archive is empty.</div>';
+    return `<ul class="jar-tree" role="tree">${body}</ul>`;
+  }
+
+  _countFilesInNode(node) {
+    let n = node.files.length;
+    for (const child of node.children.values()) n += this._countFilesInNode(child);
+    return n;
+  }
+
+  _wireFileTree(wrap) {
+    const tree = wrap.querySelector('.jar-tree');
+    if (!tree) return;
+
+    const toggleFolder = (li, force) => {
+      const row = li.querySelector(':scope > .jar-tree-folder-row');
+      const kids = li.querySelector(':scope > .jar-tree-children');
+      if (!row || !kids) return;
+      const currentlyOpen = !kids.hasAttribute('hidden');
+      const open = typeof force === 'boolean' ? force : !currentlyOpen;
+      if (open) { kids.removeAttribute('hidden'); row.setAttribute('aria-expanded', 'true'); li.classList.add('jar-tree-open'); }
+      else { kids.setAttribute('hidden', ''); row.setAttribute('aria-expanded', 'false'); li.classList.remove('jar-tree-open'); }
+    };
+
+    tree.addEventListener('click', (e) => {
+      // Open button — don't intercept (handled by outer wrap listener)
+      if (e.target.closest('[data-jar-open]')) return;
+      const folderRow = e.target.closest('.jar-tree-folder-row');
+      if (folderRow) {
+        toggleFolder(folderRow.parentElement);
+      }
+    });
+    tree.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const folderRow = e.target.closest('.jar-tree-folder-row');
+      if (folderRow) {
+        e.preventDefault();
+        toggleFolder(folderRow.parentElement);
+      }
+    });
+
+    // Expand/Collapse all buttons
+    const pane = wrap.querySelector('.jar-tree-pane');
+    if (pane) {
+      pane.addEventListener('click', (e) => {
+        const btn = e.target.closest('.jar-tree-toggle-all');
+        if (!btn) return;
+        const action = btn.getAttribute('data-action');
+        const force = action === 'expand';
+        tree.querySelectorAll('li.jar-tree-folder').forEach(li => toggleFolder(li, force));
+      });
+    }
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════
+  //  Search bar — tab- and tree-aware
   // ═════════════════════════════════════════════════════════════════════════
   _addSearchBar(wrap) {
     const bar = document.createElement('div');
     bar.className = 'jar-search-bar';
-    bar.innerHTML = `<input type="text" class="jar-search-input" placeholder="🔍 Search classes, strings, APIs…">`;
+    bar.innerHTML = `<input type="text" class="jar-search-input" placeholder="🔍 Search manifest, classes, strings, APIs, tree…">
+      <span class="jar-search-status" hidden></span>`;
     wrap.prepend(bar);
 
     const input = bar.querySelector('.jar-search-input');
+    const status = bar.querySelector('.jar-search-status');
     let debounce = null;
+
+    const rowSelectors = [
+      '.jar-table tbody tr',
+      '.jar-manifest-table tr',
+      '.jar-string-entry',
+      '.jar-suspicious-item',
+      '.jar-ref-group',
+      '.jar-dep-pkg',
+      '.jar-obfuscation-list li',
+    ].join(', ');
+
+    const applyFilter = (q) => {
+      // 1) Row-level filter across all panes (hidden tabs included — we'll switch to first hit below).
+      let totalHits = 0;
+      wrap.querySelectorAll(rowSelectors).forEach(el => {
+        if (!q) { el.classList.remove('jar-hit', 'jar-no-hit'); return; }
+        const match = el.textContent.toLowerCase().includes(q);
+        el.classList.toggle('jar-hit', match);
+        el.classList.toggle('jar-no-hit', !match);
+        if (match) totalHits++;
+      });
+
+      // 2) Tab hit-count badges + auto-switch to first tab with hits.
+      const tabBar = wrap.querySelector('.jar-tab-bar');
+      const panes = wrap.querySelectorAll('.jar-tab-pane');
+      let firstHitKey = null;
+      panes.forEach(pane => {
+        const key = pane.getAttribute('data-jar-tab-pane');
+        const paneHits = q ? pane.querySelectorAll('.jar-hit').length : 0;
+        const btn = tabBar && tabBar.querySelector(`.jar-tab-btn[data-jar-tab="${key}"]`);
+        if (btn) {
+          const hitsEl = btn.querySelector('.jar-tab-hits');
+          if (hitsEl) {
+            if (q && paneHits > 0) { hitsEl.textContent = ` ${paneHits}`; hitsEl.hidden = false; }
+            else { hitsEl.textContent = ''; hitsEl.hidden = true; }
+          }
+          btn.classList.toggle('jar-tab-has-hits', q && paneHits > 0);
+        }
+        if (q && paneHits > 0 && !firstHitKey) firstHitKey = key;
+      });
+      if (firstHitKey && tabBar) {
+        // Only switch if the current active tab has no hits.
+        const activeBtn = tabBar.querySelector('.jar-tab-btn.active');
+        const activeKey = activeBtn ? activeBtn.getAttribute('data-jar-tab') : null;
+        const activePane = activeKey ? wrap.querySelector(`.jar-tab-pane[data-jar-tab-pane="${activeKey}"]`) : null;
+        const activeHits = activePane ? activePane.querySelectorAll('.jar-hit').length : 0;
+        if (activeHits === 0) {
+          const targetBtn = tabBar.querySelector(`.jar-tab-btn[data-jar-tab="${firstHitKey}"]`);
+          if (targetBtn) targetBtn.click();
+        }
+      }
+
+      // 3) File tree: highlight matching names and auto-expand ancestor folders.
+      const tree = wrap.querySelector('.jar-tree');
+      if (tree) {
+        // Clear previous highlights & auto-expansion.
+        tree.querySelectorAll('.jar-tree-hit').forEach(el => el.classList.remove('jar-tree-hit'));
+        tree.querySelectorAll('li.jar-tree-auto-expanded').forEach(li => {
+          li.classList.remove('jar-tree-auto-expanded');
+          const kids = li.querySelector(':scope > .jar-tree-children');
+          const row = li.querySelector(':scope > .jar-tree-folder-row');
+          if (kids) kids.setAttribute('hidden', '');
+          if (row) row.setAttribute('aria-expanded', 'false');
+          li.classList.remove('jar-tree-open');
+        });
+
+        if (q) {
+          const fileLis = tree.querySelectorAll('li.jar-tree-file');
+          let treeHits = 0;
+          fileLis.forEach(li => {
+            const name = (li.getAttribute('data-jar-file-name') || '').toLowerCase();
+            const match = name.includes(q);
+            if (match) {
+              li.classList.add('jar-tree-hit');
+              treeHits++;
+              // Auto-expand ancestor folders
+              let parent = li.parentElement; // <ul.jar-tree-children>
+              while (parent && parent !== tree) {
+                if (parent.tagName === 'LI' && parent.classList.contains('jar-tree-folder')) {
+                  parent.classList.add('jar-tree-auto-expanded', 'jar-tree-open');
+                  const kids = parent.querySelector(':scope > .jar-tree-children');
+                  const row = parent.querySelector(':scope > .jar-tree-folder-row');
+                  if (kids) kids.removeAttribute('hidden');
+                  if (row) row.setAttribute('aria-expanded', 'true');
+                }
+                parent = parent.parentElement;
+              }
+            }
+          });
+          totalHits += treeHits;
+        }
+      }
+
+      // 4) Status line
+      if (q) { status.hidden = false; status.textContent = totalHits === 0 ? 'No matches' : `${totalHits} match${totalHits === 1 ? '' : 'es'}`; }
+      else { status.hidden = true; status.textContent = ''; }
+    };
+
     input.addEventListener('input', () => {
       clearTimeout(debounce);
-      debounce = setTimeout(() => {
-        const q = input.value.toLowerCase().trim();
-        // Search in tables and string entries
-        wrap.querySelectorAll('.jar-table tbody tr, .jar-string-entry, .jar-suspicious-item, .jar-ref-group, .jar-dep-pkg').forEach(el => {
-          if (!q) { el.style.display = ''; return; }
-          el.style.display = el.textContent.toLowerCase().includes(q) ? '' : 'none';
-        });
-      }, 200);
+      debounce = setTimeout(() => applyFilter(input.value.toLowerCase().trim()), 200);
     });
   }
+
 
   // ═════════════════════════════════════════════════════════════════════════
   //  Security analysis (for sidebar)

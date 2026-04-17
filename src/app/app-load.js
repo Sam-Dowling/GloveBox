@@ -980,6 +980,16 @@ Object.assign(App.prototype, {
   },
 
   // ── Navigation stack (for going back from inner archive files) ──────────
+  //
+  // Strategy: instead of serialising the rendered DOM via innerHTML (which
+  // destroys event listeners, tab state, tree expansion, scroll position,
+  // and any JS-held references), we *detach* the live DOM node from the
+  // page container and park it on the nav stack. When the user clicks Back,
+  // we re-attach the exact same node tree — preserving everything.
+  //
+  // Safety net: if re-attachment fails (detached node missing, renderer
+  // mismatch), we fall back to re-rendering from the stored buffer via the
+  // per-format helpers below.
   _pushNavState(parentName) {
     if (!this._navStack) this._navStack = [];
     // Enforce nesting depth limit to prevent recursive archive bombs
@@ -991,13 +1001,31 @@ Object.assign(App.prototype, {
     }
     const pc = document.getElementById('page-container');
     const docEl = pc && pc.firstElementChild;
+
+    // Detach the live node (removes it from the DOM but keeps all handlers,
+    // child state, and scroll intact). scrollTop/scrollLeft are saved as a
+    // belt-and-braces measure for cases where the browser resets them on
+    // re-attach (rare, but observed with some overflow containers).
+    let pageNode = null;
+    let scrollSnapshot = null;
+    if (docEl) {
+      try {
+        scrollSnapshot = this._snapshotScroll(docEl);
+        pageNode = pc.removeChild(docEl);
+      } catch (e) {
+        console.warn('Failed to detach page node for nav state:', e);
+        pageNode = null;
+      }
+    }
+
     this._navStack.push({
       findings: this.findings,
       fileHashes: this.fileHashes,
       fileMeta: this._fileMeta,
       fileBuffer: this._fileBuffer,
       yaraResults: this._yaraResults,
-      pageHTML: pc.innerHTML,
+      pageNode,                 // detached live DOM node (preferred)
+      scrollSnapshot,           // Map<element,{top,left}> for restoration
       rawText: (docEl && docEl._rawText) || null,
       fileInfoText: document.getElementById('file-info').textContent,
       parentName,
@@ -1014,33 +1042,39 @@ Object.assign(App.prototype, {
     this._yaraResults = state.yaraResults;
 
     const pc = document.getElementById('page-container');
-    pc.innerHTML = state.pageHTML;
-    // Re-attach _rawText (JS property lost during innerHTML serialisation)
-    if (state.rawText && pc.firstElementChild) {
-      pc.firstElementChild._rawText = state.rawText;
+
+    // Clear whatever is currently in the container (the inner file's view)
+    while (pc.firstChild) pc.removeChild(pc.firstChild);
+
+    // Preferred path: re-attach the detached node. This preserves event
+    // listeners, tab state, tree expansion, search input text, and scroll.
+    let reattached = false;
+    if (state.pageNode) {
+      try {
+        pc.appendChild(state.pageNode);
+        // Re-attach _rawText JS property if present
+        if (state.rawText) state.pageNode._rawText = state.rawText;
+        // Restore scroll positions (browser sometimes resets on re-attach)
+        if (state.scrollSnapshot) this._restoreScroll(state.scrollSnapshot);
+        reattached = true;
+      } catch (e) {
+        console.warn('Failed to re-attach nav page node, falling back to re-render:', e);
+        reattached = false;
+      }
     }
+
     document.getElementById('file-info').textContent = state.fileInfoText;
 
-    // Re-attach click handlers on ZIP rows (innerHTML loses event listeners)
-    // We need to re-render from the stored buffer instead
-    // For simplicity, just show the saved HTML — the user can re-open the archive file if needed
-    // But we DO need to re-wire the open-inner-file listeners
-    const zipView = pc.querySelector('.zip-view');
-    if (zipView && state.fileBuffer) {
-      // Re-render the ZIP to get working click handlers
-      this._reRenderZip(state, pc);
-    }
-
-    // Re-attach click handlers on MSI streams (innerHTML loses event listeners)
-    const msiView = pc.querySelector('.msi-view');
-    if (msiView && state.fileBuffer) {
-      this._reRenderMsi(state, pc);
-    }
-
-    // Re-attach click handlers on JAR entries (innerHTML loses event listeners)
-    const jarView = pc.querySelector('.jar-view');
-    if (jarView && state.fileBuffer) {
-      this._reRenderJar(state, pc);
+    // Fallback: re-render from buffer if re-attach failed or pageNode missing
+    if (!reattached && state.fileBuffer) {
+      const name = (state.parentName || '').toLowerCase();
+      if (name.endsWith('.zip')) this._reRenderZip(state, pc);
+      else if (name.endsWith('.msi')) this._reRenderMsi(state, pc);
+      else if (name.endsWith('.jar') || name.endsWith('.war') || name.endsWith('.ear') || name.endsWith('.class')) this._reRenderJar(state, pc);
+      // Other renderers that dispatch open-inner-file but have no
+      // dedicated re-render helper will simply show an empty container;
+      // the user can reopen the parent file manually. This is safer than
+      // attempting a generic re-render we can't validate.
     }
 
     // Re-render sidebar
@@ -1048,6 +1082,39 @@ Object.assign(App.prototype, {
 
     // Update back button visibility
     this._updateNavBackButton();
+  },
+
+  // Snapshot scroll positions of the root node and every scrollable
+  // descendant, keyed by element reference (which remains valid because we
+  // re-attach the same nodes).
+  _snapshotScroll(root) {
+    const snap = new Map();
+    try {
+      const walk = (el) => {
+        if (!el) return;
+        if (el.scrollTop || el.scrollLeft) {
+          snap.set(el, { top: el.scrollTop, left: el.scrollLeft });
+        }
+        const kids = el.children;
+        if (kids) for (let i = 0; i < kids.length; i++) walk(kids[i]);
+      };
+      walk(root);
+    } catch (_) { /* best-effort */ }
+    return snap;
+  },
+
+  _restoreScroll(snap) {
+    if (!snap || typeof snap.forEach !== 'function') return;
+    // Restore on next frame so layout has settled after re-attach
+    requestAnimationFrame(() => {
+      try {
+        snap.forEach((pos, el) => {
+          if (!el || !el.isConnected) return;
+          el.scrollTop = pos.top;
+          el.scrollLeft = pos.left;
+        });
+      } catch (_) { /* best-effort */ }
+    });
   },
 
   async _reRenderZip(state, pc) {
