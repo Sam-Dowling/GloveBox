@@ -138,7 +138,13 @@ JS_FILES = [
     'src/renderers/clickonce-renderer.js',
     'src/renderers/msix-renderer.js',
     'src/renderers/browserext-renderer.js',
+    # Registry — concatenated AFTER every renderer so its `_bootstrap()`
+    # can attach `static EXTS` + `static canHandle()` to each class by
+    # name, and BEFORE app-core.js so `App._loadFile` can call
+    # `RendererRegistry.detect()` / `RendererRegistry.makeContext()`.
+    'src/renderer-registry.js',
     'src/app/app-core.js',
+
     'src/app/app-load.js',
     'src/app/app-sidebar.js',
     'src/app/app-yara.js',
@@ -177,7 +183,7 @@ HTML = f"""<!DOCTYPE html>
         content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; frame-src blob:; worker-src blob:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; object-src 'none';">
   <meta name="description" content="Loupe — a 100% offline, single-file security analyser for suspicious files. No server, no uploads, no tracking.">
   <title>Loupe</title>
-  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 200 100'><text y='.9em' font-size='90'>🕵🏻</text></svg>">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🕵🏻</text></svg>">
   <style>{css}</style>
 </head>
 <body>
