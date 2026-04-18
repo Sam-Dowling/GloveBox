@@ -1153,14 +1153,15 @@ class PgpRenderer {
             if (key.isSecret && key.secretInfo && key.secretInfo.encrypted === false) {
               findings.detections.push({
                 name: 'Unprotected PGP Private Key',
-                description: `The ${label} is a secret key stored without a passphrase (S2K usage = 0). Anyone with access to this file can use it to sign or decrypt. This is highly unusual outside of automated systems.`,
-                severity: 'high',
+                description: `The ${label} is a secret key stored without a passphrase (S2K usage = 0). Anyone with access to this file can use it to sign or decrypt. This is highly unusual outside of automated systems and is treated as a critical exposure.`,
+                severity: 'critical',
               });
-              findings.riskScore += 40;
+              findings.riskScore += 60;
             } else if (key.isSecret) {
               findings.detections.push({
                 name: 'PGP Private Key Present',
                 description: `File contains a ${label} protected by a passphrase. Private keys should never be stored outside of a keyring.`,
+
                 severity: 'medium',
               });
               findings.riskScore += 15;
@@ -1274,8 +1275,9 @@ class PgpRenderer {
           for (const uid of group.userIds) {
             if (uid.email) {
               findings.interestingStrings.push({
-                type: (typeof IOC !== 'undefined' && IOC.EMAIL) ? IOC.EMAIL : 'email',
+                type: IOC.EMAIL,
                 url: uid.email, severity: 'info', note: 'PGP User ID',
+                _highlightText: uid.email,
               });
             }
           }
@@ -1302,8 +1304,9 @@ class PgpRenderer {
       findings.metadata = {};
       for (const fs of findings.formatSpecific) findings.metadata[fs.label] = fs.value;
       findings.externalRefs = findings.detections.map(d => ({
-        type: (typeof IOC !== 'undefined' && IOC.PATTERN) ? IOC.PATTERN : 'pattern',
-        url: d.description, severity: d.severity, ruleName: d.name,
+        type: IOC.PATTERN,
+        url: `${d.name} — ${d.description}`,
+        severity: d.severity,
       }));
     } catch (e) {
       findings.summary = `Analysis error: ${e.message}`;
