@@ -1,6 +1,3 @@
-// ─── Windows Threats ───
-// 126 rules
-
 rule HTA_File_With_Script
 {
     meta:
@@ -202,7 +199,7 @@ rule LNK_Extended_LOLBins
         mitre       = "T1218"
 
     strings:
-        $lnk = { 4C 00 00 00 }
+        $lnk = { 4C 00 00 00 01 14 02 00 }
         $a = "forfiles" nocase wide
         $b = "pcalua" nocase wide
         $c = "explorer.exe" nocase wide
@@ -215,7 +212,7 @@ rule LNK_Extended_LOLBins
         $j = "xwizard" nocase wide
 
     condition:
-        $lnk and any of ($a, $b, $c, $d, $e, $f, $g, $h, $i, $j)
+        $lnk at 0 and any of ($a, $b, $c, $d, $e, $f, $g, $h, $i, $j)
 }
 
 rule LNK_Script_Target
@@ -227,7 +224,7 @@ rule LNK_Script_Target
         mitre       = "T1204.002"
 
     strings:
-        $lnk = { 4C 00 00 00 }
+        $lnk = { 4C 00 00 00 01 14 02 00 }
         $a = ".js" nocase wide
         $b = ".jse" nocase wide
         $c = ".vbs" nocase wide
@@ -239,7 +236,7 @@ rule LNK_Script_Target
         $i = ".wsf" nocase wide
 
     condition:
-        $lnk and any of ($a, $b, $c, $d, $e, $f, $g, $h, $i)
+        $lnk at 0 and any of ($a, $b, $c, $d, $e, $f, $g, $h, $i)
 }
 
 rule LNK_Environment_Variable_Abuse
@@ -623,7 +620,7 @@ rule Info_Email_Multipart_Mixed
 rule Info_PNG_Appended_Data
 {
     meta:
-        description = "PNG file with data appended after IEND chunk — possible steganography or payload"
+        description = "PNG file with IEND chunk present — flag for analyst review of trailing bytes (possible steganography)"
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1027.001"
@@ -633,13 +630,13 @@ rule Info_PNG_Appended_Data
         $iend       = { 49 45 4E 44 AE 42 60 82 }
 
     condition:
-        $png_header and $iend and @iend[1] + 8 < filesize
+        $png_header at 0 and $iend
 }
 
 rule Info_JPEG_Appended_Data
 {
     meta:
-        description = "JPEG file with data after the EOI marker — possible hidden payload"
+        description = "JPEG file with EOI marker present — flag for analyst review of trailing bytes (possible hidden payload)"
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1027.001"
@@ -649,7 +646,7 @@ rule Info_JPEG_Appended_Data
         $eoi = { FF D9 }
 
     condition:
-        $soi at 0 and @eoi[#eoi] + 2 < filesize
+        $soi at 0 and $eoi
 }
 
 rule Info_Image_Only_HTML_Email
@@ -864,7 +861,7 @@ rule Info_Apple_Disk_Image_DMG
 
     strings:
         $a = { 78 01 73 0D 62 62 60 }
-        $b = "koly" 
+        $b = "koly"
         $c = "dmg" nocase
 
     condition:
@@ -909,7 +906,7 @@ rule Info_Cloudflare_Workers_URL
     meta:
         description = "File references Cloudflare Workers URL — abused for phishing proxies"
         severity    = "info"
-        category    = "phishing"
+        category    = "info"
         mitre       = "T1583.001"
 
     strings:
@@ -925,7 +922,7 @@ rule Info_Azure_Hosting_URL
     meta:
         description = "File references Azure hosting domains — sometimes abused for phishing infra"
         severity    = "info"
-        category    = "phishing"
+        category    = "info"
         mitre       = "T1583.001"
 
     strings:
@@ -944,7 +941,7 @@ rule Info_AWS_Hosting_URL
     meta:
         description = "File references AWS hosting domains — sometimes abused for phishing infra"
         severity    = "info"
-        category    = "phishing"
+        category    = "info"
         mitre       = "T1583.001"
 
     strings:
@@ -962,7 +959,7 @@ rule Info_Google_Cloud_Hosting_URL
     meta:
         description = "File references Google Cloud hosting domains"
         severity    = "info"
-        category    = "phishing"
+        category    = "info"
         mitre       = "T1583.001"
 
     strings:
@@ -981,7 +978,7 @@ rule Info_Firebase_Dynamic_Link
     meta:
         description = "File contains Firebase dynamic link — used to create redirect chains"
         severity    = "info"
-        category    = "phishing"
+        category    = "info"
         mitre       = "T1583.001"
 
     strings:
@@ -997,7 +994,7 @@ rule Info_Vercel_Netlify_Hosting
     meta:
         description = "File references Vercel or Netlify hosting — abused for disposable phishing sites"
         severity    = "info"
-        category    = "phishing"
+        category    = "info"
         mitre       = "T1583.001"
 
     strings:
@@ -1014,7 +1011,7 @@ rule Info_Heroku_Render_Hosting
     meta:
         description = "File references Heroku or Render hosting domains"
         severity    = "info"
-        category    = "phishing"
+        category    = "info"
         mitre       = "T1583.001"
 
     strings:
@@ -1742,13 +1739,13 @@ rule Rundll32_Script_Proxy
         mitre       = "T1218.011"
 
     strings:
-        $a     = "rundll32" nocase
-        $b     = "javascript:" nocase
-        $c     = "mshtml" nocase
-        $d     = "advpack.dll" nocase
-        $e     = "ieadvpack.dll" nocase
-        $f     = "syssetup.dll" nocase
-        $g     = "setupapi.dll" nocase
+        $a     = "rundll32.exe" nocase
+        $b     = "javascript:\"\\..\\mshtml" nocase
+        $c     = "mshtml,RunHTMLApplication" nocase
+        $d     = "advpack.dll,LaunchINFSection" nocase
+        $e     = "ieadvpack.dll,LaunchINFSection" nocase
+        $f     = "syssetup.dll,SetupInfObjectInstallAction" nocase
+        $g     = "setupapi.dll,InstallHinfSection" nocase
 
     condition:
         $a and any of ($b, $c, $d, $e, $f, $g)
@@ -1957,10 +1954,6 @@ rule REG_Any_Presence
         any of them
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// INF — Windows Setup Information File rules
-// ════════════════════════════════════════════════════════════════════════
-
 rule INF_Command_Execution
 {
     meta:
@@ -2110,10 +2103,6 @@ rule INF_Any_Presence
         $ver and any of ($sig*)
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// SCT — Windows Script Component (COM Scriptlet) rules
-// ════════════════════════════════════════════════════════════════════════
-
 rule SCT_Squiblydoo
 {
     meta:
@@ -2228,10 +2217,6 @@ rule SCT_Any_Presence
     condition:
         $sct1 and any of ($sct2, $sct3)
 }
-
-// ════════════════════════════════════════════════════════════════════════
-// MSI — Windows Installer Package rules
-// ════════════════════════════════════════════════════════════════════════
 
 rule MSI_Embedded_PE
 {
@@ -2350,10 +2335,6 @@ rule MSI_Service_Install
         $ole at 0 and any of ($svc*)
 }
 
-/* ══════════════════════════════════════════════════════════════════════════
-   Command Obfuscation Detection Rules
-   ══════════════════════════════════════════════════════════════════════════ */
-
 rule URL_Encoded_Command
 {
     meta:
@@ -2373,10 +2354,6 @@ rule URL_Encoded_Command
         any of them
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// ClickOnce Application Reference
-// ════════════════════════════════════════════════════════════════════════
-
 rule ClickOnce_AppRef_MS
 {
     meta:
@@ -2395,10 +2372,6 @@ rule ClickOnce_AppRef_MS
     condition:
         $appref and any of ($culture, $token, $proc) and $http
 }
-
-// ════════════════════════════════════════════════════════════════════════
-// Scheduled Task XML
-// ════════════════════════════════════════════════════════════════════════
 
 rule Scheduled_Task_XML
 {
@@ -2423,10 +2396,6 @@ rule Scheduled_Task_XML
         $task and $xmlns and $exec and $cmd and any of ($trigger*)
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// ISO Disk Image
-// ════════════════════════════════════════════════════════════════════════
-
 rule ISO_Disk_Image
 {
     meta:
@@ -2443,4 +2412,3 @@ rule ISO_Disk_Image
     condition:
         $cd001 or ($el_torito and $iso)
 }
-
