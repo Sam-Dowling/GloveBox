@@ -1244,16 +1244,17 @@ Object.assign(App.prototype, {
       const td2 = document.createElement('td'); td2.className = 'ext-val';
       if (ref._yaraRuleName) {
         // ── YARA match: structured, scannable layout ────────────────
-        //   • Title row: bold humanised rule name + always-visible 📐
-        //     "view rule" button (once per rule, never hidden).
+        //   • Title row: bold humanised rule name + always-visible ➕/➖
+        //     expand-toggle and 📐 "view rule" button (once per rule,
+        //     never hidden).
         //   • Description (when present) on its own muted line.
         //   • Per-string breakdown as a compact list — each row shows
         //     just the matched value (+ hit count), keeping columns
-        //     aligned regardless of `$var` length. Hovering anywhere on
-        //     the parent findings-table row reveals the "reason for
-        //     detection" sub-rows for every match at once, each carrying
-        //     the `$var` chip and the rule's condition with matched
-        //     identifiers bolded.
+        //     aligned regardless of `$var` length. Clicking the ➕
+        //     toggle reveals the "reason for detection" sub-rows for
+        //     every match at once (the `$var` chip and the rule's
+        //     condition with matched identifiers bolded); clicking ➖
+        //     collapses them again.
         // Falls back gracefully when `_yaraStrings` is absent (older
         // findings) by just showing the rule name.
         const titleRow = document.createElement('div');
@@ -1262,6 +1263,25 @@ Object.assign(App.prototype, {
         const strong = document.createElement('strong');
         strong.textContent = ref._yaraRuleName.replace(/_/g, ' ');
         titleRow.appendChild(strong);
+
+        // "Toggle match details" button — always visible when there are
+        // per-string matches to reveal. Sticky click-driven replacement
+        // for the old hover-reveal, so expanded reason rows can be read
+        // (and copied from) without the mouse hovering the card.
+        let toggleBtn = null;
+        if (ref._yaraStrings && ref._yaraStrings.length) {
+          toggleBtn = document.createElement('button');
+          toggleBtn.className = 'yara-toggle-reasons-btn';
+          toggleBtn.textContent = '\u2795'; // ➕
+          toggleBtn.title = 'Show match details';
+          toggleBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const expanded = td2.classList.toggle('yara-expanded');
+            toggleBtn.textContent = expanded ? '\u2796' : '\u2795'; // ➖ / ➕
+            toggleBtn.title = expanded ? 'Hide match details' : 'Show match details';
+          });
+          titleRow.appendChild(toggleBtn);
+        }
 
         // "View YARA rule" button — always visible, once per rule.
         // Opens the rule viewer filtered to this rule.
@@ -1276,6 +1296,7 @@ Object.assign(App.prototype, {
         titleRow.appendChild(titleViewBtn);
 
         td2.appendChild(titleRow);
+
 
         // Description line (from rule meta.description)
         if (ref.description) {
