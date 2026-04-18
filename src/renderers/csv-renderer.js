@@ -810,14 +810,57 @@ class CsvRenderer {
   }
 
   // ════════════════════════════════════════════════════════════════════════
-  // Security analysis
+  // Security analysis — formula-injection (CWE-1236) detection.
+  // A bare leading =/+/-/@ is the baseline indicator (medium). When the
+  // formula also references a known dangerous function — DDE (`cmd|/C`,
+  // `powershell`), MSEXCEL/MSExcel DDE channels, or an external
+  // HYPERLINK/WEBSERVICE pointing outside the workbook — we escalate to
+  // critical, because the cell is actively weaponised, not just suspicious.
   // ════════════════════════════════════════════════════════════════════════
   analyzeForSecurity(text) {
     const f = { risk: 'low', hasMacros: false, macroSize: 0, macroHash: '', autoExec: [], modules: [], externalRefs: [], metadata: {} };
-    if (text.split('\n').slice(0, 1000).some(l => l.trim() && /^["']?[=+\-@]/.test(l.trim()))) {
+    const lines = text.split('\n').slice(0, 5000);
+    let anyFormula = false;
+    let dangerHit = null;  // { line, snippet, kind }
+    const DANGER_RE = /(cmd(?:\.exe)?\s*[|/]|powershell|pwsh|wscript|cscript|mshta|rundll32|regsvr32|\bDDE(?:AUTO)?\b|MSEXCEL\|['"]|MSExcel\|['"]|=\s*HYPERLINK\s*\(|=\s*WEBSERVICE\s*\(|=\s*IMPORTXML\s*\(|=\s*IMPORTDATA\s*\(|=\s*IMPORTHTML\s*\()/i;
+
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      const t = l.trim();
+      if (!t) continue;
+      // Match leading =/+/-/@ in any cell (first-cell heuristic is close enough
+      // at this tier — the column splitter lives in _split).
+      if (/^["']?[=+\-@]/.test(t) || /[,;\t|]["']?[=+\-@]/.test(l)) {
+        anyFormula = true;
+        if (!dangerHit) {
+          const m = l.match(DANGER_RE);
+          if (m) {
+            const idx = m.index || 0;
+            dangerHit = {
+              line: i + 1,
+              snippet: l.substring(Math.max(0, idx - 8), Math.min(l.length, idx + 80)).trim(),
+            };
+          }
+        }
+      }
+    }
+
+    if (dangerHit) {
+      f.risk = 'critical';
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `Weaponised formula-injection payload (CWE-1236) on line ${dangerHit.line} — references command execution, DDE, or external data function: "${dangerHit.snippet}"`,
+        severity: 'critical',
+      });
+    } else if (anyFormula) {
       f.risk = 'medium';
-      f.externalRefs.push({ type: IOC.PATTERN, url: 'Formula injection risk — cells beginning with =, +, -, or @ detected', severity: 'medium' });
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: 'Formula injection risk (CWE-1236) — cells beginning with =, +, -, or @ detected. Opened in a spreadsheet these may execute if the user accepts the formula prompt.',
+        severity: 'medium',
+      });
     }
     return f;
   }
 }
+
