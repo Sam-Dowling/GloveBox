@@ -1,6 +1,3 @@
-// ─── Encoding Threats ───
-// 28 rules
-
 rule Double_Extension_Any_File
 {
     meta:
@@ -46,98 +43,98 @@ rule Right_To_Left_Override
 rule Standalone_Script_Shell_Execution
 {
     meta:
-        description = "Individual script/shell execution indicator (standalone match)"
+        description = "Two or more script/shell execution indicators co-located (standalone match)"
         severity    = "medium"
         category    = "execution"
         mitre       = "T1059"
 
     strings:
-        $wscript_shell   = "WScript.Shell" nocase
-        $create_object   = "CreateObject" nocase
-        $get_object      = "GetObject" nocase
+        $wscript_shell   = "WScript.Shell" ascii wide nocase
+        $create_object   = "CreateObject" ascii wide nocase
+        $get_object      = "GetObject" ascii wide nocase
         $shell_call      = /\bShell\s*\(/ nocase
-        $shell_execute   = "ShellExecute" nocase
-        $shell_app       = "Shell.Application" nocase
+        $shell_execute   = "ShellExecute" ascii wide nocase
+        $shell_app       = "Shell.Application" ascii wide nocase
         $run_call        = /\bRun\s*\(/ nocase
         $exec_call       = /\bExec\s*\(/ nocase
 
     condition:
-        any of them
+        2 of them
 }
 
 rule Standalone_COM_Objects
 {
     meta:
-        description = "COM object instantiation or access (standalone match)"
+        description = "Two or more COM object instantiation indicators co-located (standalone match)"
         severity    = "medium"
         category    = "execution"
         mitre       = "T1559.001"
 
     strings:
-        $fso    = "Scripting.FileSystemObject" nocase
-        $adodb  = "ADODB.Stream" nocase
-        $activex = "ActiveXObject" nocase
-        $clsid  = "clsid:" nocase
+        $fso    = "Scripting.FileSystemObject" ascii wide nocase
+        $adodb  = "ADODB.Stream" ascii wide nocase
+        $activex = "ActiveXObject" ascii wide nocase
+        $clsid  = "clsid:" ascii wide nocase
 
     condition:
-        any of them
+        2 of them
 }
 
 rule Standalone_Download_Network_Indicators
 {
     meta:
-        description = "Individual network/download indicator (standalone match)"
+        description = "Two or more network/download indicators co-located (standalone match)"
         severity    = "medium"
         category    = "command-and-control"
         mitre       = "T1105"
 
     strings:
-        $dl_file       = "DownloadFile" nocase
-        $dl_string     = "DownloadString" nocase
-        $webclient     = "Net.WebClient" nocase
-        $xmlhttp       = "XMLHTTP" nocase
-        $msxml2        = "MSXML2" nocase
-        $ms_xmlhttp    = "Microsoft.XMLHTTP" nocase
-        $winhttp       = "WinHttp.WinHttpRequest" nocase
-        $urldownload   = "URLDownloadToFile" nocase
-        $iwr           = "Invoke-WebRequest" nocase
-        $irm           = "Invoke-RestMethod" nocase
-        $bits_transfer = "Start-BitsTransfer" nocase
-        $inet_connect  = "InternetConnectA" nocase
-        $ie_app        = "InternetExplorer.Application" nocase
-        $xmlhttp_req   = "XMLHttpRequest" nocase
-        $msxml2_xmlhttp = "MSXML2.XMLHTTP" nocase
+        $dl_file       = "DownloadFile" ascii wide nocase
+        $dl_string     = "DownloadString" ascii wide nocase
+        $webclient     = "Net.WebClient" ascii wide nocase
+        $xmlhttp       = "XMLHTTP" ascii wide nocase
+        $msxml2        = "MSXML2" ascii wide nocase
+        $ms_xmlhttp    = "Microsoft.XMLHTTP" ascii wide nocase
+        $winhttp       = "WinHttp.WinHttpRequest" ascii wide nocase
+        $urldownload   = "URLDownloadToFile" ascii wide nocase
+        $iwr           = "Invoke-WebRequest" ascii wide nocase
+        $irm           = "Invoke-RestMethod" ascii wide nocase
+        $bits_transfer = "Start-BitsTransfer" ascii wide nocase
+        $inet_connect  = "InternetConnectA" ascii wide nocase
+        $ie_app        = "InternetExplorer.Application" ascii wide nocase
+        $xmlhttp_req   = "XMLHttpRequest" ascii wide nocase
+        $msxml2_xmlhttp = "MSXML2.XMLHTTP" ascii wide nocase
 
     condition:
-        any of them
+        2 of them
 }
 
 rule Standalone_PowerShell_Indicators
 {
     meta:
-        description = "Individual PowerShell indicator (standalone match)"
+        description = "Two or more PowerShell indicators co-located (standalone match)"
         severity    = "medium"
         category    = "execution"
         mitre       = "T1059.001"
 
     strings:
-        $iex            = "Invoke-Expression" nocase
+        $iex            = "Invoke-Expression" ascii wide nocase
         $iex_alias      = /\biex\s/ nocase
-        $start_process  = "Start-Process" nocase
-        $new_object     = "New-Object" nocase
-        $enc_cmd        = "-EncodedCommand" nocase
+        $start_process  = "Start-Process" ascii wide nocase
+        $new_object     = "New-Object" ascii wide nocase
+        $enc_cmd        = "-EncodedCommand" ascii wide nocase
         $enc_short      = /\s-enc\s/ nocase
         $enc_e          = /\s-e\s/ nocase
-        $nop            = "-nop" nocase
-        $noni           = "-noni" nocase
-        $hidden_win     = "-w hidden" nocase
-        $invoke_cmd     = "Invoke-Command" nocase
-        $add_type       = "Add-Type" nocase
-        $reflection     = "System.Reflection.Assembly" nocase
+        $nop            = "-nop" ascii wide nocase
+        $noni           = "-noni" ascii wide nocase
+        $hidden_win     = "-w hidden" ascii wide nocase
+        $invoke_cmd     = "Invoke-Command" ascii wide nocase
+        $add_type       = "Add-Type" ascii wide nocase
+        $reflection     = "System.Reflection.Assembly" ascii wide nocase
         $ps_enc_payload = /-[Ee](?:nc|ncodedcommand)\s+[A-Za-z0-9+\/=]{20,}/
 
     condition:
-        any of them
+        2 of them
 }
 
 rule Standalone_LOLBin_Indicators
@@ -547,10 +544,6 @@ rule Obfuscated_Download_Cradle
         any of ($dl*) and any of ($obf*)
 }
 
-// ============================================================================
-// Python Obfuscation Rules
-// ============================================================================
-
 rule Space_Delimited_Hex_Payload
 {
     meta:
@@ -568,8 +561,3 @@ rule Space_Delimited_Hex_Payload
     condition:
         any of them
 }
-
-// ============================================================================
-// Bash / Shell Obfuscation Rules
-// ============================================================================
-
