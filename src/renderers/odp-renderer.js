@@ -109,7 +109,7 @@ class OdpRenderer {
         for (const a of Array.from(links)) {
           const href = a.getAttributeNS(this.XLINK, 'href') || a.getAttribute('xlink:href');
           if (href && /^https?:\/\//i.test(href)) {
-            f.externalRefs.push({ type: 'Hyperlink', url: href, severity: 'info' });
+            f.externalRefs.push({ type: IOC.URL, url: href, severity: 'info', note: 'Hyperlink' });
           }
         }
       }

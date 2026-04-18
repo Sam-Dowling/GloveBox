@@ -1280,11 +1280,11 @@ class JarRenderer {
       if (manifest.attrs['Class-Path']) f.metadata['Class-Path'] = manifest.attrs['Class-Path'];
       if (manifest.attrs['Premain-Class']) {
         f.metadata['⚠ Premain-Class'] = manifest.attrs['Premain-Class'];
-        f.interestingStrings.push({ type: 'Java Agent', url: `Java Agent: ${manifest.attrs['Premain-Class']}`, severity: 'high' });
+        f.interestingStrings.push({ type: IOC.PATTERN, url: `Java Agent: ${manifest.attrs['Premain-Class']}`, severity: 'high' });
       }
       if (manifest.attrs['Agent-Class']) {
         f.metadata['⚠ Agent-Class'] = manifest.attrs['Agent-Class'];
-        f.interestingStrings.push({ type: 'Java Agent', url: `Dynamic Agent: ${manifest.attrs['Agent-Class']}`, severity: 'high' });
+        f.interestingStrings.push({ type: IOC.PATTERN, url: `Dynamic Agent: ${manifest.attrs['Agent-Class']}`, severity: 'high' });
       }
     }
 
@@ -1321,7 +1321,7 @@ class JarRenderer {
       if (e.dir) continue;
       const eExt = e.path.split('.').pop().toLowerCase();
       if (dangerousExts.has(eExt)) {
-        f.interestingStrings.push({ type: 'Suspicious Resource', url: e.path, severity: 'medium' });
+        f.interestingStrings.push({ type: IOC.FILE_PATH, url: e.path, severity: 'medium', note: 'Suspicious resource inside JAR' });
         if (f.risk === 'info' || f.risk === 'low') f.risk = 'medium';
       }
     }
@@ -1352,7 +1352,7 @@ class JarRenderer {
     // Suspicious APIs → interestingStrings
     for (const s of analysis.suspicious) {
       f.interestingStrings.push({
-        type: 'Suspicious API',
+        type: IOC.PATTERN,
         url: `${s.api}: ${s.desc}`,
         severity: s.severity || 'medium'
       });
@@ -1371,7 +1371,7 @@ class JarRenderer {
 
     // Obfuscation
     for (const o of obfuscation) {
-      f.interestingStrings.push({ type: 'Obfuscation', url: o, severity: 'high' });
+      f.interestingStrings.push({ type: IOC.PATTERN, url: `Obfuscation: ${o}`, severity: 'high' });
     }
 
     // Risk assessment
