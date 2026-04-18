@@ -85,7 +85,7 @@ class InfSctRenderer {
     }
 
     // Full source
-    this._appendSource(wrap, text, bytes);
+    this._appendSource(wrap, text, bytes, 'ini');
 
     // Expose raw text for IOC extraction, YARA match highlighting and click-to-scroll
     wrap._rawText = text;
@@ -123,9 +123,25 @@ class InfSctRenderer {
         sec.appendChild(h);
 
         if (s.code) {
-          const pre = document.createElement('pre'); pre.className = 'rtf-raw-source';
+          const pre = document.createElement('pre'); pre.className = 'rtf-raw-source hljs';
           pre.style.cssText += 'max-height:300px;overflow:auto;';
-          pre.textContent = s.code.length > 50000 ? s.code.slice(0, 50000) + '\n… truncated' : s.code;
+          const code = s.code.length > 50000 ? s.code.slice(0, 50000) + '\n… truncated' : s.code;
+          // Map script language → hljs grammar. VBScript uses the bundled
+          // `vbscript` grammar; JScript / JavaScript both use `javascript`.
+          const lang = /vbs|vbscript/i.test(s.language) ? 'vbscript'
+                     : /jscript|javascript/i.test(s.language) ? 'javascript'
+                     : null;
+          let highlighted = null;
+          if (lang && typeof hljs !== 'undefined' && code.length <= 200000) {
+            try {
+              highlighted = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
+            } catch (_) { /* fallback */ }
+          }
+          if (highlighted !== null) {
+            pre.innerHTML = highlighted;
+          } else {
+            pre.textContent = code;
+          }
           sec.appendChild(pre);
         }
         wrap.appendChild(sec);
@@ -163,7 +179,7 @@ class InfSctRenderer {
     }
 
     // Full source
-    this._appendSource(wrap, text, bytes);
+    this._appendSource(wrap, text, bytes, 'xml');
 
     // Expose raw text for IOC extraction, YARA match highlighting and click-to-scroll
     wrap._rawText = text;
@@ -536,7 +552,7 @@ class InfSctRenderer {
 
   // ── Shared helpers ───────────────────────────────────────────────────────
 
-  _appendSource(wrap, text, bytes) {
+  _appendSource(wrap, text, bytes, language) {
     const srcH = document.createElement('div'); srcH.className = 'hta-section-hdr';
     srcH.textContent = 'Full Source';
     wrap.appendChild(srcH);
@@ -550,10 +566,22 @@ class InfSctRenderer {
     const table = document.createElement('table'); table.className = 'plaintext-table';
     const maxLines = 50000;
     const count = Math.min(lines.length, maxLines);
+    let highlightedLines = null;
+    if (language && typeof hljs !== 'undefined' && text.length <= 200000) {
+      try {
+        const result = hljs.highlight(text, { language, ignoreIllegals: true });
+        highlightedLines = result.value.split('\n');
+      } catch (_) { /* fallback to plain textContent */ }
+    }
     for (let i = 0; i < count; i++) {
       const tr = document.createElement('tr');
       const tdNum = document.createElement('td'); tdNum.className = 'plaintext-ln'; tdNum.textContent = i + 1;
-      const tdCode = document.createElement('td'); tdCode.className = 'plaintext-code'; tdCode.textContent = lines[i];
+      const tdCode = document.createElement('td'); tdCode.className = 'plaintext-code';
+      if (highlightedLines && highlightedLines[i] !== undefined) {
+        tdCode.innerHTML = highlightedLines[i] || '';
+      } else {
+        tdCode.textContent = lines[i];
+      }
       tr.appendChild(tdNum); tr.appendChild(tdCode); table.appendChild(tr);
     }
     scr.appendChild(table); wrap.appendChild(scr);
