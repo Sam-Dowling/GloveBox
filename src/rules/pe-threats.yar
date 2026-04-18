@@ -282,7 +282,7 @@ rule PE_Dot_NET_Assembly {
 rule PE_AutoIT_Compiled {
     meta:
         description = "AutoIT compiled executable (common in commodity malware)"
-        category = "suspicious"
+        category = "execution"
         mitre       = "T1059"
         severity = "high"
     strings:
@@ -326,7 +326,7 @@ rule PE_NSIS_Installer {
 rule PE_Embedded_PE {
     meta:
         description = "PE file contains another embedded PE file"
-        category = "suspicious"
+        category = "defense-evasion"
         mitre       = "T1027.009"
         severity = "high"
     strings:
@@ -407,7 +407,7 @@ rule PE_Metasploit_Payload {
 rule PE_XLL_Excel_AddIn {
     meta:
         description = "Excel XLL add-in (DLL that auto-loads into Excel on open)"
-        category = "suspicious"
+        category = "execution"
         mitre       = "T1137.006"
         severity = "high"
     strings:
@@ -425,7 +425,7 @@ rule PE_XLL_Excel_AddIn {
 rule PE_XLL_ExcelDNA_Managed {
     meta:
         description = "Excel-DNA managed-code XLL (.NET-authored Excel add-in)"
-        category = "suspicious"
+        category = "execution"
         mitre       = "T1137.006"
         severity = "high"
     strings:
@@ -442,7 +442,7 @@ rule PE_XLL_ExcelDNA_Managed {
 rule PE_Compiled_AutoHotkey {
     meta:
         description = "Compiled AutoHotkey script (common in commodity malware droppers)"
-        category = "suspicious"
+        category = "execution"
         mitre       = "T1059"
         severity = "high"
     strings:
