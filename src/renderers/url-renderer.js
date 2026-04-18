@@ -95,6 +95,18 @@ class UrlShortcutRenderer {
     const lines = normalizedText.split('\n');
     const maxLines = 5000;
     const count = Math.min(lines.length, maxLines);
+
+    // hljs highlighting — 'ini' for .url (INI-style), 'xml' for .webloc / .website
+    // (both are XML plist-flavoured). 200 KB cap matches the other renderers.
+    const lang = (ext === 'webloc' || ext === 'website') ? 'xml' : 'ini';
+    let highlightedLines = null;
+    if (typeof hljs !== 'undefined' && normalizedText.length <= 200000) {
+      try {
+        const result = hljs.highlight(normalizedText, { language: lang, ignoreIllegals: true });
+        highlightedLines = result.value.split('\n');
+      } catch (_) { /* fallback to plain text */ }
+    }
+
     for (let i = 0; i < count; i++) {
       const tr = document.createElement('tr');
       const tdNum = document.createElement('td');
@@ -102,7 +114,11 @@ class UrlShortcutRenderer {
       tdNum.textContent = i + 1;
       const tdCode = document.createElement('td');
       tdCode.className = 'plaintext-code';
-      tdCode.textContent = lines[i];
+      if (highlightedLines && highlightedLines[i] !== undefined) {
+        tdCode.innerHTML = highlightedLines[i] || '';
+      } else {
+        tdCode.textContent = lines[i];
+      }
       tr.appendChild(tdNum);
       tr.appendChild(tdCode);
       table.appendChild(tr);
