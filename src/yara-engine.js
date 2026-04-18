@@ -235,7 +235,7 @@ class YaraEngine {
    * Scan a buffer against parsed YARA rules.
    * @param {ArrayBuffer|Uint8Array} buffer  File content
    * @param {object[]} rules  Parsed rule objects from parseRules()
-   * @returns {{ ruleName: string, tags: string, meta: object, matches: { id: string, value: string, matches: {offset: number, length: number}[] }[] }[]}
+   * @returns {{ ruleName: string, tags: string, meta: object, condition: string, matches: { id: string, value: string, matches: {offset: number, length: number}[] }[] }[]}
    */
   static scan(buffer, rules) {
     const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
@@ -276,6 +276,7 @@ class YaraEngine {
           ruleName: rule.name,
           tags: rule.tags,
           meta: rule.meta,
+          condition: rule.condition,
           matches: matchDetails
         });
       }
