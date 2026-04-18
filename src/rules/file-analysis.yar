@@ -7,14 +7,13 @@ rule PE_Shellcode_Loader_Pattern
         mitre       = "T1055"
 
     strings:
-        $mz       = { 4D 5A }
         $alloc    = "VirtualAlloc" nocase
         $protect  = "VirtualProtect" nocase
         $move     = "RtlMoveMemory" nocase
         $load     = "LoadLibraryA" nocase
 
     condition:
-        $mz at 0 and 3 of ($alloc, $protect, $move, $load)
+        uint16(0) == 0x5A4D and 3 of ($alloc, $protect, $move, $load)
 }
 
 rule PE_Download_Execute
@@ -26,7 +25,6 @@ rule PE_Download_Execute
         mitre       = "T1105"
 
     strings:
-        $mz      = { 4D 5A }
         $dl1     = "InternetConnectA" nocase
         $dl2     = "URLDownloadToFile" nocase
         $dl3     = "URLDownloadToFileA" nocase
@@ -38,7 +36,7 @@ rule PE_Download_Execute
         $exec4   = "ShellExecuteA" nocase
 
     condition:
-        $mz at 0 and any of ($dl1, $dl2, $dl3, $dl4, $dl5) and any of ($exec1, $exec2, $exec3, $exec4)
+        uint16(0) == 0x5A4D and any of ($dl1, $dl2, $dl3, $dl4, $dl5) and any of ($exec1, $exec2, $exec3, $exec4)
 }
 
 rule PE_Suspicious_Imports_Cluster
@@ -50,7 +48,6 @@ rule PE_Suspicious_Imports_Cluster
         mitre       = "T1055"
 
     strings:
-        $mz   = { 4D 5A }
         $a    = "VirtualAllocEx" nocase
         $b    = "WriteProcessMemory" nocase
         $c    = "CreateRemoteThread" nocase
@@ -64,5 +61,5 @@ rule PE_Suspicious_Imports_Cluster
         $k    = "QueueUserAPC" nocase
 
     condition:
-        $mz at 0 and 3 of ($a, $b, $c, $d, $e, $f, $g, $h, $i, $j, $k)
+        uint16(0) == 0x5A4D and 3 of ($a, $b, $c, $d, $e, $f, $g, $h, $i, $j, $k)
 }
