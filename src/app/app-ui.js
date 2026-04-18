@@ -487,9 +487,315 @@ Object.assign(App.prototype, {
     this._copyAnalysisPlist(f, parts, tp);
     this._copyAnalysisOsascript(f, parts, tp);
     this._copyAnalysisOOXMLRels(f, parts, tp);
+    this._copyAnalysisClickOnce(f, parts, tp);
+    this._copyAnalysisMsix(f, parts, tp);
 
     return parts.length ? parts.join('\n') + '\n' : '';
   },
+
+  // ── ClickOnce manifest detail ─────────────────────────────────────────
+  //   Surfaces the parsed .application / .manifest so SOC paste-ups have
+  //   the headline fields (codebase, trust level, AppDomainManager hijack,
+  //   signature state) without having to re-open the file.
+  _copyAnalysisClickOnce(f, parts, tp) {
+    const co = f && f.clickOnceInfo;
+    if (!co) return;
+
+    parts.push('\n## ClickOnce Manifest Details');
+
+    if (co.kind) {
+      const kindLabel = co.kind === 'deployment' ? 'Deployment manifest (.application)'
+                      : co.kind === 'application' ? 'Application manifest (.manifest)'
+                      : co.kind;
+      parts.push(`- **Manifest Kind:** ${tp(kindLabel)}`);
+    }
+    if (co.identity) {
+      const id = co.identity;
+      const idParts = [];
+      if (id.name) idParts.push(id.name);
+      if (id.version) idParts.push('v' + id.version);
+      if (id.processorArchitecture) idParts.push(id.processorArchitecture);
+      if (id.publicKeyToken) idParts.push('pkt=' + id.publicKeyToken);
+      if (idParts.length) parts.push(`- **Identity:** ${tp(idParts.join(' '))}`);
+    }
+    if (co.description) {
+      if (co.description.publisher) parts.push(`- **Publisher:** ${tp(co.description.publisher)}`);
+      if (co.description.product) parts.push(`- **Product:** ${tp(co.description.product)}`);
+      if (co.description.supportUrl) parts.push(`- **Support URL:** ${tp(co.description.supportUrl)}`);
+    }
+
+    if (co.deployment) {
+      const d = co.deployment;
+      parts.push('\n### Deployment');
+      if (d.codebase) {
+        const isHttp = /^http:\/\//i.test(d.codebase);
+        parts.push(`- **Codebase:** ${tp(d.codebase)}${isHttp ? ' ⚠ (HTTP — MITM risk)' : ''}`);
+      }
+      if (d.install != null) parts.push(`- **Install:** ${d.install}${d.install === true ? ' (silent install on download)' : ''}`);
+      if (d.mapFileExtensions != null) parts.push(`- **Map File Extensions:** ${d.mapFileExtensions}`);
+      if (d.trustUrlParameters != null) parts.push(`- **Trust URL Parameters:** ${d.trustUrlParameters}${d.trustUrlParameters === true ? ' ⚠ (URL query → argv)' : ''}`);
+      if (d.minimumRequiredVersion) parts.push(`- **Minimum Required Version:** ${tp(d.minimumRequiredVersion)}`);
+    }
+
+    if (co.entryPoint) {
+      const ep = co.entryPoint;
+      if (ep.commandLineFile || ep.dependentAssembly) {
+        parts.push('\n### Entry Point');
+        if (ep.commandLineFile) parts.push(`- **Command Line File:** \`${tp(ep.commandLineFile)}\``);
+        if (ep.commandLineParameters) parts.push(`- **Parameters:** \`${tp(ep.commandLineParameters)}\``);
+        if (ep.dependentAssembly && ep.dependentAssembly.name) {
+          const da = ep.dependentAssembly;
+          const daParts = [da.name];
+          if (da.version) daParts.push('v' + da.version);
+          if (da.processorArchitecture) daParts.push(da.processorArchitecture);
+          parts.push(`- **Dependent Assembly:** ${tp(daParts.join(' '))}`);
+        }
+      }
+    }
+
+    if (co.trust) {
+      parts.push('\n### Requested Trust');
+      if (co.trust.fullTrust) {
+        parts.push('- ⚠ **FullTrust (Unrestricted="true")** — unsandboxed .NET execution');
+      } else if (co.trust.permissionSet) {
+        parts.push(`- **Permission Set:** ${tp(co.trust.permissionSet)}`);
+      } else {
+        parts.push('- Declared permission set (not FullTrust)');
+      }
+      if (co.trust.defaultAssemblyRequest) {
+        parts.push(`- **Default Assembly Request:** ${tp(co.trust.defaultAssemblyRequest)}`);
+      }
+    }
+
+    if (co.appDomainManager && (co.appDomainManager.assembly || co.appDomainManager.type)) {
+      parts.push('\n### AppDomainManager Override ⚠ (MITRE T1574.014)');
+      if (co.appDomainManager.assembly) parts.push(`- **Assembly:** \`${tp(co.appDomainManager.assembly)}\``);
+      if (co.appDomainManager.type) parts.push(`- **Type:** \`${tp(co.appDomainManager.type)}\``);
+    }
+
+    if (co.signature) {
+      parts.push('\n### Signature');
+      if (co.signature.hasCertificate) {
+        parts.push('- **Status:** Authenticode-signed (embedded X509 certificate)');
+        if (co.signature.subjectName) parts.push(`- **Subject:** ${tp(co.signature.subjectName)}`);
+      } else if (co.signature.hasSignature) {
+        parts.push('- **Status:** XMLDSig-signed (no embedded certificate)');
+      } else {
+        parts.push('- ⚠ **Status:** Unsigned — any tamper goes undetected');
+      }
+    }
+
+    if (co.dependentAssemblies && co.dependentAssemblies.length) {
+      parts.push(`\n### Dependent Assemblies (${co.dependentAssemblies.length})`);
+      parts.push('| Name | Version | Arch | Codebase |');
+      parts.push('|------|---------|------|----------|');
+      for (const d of co.dependentAssemblies.slice(0, 30)) {
+        parts.push(`| ${tp(d.name || '?')} | ${tp(d.version || '—')} | ${tp(d.processorArchitecture || '—')} | ${tp(d.codebase || '—')} |`);
+      }
+      if (co.dependentAssemblies.length > 30) {
+        parts.push(`… and ${co.dependentAssemblies.length - 30} more`);
+      }
+    }
+  },
+
+
+  // ── MSIX / APPX / .appinstaller manifest detail ──────────────────────
+  //   Produces a paste-able SOC summary for Windows app packages and
+  //   App Installer files: identity, publisher, signature state, capability
+  //   set (split general / device / restricted), per-application entry
+  //   points and extensions, and — for .appinstaller — the auto-update
+  //   policy. The renderer fills findings.msixInfo with the full parsed
+  //   manifest tree; this helper only formats what's already there.
+  _copyAnalysisMsix(f, parts, tp) {
+    const mx = f && f.msixInfo;
+    if (!mx) return;
+
+    const kindLabel = mx.containerKind === 'bundle' ? 'MSIX / APPX Bundle (.msixbundle / .appxbundle)'
+                    : mx.containerKind === 'package' ? 'MSIX / APPX Package (.msix / .appx)'
+                    : mx.containerKind === 'appinstaller' ? 'App Installer File (.appinstaller)'
+                    : mx.containerKind || 'MSIX';
+    parts.push('\n## MSIX Package Details');
+    parts.push(`- **Format:** ${tp(kindLabel)}`);
+
+    // ── Identity / Publisher ──
+    if (mx.identity) {
+      const id = mx.identity;
+      const bits = [];
+      if (id.name) bits.push(id.name);
+      if (id.version) bits.push('v' + id.version);
+      if (id.processorArchitecture) bits.push(id.processorArchitecture);
+      if (id.resourceId) bits.push('res=' + id.resourceId);
+      if (bits.length) parts.push(`- **Identity:** ${tp(bits.join(' '))}`);
+      if (id.publisher) parts.push(`- **Publisher (CN):** ${tp(id.publisher)}`);
+    }
+    if (mx.properties) {
+      if (mx.properties.displayName) parts.push(`- **Display Name:** ${tp(mx.properties.displayName)}`);
+      if (mx.properties.publisherDisplayName) parts.push(`- **Publisher (Display):** ${tp(mx.properties.publisherDisplayName)}`);
+      if (mx.properties.description) parts.push(`- **Description:** ${tp(mx.properties.description)}`);
+    }
+
+    // ── Signature / Block Map (ZIP containers only) ──
+    if (mx.containerKind === 'package' || mx.containerKind === 'bundle') {
+      if (mx.hasSignature) {
+        parts.push(`- **Signature:** Signed (AppxSignature.p7x${mx.hasCodeIntegrityCat ? ' + CodeIntegrity catalog' : ''})`);
+      } else {
+        parts.push('- ⚠ **Signature:** Unsigned / sideload-only — no Authenticode signature block');
+      }
+      parts.push(`- **Block Map:** ${mx.hasBlockMap ? 'Present' : '⚠ Missing'}`);
+    }
+
+    // ── Target device families ──
+    if (mx.targetDeviceFamilies && mx.targetDeviceFamilies.length) {
+      const list = mx.targetDeviceFamilies
+        .map(t => `${t.name || '?'}${t.minVersion ? ' ≥ ' + t.minVersion : ''}`)
+        .join(', ');
+      parts.push(`- **Target Device Families:** ${tp(list)}`);
+    }
+
+    // ── Capabilities (split by severity class) ──
+    if (mx.capabilities && mx.capabilities.length) {
+      const rescap  = mx.capabilities.filter(c => c.restricted);
+      const device  = mx.capabilities.filter(c => !c.restricted && c.device);
+      const general = mx.capabilities.filter(c => !c.restricted && !c.device);
+      parts.push(`\n### Declared Capabilities (${mx.capabilities.length})`);
+      if (rescap.length) {
+        parts.push(`- ⚠ **Restricted (rescap):** ${rescap.map(c => tp(c.name || '?')).join(', ')}`);
+      }
+      if (device.length) {
+        parts.push(`- **Device:** ${device.map(c => tp(c.name || '?')).join(', ')}`);
+      }
+      if (general.length) {
+        parts.push(`- **General:** ${general.map(c => tp(c.name || '?')).join(', ')}`);
+      }
+    }
+
+    // ── Applications / Entry points / Extensions ──
+    if (mx.applications && mx.applications.length) {
+      parts.push(`\n### Applications / Entry Points (${mx.applications.length})`);
+      for (const a of mx.applications.slice(0, 20)) {
+        const head = `**${tp(a.id || '(app)')}** — \`${tp(a.executable || '(no exe)')}\``
+                   + (a.entryPoint === 'Windows.FullTrustApplication' ? ' ⚠ (FullTrust entry)' : '');
+        parts.push(`\n- ${head}`);
+        if (a.displayName) parts.push(`  - Display: ${tp(a.displayName)}`);
+        if (a.startPage) parts.push(`  - StartPage: ${tp(a.startPage)}`);
+        if (a.extensions && a.extensions.length) {
+          for (const ex of a.extensions) {
+            const line = this._formatMsixExtension(ex, tp);
+            if (line) parts.push(`  - ${line}`);
+          }
+        }
+      }
+      if (mx.applications.length > 20) parts.push(`\n… and ${mx.applications.length - 20} more applications`);
+    }
+
+    // ── Bundle package list ──
+    if (mx.bundlePackages && mx.bundlePackages.length) {
+      parts.push(`\n### Bundle Contents (${mx.bundlePackages.length})`);
+      parts.push('| Type | Architecture | Version | FileName |');
+      parts.push('|------|--------------|---------|----------|');
+      for (const p of mx.bundlePackages.slice(0, 30)) {
+        parts.push(`| ${tp(p.type || '—')} | ${tp(p.architecture || '—')} | ${tp(p.version || '—')} | \`${tp(p.fileName || '?')}\` |`);
+      }
+      if (mx.bundlePackages.length > 30) parts.push(`… and ${mx.bundlePackages.length - 30} more`);
+    }
+
+    // ── App Installer fields ──
+    if (mx.containerKind === 'appinstaller') {
+      parts.push('\n### App Installer');
+      if (mx.uri) {
+        const isHttp = /^http:\/\//i.test(mx.uri);
+        parts.push(`- **Self Uri:** \`${tp(mx.uri)}\`${isHttp ? ' ⚠ (HTTP — MITM risk)' : ''}`);
+      }
+      if (mx.version) parts.push(`- **Version:** ${tp(mx.version)}`);
+      if (mx.mainPackage) {
+        const mp = mx.mainPackage;
+        const bits = [];
+        if (mp.name) bits.push(mp.name);
+        if (mp.version) bits.push('v' + mp.version);
+        if (mp.processorArchitecture) bits.push(mp.processorArchitecture);
+        if (bits.length) parts.push(`- **Main Package:** ${tp(bits.join(' '))}`);
+        if (mp.uri) {
+          const isHttp = /^http:\/\//i.test(mp.uri);
+          parts.push(`- **Main Package Uri:** \`${tp(mp.uri)}\`${isHttp ? ' ⚠ (HTTP — MITM risk)' : ''}`);
+        }
+      }
+      if (mx.mainBundle) {
+        const mb = mx.mainBundle;
+        const bits = [];
+        if (mb.name) bits.push(mb.name);
+        if (mb.version) bits.push('v' + mb.version);
+        if (mb.processorArchitecture) bits.push(mb.processorArchitecture);
+        if (bits.length) parts.push(`- **Main Bundle:** ${tp(bits.join(' '))}`);
+        if (mb.uri) {
+          const isHttp = /^http:\/\//i.test(mb.uri);
+          parts.push(`- **Main Bundle Uri:** \`${tp(mb.uri)}\`${isHttp ? ' ⚠ (HTTP — MITM risk)' : ''}`);
+        }
+      }
+      if (mx.dependencies && mx.dependencies.length) {
+        parts.push(`- **Dependencies (${mx.dependencies.length}):**`);
+        for (const d of mx.dependencies.slice(0, 10)) {
+          const bits = [];
+          if (d.name) bits.push(d.name);
+          if (d.version) bits.push('v' + d.version);
+          if (d.processorArchitecture) bits.push(d.processorArchitecture);
+          parts.push(`  - ${tp(bits.join(' '))}${d.uri ? ` → \`${tp(d.uri)}\`` : ''}`);
+        }
+      }
+      if (mx.updateSettings) {
+        const us = mx.updateSettings;
+        parts.push('- **Update Settings:**');
+        if (us.onLaunch) {
+          const bits = [];
+          if (us.onLaunch.hoursBetweenUpdateChecks != null) bits.push(`every ${us.onLaunch.hoursBetweenUpdateChecks}h`);
+          if (us.onLaunch.updateBlocksActivation === true) bits.push('blocks activation');
+          if (us.onLaunch.showPrompt === false) bits.push('⚠ silent (no prompt)');
+          parts.push(`  - OnLaunch: ${bits.length ? bits.join(', ') : 'enabled'}`);
+        }
+        if (us.automaticBackgroundTask) parts.push('  - AutomaticBackgroundTask: enabled');
+        if (us.forceUpdateFromAnyVersion === true) parts.push('  - ⚠ ForceUpdateFromAnyVersion: true');
+      }
+    }
+  },
+
+  // Format one MSIX <Extension> entry as a single compact bullet. Returns
+  // null if the extension carries no interesting attributes.
+  _formatMsixExtension(ex, tp) {
+    if (!ex) return null;
+    const cat = ex.category || '(extension)';
+    const sev = ex.severity === 'high' ? ' ⚠' : ex.severity === 'medium' ? ' ⚠' : '';
+    switch (cat) {
+      case 'windows.fullTrustProcess':
+        return `${sev} fullTrustProcess → \`${tp(ex.executable || '?')}\``;
+      case 'windows.startupTask':
+        return `${sev} startupTask${ex.taskId ? ` (${tp(ex.taskId)})` : ''}${ex.enabled === true ? ' [enabled]' : ''}`
+             + (ex.executable ? ` → \`${tp(ex.executable)}\`` : '');
+      case 'windows.appExecutionAlias': {
+        const list = (ex.aliases || []).map(a => '`' + tp(a) + '`').join(', ') || '—';
+        return `${sev} appExecutionAlias: ${list}`;
+      }
+      case 'windows.protocol': {
+        const list = (ex.protocols || []).map(p => '`' + tp(p) + '`').join(', ') || '—';
+        return `${sev} protocol: ${list}`;
+      }
+      case 'windows.fileTypeAssociation': {
+        const list = (ex.fileTypes || []).slice(0, 10).map(t => '`' + tp(t) + '`').join(', ');
+        return `fileTypeAssociation${ex.name ? ` (${tp(ex.name)})` : ''}${list ? ': ' + list : ''}`;
+      }
+      case 'windows.service':
+        return `${sev} service → \`${tp(ex.executable || '?')}\``;
+      case 'windows.backgroundTasks': {
+        const list = (ex.triggers || []).map(t => '`' + tp(t) + '`').join(', ') || '—';
+        return `backgroundTasks: ${list}${ex.entryPoint ? ` (entry: ${tp(ex.entryPoint)})` : ''}`;
+      }
+      case 'com.Extension':
+      case 'windows.comServer':
+      case 'windows.comInterface':
+        return `${sev} ${cat}${ex.executable ? ` → \`${tp(ex.executable)}\`` : ''}`;
+      default:
+        return `${cat}${ex.executable ? ` → \`${tp(ex.executable)}\`` : ''}`;
+    }
+  },
+
 
   // ── PE deep data ──────────────────────────────────────────────────────
   _copyAnalysisPE(pe, parts, tp) {
@@ -649,7 +955,56 @@ Object.assign(App.prototype, {
         }
       }
     }
+
+    // ── Format heuristics ──
+    //   Populated by PeRenderer._detectFormatHeuristics. Each flag is a
+    //   flat field on `pe`, so any combination can fire independently
+    //   (e.g. a Go binary that is also an Inno wrapper). We emit a
+    //   dedicated subsection per detected sub-format so analysts can
+    //   paste the whole Summary into a ticket and have the headline
+    //   classification jump out.
+    if (pe.isXll) {
+      parts.push('\n### XLL (Excel Add-in)');
+      if (pe.xllIsExcelDna) parts.push('- **Runtime:** Excel-DNA managed add-in (.NET)');
+      if (pe.xllExports && pe.xllExports.length) {
+        parts.push(`- **XLL Hooks:** ${pe.xllExports.map(n => `\`${n}\``).join(', ')}`);
+      }
+      parts.push('- ⚠ Loaded into Excel as a DLL; `xlAutoOpen` runs automatically on load.');
+    }
+    if (pe.isAutoHotkey) {
+      parts.push('\n### Compiled AutoHotkey Script');
+      if (pe.autoHotkeyOffset != null) {
+        parts.push(`- **Script Offset:** 0x${(pe.autoHotkeyOffset||0).toString(16)}`);
+      }
+      if (pe.autoHotkeyScript) {
+        parts.push(`- **Script Size:** ${pe.autoHotkeyScript.length.toLocaleString()} bytes`);
+        const preview = pe.autoHotkeyScript.slice(0, 400).replace(/\r\n?/g, '\n');
+        parts.push('- **Preview:**\n```\n' + preview + (pe.autoHotkeyScript.length > 400 ? '\n…' : '') + '\n```');
+      }
+    }
+    if (pe.installerType) {
+      parts.push(`\n### ${tp(pe.installerType)} Installer`);
+      if (pe.installerVersion) parts.push(`- **Version:** ${tp(pe.installerVersion)}`);
+      parts.push('- Payload archive is embedded as a PE overlay; Loupe does **not** unpack it — run the installer in an isolated sandbox and triage the extracted setup script separately.');
+    }
+    if (pe.isGoBinary) {
+      parts.push('\n### Go Build Info');
+      const g = pe.goBuildInfo || {};
+      if (g.version) parts.push(`- **Go Version:** ${tp(g.version)}`);
+      if (g.path) parts.push(`- **Main Package:** \`${tp(g.path)}\``);
+      if (g.vcs) parts.push(`- **VCS:** ${tp(g.vcs)}`);
+      if (g.revision) parts.push(`- **Revision:** \`${tp(g.revision)}\``);
+      if (g.buildTime) parts.push(`- **Build Time:** ${tp(g.buildTime)}`);
+      if (g.settings && Object.keys(g.settings).length) {
+        const extra = Object.entries(g.settings)
+          .filter(([k]) => k !== 'vcs' && k !== 'vcs.revision' && k !== 'vcs.time')
+          .slice(0, 10);
+        for (const [k, v] of extra) parts.push(`- **${tp(k)}:** ${tp(String(v))}`);
+      }
+      if (!g.version && !g.path) parts.push('- Go binary detected via section name (.gopclntab / .go.buildinfo); build info header was not parseable.');
+    }
   },
+
 
   // ── ELF deep data ─────────────────────────────────────────────────────
   _copyAnalysisELF(elf, parts, tp) {
@@ -767,7 +1122,31 @@ Object.assign(App.prototype, {
     // this binary" without dumping every string (that would blow the
     // budget).
     if (elf.stringCount != null) parts.push(`\n**Strings extracted:** ${elf.stringCount}`);
+
+    // ── Go build info ──
+    //   Mirrors the PE heuristic block. The `isGoBinary` flag is also
+    //   surfaced via findings.metadata['Format']='Go Binary' so it
+    //   already shows up in the generic metadata section, but the full
+    //   build-info table (VCS revision, module path, settings…) only
+    //   makes sense under its own heading.
+    if (elf.isGoBinary) {
+      parts.push('\n### Go Build Info');
+      const g = elf.goBuildInfo || {};
+      if (g.version) parts.push(`- **Go Version:** ${tp(g.version)}`);
+      if (g.path) parts.push(`- **Main Package:** \`${tp(g.path)}\``);
+      if (g.vcs) parts.push(`- **VCS:** ${tp(g.vcs)}`);
+      if (g.revision) parts.push(`- **Revision:** \`${tp(g.revision)}\``);
+      if (g.buildTime) parts.push(`- **Build Time:** ${tp(g.buildTime)}`);
+      if (g.settings && Object.keys(g.settings).length) {
+        const extra = Object.entries(g.settings)
+          .filter(([k]) => k !== 'vcs' && k !== 'vcs.revision' && k !== 'vcs.time')
+          .slice(0, 10);
+        for (const [k, v] of extra) parts.push(`- **${tp(k)}:** ${tp(String(v))}`);
+      }
+      if (!g.version && !g.path) parts.push('- Go binary detected via section name (.gopclntab / .go.buildinfo); build info header was not parseable.');
+    }
   },
+
 
   // ── Mach-O deep data ──────────────────────────────────────────────────
   _copyAnalysisMachO(mo, parts, tp) {

@@ -49,8 +49,8 @@ SOC analysts, incident responders, and security-conscious users need a way to sa
 | **Email** | `.eml` `.msg` |
 | **Web** | `.html` `.htm` `.mht` `.svg` |
 | **Archives** | `.zip` `.gz` `.tar` `.tgz` `.rar` `.7z` `.cab` `.iso` `.img` |
-| **Windows** | `.lnk` `.hta` `.url` `.reg` `.inf` `.sct` `.msi` `.exe` `.dll` `.sys` `.scr` `.cpl` `.ocx` `.drv` |
-| **Linux / IoT** | ELF binaries (`.so`, `.o`, extensionless) |
+| **Windows** | `.lnk` `.hta` `.url` `.reg` `.inf` `.sct` `.msi` `.exe` `.dll` `.sys` `.scr` `.cpl` `.ocx` `.drv` `.com` `.xll` `.application` `.manifest` `.msix` `.msixbundle` `.appx` `.appxbundle` `.appinstaller` |
+| **Linux / IoT** | ELF binaries (`.so`, `.o`, `.elf`, extensionless) |
 | **macOS** | Mach-O binaries (`.dylib`, `.bundle`, Fat/Universal) · `.applescript` `.scpt` `.jxa` `.plist` `.webloc` |
 | **Certificates** | `.pem` `.der` `.crt` `.cer` `.p12` `.pfx` `.key` *(auto-disambiguated against PGP)* |
 | **OpenPGP** | `.pgp` `.gpg` `.asc` `.sig` |

@@ -222,6 +222,23 @@ Object.assign(App.prototype, {
             this._loadFile(innerFile);
           }
         });
+      } else if (['msix', 'msixbundle', 'appx', 'appxbundle', 'appinstaller'].includes(ext)) {
+        // ── MSIX / APPX / .appinstaller ────────────────────────────────
+        //   .msix/.msixbundle/.appx/.appxbundle are ZIP packages containing
+        //   AppxManifest.xml (or AppxBundleManifest.xml). .appinstaller is
+        //   a standalone XML document. The renderer sniffs the magic bytes
+        //   internally to pick the right code path.
+        const r = new MsixRenderer();
+        this.findings = await r.analyzeForSecurity(buffer, file.name);
+        docEl = await r.render(buffer, file.name);
+        // Listen for inner-file open events from clickable package entries
+        docEl.addEventListener('open-inner-file', (e) => {
+          const innerFile = e.detail;
+          if (innerFile) {
+            this._pushNavState(file.name);
+            this._loadFile(innerFile);
+          }
+        });
       } else if (['iso', 'img'].includes(ext)) {
         const r = new IsoRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
@@ -302,10 +319,43 @@ Object.assign(App.prototype, {
         const r = new ImageRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
         docEl = r.render(buffer, file.name);
-      } else if (['exe', 'dll', 'sys', 'scr', 'cpl', 'ocx', 'drv', 'com'].includes(ext)) {
+      } else if (['exe', 'dll', 'sys', 'scr', 'cpl', 'ocx', 'drv', 'com', 'xll'].includes(ext)) {
+        // .xll — Excel add-in; structurally a DLL. The PE renderer's
+        // format-heuristics pass (pe-renderer._detectFormatHeuristics)
+        // picks up the xlAutoOpen / xlAutoClose exports so the sidebar,
+        // Summary output, and YARA pass all flag the XLL class correctly.
         const r = new PeRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
         docEl = r.render(buffer, file.name);
+      } else if (ext === 'application' || ext === 'manifest') {
+        // ── ClickOnce / .NET assembly manifests ─────────────────────────
+        //   The `.manifest` extension is overloaded in the wild: most are
+        //   Side-by-Side (SxS), vcpkg, or Visual Studio project manifests.
+        //   We only want true ClickOnce deployment/application manifests.
+        //   Require *both* an `<assembly>` root *and* a ClickOnce-specific
+        //   signal — either the asm.v1/v2 URN, or one of the ClickOnce-
+        //   only child elements (`<deployment>`, `<entryPoint>`,
+        //   `<trustInfo>`). Anything else (SxS manifests with just
+        //   `<assembly>`+`<dependency>`, vcpkg manifests, VS project
+        //   manifests) falls through to the plaintext renderer.
+        const preview = new TextDecoder('utf-8', { fatal: false })
+          .decode(new Uint8Array(buffer, 0, Math.min(4096, buffer.byteLength)));
+        const hasAssemblyRoot = /<\s*(?:\w+:)?assembly\b/i.test(preview);
+        const hasClickOnceSignal =
+          /urn:schemas-microsoft-com:asm\.v[12]/i.test(preview)
+          || /<\s*(?:\w+:)?deployment\b/i.test(preview)
+          || /<\s*(?:\w+:)?entryPoint\b/i.test(preview)
+          || /<\s*(?:\w+:)?trustInfo\b/i.test(preview);
+        if (hasAssemblyRoot && hasClickOnceSignal) {
+          const r = new ClickOnceRenderer();
+          this.findings = r.analyzeForSecurity(buffer, file.name);
+          docEl = r.render(buffer, file.name);
+        } else {
+          const r = new PlainTextRenderer();
+          this.findings = r.analyzeForSecurity(buffer, file.name);
+          docEl = r.render(buffer, file.name);
+        }
+
       } else if (['elf', 'so', 'o'].includes(ext)) {
         const r = new ElfRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);

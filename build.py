@@ -49,6 +49,8 @@ YARA_FILES = [
     'src/rules/svg-threats.yar',
     'src/rules/osascript-threats.yar',
     'src/rules/plist-threats.yar',
+    'src/rules/clickonce-threats.yar',
+    'src/rules/msix-threats.yar',
 ]
 YARA_CATEGORIES = {
     'src/rules/office-macros.yar': 'Office Macros',
@@ -67,6 +69,8 @@ YARA_CATEGORIES = {
     'src/rules/svg-threats.yar': 'SVG',
     'src/rules/osascript-threats.yar': 'AppleScript/JXA',
     'src/rules/plist-threats.yar': 'Property List',
+    'src/rules/clickonce-threats.yar': 'ClickOnce',
+    'src/rules/msix-threats.yar': 'MSIX / APPX',
 }
 yar_parts = []
 for f in YARA_FILES:
@@ -128,6 +132,8 @@ JS_FILES = [
     'src/renderers/plist-renderer.js',
     'src/renderers/image-renderer.js',
     'src/renderers/plaintext-renderer.js',
+    'src/renderers/clickonce-renderer.js',
+    'src/renderers/msix-renderer.js',
     'src/app/app-core.js',
     'src/app/app-load.js',
     'src/app/app-sidebar.js',
@@ -146,12 +152,14 @@ ACCEPT_EXTS = [
     '.html','.htm','.mht','.xml','.vbs','.vbe','.js','.jse','.ps1','.bat','.cmd',
     '.ics','.vcf','.txt','.log','.json','.ini','.cfg','.yml','.yaml',
     '.jpg','.jpeg','.png','.gif','.bmp','.webp','.ico','.tif','.tiff','.avif','.svg',
-    '.evtx','.sqlite','.db','.exe','.dll','.sys','.scr','.cpl','.ocx','.drv','.com',
+    '.evtx','.sqlite','.db','.exe','.dll','.sys','.scr','.cpl','.ocx','.drv','.com','.xll',
     '.elf','.so','.o','.dylib','.bundle',
     '.pem','.der','.crt','.cer','.p12','.pfx','.key',
     '.pgp','.gpg','.asc','.sig',
     '.jar','.war','.ear','.class',
     '.applescript','.jxa','.scpt','.scptd','.plist',
+    '.application','.manifest',
+    '.msix','.msixbundle','.appx','.appxbundle','.appinstaller',
 ]
 accept_attr = ','.join(ACCEPT_EXTS)
 
