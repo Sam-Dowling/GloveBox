@@ -164,58 +164,22 @@ class OoxmlRelScanner {
   }
 }
 
-// YARA rules whose structural detection is now fully covered by renderer
-// findings — suppressed to avoid duplicate sidebar noise. Used by
-// app-yara.js when filtering scan results.
-// When a YARA rule in this map matches a file for which the corresponding
-// structural-finding note pattern is present in findings.externalRefs, the
-// YARA match is dropped from findings.externalRefs (but still visible in
-// the YARA results dialog).
+// Map of YARA rules whose sidebar display used to be suppressed when an
+// equivalent structural IOC.PATTERN finding was already emitted by a
+// renderer (PDF, OOXML, SVG). That de-duplication turned out to hide
+// genuinely useful YARA context (e.g. a PDF with JavaScript showed the
+// structural "/JS or /JavaScript object(s)" pattern but silently dropped
+// the matching `PDF_JavaScript_Execution` rule, so the user never saw
+// both signals side-by-side).
+//
+// The map is intentionally kept (rather than removed outright) so that
+// the lookup machinery in `app-yara.js → _updateSidebarWithYara()` keeps
+// working unchanged; an empty map simply means "suppress nothing", i.e.
+// structural + YARA findings now appear together in the sidebar.
 //   key   = YARA rule name
 //   value = regex (case-insensitive) tested against externalRef.note /
 //           externalRef.url; suppress only if any ref matches.
-const YARA_SUPPRESS_IF_STRUCTURAL = new Map([
-  // ── OOXML rels ────────────────────────────────────────────────────────────
-  // SecurityAnalyzer._externalRefs + OoxmlRelScanner emit equivalent
-  // structural findings with richer target/severity context.
-  ['Office_Remote_Template_Injection',
-    /attachedtemplate|oleobject|externallink|externallinkpath|subdocument|frame|package/i],
-  ['Office_External_OLE_Link',
-    /attachedtemplate|oleobject|externallink|externallinkpath|subdocument|frame|package/i],
-  ['Office_External_Relationship',
-    /attachedtemplate|oleobject|externallink|externallinkpath|subdocument|frame|package/i],
-  ['Office_ExternalLink_Formula',
-    /attachedtemplate|oleobject|externallink|externallinkpath|subdocument|frame|package/i],
-
-  // ── PDF structural ────────────────────────────────────────────────────────
-  // PdfRenderer now emits richer action/embedded-file findings.
-  ['PDF_URI_Link',                 /\/URI action|Annotation \/URI/i],
-  ['PDF_AutoOpen_Action',          /OpenAction present|AA additional-actions/i],
-  ['PDF_Launch_Action',            /\/Launch action target|\/Launch \/Win target/i],
-  ['PDF_Embedded_File_Attachment', /\/EmbeddedFile/i],
-  ['PDF_JavaScript_Execution',     /\/JS or \/JavaScript object/i],
-  ['PDF_XFA_Form',                 /XFA form/i],
-  ['PDF_SubmitForm_Action',        /\/SubmitForm action/i],
-  ['PDF_GoToR_Remote_Link',        /\/GoToR remote jump/i],
-
-  // ── SVG structural ────────────────────────────────────────────────────────
-  // SvgRenderer now emits richer findings (element-aware, with decoded
-  // handler values and sniffed blob types). Suppress the shallower YARA
-  // rules when the equivalent structural finding is present.
-  ['SVG_Embedded_Script',          /Embedded <script> element|<script> block detected|<foreignObject> contains <script>/i],
-  ['SVG_ForeignObject_Form',       /<foreignObject> contains HTML form|Phishing form/i],
-  ['SVG_ForeignObject_Password',   /Credential harvesting|password input field/i],
-  ['SVG_ForeignObject_Iframe',     /<foreignObject> contains <iframe>/i],
-  ['SVG_Event_Handler_OnLoad',     /Event handler onload\b|Event handler in raw SVG:[^"]*onload/i],
-  ['SVG_Event_Handler_Mouse',      /Event handler on(?:click|mouseover|mouseenter|mousedown)\b/i],
-  ['SVG_Event_Handler_Error',      /Event handler onerror\b|Event handler in raw SVG:[^"]*onerror/i],
-  ['SVG_Base64_Script_Payload',    /Data URI with script MIME type: data:(?:text|application)\/(?:java|ecma)script/i],
-  ['SVG_Data_URI_HTML',            /Data URI with script MIME type: data:text\/html|data:text\/html/i],
-  ['SVG_External_Use_Reference',   /<use> element loads external resource/i],
-  ['SVG_Animate_Href_Manipulation',/<(?:animate|set|animateTransform)> animates "(?:href|xlink:href|src|action|data)"/i],
-  ['SVG_Meta_Refresh_Redirect',    /Meta refresh redirect to:/i],
-  ['SVG_XXE_Entity',               /XML entity declaration|DOCTYPE with SYSTEM reference/i],
-]);
+const YARA_SUPPRESS_IF_STRUCTURAL = new Map();
 
 
 
