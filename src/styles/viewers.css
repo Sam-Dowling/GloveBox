@@ -2662,9 +2662,10 @@ body.dark .yara-view-rule-btn:hover {
      1. `.yara-sidebar-title`   — bold humanised rule name
      2. `.yara-sidebar-desc`    — muted italic rule description
      3. `.yara-sidebar-strings` — compact list of value + hit count
-   Each `<li>` wraps so that a hidden `.yara-sidebar-reason` sub-row can
-   appear on hover, revealing the matched `$var`, the rule's condition
-   with matched identifiers bolded, and the 📐 "view rule" affordance.
+   Hovering anywhere on the parent findings-table row reveals EVERY
+   match's hidden `.yara-sidebar-reason` sub-row at once (matched `$var`,
+   rule condition with matched identifiers bolded). The 📐 "view rule"
+   button lives in the title row and is always visible — once per rule.
    The aim is to replace the previous one-line "desc — N string(s)
    matched: $a=…, $b=…" blob with something an analyst can actually scan,
    while keeping column alignment stable regardless of `$var` length.
@@ -2675,6 +2676,14 @@ body.dark .yara-view-rule-btn:hover {
   gap: 4px;
   margin-bottom: 2px;
   line-height: 1.3;
+}
+
+/* Push the always-visible 📐 "view rule" button to the far right of the
+   title row so the bold rule name gets the primary left-aligned emphasis
+   and the affordance stays in a predictable spot regardless of name
+   length. Paired with .yara-view-rule-btn styles further up the file. */
+.yara-sidebar-title .yara-view-rule-btn {
+  margin-left: auto;
 }
 
 
@@ -2782,7 +2791,13 @@ body.dark .yara-sidebar-hits {
   line-height: 1.45;
 }
 
-.yara-sidebar-strings li:hover .yara-sidebar-reason {
+/* Reveal every match's reason sub-row when the user hovers ANYWHERE on
+   the parent findings-table row. `:has()` scopes this to rows that
+   actually contain a YARA strings list, so regular IOC rows are
+   unaffected. The old `li:hover` rule is kept as a fallback for the
+   (hypothetical) browser without `:has()` support. */
+.yara-sidebar-strings li:hover .yara-sidebar-reason,
+.ext-table tr.ioc-clickable:has(.yara-sidebar-strings):hover .yara-sidebar-reason {
   display: flex;
 }
 
