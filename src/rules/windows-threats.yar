@@ -86,8 +86,8 @@ rule URL_Shortcut_Suspicious
         $header = "[InternetShortcut]"
         $url = "URL="
         $icon = "IconFile="
-        $smb1 = "URL=\\\\\\\\" nocase
-        $smb2 = "URL=file://" nocase
+        $smb1 = "URL=\\\\\\\\" ascii wide nocase
+        $smb2 = "URL=file://" ascii wide nocase
 
     condition:
         $header and $url and ($smb1 or $smb2 or $icon)
@@ -2077,9 +2077,9 @@ rule INF_URL_Reference
         mitre       = "T1105"
 
     strings:
-        $url1 = "http://" nocase
-        $url2 = "https://" nocase
-        $inf = "[Version]" nocase
+        $url1 = "http://" ascii wide nocase
+        $url2 = "https://" ascii wide nocase
+        $inf = "[Version]" ascii wide nocase
 
     condition:
         $inf and any of ($url*)
@@ -2291,9 +2291,9 @@ rule MSI_Network_Indicators
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
-        $url1 = "http://" nocase
-        $url2 = "https://" nocase
-        $url3 = "ftp://" nocase
+        $url1 = "http://" ascii wide nocase
+        $url2 = "https://" ascii wide nocase
+        $url3 = "ftp://" ascii wide nocase
 
     condition:
         $ole at 0 and any of ($url*)
