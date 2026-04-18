@@ -51,6 +51,7 @@ YARA_FILES = [
     'src/rules/plist-threats.yar',
     'src/rules/clickonce-threats.yar',
     'src/rules/msix-threats.yar',
+    'src/rules/browserext-threats.yar',
 ]
 YARA_CATEGORIES = {
     'src/rules/office-macros.yar': 'Office Macros',
@@ -71,6 +72,7 @@ YARA_CATEGORIES = {
     'src/rules/plist-threats.yar': 'Property List',
     'src/rules/clickonce-threats.yar': 'ClickOnce',
     'src/rules/msix-threats.yar': 'MSIX / APPX',
+    'src/rules/browserext-threats.yar': 'Browser Extension',
 }
 yar_parts = []
 for f in YARA_FILES:
@@ -95,6 +97,7 @@ JS_FILES = [
     'src/numbering-resolver.js',
     'src/content-renderer.js',
     'src/security-analyzer.js',
+    'src/renderers/protobuf-reader.js',
     'src/renderers/ole-cfb-parser.js',
     'src/renderers/xlsx-renderer.js',
     'src/renderers/pptx-renderer.js',
@@ -134,6 +137,7 @@ JS_FILES = [
     'src/renderers/plaintext-renderer.js',
     'src/renderers/clickonce-renderer.js',
     'src/renderers/msix-renderer.js',
+    'src/renderers/browserext-renderer.js',
     'src/app/app-core.js',
     'src/app/app-load.js',
     'src/app/app-sidebar.js',
@@ -160,6 +164,7 @@ ACCEPT_EXTS = [
     '.applescript','.jxa','.scpt','.scptd','.plist',
     '.application','.manifest',
     '.msix','.msixbundle','.appx','.appxbundle','.appinstaller',
+    '.crx','.xpi',
 ]
 accept_attr = ','.join(ACCEPT_EXTS)
 
