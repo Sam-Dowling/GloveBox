@@ -21,6 +21,21 @@
 
 ## 🛡 Supported Formats (full reference)
 
+> **Extensionless and renamed files are auto-routed.** Every format below is
+> registered in a single `RendererRegistry` that dispatches files through
+> three passes — magic-byte sniff (PE `MZ`, ELF `\x7fELF`, Mach-O `FEEDFACE/FEEDFACF/CAFEBABE`,
+> OLE2 `D0CF11E0`, ZIP `PK\x03\x04`, PDF `%PDF-`, PNG/JPEG/GIF/BMP/WebP/TIFF/AVIF, ISO 9660 `CD001`,
+> EVTX `ElfFile`, SQLite `SQLite format 3`, gzip `1F 8B`, RAR `Rar!`, 7z `7z\xBC\xAF\x27\x1C`, CAB `MSCF`,
+> `bplist00`, OpenPGP packet-tag bytes, `Cr24`, `PKCX`) → extension match →
+> text-head sniff (RTF `{\rtf`, HTML/SVG/XML roots, EML headers, AppleScript,
+> `.url`/`.webloc`, `.reg`, `.inf`, `.sct`, `.iqy`/`.slk`, `.wsf`,
+> ClickOnce `<assembly>`, `-----BEGIN PGP ...-----`) — with lazy OLE-stream
+> and ZIP-central-directory peeks to disambiguate containers (DOCX vs XLSX
+> vs PPTX vs ODT vs ODP vs MSIX vs JAR vs CRX/XPI vs generic ZIP;
+> `.doc` vs `.xls` vs `.ppt` vs `.msg` inside OLE2). A file with the wrong
+> extension, no extension, or a misleading one (`.txt` on a PE, `.bin` on
+> an ISO, `.dat` on an EVTX) still lands on the right renderer.
+
 | Category | Extensions |
 |---|---|
 | **Office (modern)** | `.docx` `.docm` `.xlsx` `.xlsm` `.pptx` `.pptm` `.ods` |
@@ -57,7 +72,7 @@
 | Capability | Detail |
 |---|---|
 | **Risk assessment** | Colour-coded risk bar (low / medium / high / critical) with finding summary |
-| **Document search** | In-toolbar search with match highlighting, match counter, and `Enter`/`Shift+Enter` navigation (`Ctrl+F` to focus) |
+| **Document search** | In-toolbar search with match highlighting, match counter, and `Enter`/`Shift+Enter` navigation (`F` to focus) |
 | **YARA rule engine** | In-browser YARA rule parser and matcher — upload custom `.yar` rule files (or drag-and-drop onto the dialog), validate them, save the combined rule set back out, and scan any loaded file with text, hex, and regex string support. Ships with 488 default detection rules (across 19 category files) that auto-scan on file load. Rule *source* must be authored in an external editor — there is no in-browser rule-editing surface |
 | **File hashes** | MD5 · SHA-1 · SHA-256 computed in-browser, with one-click VirusTotal lookup |
 | **IOC extraction** | URLs, email addresses, IP addresses, file paths, and UNC paths pulled from document content, VBA source, binary strings, and decoded payloads. Defanged indicators (`hxxp://`, `1[.]2[.]3[.]4`) are refanged automatically |
@@ -105,7 +120,7 @@
 | **Collapsible sidebar** | Single-pane sidebar with collapsible `<details>` sections: File Info, Macros, Signatures & IOCs |
 | **Resizable sidebar** | Drag the sidebar edge to resize (33–50% of the viewport) |
 | **Breadcrumb navigation** | Drill-down path is shown as a clickable breadcrumb trail in the toolbar (e.g. `📦 archive.zip ▸ 📄 doc.docm ▸ 🔧 Module1.bas`). Click any crumb to jump directly to that layer; an overflow `… ▾` dropdown collapses deep trails so the trail stays on one line. The `✕` close button is anchored left of the trail so its position never shifts with filename length |
-| **Keyboard shortcuts** | `S` toggle sidebar · `Y` YARA dialog · `?`/`H` help & about · `Ctrl+F` search document · `Ctrl+V` paste file for analysis |
+| **Keyboard shortcuts** | `S` toggle sidebar · `Y` YARA dialog · `?`/`H` help & about · `F` search document · `Ctrl+V` paste file for analysis |
 | **Summary button** | `⚡ Summary` toolbar button copies a budgeted (50 KB) Markdown-formatted analysis report to the clipboard — File Info / Risk / Detections / IOCs / Macros / Deobfuscated layers / Format-specific deep data (PE/ELF/Mach-O/X.509/JAR/LNK · PDF JavaScripts + embedded files · MSI CustomActions · OneNote embedded objects · RTF OLE objects · EML/MSG attachments + auth-results · HTML credential forms · HTA/SVG active-content inventory · EVTX notable event IDs · SQLite schema · ZIP compression-ratio / zip-bomb indicators · ISO volume info · image EXIF · PGP key info · plist LaunchAgent persistence · osascript source + signatures · OOXML external relationships) — ready to paste into a ticket or LLM |
 | **Export dropdown** | `📤 Export ▾` menu consolidates six actions: **Save raw file** (download) · **Copy raw content** · **Copy STIX 2.1 bundle (JSON)** · **Copy MISP event (JSON)** · **Copy IOCs as JSON** · **Copy IOCs as CSV**. Every action except Save-raw-file writes to the clipboard so you can paste straight into a ticket or TIP — the plaintext/Markdown report is already on the `⚡ Summary` button and isn't duplicated here. See the [Exports](#-exports) section for the format-by-content matrix |
 | **Smart whole-token select** | Double-click inside any monospace viewer (URLs, hashes, base64 blobs, file paths, registry keys, PE imports, x509 fingerprints, plist leaves, etc.) selects the entire non-whitespace token — expanding past punctuation like `/`, `.`, `:`, `=`, `-`, `_` and across visual line wraps introduced by `word-break: break-all` — up to the nearest whitespace or block boundary |
