@@ -1,16 +1,12 @@
-// ─── Archive Threats ───
-// 10 rules
-
 rule ZIP_Contains_Script_File
 {
     meta:
-        description = "ZIP archive contains scripting files (.js/.vbs/.wsf/.hta/.bat/.cmd/.ps1)"
+        description = "ZIP archive contains two or more script-file types (.js/.vbs/.wsf/.hta/.bat/.cmd/.ps1) — dropper-style bundle"
         severity    = "critical"
         category    = "delivery"
         mitre       = "T1566.001"
 
     strings:
-        $pk = { 50 4B 03 04 }
         $a = ".js" fullword
         $b = ".jse" fullword
         $c = ".vbs" fullword
@@ -22,7 +18,7 @@ rule ZIP_Contains_Script_File
         $i = ".ps1" fullword
 
     condition:
-        $pk and any of ($a, $b, $c, $d, $e, $f, $g, $h, $i)
+        uint32(0) == 0x04034B50 and 2 of ($a, $b, $c, $d, $e, $f, $g, $h, $i)
 }
 
 rule ZIP_Contains_LNK
@@ -34,11 +30,10 @@ rule ZIP_Contains_LNK
         mitre       = "T1204.002"
 
     strings:
-        $pk = { 50 4B 03 04 }
         $a = ".lnk" fullword
 
     condition:
-        $pk and $a
+        uint32(0) == 0x04034B50 and $a
 }
 
 rule ZIP_Contains_URL_Shortcut
@@ -50,11 +45,10 @@ rule ZIP_Contains_URL_Shortcut
         mitre       = "T1204.002"
 
     strings:
-        $pk = { 50 4B 03 04 }
         $a = ".url" fullword
 
     condition:
-        $pk and $a
+        uint32(0) == 0x04034B50 and $a
 }
 
 rule ZIP_Contains_ISO_IMG
@@ -66,14 +60,13 @@ rule ZIP_Contains_ISO_IMG
         mitre       = "T1553.005"
 
     strings:
-        $pk = { 50 4B 03 04 }
         $a = ".iso" fullword
         $b = ".img" fullword
         $c = ".vhd" fullword
         $d = ".vhdx" fullword
 
     condition:
-        $pk and any of ($a, $b, $c, $d)
+        uint32(0) == 0x04034B50 and any of ($a, $b, $c, $d)
 }
 
 rule ZIP_Contains_Office_Macro_File
@@ -85,7 +78,6 @@ rule ZIP_Contains_Office_Macro_File
         mitre       = "T1566.001"
 
     strings:
-        $pk = { 50 4B 03 04 }
         $a = ".docm" fullword
         $b = ".xlsm" fullword
         $c = ".pptm" fullword
@@ -93,7 +85,7 @@ rule ZIP_Contains_Office_Macro_File
         $e = ".dotm" fullword
 
     condition:
-        $pk and any of ($a, $b, $c, $d, $e)
+        uint32(0) == 0x04034B50 and any of ($a, $b, $c, $d, $e)
 }
 
 rule ZIP_Contains_MSI
@@ -105,11 +97,10 @@ rule ZIP_Contains_MSI
         mitre       = "T1218.007"
 
     strings:
-        $pk = { 50 4B 03 04 }
         $a = ".msi" fullword
 
     condition:
-        $pk and $a
+        uint32(0) == 0x04034B50 and $a
 }
 
 rule RAR_Archive_Header
@@ -125,7 +116,7 @@ rule RAR_Archive_Header
         $rar5 = { 52 61 72 21 1A 07 01 00 }
 
     condition:
-        $rar4 or $rar5
+        $rar4 at 0 or $rar5 at 0
 }
 
 rule SevenZip_Archive_Header
@@ -137,10 +128,10 @@ rule SevenZip_Archive_Header
         mitre       = "T1566.001"
 
     strings:
-        $a = { 37 7A BC AF 27 1C }
+        $magic = { 37 7A BC AF 27 1C }
 
     condition:
-        $a
+        $magic at 0
 }
 
 rule Archive_Double_Extension
@@ -152,7 +143,6 @@ rule Archive_Double_Extension
         mitre       = "T1036.007"
 
     strings:
-        $pk = { 50 4B 03 04 }
         $a = ".pdf.js" nocase
         $b = ".doc.vbs" nocase
         $c = ".xlsx.js" nocase
@@ -167,7 +157,7 @@ rule Archive_Double_Extension
         $l = ".xls.hta" nocase
 
     condition:
-        $pk and any of ($a, $b, $c, $d, $e, $f, $g, $h, $i, $j, $k, $l)
+        uint32(0) == 0x04034B50 and any of ($a, $b, $c, $d, $e, $f, $g, $h, $i, $j, $k, $l)
 }
 
 rule ISO_IMG_Disk_Image
