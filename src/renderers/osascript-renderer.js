@@ -431,37 +431,91 @@ class OsascriptRenderer {
          * appearing multiple times in analysisText (embedded source plus
          * FasTX string-table entry, for example) produces exactly one
          * IOC row instead of N. */
+        let truncatedEmitted = false;
+        const emitTruncation = (reason) => {
+            if (truncatedEmitted) return;
+            truncatedEmitted = true;
+            findings.externalRefs.push({
+                type: IOC.INFO,
+                url: `IOC extraction truncated — ${reason}. Additional indicators may be present in the source.`,
+                severity: 'info',
+            });
+        };
         const urlRe = /https?:\/\/[^\s"'<>\])}]{6,200}/gi;
         const seenUrls = new Set();
         let um;
         while ((um = urlRe.exec(analysisText)) !== null) {
             if (!seenUrls.has(um[0])) {
                 seenUrls.add(um[0]);
-                findings.externalRefs.push({ type: IOC.URL, url: um[0], severity: 'medium' });
+                findings.externalRefs.push({
+                    type: IOC.URL, url: um[0], severity: 'medium',
+                    _sourceOffset: um.index, _sourceLength: um[0].length,
+                    _highlightText: um[0],
+                });
             }
-            if (findings.externalRefs.length >= 100) break;
+            if (findings.externalRefs.length >= 100) { emitTruncation('URL cap (100) reached'); break; }
         }
         /* IPs */
         const ipRe = /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/g;
         const seenIPs = new Set();
         while ((um = ipRe.exec(analysisText)) !== null) {
-            if (!seenIPs.has(um[0])) { seenIPs.add(um[0]); findings.externalRefs.push({ type: IOC.IP, url: um[0], severity: 'medium' }); }
-            if (findings.externalRefs.length >= 150) break;
+            if (!seenIPs.has(um[0])) {
+                seenIPs.add(um[0]);
+                findings.externalRefs.push({
+                    type: IOC.IP, url: um[0], severity: 'medium',
+                    _sourceOffset: um.index, _sourceLength: um[0].length,
+                    _highlightText: um[0],
+                });
+            }
+            if (findings.externalRefs.length >= 150) { emitTruncation('IP cap reached'); break; }
         }
         /* File paths */
         const pathRe = /(?:\/(?:Users|tmp|var|etc|Library|Applications|System)\/[^\s"'<>]{4,200})/g;
         const seenPaths = new Set();
         while ((um = pathRe.exec(analysisText)) !== null) {
-            if (!seenPaths.has(um[0])) { seenPaths.add(um[0]); findings.externalRefs.push({ type: IOC.FILE_PATH, url: um[0], severity: 'medium' }); }
-            if (findings.externalRefs.length >= 200) break;
+            if (!seenPaths.has(um[0])) {
+                seenPaths.add(um[0]);
+                findings.externalRefs.push({
+                    type: IOC.FILE_PATH, url: um[0], severity: 'medium',
+                    _sourceOffset: um.index, _sourceLength: um[0].length,
+                    _highlightText: um[0],
+                });
+            }
+            if (findings.externalRefs.length >= 200) { emitTruncation('file-path cap reached'); break; }
         }
-        /* Domains — loose heuristic */
+        /* Bare domains — loose heuristic. Emit as HOSTNAME (no scheme). */
         const domRe = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|xyz|info|biz|ru|cn|tk|top|cc|pw)\b/gi;
         const seenDomains = new Set();
         while ((um = domRe.exec(analysisText)) !== null) {
             const d = um[0].toLowerCase();
-            if (!seenDomains.has(d)) { seenDomains.add(d); findings.externalRefs.push({ type: IOC.URL, url: d, severity: 'info' }); }
-            if (findings.externalRefs.length >= 250) break;
+            if (!seenDomains.has(d)) {
+                seenDomains.add(d);
+                findings.externalRefs.push({
+                    type: IOC.HOSTNAME, url: d, severity: 'info',
+                    _sourceOffset: um.index, _sourceLength: um[0].length,
+                    _highlightText: um[0],
+                });
+            }
+            if (findings.externalRefs.length >= 250) { emitTruncation('hostname cap reached'); break; }
+        }
+
+        /* Mirror signatureMatches into externalRefs as IOC.PATTERN so the
+         * Summary sidebar and Share view see every detection the viewer
+         * surfaces (Detection → IOC parity). */
+        for (const sm of findings.signatureMatches) {
+            findings.externalRefs.push({
+                type: IOC.PATTERN,
+                url: `${sm.label} — ${sm.description}`,
+                severity: sm.severity || 'medium',
+            });
+        }
+        /* Mirror auto-exec triggers. */
+        for (const ae of findings.autoExec) {
+            findings.externalRefs.push({
+                type: IOC.PATTERN,
+                url: `Auto-exec trigger: ${ae}`,
+                severity: 'medium',
+            });
         }
 
         /* ── Obfuscation detection ───────────────────────────────── */

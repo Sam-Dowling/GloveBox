@@ -1103,12 +1103,36 @@ class PlistRenderer {
     }
 
     // ── Extract IOCs ─────────────────────────────────────────────────────
+    // allText is a concatenation of all string leaves, so regex-index offsets
+    // here are offsets into that synthesised string — NOT into the displayed
+    // XML source. That's intentional: click-to-focus navigation uses
+    // _highlightText (the raw matched text) to find a row in the plaintext
+    // table rather than relying on a byte offset.
+    let truncatedEmitted = false;
+    const emitTruncation = (reason) => {
+      if (truncatedEmitted) return;
+      truncatedEmitted = true;
+      findings.externalRefs.push({
+        type: IOC.INFO,
+        url: `IOC extraction truncated — ${reason}. Additional indicators may be present in the plist.`,
+        severity: 'info',
+      });
+    };
+
     // URLs
     const urlRe = /https?:\/\/[^\s"'<>\])}]{6,200}/gi;
+    const seenUrls = new Set();
     let um;
     while ((um = urlRe.exec(allText)) !== null) {
-      findings.externalRefs.push({ type: IOC.URL, url: um[0], severity: 'medium' });
-      if (findings.externalRefs.length >= 100) break;
+      if (!seenUrls.has(um[0])) {
+        seenUrls.add(um[0]);
+        findings.externalRefs.push({
+          type: IOC.URL, url: um[0], severity: 'medium',
+          _sourceOffset: um.index, _sourceLength: um[0].length,
+          _highlightText: um[0],
+        });
+      }
+      if (findings.externalRefs.length >= 100) { emitTruncation('URL cap (100) reached'); break; }
     }
 
     // IPs
@@ -1117,9 +1141,13 @@ class PlistRenderer {
     while ((um = ipRe.exec(allText)) !== null) {
       if (!seenIPs.has(um[0])) {
         seenIPs.add(um[0]);
-        findings.externalRefs.push({ type: IOC.IP, url: um[0], severity: 'medium' });
+        findings.externalRefs.push({
+          type: IOC.IP, url: um[0], severity: 'medium',
+          _sourceOffset: um.index, _sourceLength: um[0].length,
+          _highlightText: um[0],
+        });
       }
-      if (findings.externalRefs.length >= 150) break;
+      if (findings.externalRefs.length >= 150) { emitTruncation('IP cap reached'); break; }
     }
 
     // File paths
@@ -1128,21 +1156,40 @@ class PlistRenderer {
     while ((um = pathRe.exec(allText)) !== null) {
       if (!seenPaths.has(um[0])) {
         seenPaths.add(um[0]);
-        findings.externalRefs.push({ type: IOC.FILE_PATH, url: um[0], severity: 'info' });
+        findings.externalRefs.push({
+          type: IOC.FILE_PATH, url: um[0], severity: 'info',
+          _sourceOffset: um.index, _sourceLength: um[0].length,
+          _highlightText: um[0],
+        });
       }
-      if (findings.externalRefs.length >= 200) break;
+      if (findings.externalRefs.length >= 200) { emitTruncation('file-path cap reached'); break; }
     }
 
-    // Domains
+    // Bare domains — emit as HOSTNAME (no scheme, not a full URL).
     const domRe = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|xyz|info|biz|ru|cn|tk|top|cc|pw)\b/gi;
     const seenDomains = new Set();
     while ((um = domRe.exec(allText)) !== null) {
       const d = um[0].toLowerCase();
       if (!seenDomains.has(d)) {
         seenDomains.add(d);
-        findings.externalRefs.push({ type: IOC.URL, url: d, severity: 'info' });
+        findings.externalRefs.push({
+          type: IOC.HOSTNAME, url: d, severity: 'info',
+          _sourceOffset: um.index, _sourceLength: um[0].length,
+          _highlightText: um[0],
+        });
       }
-      if (findings.externalRefs.length >= 250) break;
+      if (findings.externalRefs.length >= 250) { emitTruncation('hostname cap reached'); break; }
+    }
+
+    // Mirror signatureMatches into externalRefs as IOC.PATTERN so the
+    // Summary sidebar and Share view see every detection the viewer
+    // surfaces (Detection → IOC parity).
+    for (const sm of findings.signatureMatches) {
+      findings.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `${sm.label} — ${sm.description}`,
+        severity: sm.severity || 'medium',
+      });
     }
 
     // ── Risk assessment ──────────────────────────────────────────────────

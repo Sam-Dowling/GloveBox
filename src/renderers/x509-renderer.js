@@ -1340,25 +1340,31 @@ class X509Renderer {
         if (cert.isSelfSigned) findings.formatSpecific.push({ label: 'Self-Signed', value: 'Yes' });
         if (cert.isCA) findings.formatSpecific.push({ label: 'CA Certificate', value: 'Yes' });
 
-        // Extract Subject CN as IOC (domain/hostname)
+        // Extract Subject CN as IOC (hostname — not a scheme-bearing URL).
         const subjectCN = cert.subject.CN || '';
         if (subjectCN && subjectCN.includes('.')) {
           findings.interestingStrings.push({
-            type: IOC.URL, url: subjectCN, severity: 'info', note: 'Subject CN',
+            type: IOC.HOSTNAME, url: subjectCN, severity: 'info', note: 'Subject CN',
           });
         }
 
-        // Extract IOCs from SANs (domains, IPs, emails, URIs)
+        // Extract IOCs from SANs (domains, IPs, emails, URIs).
+        // SAN (DNS) is a bare hostname, not a URL. SAN (URI) is only emitted
+        // as IOC.URL if it actually has a scheme — otherwise it's a hostname.
         if (sanExt && sanExt.altNames) {
           for (const an of sanExt.altNames) {
             if (an.type === 'DNS') {
-              findings.interestingStrings.push({ type: IOC.URL, url: an.value, severity: 'medium', note: 'SAN (DNS)' });
+              findings.interestingStrings.push({ type: IOC.HOSTNAME, url: an.value, severity: 'medium', note: 'SAN (DNS)' });
             } else if (an.type === 'IP') {
               findings.interestingStrings.push({ type: IOC.IP, url: an.value, severity: 'medium', note: 'SAN (IP)' });
             } else if (an.type === 'Email') {
               findings.interestingStrings.push({ type: IOC.EMAIL, url: an.value, severity: 'medium', note: 'SAN (Email)' });
             } else if (an.type === 'URI') {
-              findings.interestingStrings.push({ type: IOC.URL, url: an.value, severity: 'medium', note: 'SAN (URI)' });
+              const isUrl = /^[a-z][a-z0-9+.\-]*:/i.test(an.value);
+              findings.interestingStrings.push({
+                type: isUrl ? IOC.URL : IOC.HOSTNAME,
+                url: an.value, severity: 'medium', note: 'SAN (URI)',
+              });
             }
           }
         }
@@ -1394,7 +1400,9 @@ class X509Renderer {
       findings.metadata = {};
       for (const fs of findings.formatSpecific) findings.metadata[fs.label] = fs.value;
       findings.externalRefs = findings.detections.map(d => ({
-        type: IOC.PATTERN, url: d.description, severity: d.severity, ruleName: d.name,
+        type: IOC.PATTERN,
+        url: `${d.name} — ${d.description}`,
+        severity: d.severity,
       }));
 
       // Summary
