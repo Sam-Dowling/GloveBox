@@ -22,8 +22,9 @@ loupe.html
 # Generated files (optional machine-readable codemap)
 codemap.json
 
-# Cline rules
+# agents
 .clinerules
+.agents
 
 # Todo / Plans
 TODO.md
