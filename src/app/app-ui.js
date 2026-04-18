@@ -2628,8 +2628,9 @@ Object.assign(App.prototype, {
             <tr><td><kbd class="help-kbd">S</kbd></td><td>Toggle security sidebar</td></tr>
             <tr><td><kbd class="help-kbd">Y</kbd></td><td>Open YARA rule editor</td></tr>
             <tr><td><kbd class="help-kbd">?</kbd> / <kbd class="help-kbd">H</kbd></td><td>Open this help dialog</td></tr>
-            <tr><td><kbd class="help-kbd">Ctrl+F</kbd></td><td>Focus document search</td></tr>
+            <tr><td><kbd class="help-kbd">F</kbd></td><td>Focus document search</td></tr>
             <tr><td><kbd class="help-kbd">Ctrl+V</kbd></td><td>Paste file from clipboard</td></tr>
+
             <tr><td><kbd class="help-kbd">Esc</kbd></td><td>Close dialog / clear search</td></tr>
           </table>
 
