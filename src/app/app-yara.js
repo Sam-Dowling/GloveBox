@@ -1321,8 +1321,9 @@ Object.assign(App.prototype, {
       else if (maxSeverity === 'high' && currentRank < 3) this.findings.risk = 'high';
       else if (maxSeverity === 'medium' && currentRank < 2) this.findings.risk = 'medium';
     }
-    // Re-render sidebar
-    const fileName = (document.getElementById('file-info').textContent || '').split('\u00B7')[0].trim();
+    // Re-render sidebar. Use _fileMeta as single source of truth for the
+    // filename (legacy #file-info element was replaced by the breadcrumb trail).
+    const fileName = (this._fileMeta && this._fileMeta.name) || '';
     this._renderSidebar(fileName, null);
   },
 

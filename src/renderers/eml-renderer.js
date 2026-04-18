@@ -169,9 +169,39 @@ class EmlRenderer {
       f.metadata = {};
       if (email.from) f.metadata.from = email.from;
       if (email.to) f.metadata.to = email.to;
+      if (email.cc) f.metadata.cc = email.cc;
+      if (email.replyTo) f.metadata.replyTo = email.replyTo;
       if (email.date) f.metadata.date = email.date;
       if (email.subject) f.metadata.subject = email.subject;
       if (email.messageId) f.metadata.messageId = email.messageId;
+
+      // Surface parsed auth-results so the Summary writer's
+      // "Email Authentication" block has content. SPF / DKIM / DMARC verdicts
+      // are embedded inside Authentication-Results on most MTAs (we don't
+      // get them as distinct headers), so forward the combined string to
+      // each field — the writer prints only what's set.
+      if (email.authResults) {
+        f.authResults = email.authResults;
+        const ar = email.authResults.toLowerCase();
+        const pick = (tag) => {
+          const m = ar.match(new RegExp('\\b' + tag + '\\s*=\\s*([a-z]+)'));
+          return m ? m[1] : '';
+        };
+        const spfV = pick('spf'), dkimV = pick('dkim'), dmarcV = pick('dmarc');
+        if (spfV) f.spf = spfV;
+        if (dkimV) f.dkim = dkimV;
+        if (dmarcV) f.dmarc = dmarcV;
+      }
+
+      // Attachment inventory for the Summary writer's _copyAnalysisEML helper.
+      // We use the already-parsed MIME attachment list rather than re-parsing.
+      if (email.attachments && email.attachments.length) {
+        f.metadata.attachments = email.attachments.map(a => ({
+          name: a.filename || '(unnamed)',
+          size: a.size || 0,
+        }));
+      }
+
 
       // ── Dedup helpers ──────────────────────────────────────────────────
       const seenEmails = new Set();

@@ -176,9 +176,8 @@ HTML = f"""<!DOCTYPE html>
     <!-- File operations group -->
     <div class="tb-group" id="file-ops">
       <button class="tb-btn" id="btn-open" title="Open file (or drag &amp; drop)">📁 Open File</button>
-      <span id="file-info"></span>
-      <button class="tb-btn hidden" id="btn-nav-back" title="Return to parent archive">← Back</button>
-      <button class="tb-btn hidden" id="btn-close" title="Close file">✕</button>
+      <button class="tb-btn hidden" id="btn-close" title="Close file (Esc)">✕</button>
+      <nav class="hidden" id="breadcrumbs" aria-label="File path"></nav>
     </div>
     <div class="tb-spacer"></div>
     <div class="tb-separator"></div>
@@ -201,11 +200,11 @@ HTML = f"""<!DOCTYPE html>
     <div id="viewer">
       <div id="viewer-toolbar" class="hidden">
         <div class="vt-group">
-          <div class="btn-pill-group">
-            <button class="tb-btn tb-action-btn" id="btn-save" title="Save source content">💾 Save</button>
-            <button class="tb-btn tb-action-btn" id="btn-copy" title="Copy source content">📋 Copy</button>
+          <button class="tb-btn tb-action-btn tb-accent-btn" id="btn-copy-analysis" title="Copy AI/SOC summary to clipboard">⚡ Summary</button>
+          <div class="tb-menu-wrap">
+            <button class="tb-btn tb-action-btn" id="btn-export" aria-haspopup="menu" aria-expanded="false" title="Export analysis in various formats">📤 Export <span class="tb-caret">▾</span></button>
+            <div class="tb-menu hidden" id="export-menu" role="menu"></div>
           </div>
-          <button class="tb-btn tb-action-btn tb-accent-btn" id="btn-copy-analysis" title="Copy structured analysis report for AI/SOC">⚡ Analysis</button>
         </div>
         <div class="vt-search">
           <input type="text" id="doc-search" placeholder="Search content…" spellcheck="false">

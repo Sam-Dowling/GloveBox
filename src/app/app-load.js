@@ -84,8 +84,14 @@ Object.assign(App.prototype, {
 
   async _loadFile(file) {
     this._setLoading(true);
-    document.getElementById('file-info').textContent = file.name;
+    // Show the breadcrumb trail immediately so the user sees the filename
+    // while the (potentially slow) parse runs. We set a minimal _fileMeta
+    // up front; the richer metadata (entropy, magic, size-with-page-count)
+    // is filled in once parsing completes and the sidebar re-renders.
+    this._fileMeta = Object.assign({}, this._fileMeta || {}, { name: file.name, size: file.size });
+    this._renderBreadcrumbs();
     const ext = file.name.split('.').pop().toLowerCase();
+
     try {
       const buffer = await ParserWatchdog.run(() => file.arrayBuffer());
       // Store buffer for YARA scanning
@@ -617,10 +623,13 @@ Object.assign(App.prototype, {
       dz.className = 'has-document'; dz.innerHTML = '';
 
       const pages = pc.querySelectorAll('.page').length;
-      const pi = pages > 0 ? `  ·  ${pages} page${pages !== 1 ? 's' : ''}` : '';
-      document.getElementById('file-info').textContent = `${file.name}${pi}  ·  ${this._fmtBytes(file.size)}`;
+      // Stash the page count on the single-source-of-truth _fileMeta so the
+      // breadcrumb can show it as meta text next to the current crumb.
+      this._fileMeta.pages = pages;
+      this._renderBreadcrumbs();
       document.getElementById('btn-close').classList.remove('hidden');
       document.getElementById('viewer-toolbar').classList.remove('hidden');
+
 
       // Enable grab-to-pan on non-plaintext views
       const viewer = document.getElementById('viewer');
@@ -633,16 +642,22 @@ Object.assign(App.prototype, {
 
       // If the renderer decoded non-UTF-8 content (e.g. UTF-16LE PowerShell),
       // re-encode as UTF-8 for YARA scanning so text-based rules can match.
-      // Hashes are already computed from the original raw bytes above.
-      if (docEl._rawText) {
-        this._fileBuffer = new TextEncoder().encode(docEl._rawText).buffer;
+      // Route through _yaraBuffer (not _fileBuffer) so Save/Copy raw keep the
+      // original on-disk bytes — renderers like OsascriptRenderer expose a
+      // string-extraction view via _rawText that is NOT the file's real
+      // content. Respect any _yaraBuffer already set by an earlier site
+      // (SVG/HTML augmented buffer).
+      if (docEl._rawText && !this._yaraBuffer) {
+        this._yaraBuffer = new TextEncoder().encode(docEl._rawText).buffer;
       }
 
       // Auto-run YARA scan against loaded file
       this._autoYaraScan();
 
-      // Show/hide back button for archive navigation
-      this._updateNavBackButton();
+      // Breadcrumb was already rendered up front; re-render now so the
+      // current layer shows its final page count / size suffix.
+      this._renderBreadcrumbs();
+
     } catch (e) {
       console.error(e);
       this._toast(`Failed to open: ${e.message}`, 'error');
@@ -1081,10 +1096,10 @@ Object.assign(App.prototype, {
       viewerAnchor,             // { el, offset } — anchor for reflow-robust restore
       sbBodyAnchor,             // { el, offset } — anchor for reflow-robust restore
       rawText: (docEl && docEl._rawText) || null,
-      fileInfoText: document.getElementById('file-info').textContent,
       parentName,
     });
   },
+
 
   // Capture a DOM anchor for reflow-robust scroll restoration. Finds the
   // element closest to the top edge of `container` (but not above it) and
@@ -1130,9 +1145,46 @@ Object.assign(App.prototype, {
   },
 
 
-  _navBack() {
-    if (!this._navStack || !this._navStack.length) return;
-    const state = this._navStack.pop();
+  // Capture the current view's full state as a nav-stack frame WITHOUT
+  // mutating the nav stack. Used by _navJumpTo's inline pop loop and by any
+  // future caller that needs a snapshot (e.g. tests).
+  _captureNavFrame(parentName) {
+    const pc = document.getElementById('page-container');
+    const docEl = pc && pc.firstElementChild;
+    const viewerEl = document.getElementById('viewer');
+    const sbBodyEl = document.getElementById('sb-body');
+    const viewerScroll = viewerEl ? { top: viewerEl.scrollTop, left: viewerEl.scrollLeft } : null;
+    const sbBodyScroll = sbBodyEl ? { top: sbBodyEl.scrollTop, left: sbBodyEl.scrollLeft } : null;
+    const viewerAnchor = this._captureScrollAnchor(viewerEl, docEl);
+    const sbBodyAnchor = this._captureScrollAnchor(sbBodyEl, sbBodyEl);
+    let scrollSnapshot = null;
+    if (docEl) scrollSnapshot = this._snapshotScroll(docEl);
+    let pageNode = null;
+    if (docEl) {
+      try { pageNode = pc.removeChild(docEl); }
+      catch (_) { pageNode = null; }
+    }
+    return {
+      findings: this.findings,
+      fileHashes: this.fileHashes,
+      fileMeta: this._fileMeta,
+      fileBuffer: this._fileBuffer,
+      yaraResults: this._yaraResults,
+      pageNode,
+      scrollSnapshot,
+      viewerScroll,
+      sbBodyScroll,
+      viewerAnchor,
+      sbBodyAnchor,
+      rawText: (docEl && docEl._rawText) || null,
+      parentName: parentName || (this._fileMeta && this._fileMeta.name) || '',
+    };
+  },
+
+  // Restore a previously captured nav frame into the viewer/sidebar. If
+  // re-attaching the detached DOM node fails, fall back to re-rendering
+  // from the stored buffer.
+  _restoreNavFrame(state) {
     this.findings = state.findings;
     this.fileHashes = state.fileHashes;
     this._fileMeta = state.fileMeta;
@@ -1140,19 +1192,13 @@ Object.assign(App.prototype, {
     this._yaraResults = state.yaraResults;
 
     const pc = document.getElementById('page-container');
-
-    // Clear whatever is currently in the container (the inner file's view)
     while (pc.firstChild) pc.removeChild(pc.firstChild);
 
-    // Preferred path: re-attach the detached node. This preserves event
-    // listeners, tab state, tree expansion, search input text, and scroll.
     let reattached = false;
     if (state.pageNode) {
       try {
         pc.appendChild(state.pageNode);
-        // Re-attach _rawText JS property if present
         if (state.rawText) state.pageNode._rawText = state.rawText;
-        // Restore scroll positions (browser sometimes resets on re-attach)
         if (state.scrollSnapshot) this._restoreScroll(state.scrollSnapshot);
         reattached = true;
       } catch (e) {
@@ -1161,40 +1207,16 @@ Object.assign(App.prototype, {
       }
     }
 
-    document.getElementById('file-info').textContent = state.fileInfoText;
-
     // Fallback: re-render from buffer if re-attach failed or pageNode missing
     if (!reattached && state.fileBuffer) {
       const name = (state.parentName || '').toLowerCase();
       if (name.endsWith('.zip')) this._reRenderZip(state, pc);
       else if (name.endsWith('.msi')) this._reRenderMsi(state, pc);
       else if (name.endsWith('.jar') || name.endsWith('.war') || name.endsWith('.ear') || name.endsWith('.class')) this._reRenderJar(state, pc);
-      // Other renderers that dispatch open-inner-file but have no
-      // dedicated re-render helper will simply show an empty container;
-      // the user can reopen the parent file manually. This is safer than
-      // attempting a generic re-render we can't validate.
     }
 
-    // Re-render sidebar
     this._renderSidebar(state.parentName, null);
 
-    // Restore scroll positions on the outer viewer and sidebar panes. These
-    // live *outside* the detached docEl subtree so they weren't touched by
-    // _restoreScroll(state.scrollSnapshot) above. The JAR viewer in
-    // particular measures its page-container height progressively after
-    // re-attach (tab-strip layout, tree expansion sync, etc.), so a single
-    // rAF isn't enough — the scrollTop assignment would clamp to a
-    // momentarily-smaller scrollHeight and leave the user slightly above
-    // where they were. _stickyRestoreScroll keeps re-applying the target
-    // across multiple frames + a ResizeObserver until it sticks.
-    //
-    // We also pass the DOM anchor (captured in _pushNavState) — this is
-    // the element that was flush with the pane top when the user drilled
-    // in. The sticky restore uses it as a fallback whenever the numeric
-    // scrollTop can't converge, which happens when sidebar re-render
-    // reflows #viewer to a slightly different width and the JAR view's
-    // rows wrap differently. Anchor-based restore locks onto the same
-    // visual row regardless of reflow.
     try {
       if (state.viewerScroll) {
         const v = document.getElementById('viewer');
@@ -1206,9 +1228,28 @@ Object.assign(App.prototype, {
       }
     } catch (_) { /* best-effort */ }
 
-    // Update back button visibility
-    this._updateNavBackButton();
+    this._renderBreadcrumbs();
   },
+
+  // Jump directly to a specific depth in the nav stack — the only entry
+  // point for ancestor navigation now that back/forward
+  // (Alt-arrow / mouse side-buttons) has been retired in favour of the
+  // breadcrumb trail. Pops everything above `targetDepth` off the stack,
+  // discards those intermediate frames, and restores the target frame in
+  // a single pass. There is no forward/redo history — the only way back
+  // into a deeper layer is to re-click the inner file.
+  _navJumpTo(targetDepth) {
+    if (targetDepth < 0) targetDepth = 0;
+    if (!this._navStack || this._navStack.length <= targetDepth) return;
+    // Drop every frame above the target; the last one popped IS the frame
+    // we want to restore.
+    let state = null;
+    while (this._navStack.length > targetDepth) {
+      state = this._navStack.pop();
+    }
+    if (state) this._restoreNavFrame(state);
+  },
+
 
 
   // Snapshot scroll positions of the root node and every scrollable
@@ -1399,15 +1440,175 @@ Object.assign(App.prototype, {
     } catch (_) { /* fallback: static HTML already set */ }
   },
 
-  _updateNavBackButton() {
-    const btn = document.getElementById('btn-nav-back');
-    if (!btn) return;
-    if (this._navStack && this._navStack.length > 0) {
-      btn.classList.remove('hidden');
-    } else {
-      btn.classList.add('hidden');
+  // ── Breadcrumbs ─────────────────────────────────────────────────────────
+  //
+  // Renders the toolbar breadcrumb trail: one clickable crumb per ancestor
+  // frame on `_navStack` + a non-clickable current-layer crumb built from
+  // `_fileMeta`. Icons come from `_getFileIcon(name)`. When the trail is
+  // wider than its container we collapse the middle crumbs into a `… ▾`
+  // overflow dropdown to keep Open/Close + the root and current crumbs
+  // always visible.
+  //
+  // Click handlers:
+  //   • ancestor crumb → `_navJumpTo(depth)`
+  //   • `… ▾` button → toggles overflow menu listing hidden crumbs
+  //   • current crumb → no-op (user is already there)
+  //
+  // This is the single source of truth for toolbar file-path UI — there
+  // is no back/forward button, keyboard shortcut, or mouse side-button
+  // hook any more.
+  _renderBreadcrumbs() {
+    const nav = document.getElementById('breadcrumbs');
+    if (!nav) return;
+
+    // No file loaded → hide
+    if (!this._fileMeta || !this._fileMeta.name) {
+      nav.classList.add('hidden');
+      nav.innerHTML = '';
+      return;
     }
+
+    // Build the full crumb list: ancestors (from nav stack) + current
+    const stack = this._navStack || [];
+    const crumbs = stack.map((s, i) => {
+      const name = (s.fileMeta && s.fileMeta.name) || s.parentName || 'file';
+      return { name, depth: i, current: false };
+    });
+    crumbs.push({ name: this._fileMeta.name, depth: stack.length, current: true });
+
+    nav.classList.remove('hidden');
+    nav.innerHTML = '';
+
+    // Render-helper: build a single crumb element (button for ancestors,
+    // span for current). Keeps icon + label + optional meta consistent.
+    const renderCrumb = (c) => {
+      const tag = c.current ? 'span' : 'button';
+      const el = document.createElement(tag);
+      el.className = 'crumb' + (c.current ? ' crumb-current' : '');
+      if (c.current) el.setAttribute('aria-current', 'page');
+      else {
+        el.type = 'button';
+        el.title = `Jump to ${c.name}`;
+        el.addEventListener('click', () => this._navJumpTo(c.depth));
+      }
+      const icon = document.createElement('span');
+      icon.className = 'crumb-icon';
+      icon.textContent = this._getFileIcon(c.name);
+      el.appendChild(icon);
+      const label = document.createElement('span');
+      label.className = 'crumb-label';
+      label.textContent = c.name;
+      el.appendChild(label);
+      // Show page count / size meta on current crumb only
+      if (c.current) {
+        const parts = [];
+        if (this._fileMeta.pages) parts.push(`${this._fileMeta.pages} page${this._fileMeta.pages !== 1 ? 's' : ''}`);
+        if (typeof this._fileMeta.size === 'number' && this._fmtBytes) parts.push(this._fmtBytes(this._fileMeta.size));
+        if (parts.length) {
+          const meta = document.createElement('span');
+          meta.className = 'crumb-meta';
+          meta.textContent = '· ' + parts.join(' · ');
+          el.appendChild(meta);
+        }
+      }
+      return el;
+    };
+
+    const appendSep = () => {
+      const sep = document.createElement('span');
+      sep.className = 'crumb-sep';
+      sep.textContent = '›';
+      nav.appendChild(sep);
+    };
+
+    // Initial render: everything visible. Overflow handling below may
+    // replace the middle chunk with an `… ▾` chip.
+    crumbs.forEach((c, i) => {
+      if (i > 0) appendSep();
+      nav.appendChild(renderCrumb(c));
+    });
+
+    // ── Overflow collapse ────────────────────────────────────────────────
+    // If the trail is wider than the container, collapse middle crumbs
+    // (everything except root + current) into a `… ▾` chip with a
+    // dropdown. Measuring must happen after a layout pass so we defer
+    // with requestAnimationFrame.
+    const maybeCollapse = () => {
+      if (crumbs.length <= 2) return;                 // nothing to hide
+      if (nav.scrollWidth <= nav.clientWidth + 1) return;  // fits already
+
+      // Rebuild with a collapsed middle
+      nav.innerHTML = '';
+      const first = crumbs[0];
+      const last = crumbs[crumbs.length - 1];
+      const hidden = crumbs.slice(1, -1);
+
+      nav.appendChild(renderCrumb(first));
+      appendSep();
+
+      // Overflow chip
+      const wrap = document.createElement('span');
+      wrap.className = 'crumb-overflow';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'crumb-overflow-btn';
+      btn.textContent = '… ▾';
+      btn.title = `${hidden.length} more layer${hidden.length !== 1 ? 's' : ''}`;
+      const menu = document.createElement('div');
+      menu.className = 'crumb-overflow-menu hidden';
+      hidden.forEach(h => {
+        const item = renderCrumb(h);
+        item.addEventListener('click', () => { menu.classList.add('hidden'); });
+        menu.appendChild(item);
+      });
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        menu.classList.toggle('hidden');
+        if (!menu.classList.contains('hidden')) {
+          // One-shot outside click / Esc to close
+          const off = (ev) => {
+            if (ev.type === 'keydown' && ev.key !== 'Escape') return;
+            if (ev.type === 'mousedown' && wrap.contains(ev.target)) return;
+            menu.classList.add('hidden');
+            document.removeEventListener('mousedown', off, true);
+            document.removeEventListener('keydown', off, true);
+          };
+          document.addEventListener('mousedown', off, true);
+          document.addEventListener('keydown', off, true);
+        }
+      });
+      wrap.appendChild(btn);
+      wrap.appendChild(menu);
+      nav.appendChild(wrap);
+
+      appendSep();
+      nav.appendChild(renderCrumb(last));
+    };
+    requestAnimationFrame(maybeCollapse);
   },
+
+  // Shared file-icon helper — duplicated from eml-renderer's _getFileIcon
+  // so breadcrumbs and other surfaces can reuse a consistent icon vocab
+  // without adding a cross-file import dependency.
+  _getFileIcon(name) {
+    const ext = (name || '').split('.').pop().toLowerCase();
+    if (['exe', 'dll', 'scr', 'com', 'msi', 'sys', 'ocx', 'drv', 'cpl'].includes(ext)) return '⚙️';
+    if (['bat', 'cmd', 'ps1', 'vbs', 'js', 'sh', 'wsf', 'wsh', 'wsc', 'hta'].includes(ext)) return '📜';
+    if (['doc', 'docx', 'docm', 'odt', 'rtf'].includes(ext)) return '📄';
+    if (['xls', 'xlsx', 'xlsm', 'ods', 'csv', 'tsv'].includes(ext)) return '📊';
+    if (['ppt', 'pptx', 'pptm', 'odp'].includes(ext)) return '📽️';
+    if (['pdf'].includes(ext)) return '📕';
+    if (['zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'cab', 'jar', 'war', 'ear', 'iso', 'img'].includes(ext)) return '📦';
+    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg', 'webp', 'ico', 'tif', 'tiff'].includes(ext)) return '🖼️';
+    if (['txt', 'log', 'md'].includes(ext)) return '📝';
+    if (['html', 'htm', 'xml', 'json', 'mht', 'mhtml'].includes(ext)) return '🌐';
+    if (['eml', 'msg'].includes(ext)) return '✉️';
+    if (['pem', 'der', 'crt', 'cer', 'p12', 'pfx', 'key'].includes(ext)) return '🔐';
+    if (['pgp', 'gpg', 'asc', 'sig'].includes(ext)) return '🔑';
+    if (['lnk', 'url', 'webloc'].includes(ext)) return '🔗';
+    return '📄';
+  },
+
 
   // ── Interesting string extraction ────────────────────────────────────────
   _extractInterestingStrings(text, findings) {

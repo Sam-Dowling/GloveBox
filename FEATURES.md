@@ -13,7 +13,9 @@
 - [Supported Formats (full reference)](#-supported-formats-full-reference)
 - [Security Analysis Capabilities](#-security-analysis-capabilities)
 - [User Interface](#-user-interface)
+- [Exports](#-exports)
 - [Example Files (guided tour)](#-example-files-guided-tour)
+
 
 ---
 
@@ -96,7 +98,10 @@
 | **Click-and-drag panning** | Grab and drag to pan around rendered documents |
 | **Collapsible sidebar** | Single-pane sidebar with collapsible `<details>` sections: File Info, Macros, Signatures & IOCs |
 | **Resizable sidebar** | Drag the sidebar edge to resize (33–50% of the viewport) |
+| **Breadcrumb navigation** | Drill-down path is shown as a clickable breadcrumb trail in the toolbar (e.g. `📦 archive.zip ▸ 📄 doc.docm ▸ 🔧 Module1.bas`). Click any crumb to jump directly to that layer; an overflow `… ▾` dropdown collapses deep trails so the trail stays on one line. The `✕` close button is anchored left of the trail so its position never shifts with filename length |
 | **Keyboard shortcuts** | `S` toggle sidebar · `Y` YARA dialog · `?`/`H` help & about · `Ctrl+F` search document · `Ctrl+V` paste file for analysis |
+| **Summary button** | `⚡ Summary` toolbar button copies a budgeted (50 KB) Markdown-formatted analysis report to the clipboard — File Info / Risk / Detections / IOCs / Macros / Deobfuscated layers / Format-specific deep data (PE/ELF/Mach-O/X.509/JAR/LNK · PDF JavaScripts + embedded files · MSI CustomActions · OneNote embedded objects · RTF OLE objects · EML/MSG attachments + auth-results · HTML credential forms · HTA/SVG active-content inventory · EVTX notable event IDs · SQLite schema · ZIP compression-ratio / zip-bomb indicators · ISO volume info · image EXIF · PGP key info · plist LaunchAgent persistence · osascript source + signatures · OOXML external relationships) — ready to paste into a ticket or LLM |
+| **Export dropdown** | `📤 Export ▾` menu consolidates six actions: **Save raw file** (download) · **Copy raw content** · **Copy STIX 2.1 bundle (JSON)** · **Copy MISP event (JSON)** · **Copy IOCs as JSON** · **Copy IOCs as CSV**. Every action except Save-raw-file writes to the clipboard so you can paste straight into a ticket or TIP — the plaintext/Markdown report is already on the `⚡ Summary` button and isn't duplicated here. See the [Exports](#-exports) section for the format-by-content matrix |
 | **Smart whole-token select** | Double-click inside any monospace viewer (URLs, hashes, base64 blobs, file paths, registry keys, PE imports, x509 fingerprints, plist leaves, etc.) selects the entire non-whitespace token — expanding past punctuation like `/`, `.`, `:`, `=`, `-`, `_` and across visual line wraps introduced by `word-break: break-all` — up to the nearest whitespace or block boundary |
 | **Loading overlay** | Spinner with status message while parsing large files |
 | **Toast notifications** | Non-intrusive feedback for downloads, clipboard operations, and errors |
@@ -105,7 +110,73 @@
 
 ---
 
+## 📤 Exports
+
+Loupe consolidates every "get this analysis out of the browser" action into a single **`📤 Export ▾`** dropdown in the viewer toolbar. All exports are generated entirely client-side — no network calls, no third-party services. The dropdown sits next to the one-shot **`⚡ Summary`** button, which handles the plaintext/Markdown analysis report (a 50 KB analyst-friendly summary with full per-format deep data) and stays separate so the dropdown doesn't have to duplicate it.
+
+**Save raw file is the only true download in the dropdown — every other action writes to the clipboard** so the analyst's one-click flow is "Export → paste into ticket / TIP / jq pipeline".
+
+### Export format × contents matrix
+
+Columns are export formats; rows are the sections of the analysis. A ✅ means the export carries that data; a blank cell means it's deliberately omitted (usually because the target format has no idiomatic slot for it). Everything in this matrix other than the first two rows of "Summary" is emitted from the 📤 Export dropdown into the clipboard.
+
+| Content section              | Summary (clipboard) | IOCs JSON (clipboard) | IOCs CSV (clipboard) | STIX 2.1 bundle (clipboard) | MISP event (clipboard) |
+|------------------------------|:-------------------:|:---------------------:|:--------------------:|:---------------------------:|:----------------------:|
+| File metadata (name, size, type) | ✅              | ✅                    |                      | ✅ (file SCO)               | ✅ (filename attr)     |
+| File hashes (MD5/SHA-1/SHA-256) | ✅                | ✅                    |                      | ✅ (file SCO)               | ✅ (md5/sha1/sha256 attrs) |
+| Risk level + summary          | ✅                  |                       |                      | ✅ (report desc)            | ✅ (threat_level_id + tag) |
+| YARA / pattern detections     | ✅                  |                       |                      | ✅ (report)                 | ✅ (yara attrs)        |
+| IOCs (URL / IP / domain / email / hash / path) | ✅ | ✅                    | ✅                   | ✅ (indicators)             | ✅ (attributes)        |
+| VBA macro source              | ✅ (trimmed)        |                       |                      |                             |                        |
+| Deobfuscated payload layers   | ✅ (trimmed)        |                       |                      |                             |                        |
+| Format-specific deep data (PE / ELF / Mach-O / X.509 / JAR, email auth, LNK) | ✅ (trimmed) |        |                      |                             |                        |
+| Size budget                   | 50 KB (clipboard)   | unlimited             | unlimited            | unlimited                   | unlimited              |
+
+### Export menu actions
+
+| # | Label                                   | Destination  | Notes                                                                                          |
+|--:|-----------------------------------------|--------------|------------------------------------------------------------------------------------------------|
+| 1 | 💾 Save raw file                        | **Download** | Writes the original loaded file back to disk (same behaviour as the legacy Save pill button). |
+| 2 | 📋 Copy raw content                     | Clipboard    | Copies the file's raw bytes to the clipboard (UTF-8 if decodable, otherwise hex dump).         |
+|   | *— separator —*                         |              |                                                                                                |
+| 3 | 🧾 Copy STIX 2.1 bundle (JSON)          | Clipboard    | Self-contained STIX 2.1 bundle (`identity` + `file` SCO + `indicator` per IOC + `malware-analysis` `report` SDO). Deterministic UUIDv5 IDs so re-exports dedupe in TIPs. |
+| 4 | 🎯 Copy MISP event (JSON)               | Clipboard    | MISP v2 Event JSON — file-level attributes + per-IOC attributes (mapped to native MISP types) + `yara` attributes per rule hit + `tlp:clear` / `loupe:risk` / `loupe:detected-type` tags. |
+| 5 | `{…}` Copy IOCs as JSON                 | Clipboard    | Flat JSON — file source record + sorted `iocs[{type,value,severity,note,source}]`. Ideal for scripting / jq. |
+| 6 | 🔢 Copy IOCs as CSV                     | Clipboard    | RFC 4180 CSV — `type,value,severity,note,source`. Excel / LibreOffice friendly.                 |
+
+Full unbudgeted plaintext / Markdown analysis reports — previously separate "Plaintext report (.txt)", "Markdown report (.md)" and "Copy as Markdown" items — are no longer in the dropdown because they produced the same output as the `⚡ Summary` button. For a report-sized artefact, click `⚡ Summary` and paste the clipboard contents into a `.md` or `.txt` file.
+
+### STIX 2.1 IOC → pattern mapping
+
+| Loupe IOC type | STIX sub-type | Pattern                             |
+|---|---|---|
+| `URL`          | `url`         | `[url:value = '…']`                 |
+| `IP Address` (IPv4 / IPv6) | `ipv4-addr` / `ipv6-addr` | `[ipv4-addr:value = '…']` / `[ipv6-addr:value = '…']` |
+| `Hostname`     | `domain-name` | `[domain-name:value = '…']`         |
+| `Email`        | `email-addr`  | `[email-addr:value = '…']`          |
+| `Hash` (MD5 / SHA-1 / SHA-256) | `file`        | `[file:hashes.'MD5' = '…']` / `SHA-1` / `SHA-256` |
+| `File Path` / `UNC Path` | `file`    | `[file:name = '<basename>']`        |
+| Other (command lines, registry keys, usernames, MAC) | —    | omitted from STIX (still included in CSV / JSON / MISP as text). |
+
+### MISP IOC → attribute mapping
+
+| Loupe IOC type | MISP type    | Category          | `to_ids` |
+|---|---|---|---|
+| `URL`          | `url`        | Network activity  | true     |
+| `IP Address`   | `ip-dst`     | Network activity  | true     |
+| `Hostname`     | `domain`     | Network activity  | true     |
+| `Email`        | `email-src`  | Payload delivery  | true     |
+| `Hash` (md5 / sha1 / sha256) | `md5` / `sha1` / `sha256` | Payload delivery  | true     |
+| `File Path` / `UNC Path` | `filename` | Payload delivery  | false    |
+| YARA rule name | `yara`       | Payload delivery  | false    |
+| Any other type | `text`       | Other             | false    |
+
+IOCs with Loupe severity `info` always force `to_ids:false` regardless of type.
+
+---
+
 ## 🎬 Example Files (guided tour)
+
 
 The [`examples/`](examples/) directory contains sample files for every supported format — grouped by category — try dropping them into Loupe to explore.
 

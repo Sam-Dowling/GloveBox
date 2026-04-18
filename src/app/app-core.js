@@ -17,7 +17,10 @@ class App {
     this._setupViewerPan();
     this._setupSearch();
     this._checkVersionParam();
-    // Keyboard shortcuts: S=toggle sidebar, Y=YARA dialog, Ctrl+F=search
+    // Keyboard shortcuts: S=toggle sidebar, Y=YARA dialog, Ctrl+F=search.
+    // Drill-down navigation (archives, PDF attachments, etc.) is driven
+    // exclusively by the toolbar breadcrumb trail — no back/forward
+    // shortcuts or mouse side-button handlers are wired up.
     document.addEventListener('keydown', e => {
       // Ctrl+F / Cmd+F: focus document search
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
@@ -34,6 +37,7 @@ class App {
       else if (e.key === '?' || e.key === 'h' || e.key === 'H') this._openHelpDialog();
     });
   }
+
 
   _setupDrop() {
     const dz = document.getElementById('drop-zone'), fi = document.getElementById('file-input');
@@ -127,8 +131,6 @@ class App {
       if (f) {
         // Clear nav stack for fresh file loads (not drill-down into archives)
         this._navStack = [];
-        const backBtn = document.getElementById('btn-nav-back');
-        if (backBtn) backBtn.classList.add('hidden');
         this._loadFile(f);
       }
       fi.value = '';
@@ -137,14 +139,13 @@ class App {
 
   _setupToolbar() {
     document.getElementById('btn-open').addEventListener('click', () => document.getElementById('file-input').click());
-    document.getElementById('btn-nav-back').addEventListener('click', () => this._navBack());
     document.getElementById('btn-close').addEventListener('click', () => this._clearFile());
+
     document.getElementById('btn-security').addEventListener('click', () => this._toggleSidebar());
     document.getElementById('btn-yara').addEventListener('click', () => this._openYaraDialog());
     document.getElementById('btn-help').addEventListener('click', () => this._openHelpDialog());
-    document.getElementById('btn-save').addEventListener('click', () => this._saveContent());
-    document.getElementById('btn-copy').addEventListener('click', () => this._copyContent());
     document.getElementById('btn-copy-analysis').addEventListener('click', () => this._copyAnalysis());
+    document.getElementById('btn-export').addEventListener('click', () => this._toggleExportMenu());
     document.getElementById('btn-zoom-out').addEventListener('click', () => this._setZoom(this.zoom - 10));
     document.getElementById('btn-zoom-in').addEventListener('click', () => this._setZoom(this.zoom + 10));
     document.getElementById('btn-theme').addEventListener('click', () => this._toggleTheme());
@@ -271,8 +272,7 @@ class App {
     if (!files || !files.length) return;
     // Clear nav stack for fresh file loads (not drill-down into archives)
     this._navStack = [];
-    const backBtn = document.getElementById('btn-nav-back');
-    if (backBtn) backBtn.classList.add('hidden');
     this._loadFile(files[0]);
   }
+
 }

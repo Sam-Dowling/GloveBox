@@ -39,7 +39,17 @@ body.theme-solarized #viewer-toolbar {
 }
 
 body.theme-solarized #app-title   { color: #eee8d5; }
-body.theme-solarized #file-info   { color: rgba(238, 232, 213, .85); }
+
+/* Breadcrumbs — warm surface variant */
+body.theme-solarized .crumb            { color: rgba(238, 232, 213, .78); }
+body.theme-solarized .crumb:hover      { background: rgba(181, 137, 0, .14); color: #eee8d5; }
+body.theme-solarized .crumb-current    { background: rgba(181, 137, 0, .16); color: #eee8d5; }
+body.theme-solarized .crumb-current:hover { background: rgba(181, 137, 0, .16); }
+body.theme-solarized .crumb-meta       { color: rgba(147, 161, 161, .65); }
+body.theme-solarized .crumb-sep        { color: rgba(147, 161, 161, .55); }
+body.theme-solarized .crumb-overflow-btn { background: rgba(147, 161, 161, .06); color: #93a1a1; border-color: rgba(147, 161, 161, .18); }
+body.theme-solarized .crumb-overflow-btn:hover { background: rgba(181, 137, 0, .14); color: #eee8d5; }
+body.theme-solarized .crumb-overflow-menu { background: rgba(7, 54, 66, .96); border-color: rgba(147, 161, 161, .22); }
 
 /* ── Toolbar buttons (warm-accent variant of the default cyan hover) ── */
 body.theme-solarized .tb-btn {

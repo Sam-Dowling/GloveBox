@@ -92,20 +92,6 @@ body.dark #app-title {
   display: none;
 }
 
-#file-info {
-  font-size: 13px;
-  font-weight: 500;
-  color: #444;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  letter-spacing: -.1px;
-}
-
-body.dark #file-info {
-  color: rgba(255, 255, 255, .82);
-}
-
 /* Close file button (✕) — red-tinted icon button */
 #btn-close {
   color: #ef4444 !important;
@@ -304,13 +290,227 @@ body.dark .tb-menu-item-active {
   display: none;
 }
 
-/* File operations group — contains Open, file name, Back, Close */
+/* File operations group — contains Open, Close, Breadcrumbs */
 #file-ops {
   gap: 8px;
+  flex: 1;
+  min-width: 0;
+  /* allow breadcrumbs to shrink/ellipsise instead of forcing the toolbar
+     to wrap. Grows to eat available horizontal space so breadcrumbs have
+     room to breathe while Open/Close stay pinned at the left edge. */
 }
 
-#file-ops #file-info {
-  max-width: 300px;
+/* ── Breadcrumbs (toolbar file path) ────────────────────────────────────
+   Horizontal trail of crumbs showing every layer from the root archive
+   down to the current view. Each ancestor crumb is a clickable button
+   that jumps directly to that layer (see _navJumpTo in app-load.js); the
+   last crumb is the current view and is rendered as a non-interactive
+   accent pill. Overflow collapses middle crumbs into a `… ▾` dropdown. */
+#breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;           /* allow flex children to shrink below content width */
+  overflow: hidden;       /* prevents toolbar wrap when path is very long */
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -.1px;
+}
+
+#breadcrumbs.hidden {
+  display: none;
+}
+
+.crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;       /* per-crumb truncation ceiling */
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #444;
+  font: inherit;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.crumb-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.crumb-label {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.crumb:hover {
+  background: rgba(26, 115, 232, .08);
+  border-color: rgba(26, 115, 232, .2);
+  color: #1a5fb4;
+}
+
+.crumb:focus-visible {
+  outline: 2px solid #1a73e8;
+  outline-offset: 1px;
+}
+
+/* Current crumb — active file, not clickable, styled as accent pill.
+ * Inherits the 220 px truncation cap from `.crumb` but bumped slightly so
+ * the meta suffix (size / pages) stays readable. DO NOT add `flex: 1` or
+ * `max-width: none` here — the `#breadcrumbs` container already absorbs
+ * spare toolbar width, and letting one crumb grow unbounded pushes the
+ * trail off the right edge of the toolbar. */
+.crumb-current {
+  background: rgba(26, 115, 232, .1);
+  border-color: rgba(26, 115, 232, .22);
+  color: #1a5fb4;
+  font-weight: 600;
+  cursor: default;
+  max-width: 320px;
+}
+
+.crumb-current:hover {
+  background: rgba(26, 115, 232, .1);
+  border-color: rgba(26, 115, 232, .22);
+  color: #1a5fb4;
+}
+
+.crumb-meta {
+  font-weight: 400;
+  color: #666;
+  margin-left: 4px;
+  font-size: 11px;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* `›` separator between crumbs */
+.crumb-sep {
+  color: #888;
+  opacity: .55;
+  flex-shrink: 0;
+  font-size: 11px;
+  user-select: none;
+  pointer-events: none;
+}
+
+/* Collapsed-middle overflow chip */
+.crumb-overflow {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.crumb-overflow-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 8px;
+  border: 1px solid rgba(0, 0, 0, .1);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .04);
+  color: #555;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+
+.crumb-overflow-btn:hover {
+  background: rgba(26, 115, 232, .1);
+  border-color: rgba(26, 115, 232, .25);
+  color: #1a5fb4;
+}
+
+.crumb-overflow-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  min-width: 220px;
+  max-width: 380px;
+  padding: 4px;
+  border: 1px solid #c3c7cf;
+  border-radius: 8px;
+  background: #f7f8fa;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .15);
+}
+
+.crumb-overflow-menu.hidden {
+  display: none;
+}
+
+.crumb-overflow-menu .crumb {
+  width: 100%;
+  max-width: none;
+  border-radius: 4px;
+  justify-content: flex-start;
+}
+
+/* Dark-mode palette */
+body.dark .crumb {
+  color: rgba(255, 255, 255, .75);
+}
+
+body.dark .crumb:hover {
+  background: rgba(34, 211, 238, .1);
+  border-color: rgba(34, 211, 238, .25);
+  color: #22d3ee;
+}
+
+body.dark .crumb-current {
+  background: rgba(34, 211, 238, .12);
+  border-color: rgba(34, 211, 238, .28);
+  color: #67e8f9;
+}
+
+body.dark .crumb-current:hover {
+  background: rgba(34, 211, 238, .12);
+  border-color: rgba(34, 211, 238, .28);
+  color: #67e8f9;
+}
+
+body.dark .crumb-meta {
+  color: rgba(255, 255, 255, .5);
+}
+
+body.dark .crumb-sep {
+  color: rgba(255, 255, 255, .45);
+}
+
+body.dark .crumb-overflow-btn {
+  background: rgba(255, 255, 255, .06);
+  border-color: rgba(255, 255, 255, .1);
+  color: rgba(255, 255, 255, .65);
+}
+
+body.dark .crumb-overflow-btn:hover {
+  background: rgba(34, 211, 238, .12);
+  border-color: rgba(34, 211, 238, .28);
+  color: #22d3ee;
+}
+
+body.dark .crumb-overflow-menu {
+  background: rgba(22, 23, 34, .96);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border-color: rgba(255, 255, 255, .1);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .6);
 }
 
 .tb-action-btn {
@@ -549,31 +749,6 @@ body.dark .vt-zoom-btn:hover {
 body.dark #zoom-level {
   color: rgba(255, 255, 255, .62);
 }
-
-/* Nav back button for archive drill-down — blue-tinted */
-#btn-nav-back {
-  background: rgba(59, 130, 246, .1) !important;
-  border-color: rgba(59, 130, 246, .25) !important;
-  color: #3b82f6 !important;
-  font-weight: 600 !important;
-}
-
-#btn-nav-back:hover {
-  background: rgba(59, 130, 246, .2) !important;
-  border-color: rgba(59, 130, 246, .4) !important;
-}
-
-body.dark #btn-nav-back {
-  background: rgba(96, 165, 250, .12) !important;
-  border-color: rgba(96, 165, 250, .2) !important;
-  color: #60a5fa !important;
-}
-
-body.dark #btn-nav-back:hover {
-  background: rgba(96, 165, 250, .22) !important;
-  border-color: rgba(96, 165, 250, .35) !important;
-}
-
 
 /* ── Main layout ── */
 #main-area {

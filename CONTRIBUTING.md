@@ -277,6 +277,36 @@ If the renderer also emits a `.plaintext-table` (one `<tr>` per line with a `.pl
 
 ---
 
+## Adding a New Export Format
+
+The toolbar's **📤 Export** dropdown is driven by a declarative menu in `src/app/app-ui.js`. All exporters are offline, synchronous (or `async` + `await` for `crypto.subtle` hashing only), and must never reach the network. **Default to the clipboard** — every menu item except `💾 Save raw file` writes to the clipboard so the analyst can paste straight into a ticket / TIP / jq pipeline. Plaintext and Markdown report exports live behind the separate `⚡ Summary` toolbar button; do not add a clipboard-Markdown or download-Markdown item to the dropdown, that duplication was deliberately removed.
+
+Adding a new format is a three-step change:
+
+1. **Write the builder.** Add `_buildXxx(model)` + a thin `_exportXxx()` wrapper (or fold both into one `_exportXxx()`) to the `Object.assign(App.prototype, {...})` block in `src/app/app-ui.js`. Reuse the shared helpers:
+   - `this._collectIocs()` — normalised IOC list (each entry has `type`, `value`, `severity`, `note`, `source`, `stixType`).
+   - `this._fileMeta`, `this.fileHashes`, `this.findings` — canonical input surface.
+   - `this._fileSourceRecord()` — identical `{name,size,detectedType,magic,entropy,hashes{…}}` block that every threat-intel exporter embeds so the file is unambiguously identified.
+   - `this._copyToClipboard(text)` + `this._toast('Xxx copied to clipboard')` — **the default destination**.
+   - `this._buildAnalysisText(Infinity)` — unbudgeted plaintext report (same content as the ⚡ Summary button), for anything that legitimately needs a human-readable blob.
+   - `this._downloadText(text, filename, mime)` / `this._downloadJson(obj, filename)` / `this._exportFilename(suffix, ext)` — only for the rare case where the output is genuinely a file (e.g. `💾 Save raw file`). Never call `URL.createObjectURL` directly.
+2. **Register the menu item.** Add an entry to the array returned by `_getExportMenuItems()` — `{ id, icon, label, action: () => this._exportXxx() }`. Use `{ separator: true }` to add a divider. Prefix the label with `Copy ` when the action writes to the clipboard so the destination is visible without hovering. Order the array in the order items should render.
+3. **Wrap it.** The click dispatcher in `_openExportMenu()` already wraps every action in `try { … } catch (err) { console.error(…); this._toast('Export failed — see console', 'error'); }`. Your exporter just needs to `_toast('Xxx copied to clipboard')` (or similar) on success.
+
+**Docs to update (required):**
+
+- `FEATURES.md` → add a column to the format × contents matrix in the **📤 Exports** section, plus a row to the menu-actions table.
+- `README.md` → only if the new format belongs in the capabilities one-liner under **What It Finds**.
+- `CODEMAP.md` → regenerate with `python generate-codemap.py`.
+
+**Do not:**
+
+- Pull in a new vendored library just for an export format — if the spec needs SHA-1/SHA-256, use `crypto.subtle`; if it needs UUIDv5, use the existing `_uuidv5()` helper.
+- Fabricate vendor-specific custom extensions (e.g. `x_loupe_*` STIX properties) — either map to a standard field or skip the IOC.
+- Add network calls, `eval`, `new Function`, or anything that would require a CSP relaxation.
+
+---
+
 ## How to Contribute
 
 1. Fork the repo

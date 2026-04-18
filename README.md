@@ -76,6 +76,7 @@ Every format gets risk assessment, IOC extraction, and YARA scanning on top of t
 - **Native binary analysis** — PE, ELF and Mach-O with imports, sections, entropy, security features, code signatures (plus a graceful strings + hex-dump fallback when a binary is truncated so YARA/IOC scanning keeps working)
 - **Certificate & PGP inspection** — X.509 / PKCS#12 / OpenPGP with weak-key and expiry flagging
 - **Archive drill-down** — click any entry inside a ZIP / TAR / ISO / MSI to open it with full analysis
+- **Exports** — one-click **⚡ Summary** (AI/SOC clipboard brief) plus **📤 Export** menu: copy STIX 2.1 / MISP event / IOC JSON / IOC CSV straight to the clipboard, or save the raw loaded file back to disk
 
 Plus a Midnight Glass UI with a 4-theme picker (Light / Dark / Midnight OLED / Solarized — your choice persists), floating zoom, drag-pan, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
 
