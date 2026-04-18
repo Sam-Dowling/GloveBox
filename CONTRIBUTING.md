@@ -59,6 +59,7 @@ src/rules/osascript-threats.yar        # AppleScript/JXA threats: shell injectio
 src/rules/plist-threats.yar            # Property list threats: LaunchAgent, persistence keys (21 rules)
 src/rules/clickonce-threats.yar        # ClickOnce deployment threats: AppDomainManager, HTTP deploy, full trust (4 rules)
 src/rules/msix-threats.yar             # MSIX / APPX / App Installer threats: full-trust capabilities, startup tasks, silent auto-update (9 rules)
+src/rules/browserext-threats.yar       # Browser extension (.crx / .xpi) threats: native messaging, all_urls, unsafe-eval CSP, debugger, externally_connectable (12 rules)
 ```
 
 ### JS Concatenation Order
@@ -77,7 +78,9 @@ src/style-resolver.js                  # StyleResolver — resolves run/paragrap
 src/numbering-resolver.js              # NumberingResolver — list counters and markers
 src/content-renderer.js                # ContentRenderer — DOCX DOM → HTML elements
 src/security-analyzer.js               # SecurityAnalyzer — findings, metadata, external refs
+src/renderers/protobuf-reader.js       # ProtobufReader — minimal protobuf wire-format decoder (CRX v3 CrxFileHeader)
 src/renderers/ole-cfb-parser.js        # OleCfbParser — CFB/OLE2 compound file reader
+
 src/renderers/xlsx-renderer.js         # XlsxRenderer — spreadsheet view (SheetJS)
 src/renderers/pptx-renderer.js         # PptxRenderer — slide canvas renderer
 src/renderers/odt-renderer.js          # OdtRenderer — OpenDocument text renderer
@@ -116,6 +119,7 @@ src/renderers/image-renderer.js        # ImageRenderer — image preview + stego
 src/renderers/plaintext-renderer.js    # PlainTextRenderer — catch-all text/hex viewer
 src/renderers/clickonce-renderer.js    # ClickOnceRenderer — .application / .manifest deployment analyser
 src/renderers/msix-renderer.js         # MsixRenderer — .msix / .msixbundle / .appx / .appxbundle / .appinstaller analyser
+src/renderers/browserext-renderer.js   # BrowserExtRenderer — Chrome .crx (v2/v3) / Firefox .xpi WebExtension analyser
 src/app/app-core.js                    # App class — constructor, init, drop-zone, toolbar
 src/app/app-load.js                    # File loading, hashing (MD5/SHA), IOC extraction
 src/app/app-sidebar.js                 # Sidebar rendering — risk bar + collapsible panes
@@ -172,7 +176,8 @@ Loupe/
 │   │   ├── osascript-threats.yar    # AppleScript/JXA threats
 │   │   ├── plist-threats.yar        # Property list threats
 │   │   ├── clickonce-threats.yar    # ClickOnce deployment threats
-│   │   └── msix-threats.yar         # MSIX / APPX / App Installer threats
+│   │   ├── msix-threats.yar         # MSIX / APPX / App Installer threats
+│   │   └── browserext-threats.yar   # Browser extension (.crx / .xpi) threats
 │   ├── constants.js                 # Shared constants, DOM helpers, unit converters, PARSER_LIMITS
 │   ├── parser-watchdog.js           # ParserWatchdog — 60s timeout guard for parser invocations
 │   ├── vba-utils.js                 # Shared VBA binary decoder + auto-exec pattern scanner
@@ -223,7 +228,8 @@ Loupe/
 │   │   ├── image-renderer.js        # ImageRenderer — image preview + stego detection
 │   │   ├── plaintext-renderer.js    # PlainTextRenderer
 │   │   ├── clickonce-renderer.js    # ClickOnceRenderer — .application / .manifest deployment analyser
-│   │   └── msix-renderer.js         # MsixRenderer — MSIX/APPX ZIP packages + .appinstaller XML analyser
+│   │   ├── msix-renderer.js         # MsixRenderer — MSIX/APPX ZIP packages + .appinstaller XML analyser
+│   │   └── browserext-renderer.js   # BrowserExtRenderer — Chrome .crx (v2/v3) / Firefox .xpi WebExtension analyser
 │   └── app/
 │       ├── app-core.js              # App class definition + setup methods
 │       ├── app-load.js              # File loading, hashing, IOC extraction
@@ -271,7 +277,9 @@ Loupe is optimised for AI coding agents (Cline, Cursor, Copilot Workspace, etc.)
 - **AppleScript / JXA analysis** — `OsascriptRenderer` handles `.applescript` source files (syntax-highlighted display), compiled `.scpt` binaries (string extraction from binary data), and `.jxa` JavaScript for Automation files. Security analysis flags shell command execution (`do shell script`), application targeting, file system access, and macOS-specific persistence/privilege escalation patterns.
 - **Property list analysis** — `PlistRenderer` parses both XML and binary `.plist` formats into an interactive tree view with expandable nested structures. Security analysis detects LaunchAgent/LaunchDaemon persistence, suspicious URL schemes, shell command execution, and privacy-sensitive entitlement keys. 21 dedicated YARA rules cover plist-specific threat patterns.
 - **ClickOnce analysis** — `ClickOnceRenderer` parses `.application` deployment manifests and `.manifest` application manifests. `app-load.js` routes them via a root-element sniff (`assembly` → ClickOnce, otherwise falls through to `PlainTextRenderer` so side-by-side assembly / SxS / vcpkg manifests still render). Extracts identity, deployment settings, entry point, trust level, `appDomainManager*` overrides, signature presence, and `dependentAssembly` chains. Emits `findings.clickOnceInfo`, surfaced in `⚡ Summary`, and backed by `clickonce-threats.yar`.
-- **MSIX / APPX / App Installer analysis** — `MsixRenderer` handles `.msix` / `.msixbundle` / `.appx` / `.appxbundle` ZIP containers plus standalone `.appinstaller` XML (extension dispatch in `app-load.js`). For package containers, `JSZip` extracts `AppxManifest.xml` / `AppxBundleManifest.xml`; parses identity, capabilities (tiered), and application extensions (full-trust process, startup task, app-execution alias, protocol, COM, background tasks). For `.appinstaller` XML, parses `Uri`, main package / bundle, dependencies, and `UpdateSettings`. All namespaces are read via `getElementsByTagNameNS("*", local)` so prefix variations don't break extraction. Inner files emit `open-inner-file` CustomEvents (same wiring as `ZipRenderer`). Emits `findings.msixInfo`, surfaced in `⚡ Summary`, and backed by `msix-threats.yar`. See `FEATURES.md` for the full parsed-field list.
+- **MSIX / APPX / App Installer analysis** — `MsixRenderer` handles `.msix` / `.msixbundle` / `.appx` / `.appxbundle` ZIP containers plus standalone `.appinstaller` XML (extension dispatch in `app-load.js`). For package containers, `JSZip` extracts `AppxManifest.xml` / `AppxBundleManifest.xml`; parses identity, capabilities (tiered), and application extensions (full-trust process, startup task, app-execution alias, protocol, COM, background tasks). For `.appinstaller` XML, parses `Uri`, main package / bundle, dependencies, and `UpdateSettings`. All namespaces are read via `getElementsByTagNameNS("*", local)` so prefix variations don't break extraction. The `AppxSignature.p7x` signature envelope is parsed by `_parseP7x` — a deliberately conservative DER token-scan (no full ASN.1 walker) that confirms the `PKCX` magic, scans for the `AppxSipInfo` (1.3.6.1.4.1.311.84.2.1) and `SpcIndirectDataContent` OIDs, and extracts the signer Subject CN / O via the `id-at-commonName` / `id-at-organizationName` OIDs (handles UTF8String / PrintableString / BMPString tags + 0x81 / 0x82 long-form lengths). The signer CN is then compared against the manifest's `Identity/@Publisher` DN (parsed by `_parsePublisherDN`); a mismatch is the canonical re-signed / repackaged tell and is flagged `high` in both `_assess` and the summary card. `_computePublisherId` derives the canonical 13-character Windows PublisherId (SHA-256 of UTF-16LE publisher → first 8 bytes → 65-bit stream → 13 × 5-bit groups in the Crockford-style `0..9 + a..z minus i/l/o/u` alphabet) so `PackageFamilyName` lookups can be done without installation. Inner files emit `open-inner-file` CustomEvents (same wiring as `ZipRenderer`). Emits `findings.msixInfo`, surfaced in `⚡ Summary`, and backed by `msix-threats.yar`. See `FEATURES.md` for the full parsed-field list.
+- **Browser extension analysis** — `BrowserExtRenderer` handles Chrome `.crx` (v2 and v3) and Firefox `.xpi` archives. Extension dispatch in `app-load.js` routes by extension, with a `Cr24` magic sniff fallback. For `.crx`, the v2/v3 envelope is unwrapped (v2 carries a raw RSA public key + signature; v3 carries a protobuf `CrxFileHeader` decoded via the in-tree `ProtobufReader` — `_parseCrxV3Header` walks the header to pull every `AsymmetricKeyProof.public_key` (RSA field 2, ECDSA field 3) plus the nested `SignedData.crx_id` (field 10000 → field 1, expected 16 bytes), then `_decorateCrxV3` SHA-256s each public key and remaps the first 16 bytes via `_crxIdFromBytes` to produce the canonical Chrome extension ID for comparison against the declared `crx_id`) and the embedded ZIP payload is extracted with `JSZip`; for `.xpi`, the ZIP is read directly. The summary card surfaces `Chrome Extension ID (declared)`, one `Chrome Extension ID (computed, RSA-SHA256 / ECDSA-SHA256)` row per key, an `ID match: ✓ / ✗` verdict, and a signature count line; `_assess` raises `high` risks for malformed or empty headers, zero signatures, or a declared-vs-computed ID mismatch, and `medium` for a non-16-byte declared crx_id. Parses `manifest.json` (MV2 / MV3), extracts identity, permissions (tiered via static `PERM_HIGH` / `PERM_MEDIUM` / `BROAD_HOST_PATTERNS`), content scripts, background worker / service worker, externally_connectable, content_security_policy, and Firefox `applications.gecko` / legacy `install.rdf`. CRX v2 public keys produce the canonical Chrome extension ID (SHA-256 → first 16 bytes → nibble remap `0..f → a..p`); CRX v3 reuses the same remap on every parsed `AsymmetricKeyProof`. Inner files emit `open-inner-file` CustomEvents (same wiring as `ZipRenderer`). Emits `findings.browserExtInfo`, surfaced in `⚡ Summary`, and backed by `browserext-threats.yar`.
+
 - **Catch-all viewer** — `PlainTextRenderer` accepts any file type. Text files get line-numbered display; binary files get a hex dump. Both paths run IOC extraction and YARA scanning.
 
 ---
