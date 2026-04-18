@@ -127,8 +127,12 @@ class HtaRenderer {
   }
 
   analyzeForSecurity(buffer) {
+    // Start 'low' and escalate from evidence collected below — a bare HTA with
+    // no script blocks and no HTA:APPLICATION tag is still dangerous by format
+    // (the banner is severity:'high') but we let the cumulative evidence drive
+    // the final risk so the sidebar matches what the user can actually see.
     const f = {
-      risk: 'high', // HTA files are inherently high-risk
+      risk: 'low',
       hasMacros: false, macroSize: 0, macroHash: '',
       autoExec: [], modules: [], externalRefs: [], metadata: {},
       signatureMatches: []
@@ -178,6 +182,15 @@ class HtaRenderer {
     // Pattern detection is handled entirely by YARA (auto-scan on file load).
     // YARA findings already carry byte offsets → sidebar highlighter resolves
     // them against wrap._rawText for exact source-pane highlighting.
+
+    // Evidence-based risk calibration — see cross-renderer-sanity-check audit.
+    const highs = f.externalRefs.filter(r => r.severity === 'high').length;
+    const hasCrit = f.externalRefs.some(r => r.severity === 'critical');
+    const hasMed = f.externalRefs.some(r => r.severity === 'medium');
+    if (hasCrit) f.risk = 'critical';
+    else if (highs >= 2) f.risk = 'high';
+    else if (highs >= 1) f.risk = 'medium';
+    else if (hasMed) f.risk = 'low';
     return f;
   }
 

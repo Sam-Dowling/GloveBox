@@ -113,8 +113,11 @@ class RegRenderer {
   }
 
   analyzeForSecurity(buffer, fileName) {
+    // Start 'low'; the format banner and parsed warnings drive the final
+    // risk via the calibration block at the end. Registry imports are only
+    // actually dangerous if they touch dangerous keys — let evidence decide.
     const f = {
-      risk: 'high', hasMacros: false, macroSize: 0, macroHash: '',
+      risk: 'low', hasMacros: false, macroSize: 0, macroHash: '',
       autoExec: [], modules: [], externalRefs: [], metadata: {},
       signatureMatches: [], interestingStrings: []
     };
@@ -142,15 +145,25 @@ class RegRenderer {
       f.externalRefs.push({ type: IOC.PATTERN, url: w.label, severity: w.sev });
     }
 
-    // Bump risk to critical if we have many high-severity warnings
-    const highCount = analysis.warnings.filter(w => w.sev === 'high' || w.sev === 'critical').length;
-    if (highCount >= 3) f.risk = 'critical';
-
     // Emit FILE_PATH / PROCESS / REGISTRY_KEY IOCs from parsed values.
     // Values in .reg files use doubled backslashes ("C:\\Program Files\\...")
     // which the generic scanner's path regex doesn't match, so we unescape
     // them here and feed the clean form into interestingStrings.
     this._emitRegIocs(f, text, analysis);
+
+    // Evidence-based risk calibration — see cross-renderer-sanity-check audit.
+    // Keep the "3+ high warnings → critical" semantics via the rank check.
+    const rank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+    const highCount = analysis.warnings.filter(w => w.sev === 'high' || w.sev === 'critical').length;
+    const highs = f.externalRefs.filter(r => r.severity === 'high').length;
+    const hasCrit = f.externalRefs.some(r => r.severity === 'critical');
+    const hasMed = f.externalRefs.some(r => r.severity === 'medium');
+    let tier = 'low';
+    if (hasCrit || highCount >= 3) tier = 'critical';
+    else if (highs >= 2) tier = 'high';
+    else if (highs >= 1) tier = 'medium';
+    else if (hasMed) tier = 'low';
+    if ((rank[tier] || 0) > (rank[f.risk] || 0)) f.risk = tier;
 
     return f;
   }

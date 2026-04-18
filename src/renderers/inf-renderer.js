@@ -173,8 +173,11 @@ class InfSctRenderer {
   // ── Security analysis ────────────────────────────────────────────────────
 
   analyzeForSecurity(buffer, fileName) {
+    // Start 'low'; the format banner and per-branch warnings (below) will
+    // drive the final risk via the calibration block at the end. This keeps
+    // INF/SCT consistent with other categorical-high script formats.
     const f = {
-      risk: 'high', hasMacros: false, macroSize: 0, macroHash: '',
+      risk: 'low', hasMacros: false, macroSize: 0, macroHash: '',
       autoExec: [], modules: [], externalRefs: [], metadata: {},
       signatureMatches: [], interestingStrings: []
     };
@@ -225,6 +228,20 @@ class InfSctRenderer {
       // Emit IOCs that the generic scanner won't catch (bare filenames, DIRID paths)
       this._emitInfIocs(f, text, analysis);
     }
+
+    // Evidence-based risk calibration — see cross-renderer-sanity-check audit.
+    // (Runs after both SCT and INF branches. If the INF branch already bumped
+    // to 'critical', this block won't lower it thanks to the rank check.)
+    const rank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+    const highs = f.externalRefs.filter(r => r.severity === 'high').length;
+    const hasCrit = f.externalRefs.some(r => r.severity === 'critical');
+    const hasMed = f.externalRefs.some(r => r.severity === 'medium');
+    let tier = 'low';
+    if (hasCrit) tier = 'critical';
+    else if (highs >= 2) tier = 'high';
+    else if (highs >= 1) tier = 'medium';
+    else if (hasMed) tier = 'low';
+    if ((rank[tier] || 0) > (rank[f.risk] || 0)) f.risk = tier;
 
     return f;
   }

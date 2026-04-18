@@ -104,8 +104,11 @@ class WsfRenderer {
   }
 
   analyzeForSecurity(buffer, fileName) {
+    // Start 'low'; the format banner and parsed script blocks below are all
+    // severity:'high', so evidence-based calibration at the end will lift this
+    // to 'high' whenever real content warrants it.
     const f = {
-      risk: 'high', hasMacros: false, macroSize: 0, macroHash: '',
+      risk: 'low', hasMacros: false, macroSize: 0, macroHash: '',
       autoExec: [], modules: [], externalRefs: [], metadata: {},
       signatureMatches: []
     };
@@ -150,6 +153,15 @@ class WsfRenderer {
     }
 
     // Pattern detection is handled entirely by YARA (auto-scan on file load)
+
+    // Evidence-based risk calibration — see cross-renderer-sanity-check audit.
+    const highs = f.externalRefs.filter(r => r.severity === 'high').length;
+    const hasCrit = f.externalRefs.some(r => r.severity === 'critical');
+    const hasMed = f.externalRefs.some(r => r.severity === 'medium');
+    if (hasCrit) f.risk = 'critical';
+    else if (highs >= 2) f.risk = 'high';
+    else if (highs >= 1) f.risk = 'medium';
+    else if (hasMed) f.risk = 'low';
     return f;
   }
 

@@ -128,8 +128,10 @@ class UrlShortcutRenderer {
   }
 
   analyzeForSecurity(buffer, fileName) {
+    // Start 'low'; `_assessUrl()` results bump f.risk to 'medium'/'high' at
+    // the per-risk loop below when evidence warrants it.
     const f = {
-      risk: 'medium', hasMacros: false, macroSize: 0, macroHash: '',
+      risk: 'low', hasMacros: false, macroSize: 0, macroHash: '',
       autoExec: [], modules: [], externalRefs: [], metadata: {},
       signatureMatches: []
     };

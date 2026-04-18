@@ -21,8 +21,11 @@ class IqySlkRenderer {
 
   analyzeForSecurity(buffer, fileName) {
     const ext = (fileName || '').split('.').pop().toLowerCase();
+    // Start 'low'; the format banner (high) plus any EXEC/CALL/RUN/URL
+    // evidence collected below will lift the risk via the calibration at
+    // the end. Keeps this renderer consistent with the rest of the tree.
     const f = {
-      risk: 'high', hasMacros: false, macroSize: 0, macroHash: '',
+      risk: 'low', hasMacros: false, macroSize: 0, macroHash: '',
       autoExec: [], modules: [], externalRefs: [], metadata: {},
       signatureMatches: []
     };
@@ -89,6 +92,15 @@ class IqySlkRenderer {
     }
 
     // Pattern detection is handled entirely by YARA (auto-scan on file load)
+
+    // Evidence-based risk calibration — see cross-renderer-sanity-check audit.
+    const highs = f.externalRefs.filter(r => r.severity === 'high').length;
+    const hasCrit = f.externalRefs.some(r => r.severity === 'critical');
+    const hasMed = f.externalRefs.some(r => r.severity === 'medium');
+    if (hasCrit) f.risk = 'critical';
+    else if (highs >= 2) f.risk = 'high';
+    else if (highs >= 1) f.risk = 'medium';
+    else if (hasMed) f.risk = 'low';
     return f;
   }
 
