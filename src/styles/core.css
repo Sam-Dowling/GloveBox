@@ -279,6 +279,17 @@ body.dark .tb-menu-item-active {
   color: #22d3ee;
 }
 
+/* Disabled menu row — used by the 📤 Export dropdown to grey out
+   "📋 Copy raw content" on binary files (PE, Mach-O, JAR, compiled .scpt,
+   …) that can't survive a clipboard text round-trip. `pointer-events:none`
+   suppresses hover and click without needing to gate every listener. */
+.tb-menu-item-disabled,
+.tb-menu-item:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 /* Toolbar button group */
 .tb-group {
   display: flex;

@@ -133,11 +133,20 @@ class OsascriptRenderer {
             result.source = bestSource;
         }
 
-        /* Filter strings: remove duplicates and very short/boring ones */
+        /* Filter strings: remove duplicates and very short/boring ones.
+         * Compare against a trimmed copy of bestSource so that the source
+         * block — which frequently has trailing whitespace/padding in the
+         * raw printable-run — is not re-emitted as a separate "string"
+         * entry. If we compared against the untrimmed bestSource the trim
+         * on `t` would make them unequal and the whole source block (URLs
+         * and all) would be duplicated in result.strings, leading to
+         * triplicate IOC rows once analyzeForSecurity concatenates
+         * result.source with result.strings. */
+        const bestTrim = bestSource.trim();
         const seen = new Set();
         for (const s of strings) {
             const t = s.text.trim();
-            if (t.length >= MIN_LEN && !seen.has(t) && t !== bestSource) {
+            if (t.length >= MIN_LEN && !seen.has(t) && t !== bestTrim) {
                 seen.add(t);
                 result.strings.push(t);
             }
@@ -418,11 +427,18 @@ class OsascriptRenderer {
         if (/#!/.test(analysisText.substring(0, 80))) findings.autoExec.push('shebang (executable script)');
 
         /* ── Extract IOCs ────────────────────────────────────────── */
-        /* URLs */
+        /* URLs — dedup like IP/path extractors below so the same URL
+         * appearing multiple times in analysisText (embedded source plus
+         * FasTX string-table entry, for example) produces exactly one
+         * IOC row instead of N. */
         const urlRe = /https?:\/\/[^\s"'<>\])}]{6,200}/gi;
+        const seenUrls = new Set();
         let um;
         while ((um = urlRe.exec(analysisText)) !== null) {
-            findings.externalRefs.push({ type: IOC.URL, url: um[0], severity: 'medium' });
+            if (!seenUrls.has(um[0])) {
+                seenUrls.add(um[0]);
+                findings.externalRefs.push({ type: IOC.URL, url: um[0], severity: 'medium' });
+            }
             if (findings.externalRefs.length >= 100) break;
         }
         /* IPs */

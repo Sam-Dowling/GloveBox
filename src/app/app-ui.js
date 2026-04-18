@@ -73,20 +73,95 @@ Object.assign(App.prototype, {
     this._toast('File saved');
   },
 
+  // ── Is "📋 Copy raw content" safe for this file? ─────────────────────────
+  // The Web Clipboard's text channel only faithfully round-trips UTF-8 text.
+  // Binary formats (PE, Mach-O, ELF, JAR/class, compiled .scpt, PDF, MSI, OLE
+  // containers, OOXML/ODF, archives, disk images, forensic DBs, images,
+  // binary plist, DER/PKCS#12) all either (a) fail to paste at all because
+  // `application/octet-stream` is not a recognised clipboard MIME in most
+  // target apps, or (b) silently truncate at the first NUL via the
+  // String.fromCharCode fallback. Worse, a few binary formats (compiled
+  // .scpt in particular) happen to pass a UTF-8 `fatal:true` decode and
+  // would get copied as a garbled text dump that includes the renderer's
+  // extracted-strings view rather than the original bytes. So we treat
+  // "copyable as text" as: fatal-UTF-8-decode succeeds AND the detected
+  // type is not on the explicit binary denylist. 💾 Save raw file remains
+  // the canonical "get the bytes out" path for every file.
+  _RAW_COPY_BINARY_DENYLIST: new Set([
+    // Native binaries
+    'pe', 'elf', 'macho', 'exe', 'dll', 'sys', 'scr', 'cpl', 'ocx', 'drv',
+    'so', 'o', 'dylib', 'bundle',
+    // Java
+    'jar', 'war', 'ear', 'class',
+    // Documents / OLE / OOXML / ODF containers
+    'pdf', 'msi', 'ole', 'doc', 'xls', 'ppt', 'msg',
+    'docx', 'docm', 'xlsx', 'xlsm', 'pptx', 'pptm',
+    'odt', 'ods', 'odp',
+    // Archives / disk images
+    'zip', 'rar', '7z', 'tar', 'gz', 'tgz', 'cab', 'iso', 'img',
+    // Forensic / DB / logs
+    'evtx', 'sqlite', 'db', 'onenote', 'one',
+    // Images
+    'image', 'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'ico', 'tif', 'tiff', 'avif',
+    // Compiled AppleScript (extensionless/FasTX)
+    'scpt', 'scptd',
+    // Binary cert containers
+    'der', 'p12', 'pfx',
+  ]),
+
+  _isRawCopyable() {
+    if (!this._fileBuffer) return false;
+    const bytes = new Uint8Array(this._fileBuffer);
+
+    // Binary-plist sniff — some .plist files are XML (text, copyable), but
+    // `bplist00` files are binary. detectedType='plist' doesn't distinguish.
+    if (bytes.length >= 8) {
+      const h = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
+      if (h === 'bplist') return false;
+    }
+
+    // Detected-type denylist — catches spuriously UTF-8-decodable binaries
+    // like compiled .scpt whose FasTX bytes happen to pass fatal decode.
+    const meta = this._fileMeta || {};
+    const detected = (meta.detectedType || '').toLowerCase();
+    const ext = ((meta.name || '').split('.').pop() || '').toLowerCase();
+    if (this._RAW_COPY_BINARY_DENYLIST.has(detected)) return false;
+    if (this._RAW_COPY_BINARY_DENYLIST.has(ext)) return false;
+
+    // Fatal UTF-8 decode — any high-bit sequence that isn't valid UTF-8
+    // means this isn't text and the text-channel copy would mangle it.
+    try {
+      new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  },
+
   _copyContent() {
     if (!this._fileBuffer) { this._toast('No file loaded', 'error'); return; }
-    try {
-      const bytes = new Uint8Array(this._fileBuffer);
-      // Try to decode as text; if it looks binary, fall back to hex
-      const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-      this._copyToClipboard(text);
-    } catch (_) {
-      // Binary file — copy hex representation
-      const bytes = new Uint8Array(this._fileBuffer);
-      const hex = Array.from(bytes.slice(0, 65536)).map(b => b.toString(16).padStart(2, '0')).join(' ');
-      const suffix = bytes.length > 65536 ? '\n… (truncated)' : '';
-      this._copyToClipboard(hex + suffix);
+    if (!this._isRawCopyable()) {
+      // Menu gates this already, but stay defensive in case it's invoked
+      // via a direct keybinding or future code path.
+      this._toast('Binary file — use 💾 Save raw file instead', 'error');
+      return;
     }
+    const bytes = new Uint8Array(this._fileBuffer);
+    const asText = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    // Stash the original bytes + filename so a same-session paste can
+    // recover them byte-for-byte. The Web Clipboard API's text/plain
+    // channel normalises CRLF→LF (and a few browsers strip trailing
+    // newlines), which silently changes the file hash — a confusing
+    // result for a security tool. `_handlePasteEvent` checks this cache
+    // first and, if the pasted text matches what we just copied (modulo
+    // line-ending normalisation), re-loads the original File instead of
+    // a freshly-built clipboard.txt.
+    this._lastCopiedMeta = {
+      name: (this._fileMeta && this._fileMeta.name) || 'clipboard.txt',
+      buffer: this._fileBuffer,
+      normText: asText.replace(/\r\n/g, '\n'),
+    };
+    this._copyToClipboard(asText);
   },
 
   // ── ⚡ Copy Analysis (Summary) — structured report for AI / SOC ──────
@@ -2118,7 +2193,15 @@ Object.assign(App.prototype, {
   _getExportMenuItems() {
     return [
       { id: 'save-raw',  icon: '💾',  label: 'Save raw file',                action: () => this._saveContent() },
-      { id: 'copy-raw',  icon: '📋',  label: 'Copy raw content',             action: () => this._copyContent() },
+      // `enabled` is re-evaluated on every menu open (see _buildExportMenu)
+      // so the "Copy raw content" row greys out for binary formats that
+      // can't survive a clipboard text round-trip. Tooltip spells out the
+      // canonical alternative (💾 Save raw file) so users understand why.
+      {
+        id: 'copy-raw',  icon: '📋',  label: 'Copy raw content',             action: () => this._copyContent(),
+        enabled:         () => this._isRawCopyable(),
+        disabledTooltip: 'Binary file — use 💾 Save raw file instead',
+      },
       { separator: true },
       { id: 'stix',      icon: '🧾',  label: 'Copy STIX 2.1 bundle (JSON)',  action: () => this._exportStix() },
       { id: 'misp',      icon: '🎯',  label: 'Copy MISP event (JSON)',       action: () => this._exportMisp() },
@@ -2128,10 +2211,14 @@ Object.assign(App.prototype, {
   },
 
 
+  // Rebuilt on every open so per-file `enabled()` predicates (e.g. the
+  // "Copy raw content" gate that depends on whether _fileBuffer is text)
+  // are re-evaluated against the currently-loaded file rather than being
+  // frozen at first-open time.
   _buildExportMenu() {
     const menu = document.getElementById('export-menu');
-    if (!menu || menu.dataset.built === '1') return;
-    menu.dataset.built = '1';
+    if (!menu) return;
+    menu.innerHTML = '';
     menu.setAttribute('role', 'menu');
     for (const item of this._getExportMenuItems()) {
       if (item.separator) {
@@ -2150,7 +2237,15 @@ Object.assign(App.prototype, {
       btn.innerHTML =
         `<span class="tb-menu-icon">${item.icon}</span>` +
         `<span class="tb-menu-label">${item.label}</span>`;
+      const isEnabled = item.enabled ? !!item.enabled() : true;
+      if (!isEnabled) {
+        btn.disabled = true;
+        btn.setAttribute('aria-disabled', 'true');
+        btn.classList.add('tb-menu-item-disabled');
+        if (item.disabledTooltip) btn.title = item.disabledTooltip;
+      }
       btn.addEventListener('click', () => {
+        if (btn.disabled) return;
         this._closeExportMenu();
         try {
           item.action();

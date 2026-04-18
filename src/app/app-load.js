@@ -515,7 +515,11 @@ Object.assign(App.prototype, {
           const r = new MachoRenderer();
           this.findings = r.analyzeForSecurity(buffer, file.name);
           docEl = r.render(buffer, file.name);
-        } else if (detectedType === 'scpt') {
+        } else if (detectedType === 'scpt' || detectedType === 'applescript') {
+          // `scpt` = compiled AppleScript (FasTX magic), `applescript` =
+          // content-sniffed AppleScript / JXA source text. Both route
+          // through OsascriptRenderer; the renderer introspects the bytes
+          // and picks the right parsing path.
           const r = new OsascriptRenderer();
           this.findings = r.analyzeForSecurity(buffer, file.name);
           if (this.findings.augmentedBuffer) {
@@ -1000,7 +1004,39 @@ Object.assign(App.prototype, {
       if (/<plist[\s>]/i.test(head500) || /<!DOCTYPE\s+plist/i.test(head500))
         return 'plist';
     }
-    
+
+    // AppleScript / JXA source text — no magic bytes, but the language is
+    // distinctive enough to content-sniff. This matters when a user copies
+    // an .applescript file and pastes it back: the Web Clipboard API's
+    // text/plain channel normalises CRLF→LF and strips the filename, so
+    // without a sniff we'd fall through to PlainTextRenderer +
+    // hljs.highlightAuto(), which has no AppleScript grammar bundled and
+    // frequently mis-classifies AppleScript as PowerShell (both have
+    // similar `do X "…"` shapes). We look for a cluster of characteristic
+    // verbs/constructs in the first 4 KB so a lone "tell me" in a plain
+    // English text file doesn't get hijacked.
+    const head4k = String.fromCharCode(...bytes.subarray(0, Math.min(4096, bytes.length)));
+    // Must look like UTF-8 / ASCII text (reject binaries that happen to
+    // contain the words below).
+    const nonPrintable = (head4k.match(/[\x00-\x08\x0E-\x1F]/g) || []).length;
+    if (nonPrintable / Math.max(head4k.length, 1) < 0.01) {
+      let score = 0;
+      if (/\btell\s+application\s+"/i.test(head4k))      score += 3;
+      if (/\bdo\s+shell\s+script\s+"/i.test(head4k))     score += 3;
+      if (/\bend\s+tell\b/i.test(head4k))                score += 2;
+      if (/\bon\s+run\b|\bon\s+open\b|\bon\s+idle\b/i.test(head4k)) score += 2;
+      if (/\bset\s+\w[\w ]*\s+to\s+/i.test(head4k))      score += 1;
+      if (/\bwith\s+administrator\s+privileges\b/i.test(head4k)) score += 2;
+      if (/\bthe\s+clipboard\b/i.test(head4k))           score += 1;
+      if (/\bproperty\s+\w+\s*:/i.test(head4k))          score += 1;
+      if (/\bActiveXObject\b/.test(head4k))              score -= 3; // JScript, not JXA
+      if (/^\s*#!/m.test(head4k) && !/osascript/i.test(head4k)) score -= 2;
+      // Threshold: at least two strong AppleScript markers (e.g.
+      // "tell application \"…\"" + "do shell script") to avoid false
+      // positives on prose that merely contains one of these phrases.
+      if (score >= 5) return 'applescript';
+    }
+
     return null; // Unknown - will fall through to PlainTextRenderer
   },
 

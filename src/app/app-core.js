@@ -252,6 +252,22 @@ class App {
     // gives the actual text content, not rich formatting / table markup.
     const text = dt.getData('text/plain');
     if (text && text.trim()) {
+      // Same-session round-trip: if this text matches what `_copyContent`
+      // just put on the clipboard (modulo CRLF→LF normalisation that the
+      // Web Clipboard API performs on text/plain), reload the original
+      // bytes + filename instead of a freshly-built `clipboard.txt`.
+      // Without this, pasting a just-copied .applescript silently changes
+      // the file's SHA-256 and its extension, which in turn makes
+      // `_detectFileType` fall through to highlight.js auto-detect —
+      // confusing in a security tool where the hash is the identity.
+      const cached = this._lastCopiedMeta;
+      if (cached && cached.buffer && cached.normText &&
+          text.replace(/\r\n/g, '\n') === cached.normText) {
+        const file = new File([cached.buffer], cached.name,
+          { type: 'application/octet-stream' });
+        this._loadFile(file);
+        return;
+      }
       const file = new File([text], 'clipboard.txt', { type: 'text/plain' });
       this._loadFile(file);
       return;
