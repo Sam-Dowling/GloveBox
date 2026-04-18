@@ -76,6 +76,28 @@ class MsixRenderer {
   static SUSPICIOUS_HOST_RE =
     /\.(?:trycloudflare\.com|ngrok\.io|ngrok-free\.app|serveo\.net|loca\.lt|duckdns\.org|sytes\.net|zapto\.org|hopto\.org|serveftp\.com|top|xyz|tk|ml|cf|ga|gq|zip|mov|click|country|work)(?:[/:?]|$)/i;
 
+  // `AppxSignature.p7x` starts with a four-byte `PKCX` magic, immediately
+  // followed by a DER-encoded PKCS#7 SignedData. We check the magic and
+  // scan for the two Appx-specific ASN.1 OIDs plus the signer Subject CN /
+  // O so the summary card can surface a computed-vs-declared-publisher
+  // verdict. This is *not* a full ASN.1 parser — it's a token scan that
+  // degrades cleanly to "present but not parseable" on malformed or
+  // stub signatures (Loupe's own synthetic sample is a `PKCX\0`-fill).
+  static P7X_MAGIC = [0x50, 0x4B, 0x43, 0x58]; // "PKCX"
+  // 1.3.6.1.4.1.311.2.1.4 — Microsoft SpcIndirectDataContent
+  static OID_SPC_INDIRECT_DATA = [0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x01, 0x04];
+  // 1.3.6.1.4.1.311.84.2.1  — AppxSipInfo (identifies the p7x SIP)
+  static OID_APPX_SIP_INFO    = [0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x54, 0x02, 0x01];
+  // 2.5.4.3  — id-at-commonName
+  static OID_AT_COMMON_NAME   = [0x55, 0x04, 0x03];
+  // 2.5.4.10 — id-at-organizationName
+  static OID_AT_ORGANIZATION  = [0x55, 0x04, 0x0a];
+
+  // 5-bit Crockford-style alphabet used by Windows for PublisherId
+  // derivation (`0..9` + `a..z` with `i`, `l`, `o`, `u` removed). Packed
+  // as a lookup string so we can index into it directly.
+  static PUBLISHER_ID_ALPHA = '0123456789abcdefghjkmnpqrstvwxyz';
+
   // ═══════════════════════════════════════════════════════════════════════
   // Entry point — shape-matches the other renderers
   //
@@ -162,6 +184,22 @@ class MsixRenderer {
     parsed.hasCodeIntegrityCat = hasCat;
     parsed.hasBlockMap = hasBlockMap;
     parsed.containerKind = hasBundle ? 'bundle' : 'package';
+
+    // ── Decorate with parsed AppxSignature.p7x + computed Publisher ID ─
+    // Done up here (before the banner/card/risks) so `_buildSummaryCard`
+    // and `_assess` see the signer-CN / publisher-id fields. Both helpers
+    // are best-effort: a stub p7x or DN we can't parse just leaves the
+    // corresponding fields null, and the summary card / risks degrade.
+    try {
+      parsed.signature = await this._loadP7x(zip);
+    } catch (_) { parsed.signature = null; }
+    if (parsed.identity && parsed.identity.publisher) {
+      try {
+        parsed.publisherIdComputed = await this._computePublisherId(parsed.identity.publisher);
+      } catch (_) { parsed.publisherIdComputed = null; }
+      parsed.publisherDN = this._parsePublisherDN(parsed.identity.publisher);
+    }
+
 
     // ── Banner ────────────────────────────────────────────────────────
     const banner = document.createElement('div');
@@ -342,7 +380,43 @@ class MsixRenderer {
       addRow('Signature', sigTxt, parsed.hasSignature ? null : 'clickonce-warn');
       addRow('Block Map', parsed.hasBlockMap ? 'Present' : 'Missing',
              parsed.hasBlockMap ? null : 'clickonce-warn');
+
+      // ── Parsed AppxSignature.p7x ────────────────────────────────────
+      // Surface signer-CN / signer-O extracted from the PKCS#7 SignedData
+      // and a manifest-vs-signer verdict so the user can see at a glance
+      // whether the .p7x's certificate Subject lines up with the
+      // Identity/@Publisher DN it claims to belong to.
+      const sig = parsed.signature;
+      if (sig && sig.present) {
+        if (sig.hasPkcxMagic === false) {
+          addRow('p7x Magic', 'missing PKCX header (likely truncated / not a real Appx signature)', 'clickonce-warn');
+        }
+        if (sig.signerCN) addRow('Signer CN (p7x)', sig.signerCN);
+        if (sig.signerO)  addRow('Signer O (p7x)',  sig.signerO);
+        // Compare against the manifest's parsed CN / O. Mismatch is the
+        // strongest single-shot indicator of repackaged / re-signed
+        // tampering, so flag it loudly.
+        if (sig.signerCN && parsed.publisherDN && parsed.publisherDN.cn) {
+          const manifestCN = parsed.publisherDN.cn.trim();
+          const signerCN = sig.signerCN.trim();
+          const match = manifestCN.toLowerCase() === signerCN.toLowerCase();
+          addRow('Signer ↔ Manifest CN', match ? '✓ match' : `✗ mismatch (manifest: "${manifestCN}")`,
+                 match ? null : 'clickonce-warn');
+        }
+        // Sanity-check the SIP marker. Real Appx signatures always carry
+        // the AppxSipInfo OID; absence is either a stub sample or a
+        // signature copied from a non-Appx PKCS#7.
+        if (sig.hasPkcxMagic && sig.hasAppxSipInfo === false) {
+          addRow('AppxSipInfo OID', 'missing — signature payload is not an Appx SIP', 'clickonce-warn');
+        }
+      }
+
+      // Computed PublisherId — the 13-char tail of every PackageFamilyName.
+      if (parsed.publisherIdComputed) {
+        addRow('Publisher ID (computed)', parsed.publisherIdComputed);
+      }
     }
+
 
     if (parsed.targetDeviceFamilies && parsed.targetDeviceFamilies.length) {
       addRow('Target Device Families', parsed.targetDeviceFamilies
@@ -630,9 +704,21 @@ class MsixRenderer {
         parsed.hasCodeIntegrityCat = !!zip.file('AppxMetadata/CodeIntegrity.cat');
         parsed.hasBlockMap = !!zip.file('AppxBlockMap.xml');
         parsed.containerKind = hasBundle ? 'bundle' : 'package';
+        // Mirror the render path: decorate with parsed p7x + computed
+        // PublisherId so `_assess` (called below) emits the same
+        // signer-mismatch / malformed-envelope risks here that the
+        // summary card surfaces in the renderer.
+        try { parsed.signature = await this._loadP7x(zip); } catch (_) { parsed.signature = null; }
+        if (parsed.identity && parsed.identity.publisher) {
+          try {
+            parsed.publisherIdComputed = await this._computePublisherId(parsed.identity.publisher);
+          } catch (_) { parsed.publisherIdComputed = null; }
+          parsed.publisherDN = this._parsePublisherDN(parsed.identity.publisher);
+        }
       } catch (e) {
         parsed = { containerKind: 'package', capabilities: [], applications: [] };
       }
+
     } else {
       manifestText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
       parsed = this._parseAppInstaller(manifestText);
@@ -656,7 +742,18 @@ class MsixRenderer {
     }
     if (parsed.containerKind === 'package' || parsed.containerKind === 'bundle') {
       md['Signed'] = parsed.hasSignature ? 'Yes (AppxSignature.p7x)' : 'No';
+      // Surface the parsed signer Subject + the computed PublisherId so
+      // they show up in the generic Summary block alongside everything
+      // else, not just inside the renderer's bespoke MSIX card.
+      if (parsed.signature && parsed.signature.signerCN) md['Signer CN (p7x)'] = parsed.signature.signerCN;
+      if (parsed.signature && parsed.signature.signerO)  md['Signer O (p7x)']  = parsed.signature.signerO;
+      if (parsed.publisherIdComputed) md['Publisher ID (computed)'] = parsed.publisherIdComputed;
+      if (parsed.signature && parsed.signature.signerCN && parsed.publisherDN && parsed.publisherDN.cn) {
+        const matches = parsed.publisherDN.cn.trim().toLowerCase() === parsed.signature.signerCN.trim().toLowerCase();
+        md['Signer ↔ Manifest CN'] = matches ? 'match' : 'mismatch';
+      }
     }
+
     if (parsed.capabilities && parsed.capabilities.length) {
       md['Capabilities'] = String(parsed.capabilities.length);
     }
@@ -1180,7 +1277,269 @@ class MsixRenderer {
       });
     }
 
+    // ── AppxSignature.p7x conformity (parsed by _parseP7x) ────────────
+    // These three checks turn the DER token-scan results into actionable
+    // risks: a present-but-broken signature is more suspicious than no
+    // signature at all (which is just sideload-only), a non-Appx PKCS#7
+    // payload masquerading as a p7x is a tell for cribbed / repackaged
+    // signatures, and a signer-CN that doesn't match the manifest's
+    // Identity/@Publisher CN is the canonical re-sign / repackage tell.
+    const sig = parsed.signature;
+    if (sig && sig.present) {
+      if (sig.hasPkcxMagic === false) {
+        risks.push({
+          sev: 'high',
+          msg: '⚠ AppxSignature.p7x is present but missing the "PKCX" magic header — signature envelope is malformed or stubbed',
+        });
+      }
+      if (sig.hasPkcxMagic && sig.hasAppxSipInfo === false) {
+        risks.push({
+          sev: 'medium',
+          msg: 'AppxSignature.p7x lacks the AppxSipInfo OID (1.3.6.1.4.1.311.84.2.1) — payload is not a real Appx SIP signature',
+        });
+      }
+      if (sig.signerCN && parsed.publisherDN && parsed.publisherDN.cn) {
+        const manifestCN = parsed.publisherDN.cn.trim().toLowerCase();
+        const signerCN = sig.signerCN.trim().toLowerCase();
+        if (manifestCN !== signerCN) {
+          risks.push({
+            sev: 'high',
+            msg: `⚠ Signer CN "${sig.signerCN}" does not match manifest Identity/@Publisher CN "${parsed.publisherDN.cn}" — package was re-signed or repackaged`,
+            highlight: parsed.publisherDN.cn ? `CN=${parsed.publisherDN.cn}` : null,
+          });
+        }
+      }
+    }
+
     return risks;
+  }
+
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // AppxSignature.p7x parser (DER token scan)
+  //
+  // The p7x envelope layout (per the Windows SDK / `MakeAppx sign`) is:
+  //   offset 0..3  : ASCII "PKCX" magic
+  //   offset 4..   : DER-encoded PKCS#7 SignedData (ContentInfo)
+  // Rather than implement a real ASN.1 walker we scan the body for a small
+  // set of well-known OID byte sequences. This is enough to answer the
+  // three questions the summary card cares about:
+  //   1. Is this actually an Appx signature? → AppxSipInfo OID present.
+  //   2. Who did Windows think signed it?     → id-at-commonName under the
+  //      first Name structure (the signer's Subject CN).
+  //   3. Does it look structurally plausible? → PKCX magic + SpcIndirectData.
+  // The scan is deliberately conservative: missing OIDs flip the
+  // corresponding bool but never throw, so a stub / synthetic p7x (the
+  // examples/msix/example.msix sample is literally `PKCX\0PKCX\0…`) still
+  // decorates cleanly without poisoning the render pipeline.
+  //
+  // Returned record:
+  //   { present: bool,
+  //     hasPkcxMagic: bool,
+  //     hasSpcIndirectData: bool,
+  //     hasAppxSipInfo: bool,
+  //     signerCN: string | null,
+  //     signerO:  string | null,
+  //     size: bytes.length }
+  // ═══════════════════════════════════════════════════════════════════════
+  _parseP7x(bytes) {
+    const out = {
+      present: !!(bytes && bytes.length),
+      hasPkcxMagic: false,
+      hasSpcIndirectData: false,
+      hasAppxSipInfo: false,
+      signerCN: null,
+      signerO: null,
+      size: bytes ? bytes.length : 0,
+    };
+    if (!out.present) return out;
+
+    // PKCX magic (4 bytes, ASCII).
+    const M = MsixRenderer.P7X_MAGIC;
+    out.hasPkcxMagic = bytes.length >= 4 &&
+      bytes[0] === M[0] && bytes[1] === M[1] &&
+      bytes[2] === M[2] && bytes[3] === M[3];
+
+    // indexOfBytes: cheap Boyer-Moore-style scan over Uint8Array for a
+    // short DER OID pattern. OIDs we look for are 3–10 bytes; we don't
+    // need anything fancy.
+    const indexOfBytes = (needle, from) => {
+      const haystack = bytes;
+      const nLen = needle.length;
+      const hLen = haystack.length;
+      for (let i = from; i + nLen <= hLen; i++) {
+        let match = true;
+        for (let j = 0; j < nLen; j++) {
+          if (haystack[i + j] !== needle[j]) { match = false; break; }
+        }
+        if (match) return i;
+      }
+      return -1;
+    };
+
+    out.hasSpcIndirectData = indexOfBytes(MsixRenderer.OID_SPC_INDIRECT_DATA, 0) !== -1;
+    out.hasAppxSipInfo     = indexOfBytes(MsixRenderer.OID_APPX_SIP_INFO, 0)    !== -1;
+
+    // Extract the first Subject CN / O by walking every CN / O OID and
+    // reading the immediately-following tagged string. The DER encoding
+    // for an AttributeTypeAndValue is:
+    //   SEQUENCE { OID id-at-commonName, DirectoryString "Contoso…" }
+    // so the string tag (UTF8String 0x0C / PrintableString 0x13 /
+    // TeletexString 0x14 / BMPString 0x1E) lands two bytes after the
+    // OID-value end (OID tag 0x06 + length byte + N OID bytes +
+    // string-tag + string-length + N string bytes).
+    const readStringAfterOid = (oidBytes) => {
+      let pos = 0;
+      while (pos < bytes.length) {
+        const hit = indexOfBytes(oidBytes, pos);
+        if (hit === -1) return null;
+        // The byte before the OID bytes is the OID length; the byte
+        // before that is the OID tag (0x06). If that isn't 0x06 we're
+        // inside an unrelated structure — skip past this hit and
+        // continue scanning.
+        if (hit < 2 || bytes[hit - 2] !== 0x06 || bytes[hit - 1] !== oidBytes.length) {
+          pos = hit + 1;
+          continue;
+        }
+        const valStart = hit + oidBytes.length;
+        if (valStart + 2 > bytes.length) return null;
+        const strTag = bytes[valStart];
+        // Directory-string tag set the signer Name may use (PrintableString,
+        // UTF8String, TeletexString, BMPString, IA5String).
+        if (![0x0C, 0x13, 0x14, 0x1E, 0x16].includes(strTag)) {
+          pos = hit + 1;
+          continue;
+        }
+        let strLen = bytes[valStart + 1];
+        let strBodyStart = valStart + 2;
+        // Long-form length (0x81 / 0x82) — very common for long CNs.
+        if (strLen === 0x81) {
+          if (strBodyStart >= bytes.length) return null;
+          strLen = bytes[strBodyStart];
+          strBodyStart += 1;
+        } else if (strLen === 0x82) {
+          if (strBodyStart + 1 >= bytes.length) return null;
+          strLen = (bytes[strBodyStart] << 8) | bytes[strBodyStart + 1];
+          strBodyStart += 2;
+        } else if (strLen > 0x80) {
+          // Longer than 2-byte lengths are possible but vanishingly rare
+          // for directory strings; skip and keep scanning.
+          pos = hit + 1;
+          continue;
+        }
+        const strEnd = strBodyStart + strLen;
+        if (strEnd > bytes.length || strLen === 0 || strLen > 256) {
+          pos = hit + 1;
+          continue;
+        }
+        // BMPString is big-endian UTF-16; everything else is effectively
+        // ASCII / UTF-8 for the purposes of a Subject CN.
+        let str;
+        if (strTag === 0x1E) {
+          let s = '';
+          for (let i = strBodyStart; i + 1 < strEnd; i += 2) {
+            s += String.fromCharCode((bytes[i] << 8) | bytes[i + 1]);
+          }
+          str = s;
+        } else {
+          str = new TextDecoder('utf-8', { fatal: false }).decode(
+            bytes.subarray(strBodyStart, strEnd),
+          );
+        }
+        return str;
+      }
+      return null;
+    };
+
+    try { out.signerCN = readStringAfterOid(MsixRenderer.OID_AT_COMMON_NAME); } catch (_) { }
+    try { out.signerO  = readStringAfterOid(MsixRenderer.OID_AT_ORGANIZATION); } catch (_) { }
+
+    return out;
+  }
+
+  // Extract `CN=…` / `O=…` from an MSIX Identity/@Publisher DN string so
+  // we can compare against the signer certificate's Subject fields. The
+  // format is a comma-separated RFC 2253-ish DN; individual AVA values
+  // may be quoted or backslash-escaped. We keep this deliberately lax.
+  _parsePublisherDN(publisher) {
+    const out = { cn: null, o: null, ou: null, c: null };
+    if (!publisher) return out;
+    // Strip surrounding whitespace; split on unescaped commas.
+    const parts = [];
+    let buf = '';
+    let esc = false;
+    for (const ch of publisher) {
+      if (esc) { buf += ch; esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === ',') { parts.push(buf); buf = ''; continue; }
+      buf += ch;
+    }
+    if (buf) parts.push(buf);
+    for (const p of parts) {
+      const m = p.trim().match(/^([A-Za-z]+)\s*=\s*(.+)$/);
+      if (!m) continue;
+      const key = m[1].toLowerCase();
+      let val = m[2].trim();
+      if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+      if (key === 'cn') out.cn = val;
+      else if (key === 'o') out.o = val;
+      else if (key === 'ou') out.ou = val;
+      else if (key === 'c') out.c = val;
+    }
+    return out;
+  }
+
+  // Windows PackageFamilyName publisher-ID derivation:
+  //   1. Encode the Identity/@Publisher DN as UTF-16 little-endian.
+  //   2. SHA-256 it, take the first 8 bytes.
+  //   3. Pack those 64 bits + one trailing zero bit into a 65-bit
+  //      stream, then split into 13 groups of 5 bits. Each group
+  //      indexes into PUBLISHER_ID_ALPHA to give the canonical
+  //      13-character Publisher ID printed in every package family
+  //      name (e.g. Contoso.Demo_8wekyb3d8bbwe).
+  // This is what you'd compare against a `PackageFamilyName`, a p7x
+  // signer CN, or the `Name` → `PackageId` resolution Windows does at
+  // install time. Returns null on crypto.subtle failure.
+  async _computePublisherId(publisher) {
+    if (!publisher || !crypto || !crypto.subtle) return null;
+    try {
+      // Encode as UTF-16LE — no BOM.
+      const buf = new Uint8Array(publisher.length * 2);
+      for (let i = 0; i < publisher.length; i++) {
+        const code = publisher.charCodeAt(i);
+        buf[i * 2] = code & 0xFF;
+        buf[i * 2 + 1] = (code >> 8) & 0xFF;
+      }
+      const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+      const hash = new Uint8Array(hashBuf).subarray(0, 8);
+
+      // Build a 65-bit string: 64 bits of the hash + one trailing 0 bit.
+      let bits = '';
+      for (let i = 0; i < 8; i++) bits += hash[i].toString(2).padStart(8, '0');
+      bits += '0';
+
+      // 13 × 5-bit groups.
+      let id = '';
+      for (let i = 0; i < 65; i += 5) {
+        const group = parseInt(bits.substr(i, 5), 2);
+        id += MsixRenderer.PUBLISHER_ID_ALPHA.charAt(group);
+      }
+      return id;
+    } catch (_) { return null; }
+  }
+
+  // Convenience wrapper — load AppxSignature.p7x from an open JSZip and
+  // pass the bytes through `_parseP7x`. Returns `null` (not "absent")
+  // when the entry isn't in the zip so callers can distinguish "no
+  // signature file" from "signature present but malformed".
+  async _loadP7x(zip) {
+    if (!zip) return null;
+    const entry = zip.file('AppxSignature.p7x');
+    if (!entry) return null;
+    try {
+      const buf = await entry.async('arraybuffer');
+      return this._parseP7x(new Uint8Array(buf));
+    } catch (_) { return { present: true, malformed: true, size: 0 }; }
   }
 
   // ═══════════════════════════════════════════════════════════════════════
