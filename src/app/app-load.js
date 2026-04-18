@@ -262,6 +262,22 @@ Object.assign(App.prototype, {
             this._loadFile(innerFile);
           }
         });
+      } else if (['crx', 'xpi'].includes(ext)) {
+        // ── Chrome/Edge CRX + Firefox XPI ──────────────────────────────
+        //   .crx is an extension container with a Cr24 envelope wrapping a
+        //   ZIP payload; .xpi is a plain ZIP. Both carry a WebExtension
+        //   manifest.json (MV2/MV3) or, for legacy Firefox, install.rdf.
+        const r = new BrowserExtRenderer();
+        this.findings = await r.analyzeForSecurity(buffer, file.name);
+        docEl = await r.render(buffer, file.name);
+        // Listen for inner-file open events from clickable entries
+        docEl.addEventListener('open-inner-file', (e) => {
+          const innerFile = e.detail;
+          if (innerFile) {
+            this._pushNavState(file.name);
+            this._loadFile(innerFile);
+          }
+        });
       } else if (['iso', 'img'].includes(ext)) {
         const r = new IsoRenderer();
         this.findings = r.analyzeForSecurity(buffer, file.name);
@@ -423,6 +439,17 @@ Object.assign(App.prototype, {
           const r = new PdfRenderer();
           this.findings = await r.analyzeForSecurity(buffer, file.name);
           docEl = await r.render(buffer, file.name, this.findings);
+          docEl.addEventListener('open-inner-file', (e) => {
+            const innerFile = e.detail;
+            if (innerFile) {
+              this._pushNavState(file.name);
+              this._loadFile(innerFile);
+            }
+          });
+        } else if (detectedType === 'browserext') {
+          const r = new BrowserExtRenderer();
+          this.findings = await r.analyzeForSecurity(buffer, file.name);
+          docEl = await r.render(buffer, file.name);
           docEl.addEventListener('open-inner-file', (e) => {
             const innerFile = e.detail;
             if (innerFile) {
@@ -940,6 +967,10 @@ Object.assign(App.prototype, {
     if (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46)
       return 'pdf';
     
+    // Chrome/Edge CRX extension envelope: "Cr24" magic
+    if (bytes[0] === 0x43 && bytes[1] === 0x72 && bytes[2] === 0x32 && bytes[3] === 0x34)
+      return 'browserext';
+
     // ZIP / OOXML (could be docx, xlsx, pptx, odt, odp, ods, or just zip)
     if (bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04)
       return 'zip';
