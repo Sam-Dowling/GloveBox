@@ -49,9 +49,9 @@ SOC analysts, incident responders, and security-conscious users need a way to sa
 | **Email** | `.eml` `.msg` |
 | **Web** | `.html` `.htm` `.mht` `.mhtml` `.xhtml` `.svg` |
 | **Archives** | `.zip` `.gz` `.gzip` `.tar` `.tgz` `.rar` `.7z` `.cab` `.iso` `.img` |
-| **Windows** | `.lnk` `.hta` `.url` `.website` `.reg` `.inf` `.sct` `.msi` `.exe` `.dll` `.sys` `.scr` `.cpl` `.ocx` `.drv` `.com` `.xll` `.application` `.manifest` `.msix` `.msixbundle` `.appx` `.appxbundle` `.appinstaller` |
+| **Windows** | `.lnk` `.hta` `.url` `.webloc` `.website` `.reg` `.inf` `.sct` `.msi` `.exe` `.dll` `.sys` `.scr` `.cpl` `.ocx` `.drv` `.com` `.xll` `.application` `.manifest` `.msix` `.msixbundle` `.appx` `.appxbundle` `.appinstaller` |
 | **Linux / IoT** | ELF binaries (`.so`, `.o`, `.elf`, extensionless) |
-| **macOS** | Mach-O binaries (`.dylib`, `.bundle`, Fat/Universal) · `.applescript` `.scpt` `.scptd` `.jxa` `.plist` `.webloc` |
+| **macOS** | Mach-O binaries (`.dylib`, `.bundle`, Fat/Universal) · `.applescript` `.scpt` `.scptd` `.jxa` `.plist` |
 | **Certificates** | `.pem` `.der` `.crt` `.cer` `.p12` `.pfx` `.key` *(auto-disambiguated against PGP)* |
 | **OpenPGP** | `.pgp` `.gpg` `.asc` `.sig` |
 | **Java** | `.jar` `.war` `.ear` `.class` |
@@ -67,16 +67,16 @@ Every format gets risk assessment, IOC extraction, and YARA scanning on top of t
 
 ## 🔍 What It Finds
 
-- **YARA rule engine** — 450+ default rules auto-scan every file; upload your own `.yar` files to extend detection
+- **YARA rule engine** — 476 default rules auto-scan every file; upload your own `.yar` files to extend detection
 - **IOC extraction** — URLs, IPs, emails, file paths, UNC paths (including refanged `hxxp://` / `1[.]2[.]3[.]4`)
 - **File hashes** — MD5, SHA-1, SHA-256 with one-click VirusTotal lookup
 - **Macro / VBA analysis** — decoded source, auto-exec entry points, downloadable as `.txt` or raw `vbaProject.bin`
 - **Encoded payload detection** — Base64, hex, Base32, gzip/zlib/deflate; decodes and recursively drills in
-- **PDF JavaScript & attachment extraction** — pulls every `/JS` body (literal, hex, indirect stream) with per-script hash/size/trigger + suspicious-API hints; click any `/EmbeddedFile` attachment to open it in a new analysis frame, exactly like an archive entry
-- **Native binary analysis** — PE, ELF and Mach-O with imports, sections, entropy, security features, code signatures (plus a graceful strings + hex-dump fallback when a binary is truncated so YARA/IOC scanning keeps working)
+- **PDF JavaScript & attachment extraction** — every `/JS` body pulled with per-script hash, size, trigger and suspicious-API hints; `/EmbeddedFile` attachments open inline as a new analysis frame
+- **Native binary analysis** — PE, ELF and Mach-O with imports, sections, entropy, security features, code signatures; truncated binaries fall back to strings + hex dump so YARA/IOC scanning keeps working
 - **Certificate & PGP inspection** — X.509 / PKCS#12 / OpenPGP with weak-key and expiry flagging
 - **Archive drill-down** — click any entry inside a ZIP / TAR / ISO / MSI to open it with full analysis
-- **Exports** — one-click **⚡ Summary** (AI/SOC clipboard brief) plus **📤 Export** menu: copy STIX 2.1 / MISP event / IOC JSON / IOC CSV straight to the clipboard, or save the raw loaded file back to disk
+- **Exports** — one-click **⚡ Summary** for an AI/SOC clipboard brief, plus a **📤 Export** menu for STIX 2.1 / MISP / IOC JSON / IOC CSV (clipboard) and raw-file save
 
 Plus a Midnight Glass UI with a 4-theme picker (Light / Dark / Midnight OLED / Solarized — your choice persists), floating zoom, drag-pan, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
 
