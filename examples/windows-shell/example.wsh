@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<WSHSettings xmlns="http://www.microsoft.com/WSH/Settings">
+  <ScriptFile Path="example.vbs" />
+  <Settings DisplayLogo="0" Timeout="30" BatchMode="0" />
+</WSHSettings>

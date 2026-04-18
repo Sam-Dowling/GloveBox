@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Synthetic App Installer file for Loupe testing.
+
+  Exercises these Loupe MSIX detections:
+    - MSIX_AppInstaller_HTTP           (Uri + MainPackage use http:// rather than https://)
+    - MSIX_AppInstaller_Suspicious_TLD (free-TLD / disposable-infrastructure host)
+    - MSIX_AppInstaller_Silent_AutoUpdate (ShowPrompt="false" on forced updates)
+
+  The package identifier and publisher are deliberately fictitious and do not
+  match any real signing certificate.
+-->
+<AppInstaller
+    xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
+    Version="1.0.0.0"
+    Uri="http://totally-legit-updates.tk/contoso/DemoApp.appinstaller">
+
+  <MainPackage
+      Name="Contoso.DemoApp"
+      Version="1.0.0.0"
+      Publisher="CN=Contoso Demo, O=Contoso, C=US"
+      ProcessorArchitecture="x64"
+      Uri="http://totally-legit-updates.tk/contoso/DemoApp_1.0.0.0_x64.msix" />
+
+  <Dependencies>
+    <Package
+        Name="Microsoft.VCLibs.140.00"
+        Publisher="CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+        Version="14.0.30704.0"
+        ProcessorArchitecture="x64"
+        Uri="http://totally-legit-updates.tk/contoso/Microsoft.VCLibs.x64.14.00.appx" />
+  </Dependencies>
+
+  <UpdateSettings>
+    <OnLaunch
+        HoursBetweenUpdateChecks="0"
+        ShowPrompt="false"
+        UpdateBlocksActivation="false" />
+    <AutomaticBackgroundTask />
+    <ForceUpdateFromAnyVersion>true</ForceUpdateFromAnyVersion>
+  </UpdateSettings>
+
+</AppInstaller>
