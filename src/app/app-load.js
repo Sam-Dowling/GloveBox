@@ -1192,8 +1192,35 @@ Object.assign(App.prototype, {
       sbBodyAnchor,             // { el, offset } — anchor for reflow-robust restore
       rawText: (docEl && docEl._rawText) || null,
       parentName,
+      // Snapshot which top-level sidebar sections the user had open/closed
+      // at the moment they drilled in. When `_restoreNavFrame` replays this
+      // frame on Back, `_renderSidebar` consumes the snapshot via
+      // `_pendingSectionOpenState` and re-renders each section with the
+      // same open state — preserving manual collapses across the round-trip.
+      sectionOpenState: this._snapshotSectionOpenState(),
     });
   },
+
+  // ── Snapshot sidebar section open/closed state ──────────────────────────
+  //
+  // Walks the live `#sb-body details[data-sb-section]` elements and builds
+  // a plain `{ key: boolean }` map capturing which top-level sections were
+  // open at snapshot time. Consumed on restore via `_pendingSectionOpenState`
+  // / `_resolveSectionOpen` in app-sidebar.js. Keys must stay in sync with
+  // the `det.dataset.sbSection = ...` tags in the sidebar renderers:
+  //   fileInfo / detections / iocs / macros / pdfJs / deobfuscation
+  _snapshotSectionOpenState() {
+    const out = {};
+    const sbBody = document.getElementById('sb-body');
+    if (!sbBody) return out;
+    const sections = sbBody.querySelectorAll('details[data-sb-section]');
+    for (const det of sections) {
+      const key = det.dataset.sbSection;
+      if (key) out[key] = !!det.open;
+    }
+    return out;
+  },
+
 
 
   // Capture a DOM anchor for reflow-robust scroll restoration. Finds the
@@ -1273,8 +1300,12 @@ Object.assign(App.prototype, {
       sbBodyAnchor,
       rawText: (docEl && docEl._rawText) || null,
       parentName: parentName || (this._fileMeta && this._fileMeta.name) || '',
+      // Mirrors the `sectionOpenState` captured by `_pushNavState` above —
+      // see `_snapshotSectionOpenState` for the key set.
+      sectionOpenState: this._snapshotSectionOpenState(),
     };
   },
+
 
   // Restore a previously captured nav frame into the viewer/sidebar. If
   // re-attaching the detached DOM node fails, fall back to re-rendering
@@ -1310,7 +1341,16 @@ Object.assign(App.prototype, {
       else if (name.endsWith('.jar') || name.endsWith('.war') || name.endsWith('.ear') || name.endsWith('.class')) this._reRenderJar(state, pc);
     }
 
+    // Hand the snapshotted section open-state and any drill-down
+    // return-focus hint to `_renderSidebar` — consumed once on this render.
+    // Preserves the user's manual collapse of Detections/IOCs/etc. across
+    // the drill-down round-trip, and optionally scrolls+flashes the
+    // originating Deobfuscation card when returning from a decode drill-down.
+    this._pendingSectionOpenState = state.sectionOpenState || null;
+    this._pendingReturnFocus = state.returnFocus || null;
+
     this._renderSidebar(state.parentName, null);
+
 
     try {
       if (state.viewerScroll) {
