@@ -490,16 +490,19 @@ rule Stacked_Encoding_Indicators
 rule Unicode_Escape_Obfuscation
 {
     meta:
-        description = "File uses Unicode escape sequences to hide content"
+        description = "File uses Unicode escape sequences to hide content combined with dynamic execution"
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1027"
 
     strings:
-        $uesc = /(\\u[0-9a-fA-F]{4}){8,}/ ascii
+        $uesc = /(\\u[0-9a-fA-F]{4}){16,}/ ascii
+        $eval = /eval\s*\(/ nocase
+        $func = /Function\s*\(/ nocase
+        $iex  = /[iI][eE][xX]\b/
 
     condition:
-        $uesc
+        $uesc and any of ($eval, $func, $iex)
 }
 
 rule Obfuscated_IEX_Invocation
