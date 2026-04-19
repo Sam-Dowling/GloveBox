@@ -1069,6 +1069,15 @@ class BrowserExtRenderer {
     else if (score >= 2) f.risk = 'medium';
     else f.risk = 'low';
 
+    // Mirror classic-pivot metadata into the IOC table. CRX ID + Gecko ID +
+    // update URL are the standard pivots for browser-extension hunting.
+    mirrorMetadataIOCs(f, {
+      'Chrome Extension ID':  IOC.PATTERN,
+      'CRX ID (declared)':    IOC.PATTERN,
+      'Gecko ID':             IOC.PATTERN,
+      'Update URL':           IOC.URL,
+    });
+
     return f;
   }
 

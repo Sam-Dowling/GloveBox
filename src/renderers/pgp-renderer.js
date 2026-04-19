@@ -1308,6 +1308,20 @@ class PgpRenderer {
         url: `${d.name} — ${d.description}`,
         severity: d.severity,
       }));
+
+      // Mirror classic-pivot fingerprints + Key IDs into the IOC table.
+      // The PGP renderer stores these under human-readable labels that
+      // match what formatSpecific emitted (e.g. "Fingerprint", "Key ID",
+      // "Subkey Fingerprint", "Subkey Key ID"). Only real hex values make
+      // it through — placeholder strings like "(computing…)" won't match.
+      const fingerprintFields = {};
+      for (const key of Object.keys(findings.metadata || {})) {
+        if (/fingerprint/i.test(key)) fingerprintFields[key] = IOC.FINGERPRINT;
+        else if (/^key id$/i.test(key) || /\bkey id\b/i.test(key)) fingerprintFields[key] = IOC.FINGERPRINT;
+      }
+      if (Object.keys(fingerprintFields).length) {
+        mirrorMetadataIOCs(findings, fingerprintFields);
+      }
     } catch (e) {
       findings.summary = `Analysis error: ${e.message}`;
       findings.risk = findings.riskLevel;

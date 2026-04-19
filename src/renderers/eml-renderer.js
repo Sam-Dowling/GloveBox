@@ -399,12 +399,20 @@ class EmlRenderer {
       if (replyToMismatch && hasBodyUrl && f.risk !== 'high') f.risk = 'high';
       if (authTripleFail && hasBodyUrl && f.risk !== 'high') f.risk = 'high';
 
+      // Mirror classic-pivot metadata into the IOC table. Message-ID,
+      // Reply-To, From, and To are the header-level pivots every
+      // email-threat investigation starts from.
+      mirrorMetadataIOCs(f, {
+        messageId: IOC.PATTERN,
+        replyTo:   IOC.EMAIL,
+        from:      IOC.EMAIL,
+        to:        IOC.EMAIL,
+      });
 
     } catch (_) { /* parse failed — non-fatal */ }
 
     return f;
   }
-
 
   // ── MIME parser ─────────────────────────────────────────────────────────
 

@@ -476,6 +476,14 @@ class MsiRenderer {
       });
     }
 
+    // Mirror classic-pivot metadata into the IOC table. MSI Summary
+    // Information carries no GUIDs, but "Author" / "Last Author" are
+    // genuine usernames embedded by authoring tools.
+    mirrorMetadataIOCs(f, {
+      'Author':       IOC.USERNAME,
+      'Last Author':  IOC.USERNAME,
+    });
+
     return f;
   }
 

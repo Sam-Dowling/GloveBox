@@ -826,6 +826,15 @@ class MsixRenderer {
     else if (score >= 2) f.risk = 'medium';
     else f.risk = 'low';
 
+    // Mirror classic-pivot metadata into the IOC table. Publisher DN +
+    // computed PublisherId are the two fields every incident responder
+    // pivots on for MSIX packages.
+    mirrorMetadataIOCs(f, {
+      'Publisher':              IOC.PATTERN,
+      'Publisher ID (computed)': IOC.PATTERN,
+      'Signer CN (p7x)':        IOC.PATTERN,
+    });
+
     return f;
   }
 

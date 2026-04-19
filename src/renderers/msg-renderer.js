@@ -271,6 +271,18 @@ class MsgRenderer {
       }
 
       if (f.externalRefs.some(r => r.severity !== 'info') && f.risk === 'low') f.risk = 'medium';
+
+      // Mirror classic-pivot metadata into the IOC table. For .msg the
+      // `creator` field stores the From address — treat it as an email
+      // IOC if it contains an `@`, otherwise fall through as a username.
+      if (f.metadata && f.metadata.creator) {
+        const c = String(f.metadata.creator);
+        if (/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/.test(c)) {
+          mirrorMetadataIOCs(f, { creator: IOC.EMAIL });
+        } else {
+          mirrorMetadataIOCs(f, { creator: IOC.USERNAME });
+        }
+      }
     } catch (e) { }
     return f;
   }

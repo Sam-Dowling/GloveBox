@@ -1405,6 +1405,20 @@ class X509Renderer {
         severity: d.severity,
       }));
 
+      // Mirror classic-pivot fingerprints into the IOC table. X.509
+      // certs are pivoted on SHA-1 and SHA-256 thumbprints — treat any
+      // metadata row whose label mentions "Fingerprint", "SHA-1", or
+      // "SHA-256" as an IOC.FINGERPRINT. Serial numbers are kept
+      // metadata-only to avoid noise from self-signed dev certs.
+      const fingerprintFields = {};
+      for (const key of Object.keys(findings.metadata || {})) {
+        if (/fingerprint|thumbprint/i.test(key)) fingerprintFields[key] = IOC.FINGERPRINT;
+        else if (/^sha-?1\b/i.test(key) || /^sha-?256\b/i.test(key)) fingerprintFields[key] = IOC.FINGERPRINT;
+      }
+      if (Object.keys(fingerprintFields).length) {
+        mirrorMetadataIOCs(findings, fingerprintFields);
+      }
+
       // Summary
       const certCount = certs.length;
       const issues = findings.detections.length;

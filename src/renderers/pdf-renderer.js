@@ -424,12 +424,31 @@ class PdfRenderer {
 
       // Merge pdf.js-derived scripts with raw-scan scripts (dedup by hash)
       this._attachJavaScripts(f, [...pdfJsScripts, ...rawScripts]);
+      this._mirrorPdfMetadataIOCs(f);
       return f;
     } catch (_) {
       // pdf.js failed (malformed / malicious) — rely on raw-scan alone.
       this._attachJavaScripts(f, rawScripts);
+      this._mirrorPdfMetadataIOCs(f);
       return f;
     }
+  }
+
+  // ── Mirror classic-pivot PDF metadata into the IOC table ──────────────
+  // PDF Info-dict + XMP carry a handful of fields that are real IR pivots:
+  //   • xmpDocumentId / xmpInstanceId — GUIDs burned into the file by the
+  //     authoring tool; pivots across every save of the same document
+  //   • author / xmpCreator — user / organisation name (classic provenance
+  //     pivot; still flagged 'info' severity by pushIOC)
+  // Attribution fluff (title, creator tool, producer, dates) intentionally
+  // stays metadata-only per the "Option B" classic-pivot policy.
+  _mirrorPdfMetadataIOCs(f) {
+    mirrorMetadataIOCs(f, {
+      'xmpDocumentId': IOC.GUID,
+      'xmpInstanceId': IOC.GUID,
+      'author':        IOC.USERNAME,
+      'xmpCreator':    IOC.USERNAME,
+    });
   }
 
   // ════════════════════════════════════════════════════════════════════════

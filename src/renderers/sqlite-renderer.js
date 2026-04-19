@@ -25,19 +25,40 @@ class SqliteRenderer {
       f.metadata.tables = db.tables.map(t => t.name).join(', ');
       if (db.browserType) f.metadata.browserType = db.browserType;
 
-      // Extract URLs as IOCs from browser history
+      // Extract URLs as IOCs from browser history.
+      // Emit each distinct URL through `pushIOC` so it lands in the IOC
+      // table (and picks up a sibling IOC.DOMAIN via tldts when loaded).
+      // Cap at 200 to keep pathological histories from flooding the pane.
       if (db.historyRows && db.historyRows.length) {
         const urlIdx = db.historyColumns ? db.historyColumns.findIndex(c => /^url$/i.test(c)) : -1;
         if (urlIdx >= 0) {
           const seen = new Set();
+          const URL_CAP = 200;
+          let emitted = 0;
           for (const row of db.historyRows) {
             const url = row[urlIdx];
-            if (url && typeof url === 'string' && url.length > 6 && !seen.has(url)) {
-              seen.add(url);
-              if (seen.size > 500) break;
+            if (!url || typeof url !== 'string' || url.length <= 6) continue;
+            if (seen.has(url)) continue;
+            seen.add(url);
+            if (emitted < URL_CAP && /^https?:\/\//i.test(url)) {
+              pushIOC(f, {
+                type: IOC.URL,
+                value: url,
+                severity: 'info',
+                note: db.browserType ? `${db.browserType} history` : 'browser history',
+                bucket: 'externalRefs',
+              });
+              emitted++;
             }
           }
           f.metadata.urlCount = seen.size;
+          if (seen.size > URL_CAP) {
+            f.externalRefs.push({
+              type: IOC.INFO,
+              url: `URL extraction truncated at ${URL_CAP} — history contains ${seen.size} distinct URLs`,
+              severity: 'info',
+            });
+          }
         }
       }
     } catch (e) {
