@@ -211,33 +211,56 @@ The [`examples/`](examples/) directory contains sample files for every supported
 - [`example.eml`](examples/email/example.eml) — email with MIME parts and headers
 - [`phishing-example.eml`](examples/email/phishing-example.eml) — phishing email with SPF/DKIM/DMARC failures and a tracking pixel
 
-### Windows shell & forensics ([`examples/windows-shell/`](examples/windows-shell/), [`examples/forensics/`](examples/forensics/))
+### Windows scripts & shortcuts ([`examples/windows-scripts/`](examples/windows-scripts/))
 
-- [`example.lnk`](examples/windows-shell/example.lnk) — Windows shortcut with suspicious target path
-- [`example.hta`](examples/windows-shell/example.hta) — HTML Application with embedded scripts
+- [`example.lnk`](examples/windows-scripts/example.lnk) — Windows shortcut with suspicious target path
+- [`example.hta`](examples/windows-scripts/example.hta) — HTML Application with embedded scripts
+- [`example.vbs`](examples/windows-scripts/example.vbs), [`example.js`](examples/windows-scripts/example.js), [`example.cmd`](examples/windows-scripts/example.cmd) — classic script-dropper bodies
+- [`ps-obfuscation.ps1`](examples/windows-scripts/ps-obfuscation.ps1), [`cmd-obfuscation.bat`](examples/windows-scripts/cmd-obfuscation.bat), [`encoded-powershell.bat`](examples/windows-scripts/encoded-powershell.bat) — obfuscated PowerShell / cmd bodies
+- [`example.reg`](examples/windows-scripts/example.reg), [`example.inf`](examples/windows-scripts/example.inf), [`example.sct`](examples/windows-scripts/example.sct), [`example.wsf`](examples/windows-scripts/example.wsf) / [`example.wsc`](examples/windows-scripts/example.wsc) / [`example.wsh`](examples/windows-scripts/example.wsh), [`example.url`](examples/windows-scripts/example.url) — Windows shell / scripting-host formats
+
+### Windows installers ([`examples/windows-installers/`](examples/windows-installers/))
+
+- [`example.msi`](examples/windows-installers/example.msi) — Windows Installer package (CustomAction rows, embedded CAB, Authenticode verdict)
+- [`example.msix`](examples/windows-installers/example.msix), [`example.appinstaller`](examples/windows-installers/example.appinstaller) — MSIX package + App Installer XML
+- [`example.application`](examples/windows-installers/example.application), [`malicious-example.application`](examples/windows-installers/malicious-example.application), [`example.manifest`](examples/windows-installers/example.manifest) — ClickOnce deployment / application manifests (benign + malicious)
+
+### Forensics ([`examples/forensics/`](examples/forensics/))
+
 - [`example.evtx`](examples/forensics/example.evtx) / [`example-security.evtx`](examples/forensics/example-security.evtx) — Windows Event Logs (general + security events)
 - [`chromehistory-example.sqlite`](examples/forensics/chromehistory-example.sqlite) — Chrome browsing history database
 
-### Native binaries ([`examples/pe/`](examples/pe/), [`examples/elf/`](examples/elf/), [`examples/macho/`](examples/macho/))
+### Native binaries ([`examples/pe/`](examples/pe/), [`examples/elf/`](examples/elf/), [`examples/macos-system/`](examples/macos-system/))
 
 - [`pe/example.exe`](examples/pe/example.exe) — Windows PE executable with imports, sections, and security features
 - [`pe/signed-example.dll`](examples/pe/signed-example.dll) — Authenticode-signed DLL
 - [`elf/example`](examples/elf/example) — Linux ELF binary with symbols, segments, and security checks
-- [`macho/example`](examples/macho/example) — macOS Mach-O binary with load commands and code signature
+- [`macos-system/example.dylib`](examples/macos-system/example.dylib) — macOS Mach-O binary with load commands and code signature
 
 ### macOS scripts ([`examples/macos-scripts/`](examples/macos-scripts/))
 
-- [`example.plist`](examples/macos-scripts/example.plist) — macOS property list with LaunchAgent/persistence key detection
 - [`example.applescript`](examples/macos-scripts/example.applescript) — AppleScript source with macOS-specific security analysis
 - [`example.scpt`](examples/macos-scripts/example.scpt) — compiled AppleScript binary (string extraction from opaque bytecode)
 - [`example.jxa`](examples/macos-scripts/example.jxa) — JavaScript for Automation
 
-### Certificates & PGP ([`examples/certificates/`](examples/certificates/), [`examples/pgp/`](examples/pgp/))
+### macOS system & installers ([`examples/macos-system/`](examples/macos-system/))
 
-- [`example-selfsigned.pem`](examples/certificates/example-selfsigned.pem) — self-signed X.509 certificate with suspicious SANs
-- [`example-with-key.pem`](examples/certificates/example-with-key.pem) — certificate with embedded private key + weak 1024-bit RSA key
-- [`example-expired.crt`](examples/certificates/example-expired.crt) — expired X.509 certificate
-- [`example.key`](examples/pgp/example.key) — OpenPGP key block (auto-detected via packet-header heuristics; `.key` is shared with X.509 PEM private keys)
+- [`example.plist`](examples/macos-system/example.plist) — XML property list with LaunchAgent / persistence-key detection
+- [`example-binary.plist`](examples/macos-system/example-binary.plist) — binary plist (`bplist00`) round-tripped through the tree viewer
+- [`example.dmg`](examples/macos-system/example.dmg) — Apple Disk Image / UDIF with partition + `.app` bundle enumeration
+- [`example.pkg`](examples/macos-system/example.pkg) — flat PKG (xar) installer with pre/post-install script flagging, curl|bash detection, and LaunchDaemon persistence drops
+- [`example.app`](examples/macos-system/example.app) — `.app` bundle root illustrating the drop-delivery shape flagged by the ZIP / DMG renderers
+- [`example.webloc`](examples/macos-system/example.webloc) — macOS internet shortcut
+
+### Crypto — certificates & OpenPGP ([`examples/crypto/`](examples/crypto/))
+
+- [`example-selfsigned.pem`](examples/crypto/example-selfsigned.pem) — self-signed X.509 certificate with suspicious SANs
+- [`example-with-key.pem`](examples/crypto/example-with-key.pem) — certificate with embedded private key + weak 1024-bit RSA key
+- [`example-expired.crt`](examples/crypto/example-expired.crt) — expired X.509 certificate
+- [`example-san.pem`](examples/crypto/example-san.pem), [`example-ca.der`](examples/crypto/example-ca.der), [`google-chain.pem`](examples/crypto/google-chain.pem) — SAN / DER / full-chain variants
+- [`example.p12`](examples/crypto/example.p12), [`example.pfx`](examples/crypto/example.pfx) — PKCS#12 containers
+- [`example.pgp`](examples/crypto/example.pgp), [`example.gpg`](examples/crypto/example.gpg), [`example.asc`](examples/crypto/example.asc), [`example.sig`](examples/crypto/example.sig) — binary + ASCII-armored OpenPGP packet streams
+- [`example.key`](examples/crypto/example.key) — OpenPGP key block (auto-detected via packet-header heuristics; `.key` is shared with X.509 PEM private keys)
 
 ### Web, Java & images ([`examples/web/`](examples/web/), [`examples/java/`](examples/java/), [`examples/images/`](examples/images/))
 
@@ -245,7 +268,6 @@ The [`examples/`](examples/) directory contains sample files for every supported
 - [`example.jar`](examples/java/example.jar) — Java archive with class files, MANIFEST.MF, and constant pool analysis
 - [`polyglot-example.png`](examples/images/polyglot-example.png) — PNG with a ZIP appended past the IEND marker
 
-### Archives & MSI ([`examples/archives/`](examples/archives/), [`examples/msi/`](examples/msi/))
+### Archives ([`examples/archives/`](examples/archives/))
 
-- [`example.zip`](examples/archives/example.zip), [`example.tar`](examples/archives/example.tar), [`example.tar.gz`](examples/archives/example.tar.gz), [`example.gz`](examples/archives/example.gz), [`example.iso`](examples/archives/example.iso) — archive/disk-image samples
-- [`example.msi`](examples/msi/example.msi) — Windows Installer package
+- [`example.zip`](examples/archives/example.zip), [`example.tar`](examples/archives/example.tar), [`example.tar.gz`](examples/archives/example.tar.gz), [`example.gz`](examples/archives/example.gz), [`example.iso`](examples/archives/example.iso) — archive / disk-image samples

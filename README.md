@@ -75,7 +75,7 @@ Every format gets risk assessment, IOC extraction, and YARA scanning on top of t
 
 ## 🔍 What It Finds
 
-- **YARA rule engine** — 488 default rules auto-scan every file; upload your own `.yar` files to extend detection
+- **YARA rule engine** — 493 default rules auto-scan every file; upload your own `.yar` files to extend detection
 - **IOC extraction** — URLs, IPs, emails, file paths, UNC paths (including refanged `hxxp://` / `1[.]2[.]3[.]4`)
 - **File hashes** — MD5, SHA-1, SHA-256 with one-click VirusTotal lookup
 - **Macro / VBA analysis** — decoded source, auto-exec entry points, downloadable as `.txt` or raw `vbaProject.bin`
@@ -112,10 +112,11 @@ Drop one of these into Loupe to see it in action — the [`examples/`](examples/
 
 - [`examples/encoded-payloads/nested-double-b64-ip.txt`](examples/encoded-payloads/nested-double-b64-ip.txt) — double Base64 hiding a C2 IP (recursive decode drill-down)
 - [`examples/email/phishing-example.eml`](examples/email/phishing-example.eml) — SPF/DKIM/DMARC failures + tracking pixel
-- [`examples/windows-shell/example.lnk`](examples/windows-shell/example.lnk) — Shell Link with per-field IOC extraction, MAC/MachineID
+- [`examples/windows-scripts/example.lnk`](examples/windows-scripts/example.lnk) — Shell Link with per-field IOC extraction, MAC/MachineID
 - [`examples/pe/signed-example.dll`](examples/pe/signed-example.dll) — Authenticode-signed DLL showing PE analysis + cert chain
 - [`examples/forensics/example-security.evtx`](examples/forensics/example-security.evtx) — Windows security event log (auto-flags 4688 / 4624 / 1102)
 - [`examples/macos-scripts/example.scpt`](examples/macos-scripts/example.scpt) — compiled AppleScript with string extraction from opaque bytecode
+- [`examples/macos-system/example.pkg`](examples/macos-system/example.pkg) — flat macOS installer (xar) — install-script flagging, LaunchDaemon persistence detection
 - [`examples/web/example-malicious.svg`](examples/web/example-malicious.svg) — script injection + foreignObject phishing form
 
 Full guided tour: **[FEATURES.md → Example Files](FEATURES.md#-example-files-guided-tour)**.
