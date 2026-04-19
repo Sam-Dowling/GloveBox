@@ -236,7 +236,11 @@ class DmgRenderer {
       subject: `${parts.length} partition(s) · ${this._fmtBytes(bytes.length)}`,
     };
 
-    // .app bundle inside DMG is the heart of macOS drop-delivery phishing
+    // .app bundle inside DMG is the heart of macOS drop-delivery phishing.
+    // Cap emission to keep the sidebar usable — emit a visible IOC.INFO
+    // truncation marker when we hit the ceiling so the analyst isn't
+    // misled into thinking the list is complete.
+    const APP_IOC_CAP = 50;
     if (strings.apps.length) {
       f.externalRefs.push({
         type: IOC.PATTERN,
@@ -244,8 +248,15 @@ class DmgRenderer {
         severity: 'high'
       });
       f.risk = 'high';
-      for (const path of strings.apps.slice(0, 50)) {
+      for (const path of strings.apps.slice(0, APP_IOC_CAP)) {
         f.externalRefs.push({ type: IOC.FILE_PATH, url: path, severity: 'high' });
+      }
+      if (strings.apps.length > APP_IOC_CAP) {
+        f.externalRefs.push({
+          type: IOC.INFO,
+          url: `… ${strings.apps.length - APP_IOC_CAP} additional .app bundle path(s) not shown (IOC cap ${APP_IOC_CAP})`,
+          severity: 'info'
+        });
       }
     }
 
@@ -272,11 +283,20 @@ class DmgRenderer {
 
     // URLs surfaced from the image (Info.plist, license text)
     const seenUrl = new Set();
+    let urlCount = 0, urlTrunc = false;
     for (const u of strings.urls) {
       if (seenUrl.has(u)) continue; seenUrl.add(u);
       if (/apple\.com|opensource\.apple\.com/.test(u)) continue;
       f.externalRefs.push({ type: IOC.URL, url: u, severity: 'info' });
-      if (f.externalRefs.length > 200) break;
+      urlCount++;
+      if (f.externalRefs.length > 200) { urlTrunc = true; break; }
+    }
+    if (urlTrunc) {
+      f.externalRefs.push({
+        type: IOC.INFO,
+        url: `URL harvest truncated at ${urlCount} — additional URLs present but not emitted (IOC cap reached)`,
+        severity: 'info'
+      });
     }
 
     return f;
@@ -364,67 +384,68 @@ class DmgRenderer {
     const xml = new TextDecoder('utf-8', { fatal: false })
       .decode(bytes.subarray(udif.xmlOffset, udif.xmlOffset + udif.xmlLength));
 
-    // Each blkx entry is a <dict> with a <key>Name</key><string>…</string>
-    // entry and a <key>Data</key><data>…</data> base64 mish block.
-    // Pull name + compressed-data length out with a focused regex.
-    const blkxRe = /<dict>\s*<key>\s*Attributes\s*<\/key>[\s\S]*?<key>\s*Data\s*<\/key>\s*<data>([\s\S]*?)<\/data>[\s\S]*?<\/dict>/g;
-    const nameRe = /<key>\s*Name\s*<\/key>\s*<string>([^<]*)<\/string>/;
+    // Each blkx entry is a <dict> under <key>blkx</key><array>…</array> with
+    // a <key>Name</key><string>…</string> (human label) and a
+    // <key>Data</key><data>…</data> carrying a base64-encoded mish block.
+    // Capture the whole dict body so we can pull both fields from *inside*
+    // the entry — matching only "before the dict" picks up the previous
+    // entry's Name on the 2nd+ iteration.
+    const dictRe = /<dict>([\s\S]*?)<\/dict>/g;
+    const nameRe   = /<key>\s*Name\s*<\/key>\s*<string>([^<]*)<\/string>/;
     const cfNameRe = /<key>\s*CFName\s*<\/key>\s*<string>([^<]*)<\/string>/;
+    const dataRe   = /<key>\s*Data\s*<\/key>\s*<data>([\s\S]*?)<\/data>/;
 
     let m;
-    let i = 0;
-    // Walk <dict>s under <key>blkx</key><array>…</array> — but use the
-    // simpler text-scan form above: it tolerates arbitrary attribute
-    // ordering and is safe against the XML's trailing whitespace noise.
-    while ((m = blkxRe.exec(xml)) !== null && parts.length < 64) {
-      // Pull the name from the span leading up to this match
-      const before = xml.slice(Math.max(0, m.index - 4096), m.index + 200);
+    while ((m = dictRe.exec(xml)) !== null && parts.length < 64) {
+      const body = m[1];
+      // Only dicts that carry a <data> blob are blkx entries — skip the
+      // outer <dict>s that just hold the blkx array itself.
+      const dm = dataRe.exec(body);
+      if (!dm) continue;
+
       let name = '';
-      const nm = nameRe.exec(before);
+      const nm = nameRe.exec(body);
       if (nm) name = nm[1].trim();
       if (!name) {
-        const cm = cfNameRe.exec(before);
+        const cm = cfNameRe.exec(body);
         if (cm) name = cm[1].trim();
       }
 
       // Decode the base64 mish block to get block-type counts and sector totals
-      const mish = this._decodeBase64(m[1].replace(/\s+/g, ''));
+      const mish = this._decodeBase64(dm[1].replace(/\s+/g, ''));
       if (!mish || mish.length < 204) {
         parts.push({ name, sectorCount: 0, compressionMix: '(unparsed)' });
         continue;
       }
-      const partition = this._parseMishBlock(mish, name);
-      parts.push(partition);
-      i++;
+      parts.push(this._parseMishBlock(mish, name));
     }
     return parts;
   }
 
   _parseMishBlock(mish, name) {
-    // mish header layout (big-endian):
-    //   0   uint32  signature 'mish' (0x6D697368)
-    //   4   uint32  info version (1)
-    //   8   uint64  sector number (start, in image-global sectors)
-    //   16  uint64  sector count
-    //   24  uint64  data offset (within the data fork, relative to the partition's start)
-    //   32  uint32  buffer count
-    //   36  uint32  descriptor block count (unused)
-    //   40  124B    reserved
-    //   164 4B      checksum type
-    //   168 4B      checksum size (bits)
-    //   172 128B    checksum
-    //   300 4B      block count
-    //   304 ...     40-byte BLKX descriptors (type, comment, sector start, sector count, compOffset, compLength)
-
+    // BLKX mish header layout (big-endian), per Apple's DiskImages.framework
+    // and dmg2img:
+    //   0   uint32   signature 'mish' (0x6D697368)
+    //   4   uint32   info version (1)
+    //   8   uint64   sector number (start, in image-global sectors)
+    //   16  uint64   sector count
+    //   24  uint64   data offset (within the data fork)
+    //   32  uint32   buffers needed
+    //   36  uint32   block descriptor count (informational)
+    //   40  24B      reserved (6 × uint32)
+    //   64  UDIFChecksum: uint32 type + uint32 size + 128B data = 136B
+    //   200 uint32   number of block chunks
+    //   204 ...      40-byte BLKX chunk entries (type, comment, sector start,
+    //                sector count, compOffset, compLength)
     const dv = new DataView(mish.buffer, mish.byteOffset, mish.byteLength);
     if (dv.getUint32(0, false) !== 0x6D697368) {
       return { name, sectorCount: 0, compressionMix: '(not a mish block)' };
     }
     const sectorCount = Number(dv.getBigUint64(16, false));
-    const blockCount  = dv.getUint32(204, false);
+    const blockCount  = dv.getUint32(200, false);
 
     const counts = new Map();
-    let pos = 208;
+    let pos = 204;
     for (let i = 0; i < blockCount && pos + 40 <= mish.length; i++) {
       const type = dv.getUint32(pos, false);
       const label = DmgRenderer.BLOCK_TYPES[type] || `0x${type.toString(16)}`;
@@ -465,7 +486,11 @@ class DmgRenderer {
       ? extractAsciiAndUtf16leStrings(bytes, { asciiMin: 5, utf16Min: 5, cap: 20000 })
       : { ascii: this._fallbackAsciiScan(bytes) };
 
-    const appRe      = /([A-Za-z0-9 _\-.]+\.app)/g;
+    // Tight .app regex: must start with an alphanumeric (no leading dots,
+    // spaces or hyphens to cut HFS+ padding noise), allows a single
+    // internal dot before `.app`, rejects the bare literal ".app" and
+    // runs of two+ consecutive spaces — all of which are catalog slack.
+    const appRe      = /(?:^|[\s\/"'])([A-Za-z0-9][A-Za-z0-9 _\-]{2,63}(?:\.[A-Za-z0-9 _\-]{1,40})?\.app)\b/g;
     const urlRe      = /https?:\/\/[^\s"'<>]+/g;
     const apps = new Set();
     const urls = new Set();
@@ -475,9 +500,12 @@ class DmgRenderer {
       let m;
       appRe.lastIndex = 0;
       while ((m = appRe.exec(s)) !== null) {
-        // Skip noise: names with embedded control characters or obvious
-        // HFS+ field padding artefacts.
-        if (m[1].length >= 5 && m[1].length <= 120) apps.add(m[1]);
+        const hit = m[1];
+        // Skip noise: names with runs of 2+ spaces (HFS+ padding artefact)
+        // or that are just "<word>.app" where <word> is a common filesystem
+        // keyword like "Resources".
+        if (/  /.test(hit)) continue;
+        if (hit.length >= 5 && hit.length <= 120) apps.add(hit);
       }
       urlRe.lastIndex = 0;
       // urlRe has no capture group — the whole match (m[0]) is the URL.

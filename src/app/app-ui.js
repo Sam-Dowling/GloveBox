@@ -572,6 +572,8 @@ Object.assign(App.prototype, {
     this._copyAnalysisSQLite(f, parts, tp);
     this._copyAnalysisZIP(f, parts, tp);
     this._copyAnalysisISO(f, parts, tp);
+    this._copyAnalysisDMG(f, parts, tp);
+    this._copyAnalysisPKG(f, parts, tp);
     this._copyAnalysisImage(f, parts, tp);
     this._copyAnalysisPGP(f, parts, tp);
     this._copyAnalysisPlist(f, parts, tp);
@@ -2088,7 +2090,12 @@ Object.assign(App.prototype, {
       m.compressionRatio != null || m.zipEntries;
     const dangerFiles = (f.externalRefs || []).filter(r =>
       r && r.note && /danger|executable|macro|dropper/i.test(r.note));
-    if (!hasInteresting && !dangerFiles.length) return;
+    // .app bundle paths come through as IOC.FILE_PATH ending with "/" (see
+    // ZipRenderer._analyzeArchiveEntries) — used for the "ZIP-wrapped macOS
+    // app" shape that's the common delivery layout for unsigned .app malware.
+    const apps = (f.externalRefs || [])
+      .filter(r => r && r.type === IOC.FILE_PATH && /\.app\/$/i.test(r.url || ''));
+    if (!hasInteresting && !dangerFiles.length && !apps.length) return;
     parts.push('\n## ZIP Archive Details');
     if (m.compressedSize != null) parts.push(`- **Compressed size:** ${m.compressedSize}`);
     if (m.decompressedSize != null) parts.push(`- **Decompressed size:** ${m.decompressedSize}`);
@@ -2104,7 +2111,16 @@ Object.assign(App.prototype, {
       }
       if (dangerFiles.length > DN) parts.push(`… and ${dangerFiles.length - DN} more`);
     }
+    if (apps.length) {
+      const N = this._sCaps.rowCap(30);
+      parts.push(`\n### .app Bundle Paths (${apps.length})`);
+      for (const a of apps.slice(0, N)) {
+        parts.push(`- \`${tp(a.url)}\``);
+      }
+      if (apps.length > N) parts.push(`… and ${apps.length - N} more`);
+    }
   },
+
 
 
   // ── ISO deep data — volume info ───────────────────────────────────────
@@ -2117,6 +2133,79 @@ Object.assign(App.prototype, {
     if (m.title) parts.push(`- **Volume ID:** ${tp(m.title)}`);
     if (m.creator) parts.push(`- **Publisher:** ${tp(m.creator)}`);
     if (m.subject) parts.push(`- **Subject:** ${tp(m.subject)}`);
+  },
+
+  // ── DMG deep data — UDIF version, partition mix, .app bundle paths ────
+  //   Mirrors _copyAnalysisISO but with the UDIF-specific fields the DMG
+  //   renderer stashes on `metadata` (title=first-partition name, creator=
+  //   `UDIF v<n>`, subject=`<n> partition(s) · <size>`) and the IOC.FILE_PATH
+  //   entries it emits for every detected .app bundle.
+  _copyAnalysisDMG(f, parts, tp) {
+    const m = f.metadata || {};
+    const ext = ((this._fileMeta && this._fileMeta.name) || '').toLowerCase().split('.').pop();
+    if (ext !== 'dmg') return;
+    if (!m.title && !m.creator && !m.subject && !(f.externalRefs || []).length) return;
+
+    parts.push('\n## Apple Disk Image (DMG) Details');
+    if (m.creator) parts.push(`- **Container:** ${tp(m.creator)}`);
+    if (m.subject) parts.push(`- **Layout:** ${tp(m.subject)}`);
+    if (m.title) parts.push(`- **First Partition:** ${tp(m.title)}`);
+
+    // .app bundle paths come through as IOC.FILE_PATH on externalRefs.
+    const apps = (f.externalRefs || [])
+      .filter(r => r && r.type === IOC.FILE_PATH && /\.app(\/|$)/i.test(r.url || ''));
+    if (apps.length) {
+      const N = this._sCaps.rowCap(30);
+      parts.push(`\n### .app Bundle Paths (${apps.length})`);
+      for (const a of apps.slice(0, N)) {
+        parts.push(`- \`${tp(a.url)}\``);
+      }
+      if (apps.length > N) parts.push(`… and ${apps.length - N} more`);
+    }
+  },
+
+  // ── PKG deep data — xar header, signing state, install-script bodies ──
+  //   The PKG renderer stashes the package identifier on metadata.title,
+  //   the version as metadata.subject ("version X"), and the signing state
+  //   on metadata.creator ("Signed (…)" / "Unsigned"). Install scripts
+  //   show up as IOC.FILE_PATH entries (path always begins with a
+  //   "Scripts/" segment or is a well-known script name).
+  _copyAnalysisPKG(f, parts, tp) {
+    const m = f.metadata || {};
+    const ext = ((this._fileMeta && this._fileMeta.name) || '').toLowerCase().split('.').pop();
+    if (!['pkg', 'mpkg'].includes(ext)) return;
+    if (!m.title && !m.creator && !m.subject && !(f.externalRefs || []).length) return;
+
+    parts.push('\n## macOS Installer Package (PKG) Details');
+    if (m.title) parts.push(`- **Package Identifier:** ${tp(m.title)}`);
+    if (m.subject) parts.push(`- **Version:** ${tp(m.subject)}`);
+    if (m.creator) parts.push(`- **Signature:** ${tp(m.creator)}`);
+
+    // Install scripts — any FILE_PATH entry inside a Scripts/ dir or with
+    // a known pre/post-install / legacy-flight name is a script body.
+    const SCRIPT_NAMES = /(^|\/)(preinstall|postinstall|preupgrade|postupgrade|preflight|postflight|InstallationCheck|VolumeCheck)$/;
+    const scripts = (f.externalRefs || []).filter(r =>
+      r && r.type === IOC.FILE_PATH && (/(^|\/)Scripts\//.test(r.url || '') || SCRIPT_NAMES.test(r.url || '')));
+    if (scripts.length) {
+      const N = this._sCaps.rowCap(20);
+      parts.push(`\n### Install Scripts (${scripts.length})`);
+      for (const s of scripts.slice(0, N)) {
+        parts.push(`- \`${tp(s.url)}\``);
+      }
+      if (scripts.length > N) parts.push(`… and ${scripts.length - N} more`);
+    }
+
+    // LaunchDaemon / LaunchAgent persistence drops.
+    const launch = (f.externalRefs || []).filter(r =>
+      r && r.type === IOC.FILE_PATH && /\/(LaunchDaemons|LaunchAgents)\/[^/]+\.plist$/i.test(r.url || ''));
+    if (launch.length) {
+      const LN = this._sCaps.rowCap(10);
+      parts.push(`\n### LaunchDaemon / LaunchAgent Plists (${launch.length})`);
+      for (const lp of launch.slice(0, LN)) {
+        parts.push(`- \`${tp(lp.url)}\``);
+      }
+      if (launch.length > LN) parts.push(`… and ${launch.length - LN} more`);
+    }
   },
 
   // ── Image deep data — EXIF / dims / format ───────────────────────────

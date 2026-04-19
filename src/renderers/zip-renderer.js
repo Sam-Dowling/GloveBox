@@ -15,6 +15,14 @@ class ZipRenderer {
     'docm', 'xlsm', 'pptm', 'dotm', 'xltm', 'potm', 'ppam', 'xlam',
   ]);
 
+  // macOS .app bundle path regex — matches the root segment of a bundle,
+  // e.g. "MyApp.app/" or "Foo/.Bar.app/". Tight start-anchor rejects
+  // random mid-string ".app" runs that aren't real bundle roots.
+  static MACAPP_RE = /(?:^|\/)([A-Za-z0-9][A-Za-z0-9 _\-.]{0,63}\.app)\//;
+
+  // IOC cap for .app bundle FILE_PATH emission — mirrors DMG renderer.
+  static APP_IOC_CAP = 30;
+
   // Double-extension patterns attackers use (e.g. invoice.pdf.exe)
   static DECOY_EXTS = new Set([
     'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'jpg', 'png', 'gif', 'txt', 'rtf',
@@ -1047,8 +1055,44 @@ class ZipRenderer {
       f.externalRefs.push({ type: IOC.FILE_PATH, url: e.path, severity: 'high' });
     }
 
+    // ── macOS .app bundle detection ────────────────────────────────────────
+    // Emit one IOC.FILE_PATH per unique bundle root, capped at APP_IOC_CAP.
+    const bundles = this._findAppBundles(entries);
+    if (bundles.size) {
+      const roots = Array.from(bundles);
+      const cap = ZipRenderer.APP_IOC_CAP;
+      for (const root of roots.slice(0, cap)) {
+        f.externalRefs.push({ type: IOC.FILE_PATH, url: root + '/', severity: 'medium' });
+      }
+      if (roots.length > cap) {
+        f.externalRefs.push({
+          type: IOC.INFO,
+          url: `… and ${roots.length - cap} more .app bundle path(s) not shown`,
+          severity: 'info',
+        });
+      }
+    }
+
     return f;
   }
+
+  // Return a Set of unique `.app` bundle root paths (e.g. "Foo.app",
+  // "nested/.Bar.app") found among archive entries.
+  _findAppBundles(entries) {
+    const roots = new Set();
+    for (const e of entries) {
+      const p = e.path || e.name || '';
+      const m = p.match(ZipRenderer.MACAPP_RE);
+      if (!m) continue;
+      // Reconstruct the full root path up to and including the .app segment.
+      const idx = p.indexOf(m[1] + '/');
+      if (idx < 0) continue;
+      const root = p.slice(0, idx) + m[1];
+      roots.add(root);
+    }
+    return roots;
+  }
+
 
   // ── Warnings ────────────────────────────────────────────────────────────────
 
@@ -1078,8 +1122,42 @@ class ZipRenderer {
     });
     if (traversal.length) w.push({ sev: 'high', msg: `⚠ Path traversal attempt detected (Zip Slip) — ${traversal.length} entry/entries with suspicious paths` });
 
+    // ── macOS .app bundle detection ────────────────────────────────────────
+    // Flag ZIP-wrapped `.app` bundles — the common delivery shape for
+    // unsigned macOS malware outside the App Store. Mirrors the DMG
+    // renderer's equivalent warnings for drag-to-install trojan layouts.
+    const bundles = this._findAppBundles(entries);
+    if (bundles.size) {
+      const roots = Array.from(bundles);
+      const sample = roots.slice(0, 3).map(r => r.split('/').pop()).join(', ');
+      w.push({
+        sev: 'high',
+        msg: `⚠ ${roots.length} macOS .app bundle(s) inside archive: ${sample}${roots.length > 3 ? ' …' : ''} — drop-delivery shape for macOS malware`,
+      });
+      const hidden = roots.filter(r => /(^|\/)\./.test(r));
+      if (hidden.length) {
+        w.push({
+          sev: 'high',
+          msg: `⚠ ${hidden.length} hidden .app bundle(s) (leading dot) — likely evasion of Finder visibility`,
+        });
+      }
+      const unsigned = roots.filter(r => {
+        const prefix = r + '/';
+        const hasBinary = entries.some(e => (e.path || e.name || '').startsWith(prefix + 'Contents/MacOS/'));
+        const hasSig = entries.some(e => (e.path || e.name || '').startsWith(prefix + 'Contents/_CodeSignature/'));
+        return hasBinary && !hasSig;
+      });
+      if (unsigned.length) {
+        w.push({
+          sev: 'high',
+          msg: `⚠ ${unsigned.length} .app bundle(s) with a Mach-O binary but no _CodeSignature — unsigned / ad-hoc binary`,
+        });
+      }
+    }
+
     return w;
   }
+
 
   _isDoubleExt(path) {
     const name = (path || '').split('/').pop();

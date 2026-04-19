@@ -103,6 +103,64 @@ rule ZIP_Contains_MSI
         uint32(0) == 0x04034B50 and $a
 }
 
+rule ZIP_Contains_MacApp_Bundle
+{
+    meta:
+        description = "ZIP archive contains a macOS .app bundle (Info.plist + Contents/MacOS) — common macOS malware drop-delivery shape, bypasses Mark-of-the-Web on macOS hosts"
+        severity    = "high"
+        category    = "delivery"
+        mitre       = "T1204.002"
+
+    strings:
+        $info_plist    = ".app/Contents/Info.plist" ascii nocase
+        $macos_dir     = ".app/Contents/MacOS/" ascii nocase
+        $resources     = ".app/Contents/Resources/" ascii nocase
+        $pkginfo       = ".app/Contents/PkgInfo" ascii nocase
+        $embedded_prov = ".app/Contents/embedded.provisionprofile" ascii nocase
+        $code_sig      = ".app/Contents/_CodeSignature/" ascii nocase
+        $hidden_app    = /\/\.[A-Za-z0-9_\- ]{1,40}\.app\// ascii
+
+    condition:
+        uint32(0) == 0x04034B50 and (
+            ($info_plist and $macos_dir) or
+            ($info_plist and $resources) or
+            $hidden_app
+        )
+}
+
+rule ZIP_Contains_Hidden_MacApp
+{
+    meta:
+        description = "ZIP archive contains a hidden macOS .app bundle (leading dot) — obscures the real payload behind a visible decoy, classic AMOS / Atomic Stealer tradecraft"
+        severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1564.001"
+
+    strings:
+        $hidden_app = /(^|\/)\.[A-Za-z0-9_\- ]{1,40}\.app\// ascii
+        $info_plist = ".app/Contents/Info.plist" ascii nocase
+
+    condition:
+        uint32(0) == 0x04034B50 and $hidden_app and $info_plist
+}
+
+rule ZIP_MacApp_With_Unsigned_Binary
+{
+    meta:
+        description = "ZIP contains a .app bundle with an unsigned Mach-O in Contents/MacOS — unsigned macOS payload delivered without code signature"
+        severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1553.002"
+
+    strings:
+        $macos_dir  = ".app/Contents/MacOS/" ascii nocase
+        $info_plist = ".app/Contents/Info.plist" ascii nocase
+        $code_sig   = "_CodeSignature/CodeResources" ascii nocase
+
+    condition:
+        uint32(0) == 0x04034B50 and $macos_dir and $info_plist and not $code_sig
+}
+
 rule RAR_Archive_Header
 {
     meta:

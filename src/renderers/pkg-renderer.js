@@ -209,27 +209,44 @@ class PkgRenderer {
       creator: pkg.signature ? `Signed (${pkg.signature.style})` : 'Unsigned',
     };
 
-    // Pre/post-install scripts are the malware delivery vector
+    // Pre/post-install scripts are the malware delivery vector. We split
+    // "modern" (preinstall/postinstall) from "legacy" (preflight/postflight/
+    // InstallationCheck/VolumeCheck) because the legacy family is pre-
+    // PackageMaker and warrants its own badge.
     const scripts = pkg.files.filter(x => x.isScript);
-    if (scripts.length) {
+    const LEGACY_NAMES = new Set(['preflight', 'postflight', 'InstallationCheck', 'VolumeCheck', 'preupgrade', 'postupgrade']);
+    const legacy  = scripts.filter(s => LEGACY_NAMES.has(s.name));
+    const modern  = scripts.filter(s => !LEGACY_NAMES.has(s.name));
+    if (modern.length) {
       f.externalRefs.push({
         type: IOC.PATTERN,
-        url: `${scripts.length} install script(s): ${scripts.map(s => s.path.split('/').pop()).join(', ')}`,
+        url: `${modern.length} install script(s): ${modern.map(s => s.path.split('/').pop()).join(', ')}`,
         severity: 'high'
       });
       f.risk = 'high';
-      for (const s of scripts) {
-        f.externalRefs.push({ type: IOC.FILE_PATH, url: s.path, severity: 'high' });
-      }
+    }
+    if (legacy.length) {
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `${legacy.length} legacy install script(s) (pre-PackageMaker delivery path): ${legacy.map(s => s.name).join(', ')}`,
+        severity: 'medium'
+      });
+      if (f.risk === 'low') f.risk = 'medium';
+    }
+    for (const s of scripts) {
+      f.externalRefs.push({ type: IOC.FILE_PATH, url: s.path, severity: 'high' });
     }
 
-    // Unsigned installer is a real (if mundane) red flag
+    // Unsigned installer is a real (if mundane) red flag. Lift baseline
+    // risk so the sidebar surfaces "medium" even when no scripts ship —
+    // an unsigned installer is still a publisher-verification failure.
     if (!pkg.signature) {
       f.externalRefs.push({
         type: IOC.PATTERN,
         url: 'Installer package is unsigned — cannot verify publisher',
         severity: 'medium'
       });
+      if (f.risk === 'low') f.risk = 'medium';
     }
 
     // Root auth + scripts = macOS malware's signature combo
@@ -240,6 +257,48 @@ class PkgRenderer {
         severity: 'high'
       });
       f.risk = 'high';
+    }
+
+    // LaunchDaemon / LaunchAgent payload drop — macOS persistence path
+    // (T1543.001 / T1543.004). Look at file paths in the heap manifest.
+    const launchPaths = pkg.files.filter(x => !x.dir &&
+      /\/(LaunchDaemons|LaunchAgents)\/[^/]+\.plist$/i.test(x.path));
+    if (launchPaths.length) {
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `${launchPaths.length} LaunchDaemon/LaunchAgent plist(s) installed — macOS persistence mechanism`,
+        severity: 'high'
+      });
+      f.risk = 'high';
+      for (const lp of launchPaths.slice(0, 20)) {
+        f.externalRefs.push({ type: IOC.FILE_PATH, url: lp.path, severity: 'high' });
+      }
+    }
+
+    // Scan script bodies for curl|bash / wget|sh download-and-execute.
+    // Scripts are small (bytes to low KB) and ship gzip'd in the heap —
+    // decompressing them here is cheap and is the only way to surface
+    // the pattern (YARA only sees compressed heap bytes).
+    for (const s of scripts.slice(0, 16)) {
+      try {
+        const body = await this._readScriptBody(bytes, pkg, s);
+        if (!body) continue;
+        if (/\b(curl|wget)\b[^\n|]*\|\s*(ba)?sh\b/i.test(body)) {
+          f.externalRefs.push({
+            type: IOC.PATTERN,
+            url: `Install script "${s.name}" uses curl|bash / wget|sh download-and-execute`,
+            severity: 'high'
+          });
+          f.risk = 'high';
+        }
+        const urls = body.match(/https?:\/\/[^\s"'<>`]+/g) || [];
+        for (const u of urls.slice(0, 20)) {
+          if (/apple\.com|opensource\.apple\.com/.test(u)) continue;
+          f.externalRefs.push({ type: IOC.URL, url: u, severity: 'medium' });
+          if (f.externalRefs.length > 200) break;
+        }
+      } catch (e) { /* keep going — one failed script shouldn't kill the analysis */ }
+      if (f.externalRefs.length > 200) break;
     }
 
     // Harvest URLs from distribution XML (installer-check callouts, update
@@ -256,6 +315,26 @@ class PkgRenderer {
     }
 
     return f;
+  }
+
+  // Decompress a single TOC file entry from the heap. Used by the security
+  // analyser to peek inside install-script bodies. Returns a string or null.
+  async _readScriptBody(bytes, pkg, fileEntry) {
+    if (fileEntry.dir) return null;
+    if (!fileEntry.compSize || fileEntry.uncompSize > 256 * 1024) return null;
+    const slice = bytes.subarray(
+      pkg.heapOffset + fileEntry.offset,
+      pkg.heapOffset + fileEntry.offset + fileEntry.compSize
+    );
+    let data = slice;
+    if (fileEntry.encoding === 'gzip') {
+      data = await Decompressor.inflate(slice, 'gzip') || slice;
+    } else if (fileEntry.encoding !== 'none' && fileEntry.encoding !== 'raw') {
+      data = await Decompressor.inflate(slice, 'deflate')
+        || await Decompressor.inflate(slice, 'deflate-raw')
+        || slice;
+    }
+    return new TextDecoder('utf-8', { fatal: false }).decode(data);
   }
 
   // ── xar parsing ────────────────────────────────────────────────────────────
