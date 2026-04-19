@@ -191,8 +191,73 @@ HTML = f"""<!DOCTYPE html>
   <title>Loupe</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🕵🏻</text></svg>">
   <style>{css}</style>
+  <!-- ── FOUC-prevention theme bootstrap ──────────────────────────────────
+       Runs synchronously before <body> is painted so the correct theme
+       class lives on <body> from the very first frame. Without this the
+       page would flash the default light palette for a few hundred ms
+       while app-ui.js loaded, even for users who had saved a dark theme.
+       Logic mirrors _initTheme in src/app/app-ui.js:
+         1. saved `localStorage.loupe_theme`  (if valid)
+         2. OS `prefers-color-scheme: light`   (first boot only)
+         3. hard-coded fallback ('dark')
+       The theme IDs must be kept in sync with the THEMES array in
+       src/app/app-ui.js — a stale entry here just means the bootstrap
+       refuses to apply that theme and _initTheme does so one tick later.
+       Allowed by CSP: `script-src 'unsafe-inline'` is already granted for
+       the rest of the single-file bundle, so no extra relaxation. -->
+  <script>
+    (function () {{
+      try {{
+        var THEME_IDS = ['light','dark','midnight','solarized','mocha','latte'];
+        var DARK_THEMES = {{ dark:1, midnight:1, solarized:1, mocha:1 }};
+        var saved = null;
+        try {{ saved = localStorage.getItem('loupe_theme'); }} catch (_) {{}}
+        var id;
+        if (saved && THEME_IDS.indexOf(saved) !== -1) {{
+          id = saved;
+        }} else {{
+          var prefersLight = false;
+          try {{
+            prefersLight = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+          }} catch (_) {{}}
+          id = prefersLight ? 'light' : 'dark';
+        }}
+        var b = document.body || document.documentElement;
+        // <body> doesn't exist yet — stash on <html> and re-apply once body lands
+        var applyTo = function (el) {{
+          for (var i = el.classList.length - 1; i >= 0; i--) {{
+            var cls = el.classList[i];
+            if (cls.indexOf('theme-') === 0) el.classList.remove(cls);
+          }}
+          el.classList.add('theme-' + id);
+          el.classList.toggle('dark', !!DARK_THEMES[id]);
+        }};
+        // Once <body> exists we need the classes there, not on <html>.
+        // If this script runs before </head> we schedule a one-shot
+        // observer that copies the classes across the moment <body> is parsed.
+        if (document.body) {{
+          applyTo(document.body);
+        }} else {{
+          applyTo(document.documentElement);
+          var mo = new MutationObserver(function () {{
+            if (document.body) {{
+              applyTo(document.body);
+              document.documentElement.classList.remove('dark');
+              for (var i = document.documentElement.classList.length - 1; i >= 0; i--) {{
+                var cls = document.documentElement.classList[i];
+                if (cls.indexOf('theme-') === 0) document.documentElement.classList.remove(cls);
+              }}
+              mo.disconnect();
+            }}
+          }});
+          mo.observe(document.documentElement, {{ childList: true }});
+        }}
+      }} catch (_) {{ /* never let theme bootstrap break the page */ }}
+    }})();
+  </script>
 </head>
 <body>
+
 
   <!-- ── Toolbar ─────────────────────────────────────────────────────── -->
   <div id="toolbar">
