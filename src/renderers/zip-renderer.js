@@ -95,7 +95,7 @@ class ZipRenderer {
 
     if (!decompressed) {
       const errDiv = document.createElement('div');
-      errDiv.style.cssText = 'padding:12px 20px;color:#f88;';
+      errDiv.style.cssText = 'padding:12px 20px;color:var(--risk-high);';
       errDiv.innerHTML = '<p>⚠ Decompression failed — file may be corrupted or truncated.</p>';
       wrap.appendChild(errDiv);
 
@@ -623,7 +623,7 @@ class ZipRenderer {
         this._zip = zip;
         return this._renderZipContents(wrap, zip, result.decryptedBuffer, fileName);
       } catch (e) {
-        const errP = document.createElement('p'); errP.style.cssText = 'color:#f88;padding:10px;';
+        const errP = document.createElement('p'); errP.style.cssText = 'color:var(--risk-high);padding:10px;';
         errP.textContent = 'Decryption appeared successful but ZIP parsing failed: ' + e.message;
         wrap.appendChild(errP);
       }
@@ -658,11 +658,11 @@ class ZipRenderer {
             this._renderZipContents(wrap, zip, r.decryptedBuffer, fileName);
           } catch (e) {
             btn.disabled = false; btn.textContent = '🔑 Try Password';
-            input.style.borderColor = '#f88';
+            input.style.borderColor = 'var(--risk-high)';
           }
         } else {
           btn.disabled = false; btn.textContent = '🔑 Try Password';
-          input.style.borderColor = '#f88';
+          input.style.borderColor = 'var(--risk-high)';
           input.value = ''; input.placeholder = 'Wrong password — try again…';
         }
       });
@@ -1130,7 +1130,7 @@ class ZipRenderer {
     det.innerHTML = `<p><strong>Format:</strong> ${escHtml(format)}${extraInfo ? ` (${escHtml(extraInfo)})` : ''}</p>` +
       `<p><strong>File size:</strong> ${this._fmtBytes(bytes.length)}</p>` +
       `<p><strong>Extension:</strong> .${escHtml(ext)}</p>` +
-      `<p style="color:#f88;margin-top:12px">⚠ Archives are a common delivery mechanism for phishing payloads. ` +
+      `<p style="color:var(--risk-high);margin-top:12px">⚠ Archives are a common delivery mechanism for phishing payloads. ` +
       `Extract with caution in a sandbox environment.</p>`;
     wrap.appendChild(det);
 
