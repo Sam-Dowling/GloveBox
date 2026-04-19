@@ -24,6 +24,38 @@
    Registry:   src/app/app-ui.js → THEMES
    ══════════════════════════════════════════════════════ */
 
+/* ── Token overrides ──────────────────────────────────────────────────
+   Latte swaps the baseline blue accent for Catppuccin mauve so every
+   accent-tinted surface (breadcrumbs, focus rings, YARA highlights,
+   IOC row hovers, theme picker active tile, …) recolours automatically
+   through var(--accent) / var(--accent-rgb). Risk colours are retuned
+   for readable contrast on the cream base.
+
+     mauve     #8839ef   --accent
+     lavender  #7287fd   --accent-hover
+     sapphire  #209fb5   --accent-deep
+     red       #d20f39   --risk-high
+     peach     #fe640b   --risk-med
+     green     #40a02b   --risk-low
+     blue      #1e66f5   --risk-info                                    */
+body.theme-latte {
+  --accent:        #8839ef;
+  --accent-rgb:    136 57 239;
+  --accent-hover:  #7287fd;
+  --accent-deep:   #209fb5;
+
+  --risk-high:     #d20f39;
+  --risk-high-rgb: 210 15 57;
+  --risk-med:      #fe640b;
+  --risk-low:      #40a02b;
+  --risk-info:     #1e66f5;
+
+  --hairline-soft:   rgba(76, 79, 105, .06);
+  --hairline:        rgba(76, 79, 105, .1);
+  --hairline-strong: rgba(76, 79, 105, .14);
+  --hairline-bold:   rgba(76, 79, 105, .18);
+}
+
 body.theme-latte {
   background: #eff1f5;
   background-image: linear-gradient(160deg, #e6e9ef 0%, #eff1f5 60%, #e6e9ef 100%);
