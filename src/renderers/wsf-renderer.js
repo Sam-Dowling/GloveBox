@@ -37,7 +37,7 @@ class WsfRenderer {
         const sec = document.createElement('div'); sec.className = 'wsf-script-block';
         const h = document.createElement('h3');
         h.textContent = `Script ${i + 1}: ${s.language}${s.src ? ' (external: ' + s.src + ')' : ''}`;
-        h.style.cssText = 'margin:12px 0 4px 0;padding:4px 8px;background:#332;border-left:3px solid #f88;';
+        h.style.cssText = 'margin:12px 0 4px 0;padding:4px 8px;background:#332;border-left:3px solid var(--risk-high);';
         sec.appendChild(h);
 
         if (s.code) {
@@ -72,7 +72,7 @@ class WsfRenderer {
       const pSec = document.createElement('div'); pSec.style.cssText = 'padding:0 8px;';
       const h = document.createElement('h3');
       h.textContent = `${analysis.patterns.length} Suspicious Pattern(s)`;
-      h.style.cssText = 'margin:12px 0 4px 0;color:#f88;';
+      h.style.cssText = 'margin:12px 0 4px 0;color:var(--risk-high);';
       pSec.appendChild(h);
 
       for (const p of analysis.patterns) {
