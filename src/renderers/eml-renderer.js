@@ -151,6 +151,14 @@ class EmlRenderer {
       wrap.appendChild(eb);
     }
 
+    // Expose the raw decoded source so the shared sidebar IOC sweep in
+    // app-load.js scans the real message text instead of falling back to
+    // `docEl.textContent`. Without this, adjacent header-table <td>s (e.g.
+    // "…action required" in Subject + "Reply-To" label + "attacker@…" value)
+    // collapse into a single whitespace-free blob and the generic email
+    // regex greedily extends the local-part, producing bogus IOCs like
+    // `requiredReply-Toattacker@evil.example.com`.
+    wrap._rawText = text;
     return wrap;
   }
 
