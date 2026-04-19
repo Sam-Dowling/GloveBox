@@ -558,6 +558,27 @@ Object.assign(App.prototype, {
       this._wireInnerFileListener(docEl, file.name);
       return { docEl };
     },
+    async cab(file, buffer) {
+      const r = new CabRenderer();
+      this.findings = await r.analyzeForSecurity(buffer, file.name);
+      const docEl = await r.render(buffer, file.name);
+      this._wireInnerFileListener(docEl, file.name);
+      return { docEl };
+    },
+    async rar(file, buffer) {
+      const r = new RarRenderer();
+      this.findings = await r.analyzeForSecurity(buffer, file.name);
+      const docEl = await r.render(buffer, file.name);
+      this._wireInnerFileListener(docEl, file.name);
+      return { docEl };
+    },
+    async sevenz(file, buffer) {
+      const r = new SevenZRenderer();
+      this.findings = await r.analyzeForSecurity(buffer, file.name);
+      const docEl = await r.render(buffer, file.name);
+      this._wireInnerFileListener(docEl, file.name);
+      return { docEl };
+    },
     async msix(file, buffer) {
       const r = new MsixRenderer();
       this.findings = await r.analyzeForSecurity(buffer, file.name);

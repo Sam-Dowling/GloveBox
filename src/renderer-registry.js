@@ -494,33 +494,74 @@ class RendererRegistry {
     },
 
     // ── Archives ──────────────────────────────────────────────────────────
-    //    `zip` sits at the end of the container section: any OOXML / ODF /
-    //    MSIX / JAR / XPI sub-format has already claimed the file before
-    //    we fall through to the generic archive viewer.
+    //    Specific archive sub-formats (CAB / RAR / 7z) run BEFORE the
+    //    generic `zip` entry so they are claimed by their dedicated
+    //    renderers. The generic ZipRenderer still handles ZIP / OOXML /
+    //    gzip / TAR and (via `_nonZip`) remains the safety-net fallback
+    //    for any archive shape we cannot parse structurally.
+    {
+      id: 'cab',
+      className: 'CabRenderer',
+      exts: ['cab'],
+      magic: (ctx) => {
+        const b = ctx.bytes;
+        return b.length >= 4
+          && b[0] === 0x4D && b[1] === 0x53 && b[2] === 0x43 && b[3] === 0x46;
+      },
+      description: 'Microsoft Cabinet Archive (MSCF)',
+    },
+    {
+      id: 'rar',
+      className: 'RarRenderer',
+      exts: ['rar'],
+      magic: (ctx) => {
+        const b = ctx.bytes;
+        // RAR 1.5 – 4.x: "Rar!\x1A\x07\x00"
+        // RAR 5.x:        "Rar!\x1A\x07\x01\x00"
+        return b.length >= 7
+          && b[0] === 0x52 && b[1] === 0x61 && b[2] === 0x72 && b[3] === 0x21
+          && b[4] === 0x1A && b[5] === 0x07
+          && (b[6] === 0x00 || b[6] === 0x01);
+      },
+      description: 'RAR Archive (v4 / v5, listing-only)',
+    },
+    {
+      id: 'sevenz',
+      className: 'SevenZRenderer',
+      exts: ['7z'],
+      magic: (ctx) => {
+        const b = ctx.bytes;
+        // 7z signature: 37 7A BC AF 27 1C
+        return b.length >= 6
+          && b[0] === 0x37 && b[1] === 0x7A && b[2] === 0xBC && b[3] === 0xAF
+          && b[4] === 0x27 && b[5] === 0x1C;
+      },
+      description: '7-Zip Archive',
+    },
+
+    // ── Generic ZIP / gzip / TAR fallback.  Any OOXML / ODF / MSIX /
+    //    JAR / XPI / CRX sub-format has already claimed the file by the
+    //    time we get here, and the dedicated CAB / RAR / 7z entries
+    //    above claim those shapes. What's left is the plain container
+    //    viewer used for vanilla ZIP / gzip / TAR archives.
     {
       id: 'zip',
       className: 'ZipRenderer',
-      exts: ['zip', 'rar', '7z', 'cab', 'gz', 'gzip', 'tar', 'tgz'],
+      exts: ['zip', 'gz', 'gzip', 'tar', 'tgz'],
       magic: (ctx) => {
         const b = ctx.bytes;
         if (b.length < 4) return false;
         // ZIP / OOXML envelope
         if (b[0] === 0x50 && b[1] === 0x4B && b[2] === 0x03 && b[3] === 0x04) return true;
-        // RAR (both v1.5 and v5 start with "Rar!")
-        if (b[0] === 0x52 && b[1] === 0x61 && b[2] === 0x72 && b[3] === 0x21) return true;
-        // 7-Zip
-        if (b[0] === 0x37 && b[1] === 0x7A && b[2] === 0xBC && b[3] === 0xAF) return true;
         // Gzip
         if (b[0] === 0x1F && b[1] === 0x8B) return true;
-        // Microsoft Cabinet: "MSCF"
-        if (b[0] === 0x4D && b[1] === 0x53 && b[2] === 0x43 && b[3] === 0x46) return true;
         // TAR (ustar magic at 257)
         if (b.length > 262
           && b[257] === 0x75 && b[258] === 0x73 && b[259] === 0x74
           && b[260] === 0x61 && b[261] === 0x72) return true;
         return false;
       },
-      description: 'Archive (ZIP / RAR / 7z / CAB / gzip / TAR)',
+      description: 'Archive (ZIP / OOXML-raw / gzip / TAR)',
     },
 
     // ── Text-head formats (magic-by-prefix) ───────────────────────────────

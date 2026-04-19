@@ -20,6 +20,7 @@ utif_js      = read('vendor/utif.min.js')
 exifr_js     = read('vendor/exifr.min.js')
 tldts_js     = read('vendor/tldts.min.js')
 pako_js      = read('vendor/pako.min.js')
+lzma_js      = read('vendor/lzma-d-min.js')
 
 # CSS files — concatenated in order.
 # Each optional theme overlay lives in src/styles/themes/<id>.css and contains
@@ -119,6 +120,13 @@ JS_FILES = [
     # (zip, jar, msix, browserext) so the class exists at construction time.
     'src/renderers/archive-tree.js',
     'src/renderers/zip-renderer.js',
+    # Archive sub-formats that share the ArchiveTree browser but own their
+    # own container parsers. Must load AFTER archive-tree.js (like zip) and
+    # BEFORE renderer-registry.js so the registry's `_bootstrap` can attach
+    # `static EXTS` / `canHandle()` to each class by global name.
+    'src/renderers/cab-renderer.js',
+    'src/renderers/rar-renderer.js',
+    'src/renderers/seven7-renderer.js',
 
     'src/renderers/iso-renderer.js',
     'src/renderers/dmg-renderer.js',
@@ -276,7 +284,7 @@ HTML = f"""<!DOCTYPE html>
 
   <!-- ── Toolbar ─────────────────────────────────────────────────────── -->
   <div id="toolbar">
-    <span id="app-title">🕵🏻 Loupe</span>
+    <span id="app-title"><span class="emoji">🕵🏻</span> Loupe</span>
     <div class="tb-separator"></div>
     <!-- File operations group -->
     <div class="tb-group" id="file-ops">
@@ -404,6 +412,14 @@ HTML = f"""<!DOCTYPE html>
         caller needs a sync inflate) ──────────────────────────────── -->
   <script>
 {pako_js}
+  </script>
+
+  <!-- ── LZMA-JS (decoder-only, inlined — used by SevenZRenderer to
+        decompress LZMA-encoded 7z end-headers so the file listing is
+        available even for large archives that compress their own
+        metadata) ───────────────────────────────────────────────── -->
+  <script>
+{lzma_js}
   </script>
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
