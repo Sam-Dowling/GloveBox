@@ -412,7 +412,7 @@ class BrowserExtRenderer {
     try { zip = await JSZip.loadAsync(zipBuffer); }
     catch (e) {
       const err = document.createElement('div');
-      err.style.cssText = 'color:#f88;padding:20px;';
+      err.style.cssText = 'color:var(--risk-high);padding:20px;';
       err.textContent = 'Unable to open extension ZIP: ' + (e && e.message || e);
       wrap.appendChild(err);
       return wrap;
