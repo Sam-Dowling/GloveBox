@@ -194,15 +194,231 @@ class OsascriptRenderer {
 
     /* ── Syntax-highlight source code ──────────────────────────────── */
 
-    _highlight(source, lang) {
-        if (typeof hljs !== 'undefined') {
-            /* hljs may not have AppleScript grammar — try, then fall back */
-            try {
-                if (lang === 'applescript' && hljs.getLanguage('applescript')) {
-                    return hljs.highlight(source, { language: 'applescript' }).value;
+    /**
+     * AppleScript keyword set — control flow, scoping, handlers, reference
+     * forms. Every entry is a single whitespace-delimited word; multi-word
+     * phrases (e.g. "using terms from") are matched separately in
+     * APPLESCRIPT_MULTIWORD_KEYWORDS so the tokenizer can swallow them in
+     * one pass instead of painting each word with its own span.
+     */
+    static APPLESCRIPT_KEYWORDS = new Set([
+        'tell','end','on','to','of','in','is','as','if','then','else',
+        'repeat','while','until','from','by','with','without','set','get',
+        'copy','return','exit','continue','try','error','script','property',
+        'prop','global','local','my','me','its','it','the','and','or','not',
+        'equals','reference','given','into','through','thru','before','after',
+        'where','whose','every','each','first','second','third','fourth',
+        'fifth','sixth','seventh','eighth','ninth','tenth','last','some',
+        'any','considering','ignoring','contains','starts','ends','contain',
+        'equal','greater','less','than','does','doesn','aside','application',
+        'beginning','middle','front','back','this','that','these','those',
+        'entire','contents','item','items','folder','folders','file','files',
+        'window','windows','process','processes','document','documents',
+        'paragraph','paragraphs','word','words','character','characters',
+        'true','false','null'
+    ]);
+
+    /**
+     * Multi-word keyword phrases. Matched case-insensitively before the
+     * single-word keyword pass so the whole phrase becomes one hljs-keyword
+     * span. Order longest-first so "a reference to" wins over "reference".
+     */
+    static APPLESCRIPT_MULTIWORD_KEYWORDS = [
+        'using terms from','a reference to','end using terms from',
+        'end considering','end ignoring','end repeat','end tell','end try',
+        'end if','else if','exit repeat','on error'
+    ];
+
+    /** Literal values — coloured like numbers/booleans in most hljs themes. */
+    static APPLESCRIPT_LITERALS = new Set([
+        'true','false','missing','null','yes','no'
+    ]);
+
+    /**
+     * Multi-word literal phrases (e.g. "missing value").
+     */
+    static APPLESCRIPT_MULTIWORD_LITERALS = [
+        'missing value'
+    ];
+
+    /**
+     * Built-in / security-interesting phrases. The list deliberately overlaps
+     * the suspicious-pattern catalogue at the top of this file so the things
+     * analyzeForSecurity() flags are also the things an analyst's eye is
+     * drawn to when reading the source.
+     */
+    static APPLESCRIPT_MULTIWORD_BUILTINS = [
+        'do shell script','display dialog','display notification','display alert',
+        'default answer','with hidden answer','with administrator privileges',
+        'system events','current application','do JavaScript','open location',
+        'run script','mount volume','choose file','choose folder','choose from list',
+        'path to','info for','POSIX path','POSIX file','quoted form of',
+        'ASCII character','ASCII number','use framework','use scripting additions',
+        'launch agent','launch daemon','login item','system info',
+        'current date','time to GMT','offset of','count of','length of',
+        'text item delimiters','read file','write file','close access'
+    ];
+
+    static APPLESCRIPT_BUILTINS = new Set([
+        'keystroke','clipboard','osascript','curl','wget','defaults',
+        'crontab','security','screen','volume','application','applications',
+        'shell','script','dialog','notification','alert','keychain'
+    ]);
+
+    /**
+     * Tokenise AppleScript source and emit HTML with hljs-* class names so
+     * the existing viewers.css palette (light + dark + all themes) colours
+     * it correctly. The vendored highlight.min.js ships without an
+     * AppleScript grammar, so we do this ourselves — cheap, deterministic,
+     * no network fetch, and the class names match every other renderer.
+     */
+    static _highlightAppleScript(source) {
+        const esc = OsascriptRenderer._esc;
+        const KW = OsascriptRenderer.APPLESCRIPT_KEYWORDS;
+        const LIT = OsascriptRenderer.APPLESCRIPT_LITERALS;
+        const BI = OsascriptRenderer.APPLESCRIPT_BUILTINS;
+        /* Pre-compile multi-word phrase matchers, longest-first so e.g.
+         * "end using terms from" wins over "using terms from" wins over
+         * "end". Each entry: [lowercased phrase, regex, cssClass]. */
+        const phrases = [];
+        const addPhrases = (list, cls) => {
+            for (const p of list) {
+                /* \b boundaries + runs of whitespace tolerated between words */
+                const pattern = p.trim().split(/\s+/).map(w =>
+                    w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+                ).join('\\s+');
+                phrases.push({
+                    re: new RegExp('\\b' + pattern + '\\b', 'i'),
+                    cls,
+                    len: p.length,
+                });
+            }
+        };
+        addPhrases(OsascriptRenderer.APPLESCRIPT_MULTIWORD_BUILTINS, 'hljs-built_in');
+        addPhrases(OsascriptRenderer.APPLESCRIPT_MULTIWORD_KEYWORDS, 'hljs-keyword');
+        addPhrases(OsascriptRenderer.APPLESCRIPT_MULTIWORD_LITERALS, 'hljs-literal');
+        phrases.sort((a, b) => b.len - a.len);
+
+        let out = '';
+        let i = 0;
+        const n = source.length;
+
+        const peek2 = (pos) => source.charCodeAt(pos) | (source.charCodeAt(pos + 1) << 16);
+
+        while (i < n) {
+            const ch = source[i];
+            const cc = source.charCodeAt(i);
+
+            /* Block comment: (* ... *) — may nest in AppleScript but we treat
+             * as non-nesting (matches hljs behaviour). */
+            if (ch === '(' && source[i + 1] === '*') {
+                const end = source.indexOf('*)', i + 2);
+                const stop = end === -1 ? n : end + 2;
+                out += `<span class="hljs-comment">${esc(source.slice(i, stop))}</span>`;
+                i = stop;
+                continue;
+            }
+
+            /* Line comment: -- ... or # ... */
+            if ((ch === '-' && source[i + 1] === '-') || ch === '#') {
+                let j = i;
+                while (j < n && source[j] !== '\n') j++;
+                out += `<span class="hljs-comment">${esc(source.slice(i, j))}</span>`;
+                i = j;
+                continue;
+            }
+
+            /* String literal: "..." with \" escapes */
+            if (ch === '"') {
+                let j = i + 1;
+                while (j < n) {
+                    if (source[j] === '\\' && j + 1 < n) { j += 2; continue; }
+                    if (source[j] === '"') { j++; break; }
+                    j++;
                 }
-                if (lang === 'javascript' && hljs.getLanguage('javascript')) {
-                    return hljs.highlight(source, { language: 'javascript' }).value;
+                out += `<span class="hljs-string">${esc(source.slice(i, j))}</span>`;
+                i = j;
+                continue;
+            }
+
+            /* Number: integer, decimal, or 0xHEX */
+            if ((cc >= 48 && cc <= 57) ||
+                (ch === '.' && source.charCodeAt(i + 1) >= 48 && source.charCodeAt(i + 1) <= 57)) {
+                let j = i;
+                if (source[j] === '0' && (source[j + 1] === 'x' || source[j + 1] === 'X')) {
+                    j += 2;
+                    while (j < n && /[0-9a-fA-F]/.test(source[j])) j++;
+                } else {
+                    while (j < n && /[0-9]/.test(source[j])) j++;
+                    if (source[j] === '.' && /[0-9]/.test(source[j + 1] || '')) {
+                        j++;
+                        while (j < n && /[0-9]/.test(source[j])) j++;
+                    }
+                    if (source[j] === 'e' || source[j] === 'E') {
+                        j++;
+                        if (source[j] === '+' || source[j] === '-') j++;
+                        while (j < n && /[0-9]/.test(source[j])) j++;
+                    }
+                }
+                out += `<span class="hljs-number">${esc(source.slice(i, j))}</span>`;
+                i = j;
+                continue;
+            }
+
+            /* Identifier (letters / digits / underscore). AppleScript is
+             * case-insensitive for keywords, so we lowercase for lookup. */
+            if (/[A-Za-z_]/.test(ch)) {
+                /* Try multi-word phrases first */
+                let matched = null;
+                for (const p of phrases) {
+                    p.re.lastIndex = 0;
+                    const m = p.re.exec(source.slice(i, i + p.len + 16));
+                    if (m && m.index === 0) {
+                        matched = { text: m[0], cls: p.cls };
+                        break;
+                    }
+                }
+                if (matched) {
+                    out += `<span class="${matched.cls}">${esc(matched.text)}</span>`;
+                    i += matched.text.length;
+                    continue;
+                }
+                /* Single identifier */
+                let j = i;
+                while (j < n && /[A-Za-z0-9_]/.test(source[j])) j++;
+                const word = source.slice(i, j);
+                const lw = word.toLowerCase();
+                let cls = null;
+                if (LIT.has(lw)) cls = 'hljs-literal';
+                else if (KW.has(lw)) cls = 'hljs-keyword';
+                else if (BI.has(lw)) cls = 'hljs-built_in';
+                if (cls) out += `<span class="${cls}">${esc(word)}</span>`;
+                else out += esc(word);
+                i = j;
+                continue;
+            }
+
+            /* Anything else — escape and emit verbatim. */
+            out += esc(ch);
+            i++;
+        }
+        return out;
+    }
+
+    _highlight(source, lang) {
+        /* AppleScript: vendored highlight.min.js has no grammar for it, so
+         * use our in-house tokenizer. It emits hljs-* class names, so the
+         * existing viewers.css palette applies across every theme. */
+        if (lang === 'applescript') {
+            try {
+                return OsascriptRenderer._highlightAppleScript(source);
+            } catch (_) { /* fall through to plain escaping */ }
+        }
+        /* JXA: JavaScript grammar ships with highlight.min.js. */
+        if (typeof hljs !== 'undefined' && lang === 'javascript') {
+            try {
+                if (hljs.getLanguage('javascript')) {
+                    return hljs.highlight(source, { language: 'javascript', ignoreIllegals: true }).value;
                 }
             } catch (_) { /* fall through */ }
         }
@@ -384,6 +600,10 @@ class OsascriptRenderer {
                     severity: p.sev,
                     count: matches.length,
                     sample: matches[0].substring(0, 120),
+                    /* Raw first match — used by the IOC.PATTERN mirror below
+                     * as _highlightText so clicking the sidebar row scrolls
+                     * to the actual offending line in the Source viewer. */
+                    _firstMatch: matches[0],
                 });
                 if (p.sev === 'critical') criticalCount++;
                 else if (p.sev === 'high') highCount++;
@@ -410,6 +630,7 @@ class OsascriptRenderer {
                         severity: p.sev,
                         count: matches.length,
                         sample: matches[0].substring(0, 120),
+                        _firstMatch: matches[0],
                     });
                     if (p.sev === 'critical') criticalCount++;
                     else if (p.sev === 'high') highCount++;
@@ -419,12 +640,20 @@ class OsascriptRenderer {
         }
 
         /* ── Auto-exec detection ─────────────────────────────────── */
-        if (/on\s+run/i.test(analysisText)) findings.autoExec.push('on run');
-        if (/on\s+open/i.test(analysisText)) findings.autoExec.push('on open');
-        if (/on\s+idle/i.test(analysisText)) findings.autoExec.push('on idle');
-        if (/on\s+quit/i.test(analysisText)) findings.autoExec.push('on quit');
-        if (/on\s+adding\s+folder\s+items/i.test(analysisText)) findings.autoExec.push('folder action trigger');
-        if (/#!/.test(analysisText.substring(0, 80))) findings.autoExec.push('shebang (executable script)');
+        /* Each entry records {label, hit} — `hit` is the literal substring
+         * that matched in analysisText, carried through to the IOC.PATTERN
+         * mirror as _highlightText so sidebar clicks land on the source line. */
+        const pushAutoExec = (re, label, haystack = analysisText) => {
+            const m = haystack.match(re);
+            if (m) findings.autoExec.push({ label, hit: m[0] });
+        };
+        pushAutoExec(/on\s+run/i, 'on run');
+        pushAutoExec(/on\s+open/i, 'on open');
+        pushAutoExec(/on\s+idle/i, 'on idle');
+        pushAutoExec(/on\s+quit/i, 'on quit');
+        pushAutoExec(/on\s+adding\s+folder\s+items/i, 'folder action trigger');
+        pushAutoExec(/#![^\n]*/, 'shebang (executable script)', analysisText.substring(0, 80));
+
 
         /* ── Extract IOCs ────────────────────────────────────────── */
         /* URLs — dedup like IP/path extractors below so the same URL
@@ -501,22 +730,36 @@ class OsascriptRenderer {
 
         /* Mirror signatureMatches into externalRefs as IOC.PATTERN so the
          * Summary sidebar and Share view see every detection the viewer
-         * surfaces (Detection → IOC parity). */
+         * surfaces (Detection → IOC parity).
+         *
+         * Thread `_firstMatch` through as `_highlightText` so clicking the
+         * Pattern row in the sidebar locates the concrete offending substring
+         * in the Source viewer. Without it the mirrored "Label — description"
+         * string never literally appears in the rendered source and the
+         * click would silently no-op (see plist-renderer.js for the same
+         * pattern with the same explanation). */
         for (const sm of findings.signatureMatches) {
-            findings.externalRefs.push({
+            const ref = {
                 type: IOC.PATTERN,
                 url: `${sm.label} — ${sm.description}`,
                 severity: sm.severity || 'medium',
-            });
+            };
+            if (sm._firstMatch) ref._highlightText = sm._firstMatch;
+            findings.externalRefs.push(ref);
         }
-        /* Mirror auto-exec triggers. */
+
+        /* Mirror auto-exec triggers. Each entry is {label, hit} — thread `hit`
+         * through as _highlightText so clicking the sidebar row scrolls the
+         * Source viewer to the actual trigger token. */
         for (const ae of findings.autoExec) {
             findings.externalRefs.push({
                 type: IOC.PATTERN,
-                url: `Auto-exec trigger: ${ae}`,
+                url: `Auto-exec trigger: ${ae.label}`,
                 severity: 'medium',
+                _highlightText: ae.hit,
             });
         }
+
 
         /* ── Obfuscation detection ───────────────────────────────── */
         const b64Chunks = analysisText.match(/[A-Za-z0-9+/=]{60,}/g);
