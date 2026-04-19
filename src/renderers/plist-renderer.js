@@ -602,17 +602,17 @@ class PlistRenderer {
       }
       if (progArgs && progArgs._type === 'array') {
         const argStrings = progArgs._items.map(i => i._value || '').join(' ');
-        addRow('ProgramArguments', argStrings, /\/bin\/(?:ba)?sh|curl|wget|osascript|python/.test(argStrings) ? '#f88' : null);
+        addRow('ProgramArguments', argStrings, /\/bin\/(?:ba)?sh|curl|wget|osascript|python/.test(argStrings) ? 'var(--risk-high)' : null);
       }
 
       const runAtLoad = this._getValue(root, 'RunAtLoad');
-      if (runAtLoad) addRow('RunAtLoad', runAtLoad._value ? '✅ true' : '❌ false', runAtLoad._value ? '#f88' : null);
+      if (runAtLoad) addRow('RunAtLoad', runAtLoad._value ? '✅ true' : '❌ false', runAtLoad._value ? 'var(--risk-high)' : null);
 
       const keepAlive = this._getValue(root, 'KeepAlive');
       if (keepAlive) addRow('KeepAlive', keepAlive._type === 'boolean' ? (keepAlive._value ? '✅ true' : '❌ false') : '(complex)', keepAlive._value ? '#fa0' : null);
 
       const interval = this._getValue(root, 'StartInterval');
-      if (interval) addRow('StartInterval', interval._value + ' seconds', interval._value && interval._value < 300 ? '#f88' : null);
+      if (interval) addRow('StartInterval', interval._value + ' seconds', interval._value && interval._value < 300 ? 'var(--risk-high)' : null);
 
       const watchPaths = this._getValue(root, 'WatchPaths');
       if (watchPaths && watchPaths._type === 'array') {
