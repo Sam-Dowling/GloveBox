@@ -84,15 +84,15 @@ Every format gets risk assessment, IOC extraction, and YARA scanning on top of t
 - **Native binary analysis** — PE, ELF and Mach-O with imports, sections, entropy, security features, code signatures; truncated binaries fall back to strings + hex dump so YARA/IOC scanning keeps working
 - **Certificate & PGP inspection** — X.509 / PKCS#12 / OpenPGP with weak-key and expiry flagging
 - **Archive drill-down** — click any entry inside a ZIP / TAR / ISO / MSI to open it with full analysis
-- **Exports** — one-click **⚡ Summary** for an AI/SOC clipboard brief, plus a **📤 Export** menu for STIX 2.1 / MISP / IOC JSON / IOC CSV (clipboard) and raw-file save
+- **Exports** — one-click **⚡ Summary** for an AI/SOC clipboard brief (budget configurable from 4 K chars up to unbounded via a 10-stop log slider in ⚙ Settings; the live token chip next to the button — `4K` · `16K` · `MAX` — tells you what you'll paste), plus a **📤 Export** menu for STIX 2.1 / MISP / IOC JSON / IOC CSV (clipboard) and raw-file save
 
-Plus a Midnight Glass UI with a 4-theme picker (Light / Dark / Midnight OLED / Solarized — your choice persists), floating zoom, drag-pan, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
+Plus a Midnight Glass UI with a 6-theme picker (Light / Dark / Midnight OLED / Solarized / Mocha / Latte — your choice persists), a unified **⚙ Settings / Help** dialog (`,` for Settings, `?` or `H` for Help, theme tiles included) with floating zoom, drag-pan, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
 
 ---
 
 ## 🎨 Themes
 
-Four built-in themes, one click apart — your choice persists via `localStorage`.
+Six built-in themes, selectable from the **⚙ Settings** dialog — your choice persists via `localStorage`.
 
 <p align="center">
 <img src="screenshots/light.png"     alt="Loupe — Light theme"     width="400">
@@ -101,7 +101,7 @@ Four built-in themes, one click apart — your choice persists via `localStorage
 <img src="screenshots/midnight.png"  alt="Loupe — Midnight (OLED)" width="400">
 <img src="screenshots/solarized.png" alt="Loupe — Solarized Dark"  width="400">
 <br>
-<em>Light · Dark (default) · Midnight (OLED pure-black) · Solarized Dark</em>
+<em>Light · Dark (default) · Midnight (OLED pure-black) · Solarized Dark · Mocha · Latte</em>
 </p>
 
 ---

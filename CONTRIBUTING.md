@@ -30,6 +30,8 @@ src/styles/core.css                    # Base theme, toolbar, sidebar, dialogs (
 src/styles/viewers.css                 # All format-specific viewer styles
 src/styles/themes/midnight.css         # Optional theme overlay — Midnight (OLED pure-black)
 src/styles/themes/solarized.css        # Optional theme overlay — Solarized Dark
+src/styles/themes/mocha.css            # Optional theme overlay — Catppuccin Mocha (dark, mauve accent)
+src/styles/themes/latte.css            # Optional theme overlay — Catppuccin Latte (light, mauve accent)
 ```
 
 Light and Dark are the baseline palettes and live in `core.css` (`body` / `body.dark`
@@ -127,7 +129,13 @@ src/app/app-load.js                    # File loading, hashing (MD5/SHA), IOC ex
 src/app/app-sidebar.js                 # Sidebar rendering — risk bar + collapsible panes
 src/app/app-yara.js                    # YARA rules dialog — upload, validate, save, scan, result display
 src/app/app-ui.js                      # UI helpers (zoom, theme, pan, toast) + bootstrap
+src/app/app-settings.js                # Unified ⚙ Settings / Help modal (theme tiles + Summary-budget slider + shortcuts)
 ```
+
+`app-settings.js` must load **after** `app-ui.js` because it reuses the `THEMES`
+registry and `_setTheme()` method defined there, and overrides the unbudgeted
+`_buildAnalysisText` call path in `_copyAnalysis` with the user's configured
+Summary-budget step.
 
 Vendor libraries (`vendor/jszip.min.js`, `vendor/xlsx.full.min.js`, `vendor/pdf.min.js`, `vendor/pdf.worker.min.js`, `vendor/highlight.min.js`) are inlined into separate `<script>` blocks before the application code.
 
@@ -159,7 +167,9 @@ Loupe/
 │   │   ├── viewers.css              # Format-specific viewer styles
 │   │   └── themes/                  # Optional theme overlays (body.theme-<id>)
 │   │       ├── midnight.css         # Midnight (OLED pure-black) — dark-based
-│   │       └── solarized.css        # Solarized Dark — warm low-glare, dark-based
+│   │       ├── solarized.css        # Solarized Dark — warm low-glare, dark-based
+│   │       ├── mocha.css            # Catppuccin Mocha — dark, mauve-accented
+│   │       └── latte.css            # Catppuccin Latte — light, mauve-accented
 │   ├── rules/                       # YARA rules (split by threat category)
 │   │   ├── office-macros.yar        # Office/VBA macro detection
 │   │   ├── script-threats.yar       # PS, JS, VBS, CMD, Python threats
@@ -238,7 +248,8 @@ Loupe/
 │       ├── app-load.js              # File loading, hashing, IOC extraction
 │       ├── app-sidebar.js           # Sidebar rendering (risk bar + collapsible panes)
 │       ├── app-yara.js              # YARA rules dialog (upload/validate/save/scan)
-│       └── app-ui.js                # UI helpers + DOMContentLoaded bootstrap
+│       ├── app-ui.js                # UI helpers + DOMContentLoaded bootstrap
+│       └── app-settings.js          # Unified ⚙ Settings / Help modal (theme tiles + Summary-budget slider)
 └── examples/                        # Sample files for testing various formats
 ```
 
@@ -258,7 +269,8 @@ Loupe is optimised for AI coding agents (Cline, Cursor, Copilot Workspace, etc.)
 
 - **Single output file** — `build.py` inlines all CSS and JavaScript so the viewer works by opening one `.html` file with zero external dependencies.
 - **No eval, no network** — the Content-Security-Policy (`default-src 'none'`) blocks all external fetches; images are rendered only from `data:` and `blob:` URLs.
-- **App class split** — `App` is defined in `app-core.js`; additional methods are attached via `Object.assign(App.prototype, {...})` in `app-load.js`, `app-sidebar.js`, `app-yara.js`, and `app-ui.js`, keeping each file focused.
+- **App class split** — `App` is defined in `app-core.js`; additional methods are attached via `Object.assign(App.prototype, {...})` in `app-load.js`, `app-sidebar.js`, `app-yara.js`, `app-ui.js`, and `app-settings.js`, keeping each file focused.
+- **User preferences** — user-configurable settings persist via `localStorage` under the `loupe_*` namespace. Current keys: `loupe_theme` (one of `light` / `dark` / `midnight` / `solarized` / `mocha` / `latte`, written by `_setTheme()` in `app-ui.js` — the canonical list lives in the `THEMES` array at the top of that file, so adding a new `src/styles/themes/<id>.css` overlay plus a `THEMES` row is all it takes to extend the set) and `loupe_summary_chars` (integer character budget written by `_setSummaryStep()` in `app-settings.js`; the ten-stop log scale lives in the `SUMMARY_STEPS` array at the top of that file, with `Infinity` at step 10 meaning "unbudgeted"). The YARA dialog owns its own key (`loupe_yara_rules`) documented in `app-yara.js`. New preference keys should follow the `loupe_<feature>` prefix so they are easy to audit and clear. The theme picker itself is exposed only through the ⚙ Settings dialog's tile grid — there is no toolbar theme dropdown.
 - **YARA-based detection** — all threat detection is driven by YARA rules. Default rules are split across `src/rules/*.yar` by threat category and auto-scanned on file load. Users can upload (or drag-and-drop) their own `.yar` files, validate them, and save the combined rule set back out via the YARA dialog (`Y` key). There is no in-browser rule-editing surface — rule source is authored in an external editor and loaded as files; uploaded rules persist in `localStorage`.
 - **Shared VBA helpers** — `parseVBAText()` and `autoExecPatterns` live in `vba-utils.js` and are reused by `DocxParser`, `XlsxRenderer`, and `PptxRenderer`.
 - **OLE/CFB parser** — `OleCfbParser` is shared by `DocBinaryRenderer` (`.doc`), `MsgRenderer` (`.msg`), and `PptRenderer` (`.ppt`) for reading compound binary files.
