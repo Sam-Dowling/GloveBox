@@ -1754,7 +1754,7 @@ class PeRenderer {
   _renderEntropyBar(entropy) {
     // Returns an HTML string for inline use in table
     const pct = Math.min(entropy / 8 * 100, 100);
-    const color = entropy > 7.0 ? '#e74c3c' : entropy > 6.0 ? '#f39c12' : '#27ae60';
+    const color = entropy > 7.0 ? 'var(--risk-high)' : entropy > 6.0 ? 'var(--risk-med)' : 'var(--risk-low)';
     return `<div class="pe-entropy-bar"><div class="pe-entropy-fill" style="width:${pct.toFixed(1)}%;background:${color}"></div></div>` +
       `<span class="pe-entropy-val">${entropy.toFixed(3)}</span>`;
   }
