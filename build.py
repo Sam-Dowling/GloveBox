@@ -57,7 +57,6 @@ YARA_FILES = [
     'src/rules/macos-installer-threats.yar',
 ]
 YARA_CATEGORIES = {
-
     'src/rules/office-macros.yar': 'Office Macros',
     'src/rules/script-threats.yar': 'Script',
     'src/rules/document-threats.yar': 'Document',
@@ -115,7 +114,6 @@ JS_FILES = [
     'src/renderers/iso-renderer.js',
     'src/renderers/dmg-renderer.js',
     'src/renderers/pkg-renderer.js',
-
     'src/renderers/url-renderer.js',
     'src/renderers/onenote-renderer.js',
     'src/renderers/iqy-slk-renderer.js',
@@ -172,7 +170,6 @@ ACCEPT_EXTS = [
     '.csv','.tsv','.doc','.msg','.eml','.lnk','.hta','.rtf','.pdf',
     '.zip','.gz','.gzip','.tar','.tgz','.rar','.7z','.cab','.iso','.img','.one',
     '.dmg','.pkg','.mpkg',
-
     '.url','.webloc','.website','.iqy','.slk','.wsf','.wsc','.wsh','.reg','.inf','.sct','.msi',
     '.html','.htm','.mht','.mhtml','.xhtml','.xml','.vbs','.vbe','.js','.jse','.ps1','.bat','.cmd',
     '.ics','.vcf','.txt','.log','.json','.ini','.cfg','.yml','.yaml',

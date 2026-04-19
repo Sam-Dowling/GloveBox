@@ -224,7 +224,7 @@ Object.assign(App.prototype, {
     // toolbar Summary button.
     const foot = document.createElement('div');
     foot.className = 'settings-footnote';
-    foot.innerHTML = `Current setting persists across reloads. Default is (~${curInfo ? SUMMARY_STEPS[SUMMARY_DEFAULT_STEP - 1].label : '16K'} tokens).`;
+    foot.innerHTML = `Default is ~${curInfo ? SUMMARY_STEPS[SUMMARY_DEFAULT_STEP - 1].label : '16K'} tokens.`;
     body.appendChild(foot);
   },
 
