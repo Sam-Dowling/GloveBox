@@ -10,6 +10,7 @@ class App {
 
   init() {
     this._initTheme();    // applies persisted theme (localStorage) or default
+    this._initSettings(); // restores summary-budget step + paints ⚡ chip
     this._setupDrop();
 
     this._setupToolbar();
@@ -27,7 +28,8 @@ class App {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.altKey || e.ctrlKey || e.metaKey) return;
       if (e.key === 's' || e.key === 'S') this._toggleSidebar();
       else if (e.key === 'y' || e.key === 'Y') this._openYaraDialog();
-      else if (e.key === '?' || e.key === 'h' || e.key === 'H') this._openHelpDialog();
+      else if (e.key === ',') this._openSettingsDialog('settings');
+      else if (e.key === '?' || e.key === 'h' || e.key === 'H') this._openSettingsDialog('help');
       else if (e.key === 'f' || e.key === 'F') {
         // Only hijack F when a file is loaded (viewer toolbar is visible),
         // otherwise silently pass through so the user can still type F into
@@ -146,12 +148,11 @@ class App {
 
     document.getElementById('btn-security').addEventListener('click', () => this._toggleSidebar());
     document.getElementById('btn-yara').addEventListener('click', () => this._openYaraDialog());
-    document.getElementById('btn-help').addEventListener('click', () => this._openHelpDialog());
+    document.getElementById('btn-settings').addEventListener('click', () => this._openSettingsDialog('settings'));
     document.getElementById('btn-copy-analysis').addEventListener('click', () => this._copyAnalysis());
     document.getElementById('btn-export').addEventListener('click', () => this._toggleExportMenu());
     document.getElementById('btn-zoom-out').addEventListener('click', () => this._setZoom(this.zoom - 10));
     document.getElementById('btn-zoom-in').addEventListener('click', () => this._setZoom(this.zoom + 10));
-    document.getElementById('btn-theme').addEventListener('click', () => this._toggleTheme());
 
     // Ctrl+V paste shortcut (when not focused on an input)
     document.addEventListener('paste', e => {

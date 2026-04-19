@@ -11,10 +11,12 @@
 // `dark: true` toggles the legacy `body.dark` class so the ~150 existing dark
 // rules across core.css / viewers.css act as the baseline the overlay refines.
 const THEMES = [
-  { id: 'light',     label: 'Light',           icon: '☀',  dark: false },
-  { id: 'dark',      label: 'Dark',            icon: '🌙', dark: true  },
-  { id: 'midnight',  label: 'Midnight (OLED)', icon: '🌑', dark: true  },
-  { id: 'solarized', label: 'Solarized',       icon: '🟡', dark: true  },
+  { id: 'light', label: 'Light', icon: '☀', dark: false },
+  { id: 'dark', label: 'Dark', icon: '🌙', dark: true },
+  { id: 'midnight', label: 'Midnight (OLED)', icon: '🌑', dark: true },
+  { id: 'solarized', label: 'Solarized', icon: '🟡', dark: true },
+  { id: 'mocha', label: 'Mocha', icon: '🌺', dark: true },
+  { id: 'latte', label: 'Latte', icon: '🍵', dark: false },
 ];
 const _THEME_PREF_KEY = 'loupe_theme';
 const _DEFAULT_THEME = 'dark';
@@ -167,13 +169,14 @@ Object.assign(App.prototype, {
   // ── ⚡ Copy Analysis (Summary) — structured report for AI / SOC ──────
   _copyAnalysis() {
     if (!this._fileBuffer || !this.findings) { this._toast('No file loaded', 'error'); return; }
-    // Budget raised from 12 KB → 50 KB so the Summary can carry every
-    // renderer's per-format deep data (PDF JavaScripts, MSI CustomActions,
-    // EVTX event distribution, PGP key info, plist persistence, …) rather
-    // than only a compact headline view.  Strict IOC/STIX/MISP exporters
-    // are not affected — they live in _collectIocs / _buildStix / _buildMisp
-    // and remain TIP-friendly.
-    const report = this._buildAnalysisText(50000);
+    // Budget is user-configurable via the Settings dialog (logarithmic
+    // 10-step slider from ~4 KB to unbudgeted). The default step (~64 KB)
+    // carries every renderer's per-format deep data (PDF JavaScripts,
+    // MSI CustomActions, EVTX event distribution, PGP key info, plist
+    // persistence, …) rather than only a compact headline view.  Strict
+    // IOC/STIX/MISP exporters are not affected — they live in
+    // _collectIocs / _buildStix / _buildMisp and remain TIP-friendly.
+    const report = this._buildAnalysisText(this._getSummaryCharBudget());
     this._copyToClipboard(report);
   },
 
@@ -189,39 +192,69 @@ Object.assign(App.prototype, {
     const BUDGET = UNBUDGETED ? Number.MAX_SAFE_INTEGER : budget;
     const f = this.findings;
 
+    // ── Budget-scale factor ──────────────────────────────────────────────
+    // Every per-renderer cap and per-field truncation in this report is
+    // expressed relative to the 64 K default (SCALE = 1). Raising the
+    // Settings "⚡ Summary size" slider widens row counts, string
+    // truncations, and metadata-tree depth; lowering it (down to 4 K)
+    // tightens them. Floor values (rowCap≥5, charCap≥120) keep tiny
+    // budgets from collapsing sections to nothing; at MAX every cap
+    // becomes Infinity so `.slice(0, Infinity)` / `length > Infinity`
+    // degrade to "no truncation" without a separate code path.
+    //
+    //   budget  SCALE   rowCap(30)  charCap(800)
+    //    4 000    0.25      8           200
+    //   16 000    0.25 →0.5 8 / 15      200 / 400
+    //   64 000    1.0       30          800     (legacy / default)
+    //  128 000    2.0       60        1 600
+    //  256 000    4.0      120        3 200
+    //    MAX      ∞          ∞            ∞
+    const SCALE = UNBUDGETED ? Infinity : Math.max(0.25, BUDGET / 64000);
+    const rowCap  = (n) => SCALE === Infinity ? Infinity : Math.max(5,   Math.ceil(n * SCALE));
+    const charCap = (n) => SCALE === Infinity ? Infinity : Math.max(120, Math.ceil(n * SCALE));
+    // Expose on `this` so every _copyAnalysisXxx helper (App.prototype
+    // methods, not closures over this function) can scale its own
+    // literals. Saved / restored around the body so nested calls don't
+    // leak a stale cap set.
+    const _prevCaps = this._sCaps;
+    this._sCaps = { SCALE, rowCap, charCap };
+
     const meta = this._fileMeta || {};
     const hashes = this.fileHashes || {};
     const sections = [];
 
-    // Helper: truncate a section to fit a max length
+    // Helper: truncate a section to fit a max length. A max of Infinity
+    // short-circuits so MAX-budget reports skip the comparison entirely.
     const cap = (text, max) => {
       if (!text) return '';
+      if (max === Infinity) return text;
       return text.length <= max ? text : text.slice(0, max) + '\n… (section truncated)\n';
     };
     // Helper: escape pipe characters for markdown tables
     const tp = (v) => String(v || '').replace(/\|/g, '∣').replace(/\n/g, ' ');
+    try {
 
     // ═══════ 1. File Info (priority: always included) ════════════════════
     const FMT = {
-      docx:'Word Document',docm:'Word Macro-Enabled Document',xlsx:'Excel Workbook',
-      xlsm:'Excel Macro-Enabled Workbook',xls:'Excel 97-2003 Workbook',ods:'OpenDocument Spreadsheet',
-      pptx:'PowerPoint Presentation',pptm:'PowerPoint Macro-Enabled Presentation',
-      csv:'Comma-Separated Values',tsv:'Tab-Separated Values',doc:'Word 97-2003 Document',
-      msg:'Outlook Message',eml:'Email Message',lnk:'Windows Shortcut',hta:'HTML Application',
-      pdf:'PDF Document',rtf:'Rich Text Format',html:'HTML Document',htm:'HTML Document',
-      one:'OneNote Document',iso:'Disk Image (ISO)',img:'Disk Image (IMG)',zip:'ZIP Archive',
-      rar:'RAR Archive','7z':'7-Zip Archive',wsf:'Windows Script File',url:'Internet Shortcut',
-      svg:'SVG Image',iqy:'Internet Query File',slk:'Symbolic Link File',evtx:'Windows Event Log',
-      sqlite:'SQLite Database',db:'SQLite Database',exe:'PE Executable',dll:'PE Dynamic Library',
-      sys:'PE Driver',elf:'ELF Binary',so:'ELF Shared Object',jar:'Java Archive',
-      class:'Java Class',pem:'PEM Certificate',der:'DER Certificate',crt:'X.509 Certificate',
-      p12:'PKCS#12 Keystore',war:'Java WAR',ear:'Java EAR',msi:'Windows Installer',
-      reg:'Registry File',inf:'INF File',sct:'Scriptlet',scpt:'Compiled AppleScript',
-      applescript:'AppleScript Source',jxa:'JavaScript for Automation',plist:'Property List',
-      pfx:'PKCS#12 Keystore',cer:'X.509 Certificate',odt:'OpenDocument Text',
-      odp:'OpenDocument Presentation',ppt:'PowerPoint 97-2003',dylib:'Mach-O Dynamic Library',
-      bundle:'Mach-O Bundle',o:'Object File',cab:'Cabinet Archive',
-      gz:'Gzip Archive',tgz:'Tar Gzip Archive',tar:'Tar Archive',
+      docx: 'Word Document', docm: 'Word Macro-Enabled Document', xlsx: 'Excel Workbook',
+      xlsm: 'Excel Macro-Enabled Workbook', xls: 'Excel 97-2003 Workbook', ods: 'OpenDocument Spreadsheet',
+      pptx: 'PowerPoint Presentation', pptm: 'PowerPoint Macro-Enabled Presentation',
+      csv: 'Comma-Separated Values', tsv: 'Tab-Separated Values', doc: 'Word 97-2003 Document',
+      msg: 'Outlook Message', eml: 'Email Message', lnk: 'Windows Shortcut', hta: 'HTML Application',
+      pdf: 'PDF Document', rtf: 'Rich Text Format', html: 'HTML Document', htm: 'HTML Document',
+      one: 'OneNote Document', iso: 'Disk Image (ISO)', img: 'Disk Image (IMG)', zip: 'ZIP Archive',
+      rar: 'RAR Archive', '7z': '7-Zip Archive', wsf: 'Windows Script File', url: 'Internet Shortcut',
+      svg: 'SVG Image', iqy: 'Internet Query File', slk: 'Symbolic Link File', evtx: 'Windows Event Log',
+      sqlite: 'SQLite Database', db: 'SQLite Database', exe: 'PE Executable', dll: 'PE Dynamic Library',
+      sys: 'PE Driver', elf: 'ELF Binary', so: 'ELF Shared Object', jar: 'Java Archive',
+      class: 'Java Class', pem: 'PEM Certificate', der: 'DER Certificate', crt: 'X.509 Certificate',
+      p12: 'PKCS#12 Keystore', war: 'Java WAR', ear: 'Java EAR', msi: 'Windows Installer',
+      reg: 'Registry File', inf: 'INF File', sct: 'Scriptlet', scpt: 'Compiled AppleScript',
+      applescript: 'AppleScript Source', jxa: 'JavaScript for Automation', plist: 'Property List',
+      pfx: 'PKCS#12 Keystore', cer: 'X.509 Certificate', odt: 'OpenDocument Text',
+      odp: 'OpenDocument Presentation', ppt: 'PowerPoint 97-2003', dylib: 'Mach-O Dynamic Library',
+      bundle: 'Mach-O Bundle', o: 'Object File', cab: 'Cabinet Archive',
+      gz: 'Gzip Archive', tgz: 'Tar Gzip Archive', tar: 'Tar Archive',
     };
     const fileName = (meta.name || '').toString();
     const ext = fileName.split('.').pop().toLowerCase();
@@ -234,13 +267,13 @@ Object.assign(App.prototype, {
     if (hashes.sha1) s += `| SHA-1 | \`${hashes.sha1}\` |\n`;
     if (hashes.sha256) s += `| SHA-256 | \`${hashes.sha256}\` |\n`;
     if (meta.entropy !== undefined) s += `| Entropy | ${meta.entropy.toFixed(3)} / 8.000 |\n`;
-    sections.push({ text: s, priority: 1, maxLen: 800 });
+    sections.push({ text: s, priority: 1, maxLen: charCap(800) });
 
     // ═══════ 2. Risk Assessment ══════════════════════════════════════════
     const risk = f.risk || f.riskLevel || '';
     if (risk) {
-      const sev = { critical:'🔴 CRITICAL', high:'🟠 HIGH', medium:'🟡 MEDIUM', low:'🟢 LOW' };
-      sections.push({ text: `\n## Risk Assessment\n**${sev[risk] || risk.toUpperCase()}**\n`, priority: 2, maxLen: 200 });
+      const sev = { critical: '🔴 CRITICAL', high: '🟠 HIGH', medium: '🟡 MEDIUM', low: '🟢 LOW' };
+      sections.push({ text: `\n## Risk Assessment\n**${sev[risk] || risk.toUpperCase()}**\n`, priority: 2, maxLen: charCap(200) });
     }
 
     // ═══════ 3. Detections ═══════════════════════════════════════════════
@@ -248,12 +281,13 @@ Object.assign(App.prototype, {
     const allRefs = [...(f.externalRefs || []), ...(f.interestingStrings || [])];
     const detections = allRefs.filter(r => detectionTypes.has(r.type));
     if (detections.length) {
+      const detCap = rowCap(250);
       let d = '\n## Detections\n| Rule | Severity | Description |\n|------|----------|-------------|\n';
-      for (const det of detections.slice(0, 250)) {
+      for (const det of detections.slice(0, detCap)) {
         d += `| ${tp(det.ruleName || det.type)} | ${(det.severity || 'info').toUpperCase()} | ${tp(det.description || det.url)} |\n`;
       }
-      if (detections.length > 250) d += `\n… and ${detections.length - 250} more detections\n`;
-      sections.push({ text: d, priority: 3, maxLen: 10000 });
+      if (detections.length > detCap) d += `\n… and ${detections.length - detCap} more detections\n`;
+      sections.push({ text: d, priority: 3, maxLen: charCap(10000) });
     }
 
     // ═══════ 4. IOCs (ALL types except detections) ═══════════════════════
@@ -266,12 +300,13 @@ Object.assign(App.prototype, {
       }
     }
     if (iocs.length) {
+      const iocCap = rowCap(350);
       let d = '\n## IOCs\n| Type | Value | Severity |\n|------|-------|----------|\n';
-      for (const ioc of iocs.slice(0, 350)) {
+      for (const ioc of iocs.slice(0, iocCap)) {
         d += `| ${tp(ioc.type)} | \`${tp(ioc.url)}\` | ${ioc.severity || 'info'} |\n`;
       }
-      if (iocs.length > 350) d += `\n… and ${iocs.length - 350} more IOCs\n`;
-      sections.push({ text: d, priority: 4, maxLen: 10000 });
+      if (iocs.length > iocCap) d += `\n… and ${iocs.length - iocCap} more IOCs\n`;
+      sections.push({ text: d, priority: 4, maxLen: charCap(10000) });
     }
 
     // ═══════ 5. Macros ═══════════════════════════════════════════════════
@@ -286,9 +321,10 @@ Object.assign(App.prototype, {
         for (const mod of mods) {
           d += `### ${mod.name}\n\`\`\`vba\n${mod.source}\n\`\`\`\n\n`;
         }
-        sections.push({ text: d, priority: 5, maxLen: 12000 });
+        sections.push({ text: d, priority: 5, maxLen: charCap(12000) });
       }
     }
+
 
     // ═══════ 6. Deobfuscated Findings ════════════════════════════════════
     // Walk the full innerFindings tree — every decoded layer (including
@@ -327,6 +363,13 @@ Object.assign(App.prototype, {
       uniqueLayers.push(ef);
     }
     if (uniqueLayers.length) {
+      // Per-layer decode budget scales with the Summary size slider. The
+      // `decodeMax` is how many bytes we re-decode from the raw buffer
+      // (only used when _deobfuscatedText wasn't already cached); the
+      // `emitMax` trims the actual text we emit into the report. Default
+      // 64 K keeps legacy 16 000 / 8 000 behaviour exactly.
+      const decodeMax = charCap(16000);
+      const emitMax = charCap(8000);
       let d = '\n## Deobfuscated Findings\n';
       for (const ef of uniqueLayers) {
 
@@ -334,13 +377,19 @@ Object.assign(App.prototype, {
         d += `### ${chain}\n`;
         if (ef.severity && ef.severity !== 'info') d += `**Severity:** ${ef.severity}\n`;
         let dec = ef._deobfuscatedText || '';
-        if (!dec && ef.decodedBytes) { try { dec = new TextDecoder('utf-8', { fatal: true }).decode(ef.decodedBytes.slice(0, 16000)); } catch (_) {} }
-        if (dec) d += '```\n' + (dec.length > 8000 ? dec.slice(0, 8000) + '\n… (truncated)' : dec) + '\n```\n';
+        if (!dec && ef.decodedBytes) {
+          try {
+            const sliceN = decodeMax === Infinity ? ef.decodedBytes.length : decodeMax;
+            dec = new TextDecoder('utf-8', { fatal: true }).decode(ef.decodedBytes.slice(0, sliceN));
+          } catch (_) { }
+        }
+        if (dec) d += '```\n' + ((emitMax !== Infinity && dec.length > emitMax) ? dec.slice(0, emitMax) + '\n… (truncated)' : dec) + '\n```\n';
         if (ef.iocs && ef.iocs.length) d += '**IOCs:** ' + ef.iocs.map(i => `${i.type}: \`${i.url}\``).join(', ') + '\n';
         d += '\n';
       }
-      sections.push({ text: d, priority: 6, maxLen: 14000 });
+      sections.push({ text: d, priority: 6, maxLen: charCap(14000) });
     }
+
 
     // ═══════ 7. Format-Specific Deep Data ════════════════════════════════
     let deep = this._copyAnalysisFormatSpecific(f, tp);
@@ -361,20 +410,47 @@ Object.assign(App.prototype, {
     let report = output.join('');
     if (report.length > BUDGET) report = report.slice(0, BUDGET) + '\n… (report truncated)';
     return report;
+    } finally {
+      // Restore caps in case a nested _buildAnalysisText call (or a
+      // future re-entrancy) stashed one before us.
+      this._sCaps = _prevCaps;
+    }
   },
 
 
   // Recursive pretty-printer for the generic metadata loop. The legacy
   // writer just did `${v}` which stringified arrays/objects as "[object
   // Object]" or "[object]","[object]","...". This formatter renders the
-  // actual structure (bounded: depth ≤ 3, arrays ≤ 20, strings ≤ 500 chars)
-  // so analysts get the real nested data without the report blowing up.
+  // actual structure so analysts get the real nested data without the
+  // report blowing up.
+  //
+  // Caps are scaled by the Summary budget via `this._sCaps` (set by
+  // _buildAnalysisText). At the 64 K default (SCALE=1) this matches the
+  // legacy behaviour — depth ≤ 3, arrays/objects ≤ 20, strings ≤ 500 chars
+  // — byte-for-byte. At 256 K the tree opens up (depth 5, ≤80 items,
+  // ≤2 000-char strings) so previously-hidden nested fields (plist
+  // MachServices, EML Received: chains, SQLite per-table columns, etc.)
+  // reach the report. At MAX the caps are all Infinity.
   _formatMetadataValue(v, depth) {
     depth = depth | 0;
     if (v == null) return '';
     const t = typeof v;
+    // Resolve caps from the cap set stashed by _buildAnalysisText. If a
+    // caller invokes this directly without a budget (shouldn't happen,
+    // but keep the old bounds as a fallback) we honour the legacy 500 /
+    // 20 / 3 literals.
+    const caps = this._sCaps || null;
+    const S = caps ? caps.SCALE : 1;
+    const strMax  = caps ? caps.charCap(500) : 500;
+    const itemMax = caps ? caps.rowCap(20)   : 20;
+    // Depth scales in three steps: default ≤3, 2× →4, ≥4× →5, MAX ∞.
+    const depthMax = (S === Infinity) ? Infinity
+      : S >= 4 ? 5
+      : S >= 2 ? 4
+      : 3;
     if (t === 'string') {
-      return v.length > 500 ? v.slice(0, 500) + '… (truncated)' : v;
+      if (strMax === Infinity || v.length <= strMax) return v;
+      return v.slice(0, strMax) + '… (truncated)';
     }
     if (t === 'number' || t === 'boolean') return String(v);
     if (v instanceof Uint8Array || (ArrayBuffer.isView && ArrayBuffer.isView(v))) {
@@ -382,22 +458,24 @@ Object.assign(App.prototype, {
     }
     if (Array.isArray(v)) {
       if (!v.length) return '[]';
-      if (depth >= 3) return `[${v.length} items]`;
-      const shown = v.slice(0, 20).map(x => this._formatMetadataValue(x, depth + 1));
+      if (depth >= depthMax) return `[${v.length} items]`;
+      const take = itemMax === Infinity ? v.length : Math.min(v.length, itemMax);
+      const shown = v.slice(0, take).map(x => this._formatMetadataValue(x, depth + 1));
       // For scalar arrays use a compact inline representation; for
       // object/nested arrays lay them out one per line for legibility.
       const anyComplex = shown.some(s => s.includes('\n') || s.length > 60);
-      const tail = v.length > 20 ? `, … and ${v.length - 20} more` : '';
+      const tail = v.length > take ? `, … and ${v.length - take} more` : '';
       if (!anyComplex) return '[' + shown.join(', ') + tail + ']';
       return '\n' + shown.map(s => '  - ' + s.replace(/\n/g, '\n    ')).join('\n')
         + (tail ? '\n  ' + tail : '');
     }
     if (t === 'object') {
-      if (depth >= 3) return '{…}';
+      if (depth >= depthMax) return '{…}';
       const keys = Object.keys(v);
       if (!keys.length) return '{}';
-      const shown = keys.slice(0, 20).map(k => `${k}: ${this._formatMetadataValue(v[k], depth + 1)}`);
-      const tail = keys.length > 20 ? `, … and ${keys.length - 20} more` : '';
+      const take = itemMax === Infinity ? keys.length : Math.min(keys.length, itemMax);
+      const shown = keys.slice(0, take).map(k => `${k}: ${this._formatMetadataValue(v[k], depth + 1)}`);
+      const tail = keys.length > take ? `, … and ${keys.length - take} more` : '';
       const anyComplex = shown.some(s => s.includes('\n') || s.length > 60);
       if (!anyComplex) return '{' + shown.join(', ') + tail + '}';
       return '\n' + shown.map(s => '  - ' + s.replace(/\n/g, '\n    ')).join('\n')
@@ -421,14 +499,26 @@ Object.assign(App.prototype, {
       }
     }
 
-    // ── Security issues (autoExec for PE/ELF/Mach-O) ──
+    // ── Security issues (autoExec for PE/ELF/Mach-O, osascript) ──
     if (f.autoExec && f.autoExec.length && !f.hasMacros) {
       parts.push('\n## Security Issues');
       for (const issue of f.autoExec) {
-        const text = typeof issue === 'string' ? issue : `${issue.module}: ${(issue.patterns || []).join(', ')}`;
+        let text;
+        if (typeof issue === 'string') {
+          text = issue;
+        } else if (issue && issue.label) {
+          // osascript auto-exec: {label, hit}
+          text = issue.label;
+        } else if (issue && issue.module) {
+          // PE/ELF/Mach-O macro-style auto-exec: {module, patterns}
+          text = `${issue.module}: ${(issue.patterns || []).join(', ')}`;
+        } else {
+          text = String(issue);
+        }
         parts.push(`- ⚠ ${text}`);
       }
     }
+
 
     // ── PE Binary ──
     if (f.peInfo) this._copyAnalysisPE(f.peInfo, parts, tp);
@@ -506,8 +596,8 @@ Object.assign(App.prototype, {
 
     if (co.kind) {
       const kindLabel = co.kind === 'deployment' ? 'Deployment manifest (.application)'
-                      : co.kind === 'application' ? 'Application manifest (.manifest)'
-                      : co.kind;
+        : co.kind === 'application' ? 'Application manifest (.manifest)'
+          : co.kind;
       parts.push(`- **Manifest Kind:** ${tp(kindLabel)}`);
     }
     if (co.identity) {
@@ -587,17 +677,19 @@ Object.assign(App.prototype, {
     }
 
     if (co.dependentAssemblies && co.dependentAssemblies.length) {
+      const N = this._sCaps.rowCap(30);
       parts.push(`\n### Dependent Assemblies (${co.dependentAssemblies.length})`);
       parts.push('| Name | Version | Arch | Codebase |');
       parts.push('|------|---------|------|----------|');
-      for (const d of co.dependentAssemblies.slice(0, 30)) {
+      for (const d of co.dependentAssemblies.slice(0, N)) {
         parts.push(`| ${tp(d.name || '?')} | ${tp(d.version || '—')} | ${tp(d.processorArchitecture || '—')} | ${tp(d.codebase || '—')} |`);
       }
-      if (co.dependentAssemblies.length > 30) {
-        parts.push(`… and ${co.dependentAssemblies.length - 30} more`);
+      if (co.dependentAssemblies.length > N) {
+        parts.push(`… and ${co.dependentAssemblies.length - N} more`);
       }
     }
   },
+
 
 
   // ── MSIX / APPX / .appinstaller manifest detail ──────────────────────
@@ -612,9 +704,9 @@ Object.assign(App.prototype, {
     if (!mx) return;
 
     const kindLabel = mx.containerKind === 'bundle' ? 'MSIX / APPX Bundle (.msixbundle / .appxbundle)'
-                    : mx.containerKind === 'package' ? 'MSIX / APPX Package (.msix / .appx)'
-                    : mx.containerKind === 'appinstaller' ? 'App Installer File (.appinstaller)'
-                    : mx.containerKind || 'MSIX';
+      : mx.containerKind === 'package' ? 'MSIX / APPX Package (.msix / .appx)'
+        : mx.containerKind === 'appinstaller' ? 'App Installer File (.appinstaller)'
+          : mx.containerKind || 'MSIX';
     parts.push('\n## MSIX Package Details');
     parts.push(`- **Format:** ${tp(kindLabel)}`);
 
@@ -655,8 +747,8 @@ Object.assign(App.prototype, {
 
     // ── Capabilities (split by severity class) ──
     if (mx.capabilities && mx.capabilities.length) {
-      const rescap  = mx.capabilities.filter(c => c.restricted);
-      const device  = mx.capabilities.filter(c => !c.restricted && c.device);
+      const rescap = mx.capabilities.filter(c => c.restricted);
+      const device = mx.capabilities.filter(c => !c.restricted && c.device);
       const general = mx.capabilities.filter(c => !c.restricted && !c.device);
       parts.push(`\n### Declared Capabilities (${mx.capabilities.length})`);
       if (rescap.length) {
@@ -672,10 +764,11 @@ Object.assign(App.prototype, {
 
     // ── Applications / Entry points / Extensions ──
     if (mx.applications && mx.applications.length) {
+      const AN = this._sCaps.rowCap(20);
       parts.push(`\n### Applications / Entry Points (${mx.applications.length})`);
-      for (const a of mx.applications.slice(0, 20)) {
+      for (const a of mx.applications.slice(0, AN)) {
         const head = `**${tp(a.id || '(app)')}** — \`${tp(a.executable || '(no exe)')}\``
-                   + (a.entryPoint === 'Windows.FullTrustApplication' ? ' ⚠ (FullTrust entry)' : '');
+          + (a.entryPoint === 'Windows.FullTrustApplication' ? ' ⚠ (FullTrust entry)' : '');
         parts.push(`\n- ${head}`);
         if (a.displayName) parts.push(`  - Display: ${tp(a.displayName)}`);
         if (a.startPage) parts.push(`  - StartPage: ${tp(a.startPage)}`);
@@ -686,19 +779,21 @@ Object.assign(App.prototype, {
           }
         }
       }
-      if (mx.applications.length > 20) parts.push(`\n… and ${mx.applications.length - 20} more applications`);
+      if (mx.applications.length > AN) parts.push(`\n… and ${mx.applications.length - AN} more applications`);
     }
 
     // ── Bundle package list ──
     if (mx.bundlePackages && mx.bundlePackages.length) {
+      const BN = this._sCaps.rowCap(30);
       parts.push(`\n### Bundle Contents (${mx.bundlePackages.length})`);
       parts.push('| Type | Architecture | Version | FileName |');
       parts.push('|------|--------------|---------|----------|');
-      for (const p of mx.bundlePackages.slice(0, 30)) {
+      for (const p of mx.bundlePackages.slice(0, BN)) {
         parts.push(`| ${tp(p.type || '—')} | ${tp(p.architecture || '—')} | ${tp(p.version || '—')} | \`${tp(p.fileName || '?')}\` |`);
       }
-      if (mx.bundlePackages.length > 30) parts.push(`… and ${mx.bundlePackages.length - 30} more`);
+      if (mx.bundlePackages.length > BN) parts.push(`… and ${mx.bundlePackages.length - BN} more`);
     }
+
 
     // ── App Installer fields ──
     if (mx.containerKind === 'appinstaller') {
@@ -733,8 +828,10 @@ Object.assign(App.prototype, {
         }
       }
       if (mx.dependencies && mx.dependencies.length) {
+        const DN = this._sCaps.rowCap(10);
         parts.push(`- **Dependencies (${mx.dependencies.length}):**`);
-        for (const d of mx.dependencies.slice(0, 10)) {
+        for (const d of mx.dependencies.slice(0, DN)) {
+
           const bits = [];
           if (d.name) bits.push(d.name);
           if (d.version) bits.push('v' + d.version);
@@ -771,18 +868,18 @@ Object.assign(App.prototype, {
     if (!bx) return;
 
     const kindLabel = bx.containerKind === 'crx' ? 'Chrome / Edge Extension (.crx)'
-                    : bx.containerKind === 'xpi' ? 'Firefox WebExtension (.xpi)'
-                    : bx.containerKind === 'xpi-legacy' ? 'Legacy Firefox Add-on (.xpi, install.rdf)'
-                    : bx.containerKind || 'Browser Extension';
+      : bx.containerKind === 'xpi' ? 'Firefox WebExtension (.xpi)'
+        : bx.containerKind === 'xpi-legacy' ? 'Legacy Firefox Add-on (.xpi, install.rdf)'
+          : bx.containerKind || 'Browser Extension';
     parts.push('\n## Browser Extension Details');
     parts.push(`- **Format:** ${tp(kindLabel)}`);
 
     // ── Identity ──
-    if (bx.name)         parts.push(`- **Name:** ${tp(bx.name)}`);
-    if (bx.version)      parts.push(`- **Version:** ${tp(bx.version)}`);
-    if (bx.description)  parts.push(`- **Description:** ${tp(bx.description)}`);
-    if (bx.author)       parts.push(`- **Author:** ${tp(bx.author)}`);
-    if (bx.homepageUrl)  parts.push(`- **Homepage:** \`${tp(bx.homepageUrl)}\``);
+    if (bx.name) parts.push(`- **Name:** ${tp(bx.name)}`);
+    if (bx.version) parts.push(`- **Version:** ${tp(bx.version)}`);
+    if (bx.description) parts.push(`- **Description:** ${tp(bx.description)}`);
+    if (bx.author) parts.push(`- **Author:** ${tp(bx.author)}`);
+    if (bx.homepageUrl) parts.push(`- **Homepage:** \`${tp(bx.homepageUrl)}\``);
     if (bx.manifestVersion != null) {
       parts.push(`- **Manifest Version:** ${bx.manifestVersion}${bx.manifestVersion === 2 ? ' (MV2 — deprecated)' : ''}`);
     }
@@ -800,13 +897,21 @@ Object.assign(App.prototype, {
       }
       parts.push(`- **CRX Envelope:** ${tp(sigBits.join(', '))}`);
       if (bx.crxId) parts.push(`- **Chrome Extension ID:** \`${tp(bx.crxId)}\``);
+      // Surface the (large) CRX header if we have room — it contains the
+      // developer's public key and signature and is evidence for pinning.
+      if (bx.crxPublicKey && this._sCaps.SCALE >= 2) {
+        const pk = bx.crxPublicKey;
+        const cap = this._sCaps.charCap(400);
+        parts.push(`- **CRX Public Key (base64):** \`${tp(pk.length > cap ? pk.slice(0, cap) + '…' : pk)}\``);
+      }
+
     } else if (bx.containerKind === 'xpi' || bx.containerKind === 'xpi-legacy') {
       const sigBits = [];
       if (bx.hasMozillaSig) sigBits.push('META-INF/mozilla.rsa');
-      if (bx.hasCoseSig)    sigBits.push('META-INF/cose.sig');
+      if (bx.hasCoseSig) sigBits.push('META-INF/cose.sig');
       if (sigBits.length) parts.push(`- **Mozilla Signature:** ${tp(sigBits.join(' + '))}`);
-      else                parts.push('- ⚠ **Mozilla Signature:** Unsigned XPI (no META-INF/mozilla.rsa)');
-      if (bx.geckoId)              parts.push(`- **gecko.id:** \`${tp(bx.geckoId)}\``);
+      else parts.push('- ⚠ **Mozilla Signature:** Unsigned XPI (no META-INF/mozilla.rsa)');
+      if (bx.geckoId) parts.push(`- **gecko.id:** \`${tp(bx.geckoId)}\``);
       if (bx.geckoStrictMinVersion) parts.push(`- **gecko.strict_min_version:** ${tp(bx.geckoStrictMinVersion)}`);
     }
 
@@ -814,20 +919,20 @@ Object.assign(App.prototype, {
     if (bx.updateUrl) {
       const u = bx.updateUrl;
       const isStore = /(^|\.)google\.com\/|(^|\.)mozilla\.org\/|addons\.mozilla\.org/i.test(u);
-      const isHttp  = /^http:\/\//i.test(u);
+      const isHttp = /^http:\/\//i.test(u);
       const tag = isHttp ? ' ⚠ (HTTP — MITM risk)'
-                : !isStore ? ' ⚠ (off-store auto-update channel)'
-                : '';
+        : !isStore ? ' ⚠ (off-store auto-update channel)'
+          : '';
       parts.push(`- **Update URL:** \`${tp(u)}\`${tag}`);
     }
 
     // ── Permissions split by tier ──
     if ((bx.permissions && bx.permissions.length) ||
-        (bx.optionalPermissions && bx.optionalPermissions.length) ||
-        (bx.hostPermissions && bx.hostPermissions.length) ||
-        (bx.optionalHostPermissions && bx.optionalHostPermissions.length)) {
+      (bx.optionalPermissions && bx.optionalPermissions.length) ||
+      (bx.hostPermissions && bx.hostPermissions.length) ||
+      (bx.optionalHostPermissions && bx.optionalHostPermissions.length)) {
       const HIGH = (BrowserExtRenderer.PERM_HIGH || new Set());
-      const MED  = (BrowserExtRenderer.PERM_MEDIUM || new Set());
+      const MED = (BrowserExtRenderer.PERM_MEDIUM || new Set());
       const hi = [], md = [], lo = [];
       for (const p of (bx.permissions || [])) {
         if (HIGH.has(p)) hi.push(p);
@@ -843,30 +948,32 @@ Object.assign(App.prototype, {
       }
 
       if (bx.hostPermissions && bx.hostPermissions.length) {
+        const HP = this._sCaps.rowCap(20);
         const broadHosts = bx.hostPermissions.filter(h => /^<all_urls>$|^\*:\/\/\*\/\*$|^https?:\/\/\*\/\*$/i.test(h));
-        parts.push(`- **Host Permissions (${bx.hostPermissions.length}):** ${bx.hostPermissions.slice(0, 20).map(h => '`' + tp(h) + '`').join(', ')}${bx.hostPermissions.length > 20 ? `, … +${bx.hostPermissions.length - 20} more` : ''}`);
+        parts.push(`- **Host Permissions (${bx.hostPermissions.length}):** ${bx.hostPermissions.slice(0, HP).map(h => '`' + tp(h) + '`').join(', ')}${bx.hostPermissions.length > HP ? `, … +${bx.hostPermissions.length - HP} more` : ''}`);
         if (broadHosts.length) {
           parts.push(`  - ⚠ Broad grant: ${broadHosts.map(h => '`' + tp(h) + '`').join(', ')} — content scripts / webRequest see every site the user visits`);
         }
       }
       if (bx.optionalHostPermissions && bx.optionalHostPermissions.length) {
-        parts.push(`- **Optional Host Permissions:** ${bx.optionalHostPermissions.slice(0, 20).map(h => '`' + tp(h) + '`').join(', ')}`);
+        parts.push(`- **Optional Host Permissions:** ${bx.optionalHostPermissions.slice(0, this._sCaps.rowCap(20)).map(h => '`' + tp(h) + '`').join(', ')}`);
       }
     }
 
+
     // ── Entry points ──
     const entryBits = [];
-    if (bx.serviceWorker)    entryBits.push(`service_worker → \`${tp(bx.serviceWorker)}\``);
-    if (bx.backgroundPage)   entryBits.push(`background.page → \`${tp(bx.backgroundPage)}\``);
+    if (bx.serviceWorker) entryBits.push(`service_worker → \`${tp(bx.serviceWorker)}\``);
+    if (bx.backgroundPage) entryBits.push(`background.page → \`${tp(bx.backgroundPage)}\``);
     if (bx.backgroundScripts && bx.backgroundScripts.length) {
       entryBits.push(`background.scripts: ${bx.backgroundScripts.map(s => '`' + tp(s) + '`').join(', ')}`);
     }
-    if (bx.actionPopup)        entryBits.push(`action.default_popup → \`${tp(bx.actionPopup)}\``);
+    if (bx.actionPopup) entryBits.push(`action.default_popup → \`${tp(bx.actionPopup)}\``);
     if (bx.browserActionPopup) entryBits.push(`browser_action.default_popup → \`${tp(bx.browserActionPopup)}\``);
-    if (bx.pageActionPopup)    entryBits.push(`page_action.default_popup → \`${tp(bx.pageActionPopup)}\``);
-    if (bx.optionsPage)        entryBits.push(`options_page → \`${tp(bx.optionsPage)}\``);
-    if (bx.optionsUiPage)      entryBits.push(`options_ui.page → \`${tp(bx.optionsUiPage)}\``);
-    if (bx.devtoolsPage)       entryBits.push(`devtools_page → \`${tp(bx.devtoolsPage)}\``);
+    if (bx.pageActionPopup) entryBits.push(`page_action.default_popup → \`${tp(bx.pageActionPopup)}\``);
+    if (bx.optionsPage) entryBits.push(`options_page → \`${tp(bx.optionsPage)}\``);
+    if (bx.optionsUiPage) entryBits.push(`options_ui.page → \`${tp(bx.optionsUiPage)}\``);
+    if (bx.devtoolsPage) entryBits.push(`devtools_page → \`${tp(bx.devtoolsPage)}\``);
     if (bx.sidebarActionPanel) entryBits.push(`sidebar_action.default_panel → \`${tp(bx.sidebarActionPanel)}\``);
     if (entryBits.length) {
       parts.push('\n### Entry Points');
@@ -875,20 +982,23 @@ Object.assign(App.prototype, {
 
     // ── Content scripts ──
     if (bx.contentScripts && bx.contentScripts.length) {
+      const CN = this._sCaps.rowCap(20);
+      const MN = this._sCaps.rowCap(6);
       parts.push(`\n### Content Scripts (${bx.contentScripts.length})`);
-      for (const cs of bx.contentScripts.slice(0, 20)) {
-        const matches = (cs.matches || []).slice(0, 6).map(m => '`' + tp(m) + '`').join(', ');
+      for (const cs of bx.contentScripts.slice(0, CN)) {
+        const matches = (cs.matches || []).slice(0, MN).map(m => '`' + tp(m) + '`').join(', ');
         const runAt = cs.runAt ? ` run_at=${tp(cs.runAt)}` : '';
         const world = cs.world ? ` world=${tp(cs.world)}` : '';
         const files = (cs.js || []).map(j => '`' + tp(j) + '`').join(', ');
         const css = (cs.css || []).map(c => '`' + tp(c) + '`').join(', ');
-        const matchMore = (cs.matches || []).length > 6 ? `, … +${cs.matches.length - 6}` : '';
+        const matchMore = (cs.matches || []).length > MN ? `, … +${cs.matches.length - MN}` : '';
         parts.push(`- matches: ${matches || '—'}${matchMore}${runAt}${world}`);
         if (files) parts.push(`  - js: ${files}`);
         if (css) parts.push(`  - css: ${css}`);
       }
-      if (bx.contentScripts.length > 20) parts.push(`… and ${bx.contentScripts.length - 20} more`);
+      if (bx.contentScripts.length > CN) parts.push(`… and ${bx.contentScripts.length - CN} more`);
     }
+
 
     // ── CSP / externally connectable / WAR ──
     if (bx.contentSecurityPolicy) {
@@ -911,19 +1021,23 @@ Object.assign(App.prototype, {
     }
 
     if (bx.webAccessibleResources && bx.webAccessibleResources.length) {
+      const WN = this._sCaps.rowCap(15);
+      const RN2 = this._sCaps.rowCap(8);
+      const MN2 = this._sCaps.rowCap(6);
       parts.push(`\n### Web-Accessible Resources (${bx.webAccessibleResources.length})`);
-      for (const war of bx.webAccessibleResources.slice(0, 15)) {
-        const res = (war.resources || []).slice(0, 8).map(r => '`' + tp(r) + '`').join(', ');
-        const mt  = (war.matches || []).slice(0, 6).map(m => '`' + tp(m) + '`').join(', ');
+      for (const war of bx.webAccessibleResources.slice(0, WN)) {
+        const res = (war.resources || []).slice(0, RN2).map(r => '`' + tp(r) + '`').join(', ');
+        const mt = (war.matches || []).slice(0, MN2).map(m => '`' + tp(m) + '`').join(', ');
         parts.push(`- resources: ${res || '—'}${mt ? ` — matches: ${mt}` : ''}`);
       }
-      if (bx.webAccessibleResources.length > 15) parts.push(`… and ${bx.webAccessibleResources.length - 15} more`);
+      if (bx.webAccessibleResources.length > WN) parts.push(`… and ${bx.webAccessibleResources.length - WN} more`);
     }
 
     // ── Commands (keyboard shortcuts) ──
     if (bx.commands && bx.commands.length) {
       parts.push(`\n### Commands / Keyboard Shortcuts (${bx.commands.length})`);
-      for (const cmd of bx.commands.slice(0, 10)) {
+      for (const cmd of bx.commands.slice(0, this._sCaps.rowCap(10))) {
+
         const key = cmd.suggestedKey ? ` → ${tp(cmd.suggestedKey)}` : '';
         parts.push(`- \`${tp(cmd.name || '?')}\`${key}${cmd.description ? ` — ${tp(cmd.description)}` : ''}`);
       }
@@ -950,7 +1064,7 @@ Object.assign(App.prototype, {
         return `${sev} fullTrustProcess → \`${tp(ex.executable || '?')}\``;
       case 'windows.startupTask':
         return `${sev} startupTask${ex.taskId ? ` (${tp(ex.taskId)})` : ''}${ex.enabled === true ? ' [enabled]' : ''}`
-             + (ex.executable ? ` → \`${tp(ex.executable)}\`` : '');
+          + (ex.executable ? ` → \`${tp(ex.executable)}\`` : '');
       case 'windows.appExecutionAlias': {
         const list = (ex.aliases || []).map(a => '`' + tp(a) + '`').join(', ') || '—';
         return `${sev} appExecutionAlias: ${list}`;
@@ -960,9 +1074,10 @@ Object.assign(App.prototype, {
         return `${sev} protocol: ${list}`;
       }
       case 'windows.fileTypeAssociation': {
-        const list = (ex.fileTypes || []).slice(0, 10).map(t => '`' + tp(t) + '`').join(', ');
+        const list = (ex.fileTypes || []).slice(0, this._sCaps.rowCap(10)).map(t => '`' + tp(t) + '`').join(', ');
         return `fileTypeAssociation${ex.name ? ` (${tp(ex.name)})` : ''}${list ? ': ' + list : ''}`;
       }
+
       case 'windows.service':
         return `${sev} service → \`${tp(ex.executable || '?')}\``;
       case 'windows.backgroundTasks': {
@@ -1032,7 +1147,7 @@ Object.assign(App.prototype, {
     // Overlay — bytes appended after the final PE section (often a
     // self-extracting payload or trailing signed blob).
     if (pe.overlayInfo && pe.overlayInfo.size) {
-      parts.push(`**Overlay:** ${pe.overlayInfo.size} bytes at offset 0x${(pe.overlayInfo.offset||0).toString(16)}${pe.overlayInfo.entropy != null ? ` (entropy ${pe.overlayInfo.entropy.toFixed(2)})` : ''}`);
+      parts.push(`**Overlay:** ${pe.overlayInfo.size} bytes at offset 0x${(pe.overlayInfo.offset || 0).toString(16)}${pe.overlayInfo.entropy != null ? ` (entropy ${pe.overlayInfo.entropy.toFixed(2)})` : ''}`);
     }
 
     // Section table
@@ -1043,7 +1158,7 @@ Object.assign(App.prototype, {
       for (const s of pe.sections) {
         const entropy = s.entropy !== undefined ? s.entropy.toFixed(2) : '—';
         const flags = (s.charFlags || []).join(', ') || tp(s.characteristics);
-        parts.push(`| ${tp(s.name)} | 0x${(s.virtualSize||0).toString(16)} | 0x${(s.rawSize||0).toString(16)} | ${entropy} | ${tp(flags)} |`);
+        parts.push(`| ${tp(s.name)} | 0x${(s.virtualSize || 0).toString(16)} | 0x${(s.rawSize || 0).toString(16)} | ${entropy} | ${tp(flags)} |`);
       }
     }
 
@@ -1066,34 +1181,44 @@ Object.assign(App.prototype, {
         parts.push('\n**Suspicious imports:**');
         for (const s of suspicious) parts.push(`- ${s}`);
       }
-      // Show normal imports if we have budget
-      const normalLimit = Math.max(5, 30 - suspicious.length);
+      // Show normal imports if we have budget. Base import count scales
+      // with the Summary budget — 30 at 64 K default, 60 at 128 K, ∞ at
+      // MAX — so bigger reports list more vendor DLLs instead of hiding
+      // them behind an ellipsis.
+      const baseImportCap = this._sCaps.rowCap(30);
+      const normalLimit = (baseImportCap === Infinity)
+        ? Infinity
+        : Math.max(5, baseImportCap - suspicious.length);
       if (normal.length) {
         parts.push('\n**Other imports:**');
-        for (const n of normal.slice(0, normalLimit)) parts.push(`- ${n}`);
-        if (normal.length > normalLimit) parts.push(`- … and ${normal.length - normalLimit} more DLLs`);
+        const takeN = normalLimit === Infinity ? normal.length : normalLimit;
+        for (const n of normal.slice(0, takeN)) parts.push(`- ${n}`);
+        if (normal.length > takeN) parts.push(`- … and ${normal.length - takeN} more DLLs`);
       }
     }
 
     // Exports
     if (pe.exports && pe.exports.names && pe.exports.names.length) {
       const ex = pe.exports;
+      const EN = this._sCaps.rowCap(30);
       parts.push(`\n### Exports (${ex.numNames || ex.names.length} functions)`);
       if (ex.dllName) parts.push(`**DLL name:** ${ex.dllName}`);
-      const names = ex.names.slice(0, 30).map(n => n.name || `Ordinal#${n.ordinal}`);
-      parts.push(names.join(', ') + (ex.names.length > 30 ? `… (+${ex.names.length - 30})` : ''));
+      const names = ex.names.slice(0, EN).map(n => n.name || `Ordinal#${n.ordinal}`);
+      parts.push(names.join(', ') + (ex.names.length > EN ? `… (+${ex.names.length - EN})` : ''));
     }
 
     // Rich Header
     if (pe.richHeader && pe.richHeader.entries && pe.richHeader.entries.length) {
-      parts.push(`\n### Rich Header (XOR key: 0x${(pe.richHeader.xorKey||0).toString(16)})`);
+      const RN = this._sCaps.rowCap(20);
+      parts.push(`\n### Rich Header (XOR key: 0x${(pe.richHeader.xorKey || 0).toString(16)})`);
       parts.push('| CompID | BuildID | Count |');
       parts.push('|--------|---------|-------|');
-      for (const e of pe.richHeader.entries.slice(0, 20)) {
+      for (const e of pe.richHeader.entries.slice(0, RN)) {
         parts.push(`| ${e.compId} | ${e.buildId} | ${e.count} |`);
       }
-      if (pe.richHeader.entries.length > 20) parts.push(`… and ${pe.richHeader.entries.length - 20} more`);
+      if (pe.richHeader.entries.length > RN) parts.push(`… and ${pe.richHeader.entries.length - RN} more`);
     }
+
 
     // Authenticode Certificates
     if (pe.certificates && pe.certificates.length) {
@@ -1119,11 +1244,14 @@ Object.assign(App.prototype, {
 
     // Resources
     if (pe.resources && pe.resources.length) {
+      const RC = this._sCaps.rowCap(20);
       parts.push(`\n### Resources (${pe.resources.length} types)`);
-      for (const r of pe.resources.slice(0, 20)) {
+      for (const r of pe.resources.slice(0, RC)) {
         parts.push(`- ${r.typeName || 'Type#' + r.id}${r.count ? ' (' + r.count + ' entries)' : ''}`);
       }
+      if (pe.resources.length > RC) parts.push(`… and ${pe.resources.length - RC} more`);
     }
+
 
     // Data Directories
     if (pe.dataDirectories && pe.dataDirectories.length) {
@@ -1133,7 +1261,7 @@ Object.assign(App.prototype, {
         parts.push('| Directory | RVA | Size |');
         parts.push('|-----------|-----|------|');
         for (const d of active) {
-          parts.push(`| ${tp(d.name)} | 0x${(d.rva||0).toString(16)} | 0x${(d.size||0).toString(16)} |`);
+          parts.push(`| ${tp(d.name)} | 0x${(d.rva || 0).toString(16)} | 0x${(d.size || 0).toString(16)} |`);
         }
       }
     }
@@ -1156,12 +1284,13 @@ Object.assign(App.prototype, {
     if (pe.isAutoHotkey) {
       parts.push('\n### Compiled AutoHotkey Script');
       if (pe.autoHotkeyOffset != null) {
-        parts.push(`- **Script Offset:** 0x${(pe.autoHotkeyOffset||0).toString(16)}`);
+        parts.push(`- **Script Offset:** 0x${(pe.autoHotkeyOffset || 0).toString(16)}`);
       }
       if (pe.autoHotkeyScript) {
         parts.push(`- **Script Size:** ${pe.autoHotkeyScript.length.toLocaleString()} bytes`);
-        const preview = pe.autoHotkeyScript.slice(0, 400).replace(/\r\n?/g, '\n');
-        parts.push('- **Preview:**\n```\n' + preview + (pe.autoHotkeyScript.length > 400 ? '\n…' : '') + '\n```');
+        const ahkMax = (this._sCaps && this._sCaps.charCap) ? this._sCaps.charCap(400) : 400;
+        const preview = pe.autoHotkeyScript.slice(0, ahkMax).replace(/\r\n?/g, '\n');
+        parts.push('- **Preview:**\n```\n' + preview + (pe.autoHotkeyScript.length > ahkMax ? '\n…' : '') + '\n```');
       }
     }
     if (pe.installerType) {
@@ -1225,14 +1354,15 @@ Object.assign(App.prototype, {
 
     // Sections
     if (elf.sections && elf.sections.length) {
+      const SN = this._sCaps.rowCap(40);
       parts.push(`\n### Sections (${elf.sections.length})`);
       parts.push('| Name | Type | Size | Entropy | Flags |');
       parts.push('|------|------|------|---------|-------|');
-      for (const s of elf.sections.slice(0, 40)) {
+      for (const s of elf.sections.slice(0, SN)) {
         const entropy = s.entropy !== undefined ? s.entropy.toFixed(2) : '—';
-        parts.push(`| ${tp(s.name)} | ${tp(s.typeStr)} | 0x${(s.size||0).toString(16)} | ${entropy} | ${tp(s.flagsStr)} |`);
+        parts.push(`| ${tp(s.name)} | ${tp(s.typeStr)} | 0x${(s.size || 0).toString(16)} | ${entropy} | ${tp(s.flagsStr)} |`);
       }
-      if (elf.sections.length > 40) parts.push(`… and ${elf.sections.length - 40} more`);
+      if (elf.sections.length > SN) parts.push(`… and ${elf.sections.length - SN} more`);
     }
 
     // Segments
@@ -1241,20 +1371,21 @@ Object.assign(App.prototype, {
       parts.push('| Type | Flags | FileSize | MemSize |');
       parts.push('|------|-------|----------|---------|');
       for (const s of elf.segments) {
-        parts.push(`| ${tp(s.typeStr)} | ${tp(s.flagsStr)} | 0x${(s.filesz||0).toString(16)} | 0x${(s.memsz||0).toString(16)} |`);
+        parts.push(`| ${tp(s.typeStr)} | ${tp(s.flagsStr)} | 0x${(s.filesz || 0).toString(16)} | 0x${(s.memsz || 0).toString(16)} |`);
       }
     }
 
     // Dynamic entries
     if (elf.dynamic && elf.dynamic.length) {
       const interesting = elf.dynamic.filter(d => d.tagName !== 'DT_NULL');
+      const DN = this._sCaps.rowCap(40);
       parts.push(`\n### Dynamic Entries (${interesting.length})`);
       parts.push('| Tag | Value |');
       parts.push('|-----|-------|');
-      for (const d of interesting.slice(0, 40)) {
+      for (const d of interesting.slice(0, DN)) {
         parts.push(`| ${tp(d.tagName)} | ${tp(d.valStr || d.val)} |`);
       }
-      if (interesting.length > 40) parts.push(`… and ${interesting.length - 40} more`);
+      if (interesting.length > DN) parts.push(`… and ${interesting.length - DN} more`);
     }
 
     // Dynamic libraries
@@ -1268,23 +1399,25 @@ Object.assign(App.prototype, {
     if (allSyms.length) {
       const suspicious = allSyms.filter(s => s._suspicious || s._risky);
       const named = allSyms.filter(s => s.name && s.name.length > 0);
+      const SUN = this._sCaps.rowCap(30);
+      const NON = this._sCaps.rowCap(40);
       parts.push(`\n### Symbols (${named.length} named)`);
       if (suspicious.length) {
         parts.push('\n**Suspicious symbols:**');
-        for (const s of suspicious.slice(0, 30)) parts.push(`- ⚠ \`${s.name}\` (${s.type || ''} ${s.bind || ''})`);
-        if (suspicious.length > 30) parts.push(`… and ${suspicious.length - 30} more`);
+        for (const s of suspicious.slice(0, SUN)) parts.push(`- ⚠ \`${s.name}\` (${s.type || ''} ${s.bind || ''})`);
+        if (suspicious.length > SUN) parts.push(`… and ${suspicious.length - SUN} more`);
       }
-      const otherNamed = named.filter(s => !s._suspicious && !s._risky).slice(0, 40);
+      const otherNamed = named.filter(s => !s._suspicious && !s._risky).slice(0, NON);
       if (otherNamed.length) {
         parts.push('\n**Imported/Exported:**');
-        parts.push(otherNamed.map(s => `\`${s.name}\``).join(', ') + (named.length > 40 + suspicious.length ? '…' : ''));
+        parts.push(otherNamed.map(s => `\`${s.name}\``).join(', ') + (named.length > NON + suspicious.length ? '…' : ''));
       }
     }
 
     // Notes
     if (elf.notes && elf.notes.length) {
       parts.push(`\n### Notes (${elf.notes.length})`);
-      for (const n of elf.notes.slice(0, 10)) {
+      for (const n of elf.notes.slice(0, this._sCaps.rowCap(10))) {
         parts.push(`- **${tp(n.name)}** (type ${n.type}): ${tp(n.desc || '')}`);
       }
     }
@@ -1294,11 +1427,12 @@ Object.assign(App.prototype, {
     // glibc / libstdc++ release.
     if (elf.verneed && elf.verneed.length) {
       parts.push(`\n### Version Needs (${elf.verneed.length})`);
-      for (const v of elf.verneed.slice(0, 20)) {
+      for (const v of elf.verneed.slice(0, this._sCaps.rowCap(20))) {
         const versions = (v.versions || []).map(vv => vv.name).join(', ');
         parts.push(`- **${tp(v.file || '?')}**${versions ? `: ${tp(versions)}` : ''}`);
       }
     }
+
 
     // Extracted string count — quick proxy for "how much plaintext is in
     // this binary" without dumping every string (that would blow the
@@ -1378,42 +1512,48 @@ Object.assign(App.prototype, {
       parts.push('| Segment | VMSize | FileSize | MaxProt | Sections |');
       parts.push('|---------|--------|----------|---------|----------|');
       for (const seg of mo.segments) {
-        parts.push(`| ${tp(seg.segname)} | 0x${(seg.vmsize||0).toString(16)} | 0x${(seg.filesize||0).toString(16)} | ${tp(seg.maxprot)} | ${(seg.sections||[]).length} |`);
+        parts.push(`| ${tp(seg.segname)} | 0x${(seg.vmsize || 0).toString(16)} | 0x${(seg.filesize || 0).toString(16)} | ${tp(seg.maxprot)} | ${(seg.sections || []).length} |`);
       }
       // List interesting sections
       const allSects = (mo.sections || []);
       if (allSects.length) {
+        const SN = this._sCaps.rowCap(30);
         parts.push(`\n**Sections (${allSects.length}):** ` +
-          allSects.slice(0, 30).map(s => `${s.segname},${s.sectname}`).join(' · ') +
-          (allSects.length > 30 ? '…' : ''));
+          allSects.slice(0, SN).map(s => `${s.segname},${s.sectname}`).join(' · ') +
+          (allSects.length > SN ? '…' : ''));
       }
     }
 
+
     // Dynamic libraries
     if (mo.dylibs && mo.dylibs.length) {
+      const DN = this._sCaps.rowCap(30);
       parts.push(`\n### Dynamic Libraries (${mo.dylibs.length})`);
-      for (const d of mo.dylibs.slice(0, 30)) {
+      for (const d of mo.dylibs.slice(0, DN)) {
         parts.push(`- ${tp(d.name)}${d.currentVersion ? ' v' + d.currentVersion : ''}`);
       }
-      if (mo.dylibs.length > 30) parts.push(`… and ${mo.dylibs.length - 30} more`);
+      if (mo.dylibs.length > DN) parts.push(`… and ${mo.dylibs.length - DN} more`);
     }
 
     // Symbols
     if (mo.symbols && mo.symbols.length) {
       const suspicious = mo.symbols.filter(s => s._suspicious || s.category === 'suspicious');
       const named = mo.symbols.filter(s => s.name && s.name.length > 1);
+      const SUN = this._sCaps.rowCap(30);
+      const NON = this._sCaps.rowCap(40);
       parts.push(`\n### Symbols (${named.length} named)`);
       if (suspicious.length) {
         parts.push('\n**Suspicious symbols:**');
-        for (const s of suspicious.slice(0, 30)) parts.push(`- ⚠ \`${s.name}\``);
-        if (suspicious.length > 30) parts.push(`… and ${suspicious.length - 30} more`);
+        for (const s of suspicious.slice(0, SUN)) parts.push(`- ⚠ \`${s.name}\``);
+        if (suspicious.length > SUN) parts.push(`… and ${suspicious.length - SUN} more`);
       }
-      const others = named.filter(s => !s._suspicious && s.category !== 'suspicious').slice(0, 40);
+      const others = named.filter(s => !s._suspicious && s.category !== 'suspicious').slice(0, NON);
       if (others.length) {
         parts.push('\n**Imported/Exported:**');
-        parts.push(others.map(s => `\`${s.name}\``).join(', ') + (named.length > 40 + suspicious.length ? '…' : ''));
+        parts.push(others.map(s => `\`${s.name}\``).join(', ') + (named.length > NON + suspicious.length ? '…' : ''));
       }
     }
+
 
     // Code Signature
     if (mo.codeSignature) {
@@ -1449,11 +1589,17 @@ Object.assign(App.prototype, {
       }
     }
 
-    // Entitlements
+    // Entitlements — the raw XML plist. Entitlements are one of the most
+    // analysis-critical surfaces on a Mach-O (app sandbox, keychain
+    // access, camera/microphone, com.apple.security.* flags); truncating
+    // them hides the actual behaviour. Scale the cap aggressively so a
+    // 256 K Summary shows a ≥ 4 000-char blob, and MAX emits the whole
+    // file.
     if (mo.entitlements) {
+      const EN = this._sCaps.charCap(1000);
       parts.push('\n### Entitlements');
       parts.push('```xml');
-      parts.push(mo.entitlements.length > 1000 ? mo.entitlements.slice(0, 1000) + '\n… (truncated)' : mo.entitlements);
+      parts.push((EN !== Infinity && mo.entitlements.length > EN) ? mo.entitlements.slice(0, EN) + '\n… (truncated)' : mo.entitlements);
       parts.push('```');
     }
 
@@ -1472,11 +1618,14 @@ Object.assign(App.prototype, {
     // Weak dylibs — loadable but not required; sometimes used to hide
     // optional persistence paths.
     if (mo.weakDylibs && mo.weakDylibs.length) {
+      const WN = this._sCaps.rowCap(20);
       parts.push(`\n### Weak Dylibs (${mo.weakDylibs.length})`);
-      for (const d of mo.weakDylibs.slice(0, 20)) {
+      for (const d of mo.weakDylibs.slice(0, WN)) {
         parts.push(`- ${tp(typeof d === 'string' ? d : (d.name || ''))}`);
       }
+      if (mo.weakDylibs.length > WN) parts.push(`… and ${mo.weakDylibs.length - WN} more`);
     }
+
 
     // Linker options baked in via LC_LINKER_OPTION.
     if (mo.linkerOpts && mo.linkerOpts.length) {
@@ -1521,12 +1670,13 @@ Object.assign(App.prototype, {
         parts.push('\n**Extensions:**');
         for (const ext of c.extensions) {
           const isSAN = (ext.oid === '2.5.29.17') || (ext.name === 'Subject Alternative Name');
-          const limit = isSAN ? 2000 : 800;
+          const limit = isSAN ? this._sCaps.charCap(2000) : this._sCaps.charCap(800);
           let val = ext.value || '';
-          if (val.length > limit) val = val.slice(0, limit) + '…';
+          if (limit !== Infinity && val.length > limit) val = val.slice(0, limit) + '…';
           parts.push(`- **${ext.name || ext.oid}**${ext.critical ? ' (CRITICAL)' : ''}: ${val}`);
         }
       }
+
     }
 
     // Detections from x509 findings
@@ -1555,15 +1705,16 @@ Object.assign(App.prototype, {
 
     // Suspicious APIs
     if (j.suspiciousAPIs && j.suspiciousAPIs.length) {
+      const SA = this._sCaps.rowCap(30);
       parts.push(`\n### Suspicious APIs (${j.suspiciousAPIs.length})`);
       const seen = new Set();
-      for (const s of j.suspiciousAPIs.slice(0, 30)) {
+      for (const s of j.suspiciousAPIs.slice(0, SA)) {
         const key = s.api;
         if (seen.has(key)) continue;
         seen.add(key);
-        parts.push(`- ⚠ **${tp(s.api)}** [${(s.severity||'medium').toUpperCase()}]: ${tp(s.desc)}${s.mitre ? ' (' + s.mitre + ')' : ''}`);
+        parts.push(`- ⚠ **${tp(s.api)}** [${(s.severity || 'medium').toUpperCase()}]: ${tp(s.desc)}${s.mitre ? ' (' + s.mitre + ')' : ''}`);
       }
-      if (j.suspiciousAPIs.length > 30) parts.push(`… and ${j.suspiciousAPIs.length - 30} more`);
+      if (j.suspiciousAPIs.length > SA) parts.push(`… and ${j.suspiciousAPIs.length - SA} more`);
     }
 
     // Obfuscation
@@ -1574,16 +1725,19 @@ Object.assign(App.prototype, {
 
     // Classes
     if (j.classes && j.classes.length) {
+      const CN = this._sCaps.rowCap(30);
       parts.push(`\n### Classes (${j.classes.length})`);
-      const display = j.classes.slice(0, 30).map(c => `\`${c}\``);
-      parts.push(display.join(', ') + (j.classes.length > 30 ? `… (+${j.classes.length - 30})` : ''));
+      const display = j.classes.slice(0, CN).map(c => `\`${c}\``);
+      parts.push(display.join(', ') + (j.classes.length > CN ? `… (+${j.classes.length - CN})` : ''));
     }
 
     // Dependencies
     if (j.dependencies && j.dependencies.length) {
+      const DN = this._sCaps.rowCap(30);
       parts.push(`\n### Dependencies (${j.dependencies.length})`);
-      parts.push(j.dependencies.slice(0, 30).join(', ') + (j.dependencies.length > 30 ? '…' : ''));
+      parts.push(j.dependencies.slice(0, DN).join(', ') + (j.dependencies.length > DN ? '…' : ''));
     }
+
 
     // Config files
     if (j.configFiles && j.configFiles.length) {
@@ -1603,11 +1757,13 @@ Object.assign(App.prototype, {
     // Embedded JARs (jar-in-jar, e.g. Spring Boot / Shaded) — each one
     // is a separately-analysable payload.
     if (j.embeddedJars && j.embeddedJars.length) {
+      const EJN = this._sCaps.rowCap(20);
       parts.push(`\n### Embedded JARs (${j.embeddedJars.length})`);
-      for (const ej of j.embeddedJars.slice(0, 20)) {
+      for (const ej of j.embeddedJars.slice(0, EJN)) {
         const name = typeof ej === 'string' ? ej : (ej.name || ej.path || '?');
         parts.push(`- \`${tp(name)}\``);
       }
+      if (j.embeddedJars.length > EJN) parts.push(`… and ${j.embeddedJars.length - EJN} more`);
     }
 
     // Signing certificates — same shape as PE authenticode certs; print
@@ -1630,12 +1786,15 @@ Object.assign(App.prototype, {
     const m = f.metadata || {};
     // Only emit if there's at least one interesting PDF-specific field.
     if (!(m.pdfJavaScripts || m.embeddedFiles || m.xfa || m.xfaPackets ||
-          m.acroFormPresent || m.encrypted || m.pages)) return;
+      m.acroFormPresent || m.encrypted || m.pages)) return;
     parts.push('\n## PDF Details');
 
     // JavaScript — the single most analysis-worthy surface in a PDF.
+    //   Each script body truncation scales so high-budget Summary exports
+    //   emit more of the script rather than snapping at 800.
     const js = m.pdfJavaScripts || [];
     if (js.length) {
+      const SRC = this._sCaps.charCap(800);
       parts.push(`\n### JavaScript Scripts (${js.length})`);
       for (const s of js) {
         parts.push(`\n**${tp(s.trigger || 'script')}** — ${s.size || 0} bytes${s.hash ? ` · hash \`${s.hash}\`` : ''}`);
@@ -1643,7 +1802,7 @@ Object.assign(App.prototype, {
           parts.push(`⚠ Suspicious patterns: ${s.suspicious.join(', ')}`);
         }
         if (s.source) {
-          const src = s.source.length > 800 ? s.source.slice(0, 800) + '\n… (truncated)' : s.source;
+          const src = (SRC !== Infinity && s.source.length > SRC) ? s.source.slice(0, SRC) + '\n… (truncated)' : s.source;
           parts.push('```javascript\n' + src + '\n```');
         }
       }
@@ -1652,14 +1811,16 @@ Object.assign(App.prototype, {
     // Embedded files — attachments the PDF will offer to save/launch.
     const ef = m.embeddedFiles || [];
     if (ef.length) {
+      const EN = this._sCaps.rowCap(30);
       parts.push(`\n### Embedded Files (${ef.length})`);
       parts.push('| Name | MIME | Size | Hash |');
       parts.push('|------|------|------|------|');
-      for (const e of ef.slice(0, 30)) {
+      for (const e of ef.slice(0, EN)) {
         parts.push(`| ${tp(e.name || '?')} | ${tp(e.mime || '—')} | ${e.size || 0} | ${e.hash ? '`' + e.hash + '`' : '—'} |`);
       }
-      if (ef.length > 30) parts.push(`… and ${ef.length - 30} more`);
+      if (ef.length > EN) parts.push(`… and ${ef.length - EN} more`);
     }
+
 
     // XFA — dynamic forms use their own XFA packets; list them so the
     // analyst sees whether it's the form-stuffing or full-xfa variant.
@@ -1681,7 +1842,7 @@ Object.assign(App.prototype, {
   _copyAnalysisMSI(f, parts, tp) {
     const m = f.metadata || {};
     const looksMsi = m.customActionCount != null || m.authenticode || m.binaryStreamCount != null ||
-                     m.embeddedCabs || m.binaryStreamSniff;
+      m.embeddedCabs || m.binaryStreamSniff;
     if (!looksMsi) return;
     parts.push('\n## MSI Details');
 
@@ -1694,12 +1855,14 @@ Object.assign(App.prototype, {
     const ca = (f.externalRefs || []).filter(r =>
       r && r.note && /custom\s*action/i.test(r.note));
     if (ca.length) {
+      const CN = this._sCaps.rowCap(30);
       parts.push(`\n### Custom Actions (${ca.length})`);
-      for (const e of ca.slice(0, 30)) {
+      for (const e of ca.slice(0, CN)) {
         parts.push(`- [${(e.severity || 'info').toUpperCase()}] ${tp(e.note || '')}: \`${tp(e.url || '')}\``);
       }
-      if (ca.length > 30) parts.push(`… and ${ca.length - 30} more`);
+      if (ca.length > CN) parts.push(`… and ${ca.length - CN} more`);
     }
+
 
     if (m.embeddedCabs) {
       parts.push('\n### Embedded CABs');
@@ -1721,7 +1884,8 @@ Object.assign(App.prototype, {
     }
     if (m.fileDataStoreGuids) {
       const g = Array.isArray(m.fileDataStoreGuids) ? m.fileDataStoreGuids : [m.fileDataStoreGuids];
-      parts.push(`- **FileDataStore GUIDs (${g.length}):** ${g.slice(0, 10).join(', ')}${g.length > 10 ? '…' : ''}`);
+      const GN = this._sCaps.rowCap(10);
+      parts.push(`- **FileDataStore GUIDs (${g.length}):** ${g.slice(0, GN).join(', ')}${g.length > GN ? '…' : ''}`);
     }
   },
 
@@ -1730,11 +1894,12 @@ Object.assign(App.prototype, {
     const ole = (f.externalRefs || []).filter(r =>
       r && r.note && /ole\s*object|objdata|objclass/i.test(r.note));
     if (!ole.length) return;
+    const N = this._sCaps.rowCap(20);
     parts.push(`\n## RTF OLE Objects (${ole.length})`);
-    for (const e of ole.slice(0, 20)) {
+    for (const e of ole.slice(0, N)) {
       parts.push(`- [${(e.severity || 'info').toUpperCase()}] ${tp(e.note || '')}: \`${tp(e.url || '')}\``);
     }
-    if (ole.length > 20) parts.push(`… and ${ole.length - 20} more`);
+    if (ole.length > N) parts.push(`… and ${ole.length - N} more`);
   },
 
   // ── EML deep data — Cc / Reply-To / attachment list ───────────────────
@@ -1746,13 +1911,14 @@ Object.assign(App.prototype, {
     // clean tabular attachment view here.)
     const atts = Array.isArray(m.attachments) ? m.attachments : null;
     if (!atts || !atts.length) return;
+    const N = this._sCaps.rowCap(30);
     parts.push(`\n## Email Attachments (${atts.length})`);
     parts.push('| Name | Size |');
     parts.push('|------|------|');
-    for (const a of atts.slice(0, 30)) {
+    for (const a of atts.slice(0, N)) {
       parts.push(`| ${tp(a.name || '(unnamed)')} | ${a.size != null ? a.size : '—'} |`);
     }
-    if (atts.length > 30) parts.push(`… and ${atts.length - 30} more`);
+    if (atts.length > N) parts.push(`… and ${atts.length - N} more`);
   },
 
   // ── MSG deep data — recipient / subject headline + attachments ───────
@@ -1762,18 +1928,19 @@ Object.assign(App.prototype, {
     // flow through externalRefs with type IOC.ATTACHMENT (string guard).
     const atts = (f.externalRefs || []).filter(r =>
       r && (r.type === (typeof IOC !== 'undefined' && IOC.ATTACHMENT) ||
-            (r.note && /attachment/i.test(r.note))));
+        (r.note && /attachment/i.test(r.note))));
     if (!m.title && !m.creator && !atts.length) return;
     parts.push('\n## Outlook Message Details');
     if (m.title) parts.push(`- **Subject:** ${tp(m.title)}`);
     if (m.creator) parts.push(`- **Sender:** ${tp(m.creator)}`);
     if (m.created) parts.push(`- **Created:** ${tp(m.created)}`);
     if (atts.length) {
+      const N = this._sCaps.rowCap(30);
       parts.push(`\n### Attachments (${atts.length})`);
-      for (const a of atts.slice(0, 30)) {
+      for (const a of atts.slice(0, N)) {
         parts.push(`- \`${tp(a.url || '')}\`${a.note ? ` — ${tp(a.note)}` : ''}`);
       }
-      if (atts.length > 30) parts.push(`… and ${atts.length - 30} more`);
+      if (atts.length > N) parts.push(`… and ${atts.length - N} more`);
     }
   },
 
@@ -1788,11 +1955,12 @@ Object.assign(App.prototype, {
     parts.push('\n## HTML Details');
     if (m.title) parts.push(`- **Title:** ${tp(m.title)}`);
     if (forms.length) {
+      const N = this._sCaps.rowCap(20);
       parts.push(`\n### Forms / credential harvesting indicators (${forms.length})`);
-      for (const fm of forms.slice(0, 20)) {
+      for (const fm of forms.slice(0, N)) {
         parts.push(`- [${(fm.severity || 'info').toUpperCase()}] ${tp(fm.url)}${fm.note ? ` — ${tp(fm.note)}` : ''}`);
       }
-      if (forms.length > 20) parts.push(`… and ${forms.length - 20} more`);
+      if (forms.length > N) parts.push(`… and ${forms.length - N} more`);
     }
   },
 
@@ -1806,12 +1974,14 @@ Object.assign(App.prototype, {
     const scripts = (f.externalRefs || []).filter(r =>
       r && (r.note && /hta|script|vbscript|jscript/i.test(r.note)));
     if (!scripts.length) return;
+    const N = this._sCaps.rowCap(20);
     parts.push(`\n## HTA Script Indicators (${scripts.length})`);
-    for (const s of scripts.slice(0, 20)) {
+    for (const s of scripts.slice(0, N)) {
       parts.push(`- [${(s.severity || 'info').toUpperCase()}] ${tp(s.note || '')}: \`${tp(s.url || '')}\``);
     }
-    if (scripts.length > 20) parts.push(`… and ${scripts.length - 20} more`);
+    if (scripts.length > N) parts.push(`… and ${scripts.length - N} more`);
   },
+
 
   // ── SVG deep data — script/handler/foreignObject counts ──────────────
   _copyAnalysisSVG(f, parts, tp) {
@@ -1871,15 +2041,17 @@ Object.assign(App.prototype, {
       hits.push({ id: m2[1], desc: m2[2], count: m2[3] ? parseInt(m2[3], 10) : 1, severity: r.severity || 'info' });
     }
     if (hits.length) {
+      const N = this._sCaps.rowCap(40);
       parts.push(`\n### Notable Event IDs (${hits.length})`);
       parts.push('| ID | Count | Severity | Description |');
       parts.push('|----|-------|----------|-------------|');
-      for (const h of hits.slice(0, 40)) {
+      for (const h of hits.slice(0, N)) {
         parts.push(`| ${h.id} | ${h.count} | ${(h.severity || 'info').toUpperCase()} | ${tp(h.desc)} |`);
       }
-      if (hits.length > 40) parts.push(`… and ${hits.length - 40} more`);
+      if (hits.length > N) parts.push(`… and ${hits.length - N} more`);
     }
   },
+
 
   // ── SQLite deep data — schema / version / browser-profile stats ──────
   _copyAnalysisSQLite(f, parts, tp) {
@@ -1894,16 +2066,18 @@ Object.assign(App.prototype, {
 
     // m.tables may be a number, a string ("42 tables"), or an array.
     if (Array.isArray(m.tables)) {
+      const TN = this._sCaps.rowCap(30);
       parts.push(`\n### Tables (${m.tables.length})`);
-      for (const t of m.tables.slice(0, 30)) {
+      for (const t of m.tables.slice(0, TN)) {
         if (typeof t === 'string') parts.push(`- \`${tp(t)}\``);
         else parts.push(`- \`${tp(t.name || '?')}\`${t.rowCount != null ? ` (${t.rowCount} rows)` : ''}${t.columns ? ` — ${tp((t.columns || []).join(', '))}` : ''}`);
       }
-      if (m.tables.length > 30) parts.push(`… and ${m.tables.length - 30} more`);
+      if (m.tables.length > TN) parts.push(`… and ${m.tables.length - TN} more`);
     } else if (m.tables != null) {
       parts.push(`- **Tables:** ${tp(m.tables)}`);
     }
   },
+
 
   // ── ZIP deep data — compression ratio (zip-bomb indicator), dangerous files ──
   _copyAnalysisZIP(f, parts, tp) {
@@ -1923,13 +2097,15 @@ Object.assign(App.prototype, {
       parts.push(`- **Compression ratio:** ${r}${typeof m.compressionRatio === 'number' && m.compressionRatio > 100 ? '×  ⚠ (zip-bomb indicator)' : ''}`);
     }
     if (dangerFiles.length) {
+      const DN = this._sCaps.rowCap(30);
       parts.push(`\n### Suspicious Entries (${dangerFiles.length})`);
-      for (const d of dangerFiles.slice(0, 30)) {
+      for (const d of dangerFiles.slice(0, DN)) {
         parts.push(`- [${(d.severity || 'info').toUpperCase()}] \`${tp(d.url || '')}\`${d.note ? ` — ${tp(d.note)}` : ''}`);
       }
-      if (dangerFiles.length > 30) parts.push(`… and ${dangerFiles.length - 30} more`);
+      if (dangerFiles.length > DN) parts.push(`… and ${dangerFiles.length - DN} more`);
     }
   },
+
 
   // ── ISO deep data — volume info ───────────────────────────────────────
   _copyAnalysisISO(f, parts, tp) {
@@ -1954,9 +2130,11 @@ Object.assign(App.prototype, {
     if (m.size != null) parts.push(`- **Raw byte size:** ${m.size}`);
     if (m.exif) {
       const e = typeof m.exif === 'string' ? m.exif : JSON.stringify(m.exif);
-      parts.push(`- **EXIF preview:** ${tp(e.length > 200 ? e.slice(0, 200) + '…' : e)}`);
+      const XN = this._sCaps.charCap(200);
+      parts.push(`- **EXIF preview:** ${tp(XN !== Infinity && e.length > XN ? e.slice(0, XN) + '…' : e)}`);
     }
   },
+
 
   // ── PGP deep data — non-standard detections[] / formatSpecific[] ─────
   _copyAnalysisPGP(f, parts, tp) {
@@ -2006,15 +2184,18 @@ Object.assign(App.prototype, {
       parts.push(`- **WatchPaths:** ${wp.join(', ')}`);
     }
     if (sigs.length) {
+      const SN = this._sCaps.rowCap(20);
       parts.push('\n### Persistence / Behaviour Signatures');
-      for (const s of sigs.slice(0, 20)) {
+      for (const s of sigs.slice(0, SN)) {
         const name = s.name || s.rule || s.id || '?';
         parts.push(`- **${tp(name)}**${s.severity ? ` [${s.severity.toUpperCase()}]` : ''}${s.description ? ': ' + tp(s.description) : ''}`);
       }
+      if (sigs.length > SN) parts.push(`… and ${sigs.length - SN} more`);
     }
   },
 
   // ── Osascript deep data — decompiled source + signatures ─────────────
+
   _copyAnalysisOsascript(f, parts, tp) {
     const m = f.metadata || {};
     const ext = ((this._fileMeta && this._fileMeta.name) || '').toLowerCase().split('.').pop();
@@ -2045,14 +2226,16 @@ Object.assign(App.prototype, {
     const rels = (f.externalRefs || []).filter(r =>
       r && r.note && /ooxml|relationship|external\s*target/i.test(r.note));
     if (!rels.length) return;
+    const N = this._sCaps.rowCap(40);
     parts.push(`\n## OOXML Relationships (${rels.length})`);
     parts.push('| Severity | Note | Target |');
     parts.push('|----------|------|--------|');
-    for (const r of rels.slice(0, 40)) {
+    for (const r of rels.slice(0, N)) {
       parts.push(`| ${(r.severity || 'info').toUpperCase()} | ${tp(r.note || '')} | \`${tp(r.url || '')}\` |`);
     }
-    if (rels.length > 40) parts.push(`… and ${rels.length - 40} more`);
+    if (rels.length > N) parts.push(`… and ${rels.length - N} more`);
   },
+
 
   // ── Downloads ────────────────────────────────────────────────────────────
   _downloadMacros() {
@@ -2276,7 +2459,7 @@ Object.assign(App.prototype, {
         if (cur.nodeType === 1) {
           const t = cur.tagName;
           if (t === 'PRE' || t === 'CODE' || t === 'TD' || t === 'TH' || t === 'LI' ||
-              t === 'P'   || t === 'DT'   || t === 'DD' || t === 'BLOCKQUOTE') return cur;
+            t === 'P' || t === 'DT' || t === 'DD' || t === 'BLOCKQUOTE') return cur;
           const d = getComputedStyle(cur).display;
           if (d && d !== 'inline' && d !== 'inline-block' && d !== 'inline-flex' && d !== 'contents') return cur;
         }
@@ -2384,6 +2567,10 @@ Object.assign(App.prototype, {
   // `theme-*` + `dark` classes, then re-applies the new ones. Persists the
   // choice to localStorage (same pattern as uploaded YARA rules) so the user
   // sees the same theme across reloads.
+  //
+  // The sole UI surface is the tile grid in the ⚙ Settings dialog
+  // (`app-settings.js` → `_renderSettingsTab`); the legacy toolbar dropdown
+  // has been retired.
   _setTheme(id) {
     const theme = THEMES.find(t => t.id === id) || THEMES.find(t => t.id === _DEFAULT_THEME);
     const body = document.body;
@@ -2396,90 +2583,7 @@ Object.assign(App.prototype, {
     this.dark = !!theme.dark;     // kept for any legacy callers
     this._themeId = theme.id;
 
-    // Reflect the active theme in the toolbar button icon
-    const btn = document.getElementById('btn-theme');
-    if (btn) {
-      btn.textContent = theme.icon;
-      btn.setAttribute('title', `Theme: ${theme.label} — click to change`);
-    }
-
-    // Mark the active row in the dropdown (if built)
-    const menu = document.getElementById('theme-menu');
-    if (menu) {
-      for (const item of menu.querySelectorAll('.tb-menu-item')) {
-        item.classList.toggle('tb-menu-item-active', item.dataset.themeId === theme.id);
-      }
-    }
-
     try { localStorage.setItem(_THEME_PREF_KEY, theme.id); } catch (_) { /* storage blocked */ }
-  },
-
-  // Build the theme dropdown once from the THEMES registry. Subsequent calls
-  // no-op — the menu's visibility is toggled via .hidden, not rebuilt.
-  _buildThemeMenu() {
-    const menu = document.getElementById('theme-menu');
-    if (!menu || menu.dataset.built === '1') return;
-    menu.dataset.built = '1';
-    menu.setAttribute('role', 'menu');
-    for (const t of THEMES) {
-      const item = document.createElement('button');
-      item.type = 'button';
-      item.className = 'tb-menu-item';
-      item.dataset.themeId = t.id;
-      item.setAttribute('role', 'menuitemradio');
-      item.innerHTML =
-        `<span class="tb-menu-icon">${t.icon}</span>` +
-        `<span class="tb-menu-label">${t.label}</span>` +
-        `<span class="tb-menu-check">✓</span>`;
-      item.addEventListener('click', () => {
-        this._setTheme(t.id);
-        this._closeThemeMenu();
-      });
-      menu.appendChild(item);
-    }
-  },
-
-  _openThemeMenu() {
-    this._buildThemeMenu();
-    const menu = document.getElementById('theme-menu');
-    const btn = document.getElementById('btn-theme');
-    if (!menu || !btn) return;
-    menu.classList.remove('hidden');
-    btn.setAttribute('aria-expanded', 'true');
-    // Re-mark the active row in case it changed elsewhere
-    for (const item of menu.querySelectorAll('.tb-menu-item')) {
-      item.classList.toggle('tb-menu-item-active', item.dataset.themeId === this._themeId);
-    }
-    // Dismiss on outside click / Escape
-    const onDocDown = e => {
-      if (menu.contains(e.target) || btn.contains(e.target)) return;
-      this._closeThemeMenu();
-    };
-    const onEsc = e => { if (e.key === 'Escape') this._closeThemeMenu(); };
-    this._themeMenuDismiss = () => {
-      document.removeEventListener('mousedown', onDocDown, true);
-      document.removeEventListener('keydown', onEsc, true);
-      this._themeMenuDismiss = null;
-    };
-    // Defer to avoid catching the originating click
-    setTimeout(() => {
-      document.addEventListener('mousedown', onDocDown, true);
-      document.addEventListener('keydown', onEsc, true);
-    }, 0);
-  },
-
-  _closeThemeMenu() {
-    const menu = document.getElementById('theme-menu');
-    const btn = document.getElementById('btn-theme');
-    if (menu) menu.classList.add('hidden');
-    if (btn) btn.setAttribute('aria-expanded', 'false');
-    if (this._themeMenuDismiss) this._themeMenuDismiss();
-  },
-
-  _toggleThemeMenu() {
-    const menu = document.getElementById('theme-menu');
-    if (menu && !menu.classList.contains('hidden')) this._closeThemeMenu();
-    else this._openThemeMenu();
   },
 
   // Apply the persisted theme on startup. Call this in App.init().
@@ -2489,9 +2593,6 @@ Object.assign(App.prototype, {
     const id = (saved && THEMES.some(t => t.id === saved)) ? saved : _DEFAULT_THEME;
     this._setTheme(id);
   },
-
-  // Deprecated — kept as a thin alias so any external callers still work.
-  _toggleTheme() { this._toggleThemeMenu(); },
 
 
   _setLoading(on) {
@@ -2606,70 +2707,12 @@ Object.assign(App.prototype, {
   },
 
   // ── Help / About dialog ───────────────────────────────────────────────────
-  _openHelpDialog() {
-    // Don't open twice
-    if (document.querySelector('.help-overlay')) return;
-
-    const version = typeof LOUPE_VERSION !== 'undefined' ? LOUPE_VERSION : 'dev';
-
-    const overlay = document.createElement('div');
-    overlay.className = 'help-overlay';
-    overlay.innerHTML = `
-      <div class="help-dialog">
-        <div class="help-header">
-          <span>🕵🏻 Loupe <small>v${version}</small></span>
-          <button class="help-close" title="Close (Esc)">✕</button>
-        </div>
-        <div class="help-body">
-          <p class="help-tagline">A 100% offline, single-file security analyser for suspicious files.<br>No server, no uploads, no tracking — just drop a file and inspect it.</p>
-
-          <h3>Keyboard Shortcuts</h3>
-          <table class="help-kbd-table">
-            <tr><td><kbd class="help-kbd">S</kbd></td><td>Toggle security sidebar</td></tr>
-            <tr><td><kbd class="help-kbd">Y</kbd></td><td>Open YARA rule editor</td></tr>
-            <tr><td><kbd class="help-kbd">?</kbd> / <kbd class="help-kbd">H</kbd></td><td>Open this help dialog</td></tr>
-            <tr><td><kbd class="help-kbd">F</kbd></td><td>Focus document search</td></tr>
-            <tr><td><kbd class="help-kbd">Ctrl+V</kbd></td><td>Paste file from clipboard</td></tr>
-
-            <tr><td><kbd class="help-kbd">Esc</kbd></td><td>Close dialog / clear search</td></tr>
-          </table>
-
-          <h3>Links</h3>
-          <p>
-            <a href="https://github.com/Loupe-tools/Loupe/releases/latest/download/loupe.html" target="_blank" rel="noopener">Download Loupe</a>
-            ·
-            <a href="https://github.com/Loupe-tools/Loupe" target="_blank" rel="noopener">GitHub Repository</a>
-            ·
-            <a href="https://loupe.tools/" target="_blank" rel="noopener">Live Demo</a>
-          </p>
-
-          <div style="text-align:center;margin-top:12px;">
-            <a class="help-update-btn" href="https://loupe.tools/?v=v${version}" target="_blank" rel="noopener">🔄 Check for Updates</a>
-          </div>
-
-          <p style="margin-top:1.2em;opacity:0.5;font-size:0.85em;">Licensed under the GNU General Public License v3.0</p>
-        </div>
-      </div>`;
-
-    document.body.appendChild(overlay);
-
-    // Close handlers
-    const close = () => this._closeHelpDialog();
-    overlay.querySelector('.help-close').addEventListener('click', close);
-    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
-
-    this._helpEscHandler = e => { if (e.key === 'Escape') close(); };
-    document.addEventListener('keydown', this._helpEscHandler);
-  },
-
-  _closeHelpDialog() {
-    const overlay = document.querySelector('.help-overlay');
-    if (overlay) overlay.remove();
-    if (this._helpEscHandler) {
-      document.removeEventListener('keydown', this._helpEscHandler);
-      this._helpEscHandler = null;
-    }
-  },
+  //
+  // The Help pane lives in the unified Settings dialog (see app-settings.js).
+  // This section used to own a standalone `.help-overlay` modal built by
+  // `_openHelpDialog`; that code moved to `_renderHelpTab` and the old
+  // entry-point keyboard shortcut (`?` / `H`) now routes through
+  // `_openSettingsDialog('help')` — wired in app-core.js.
 
   // ── Version check (from ?v= query parameter) ─────────────────────────────
   _checkVersionParam() {
@@ -2754,21 +2797,21 @@ Object.assign(App.prototype, {
   // into a ticket / TIP.
   _getExportMenuItems() {
     return [
-      { id: 'save-raw',  icon: '💾',  label: 'Save raw file',                action: () => this._saveContent() },
+      { id: 'save-raw', icon: '💾', label: 'Save raw file', action: () => this._saveContent() },
       // `enabled` is re-evaluated on every menu open (see _buildExportMenu)
       // so the "Copy raw content" row greys out for binary formats that
       // can't survive a clipboard text round-trip. Tooltip spells out the
       // canonical alternative (💾 Save raw file) so users understand why.
       {
-        id: 'copy-raw',  icon: '📋',  label: 'Copy raw content',             action: () => this._copyContent(),
-        enabled:         () => this._isRawCopyable(),
+        id: 'copy-raw', icon: '📋', label: 'Copy raw content', action: () => this._copyContent(),
+        enabled: () => this._isRawCopyable(),
         disabledTooltip: 'Binary file — use 💾 Save raw file instead',
       },
       { separator: true },
-      { id: 'stix',      icon: '🧾',  label: 'Copy STIX 2.1 bundle (JSON)',  action: () => this._exportStix() },
-      { id: 'misp',      icon: '🎯',  label: 'Copy MISP event (JSON)',       action: () => this._exportMisp() },
-      { id: 'iocs-json', icon: '{…}', label: 'Copy IOCs as JSON',            action: () => this._exportIocsJson() },
-      { id: 'iocs-csv',  icon: '🔢',  label: 'Copy IOCs as CSV',             action: () => this._exportIocsCsv() },
+      { id: 'stix', icon: '🧾', label: 'Copy STIX 2.1 bundle (JSON)', action: () => this._exportStix() },
+      { id: 'misp', icon: '🎯', label: 'Copy MISP event (JSON)', action: () => this._exportMisp() },
+      { id: 'iocs-json', icon: '{…}', label: 'Copy IOCs as JSON', action: () => this._exportIocsJson() },
+      { id: 'iocs-csv', icon: '🔢', label: 'Copy IOCs as CSV', action: () => this._exportIocsCsv() },
     ];
   },
 
@@ -2938,11 +2981,11 @@ Object.assign(App.prototype, {
       seen.add(key);
       const stixType = this._classifyIocForStix(r.type, r.url);
       out.push({
-        type:     r.type,
-        value:    r.url,
+        type: r.type,
+        value: r.url,
         severity: r.severity || 'info',
-        note:     r.description || r.ruleName || '',
-        source:   r._source || r.section || '',
+        note: r.description || r.ruleName || '',
+        source: r._source || r.section || '',
         stixType, // may be null for unmappable types (skipped by STIX)
       });
     }
@@ -3067,13 +3110,13 @@ Object.assign(App.prototype, {
       // Escape any single quotes in the literal.
       const esc = String(val).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
       switch (type) {
-        case 'url':         return `[url:value = '${esc}']`;
-        case 'ipv4':        return `[ipv4-addr:value = '${esc}']`;
-        case 'ipv6':        return `[ipv6-addr:value = '${esc}']`;
-        case 'email':       return `[email-addr:value = '${esc}']`;
-        case 'domain':      return `[domain-name:value = '${esc}']`;
-        case 'hash-md5':    return `[file:hashes.'MD5' = '${esc}']`;
-        case 'hash-sha1':   return `[file:hashes.'SHA-1' = '${esc}']`;
+        case 'url': return `[url:value = '${esc}']`;
+        case 'ipv4': return `[ipv4-addr:value = '${esc}']`;
+        case 'ipv6': return `[ipv6-addr:value = '${esc}']`;
+        case 'email': return `[email-addr:value = '${esc}']`;
+        case 'domain': return `[domain-name:value = '${esc}']`;
+        case 'hash-md5': return `[file:hashes.'MD5' = '${esc}']`;
+        case 'hash-sha1': return `[file:hashes.'SHA-1' = '${esc}']`;
         case 'hash-sha256': return `[file:hashes.'SHA-256' = '${esc}']`;
         case 'file-path': {
           // Take basename, skip drive/UNC prefix.
@@ -3145,7 +3188,7 @@ Object.assign(App.prototype, {
     b[6] = (b[6] & 0x0f) | 0x40;
     b[8] = (b[8] & 0x3f) | 0x80;
     const h = Array.from(b).map(x => x.toString(16).padStart(2, '0'));
-    return `${h.slice(0,4).join('')}-${h.slice(4,6).join('')}-${h.slice(6,8).join('')}-${h.slice(8,10).join('')}-${h.slice(10,16).join('')}`;
+    return `${h.slice(0, 4).join('')}-${h.slice(4, 6).join('')}-${h.slice(6, 8).join('')}-${h.slice(8, 10).join('')}-${h.slice(10, 16).join('')}`;
   },
 
   // Deterministic UUID v5 (RFC 4122 §4.3). Accepts a canonical namespace
@@ -3162,7 +3205,7 @@ Object.assign(App.prototype, {
     h[6] = (h[6] & 0x0f) | 0x50;  // version 5
     h[8] = (h[8] & 0x3f) | 0x80;  // variant RFC 4122
     const hex = Array.from(h).map(x => x.toString(16).padStart(2, '0'));
-    return `${hex.slice(0,4).join('')}-${hex.slice(4,6).join('')}-${hex.slice(6,8).join('')}-${hex.slice(8,10).join('')}-${hex.slice(10,16).join('')}`;
+    return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10, 16).join('')}`;
   },
 
   _uuidToBytes(uuid) {
@@ -3193,8 +3236,8 @@ Object.assign(App.prototype, {
 
     const risk = String(f.risk || 'info').toLowerCase();
     const threatLevel = (risk === 'high' || risk === 'critical') ? '1'
-                      : (risk === 'medium') ? '2'
-                      : (risk === 'low') ? '3' : '4';
+      : (risk === 'medium') ? '2'
+        : (risk === 'low') ? '3' : '4';
 
     // IOC → MISP attribute mapping. The table here is deliberately pinned
     // near the top of the builder so reviewers see the full surface.
@@ -3213,16 +3256,16 @@ Object.assign(App.prototype, {
     const mapMisp = (ioc) => {
       const base = { value: ioc.value, comment: ioc.note || ioc.type, distribution: '5' };
       switch (ioc.stixType) {
-        case 'url':         return { ...base, type: 'url',      category: 'Network activity', to_ids: '1' };
+        case 'url': return { ...base, type: 'url', category: 'Network activity', to_ids: '1' };
         case 'ipv4':
-        case 'ipv6':        return { ...base, type: 'ip-dst',   category: 'Network activity', to_ids: '1' };
-        case 'domain':      return { ...base, type: 'domain',   category: 'Network activity', to_ids: '1' };
-        case 'email':       return { ...base, type: 'email-src',category: 'Payload delivery', to_ids: '1' };
-        case 'hash-md5':    return { ...base, type: 'md5',      category: 'Payload delivery', to_ids: '1' };
-        case 'hash-sha1':   return { ...base, type: 'sha1',     category: 'Payload delivery', to_ids: '1' };
-        case 'hash-sha256': return { ...base, type: 'sha256',   category: 'Payload delivery', to_ids: '1' };
-        case 'file-path':   return { ...base, type: 'filename', category: 'Payload delivery', to_ids: '0' };
-        default:            return { ...base, type: 'text',     category: 'Other',            to_ids: '0' };
+        case 'ipv6': return { ...base, type: 'ip-dst', category: 'Network activity', to_ids: '1' };
+        case 'domain': return { ...base, type: 'domain', category: 'Network activity', to_ids: '1' };
+        case 'email': return { ...base, type: 'email-src', category: 'Payload delivery', to_ids: '1' };
+        case 'hash-md5': return { ...base, type: 'md5', category: 'Payload delivery', to_ids: '1' };
+        case 'hash-sha1': return { ...base, type: 'sha1', category: 'Payload delivery', to_ids: '1' };
+        case 'hash-sha256': return { ...base, type: 'sha256', category: 'Payload delivery', to_ids: '1' };
+        case 'file-path': return { ...base, type: 'filename', category: 'Payload delivery', to_ids: '0' };
+        default: return { ...base, type: 'text', category: 'Other', to_ids: '0' };
       }
     };
 
@@ -3231,8 +3274,8 @@ Object.assign(App.prototype, {
 
     // File-level attributes (always emitted if we have the data).
     if (meta.name) pushAttr({ type: 'filename', category: 'Payload delivery', to_ids: '0', distribution: '5', value: meta.name, comment: 'Analysed file' });
-    if (hashes.md5) pushAttr({ type: 'md5',    category: 'Payload delivery', to_ids: '1', distribution: '5', value: hashes.md5,    comment: 'File hash (MD5)' });
-    if (hashes.sha1) pushAttr({ type: 'sha1',  category: 'Payload delivery', to_ids: '1', distribution: '5', value: hashes.sha1,   comment: 'File hash (SHA-1)' });
+    if (hashes.md5) pushAttr({ type: 'md5', category: 'Payload delivery', to_ids: '1', distribution: '5', value: hashes.md5, comment: 'File hash (MD5)' });
+    if (hashes.sha1) pushAttr({ type: 'sha1', category: 'Payload delivery', to_ids: '1', distribution: '5', value: hashes.sha1, comment: 'File hash (SHA-1)' });
     if (hashes.sha256) pushAttr({ type: 'sha256', category: 'Payload delivery', to_ids: '1', distribution: '5', value: hashes.sha256, comment: 'File hash (SHA-256)' });
 
     // IOCs

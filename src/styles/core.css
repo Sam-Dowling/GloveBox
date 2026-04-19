@@ -2331,3 +2331,365 @@ body.dark .error-box p {
   color: rgba(255, 255, 255, .5);
 }
 
+/* ══════════════════════════════════════════════════════
+   Settings / Help unified modal
+   ─────────────────────────────────────────────────────
+   Two-tabbed dialog owned by app-settings.js. Opens from
+   the ⚙ toolbar button, the `,` shortcut (Settings tab)
+   and the `?` / `H` shortcut (Help tab). The legacy
+   `.help-*` rules in viewers.css are kept because:
+     (a) Help tab content reuses `.help-kbd-table`,
+         `.help-kbd`, `.help-tagline`, `.help-update-btn`.
+     (b) `_checkVersionParam` in app-ui.js still builds a
+         separate `.help-overlay.update-check-overlay`
+         popup for the ?v= update-check splash.
+   Styling rhymes with .tb-menu / .help-dialog so the
+   dialog sits visually in the same family as the toolbar
+   dropdowns.
+   ══════════════════════════════════════════════════════ */
+
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, .38);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  padding: 24px;
+}
+
+body.dark .settings-overlay {
+  background: rgba(5, 6, 12, .62);
+}
+
+.settings-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 560px;
+  max-width: 100%;
+  /* Fixed height keeps the dialog from jumping vertically when the user
+     switches between the Settings and Help tabs (they have very
+     different content heights). `max-height: 86vh` still kicks in on
+     short viewports; `.settings-body` flexes + scrolls to fill the gap. */
+  height: 560px;
+  max-height: 86vh;
+  background: #f7f8fa;
+  border: 1px solid #c3c7cf;
+  border-radius: 14px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .24);
+  overflow: hidden;
+  color: #222;
+}
+
+body.dark .settings-dialog {
+  background: rgba(22, 23, 34, .98);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-color: rgba(255, 255, 255, .1);
+  box-shadow: 0 18px 56px rgba(0, 0, 0, .6);
+  color: #d4d4dc;
+}
+
+.settings-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e1e3e8;
+}
+
+body.dark .settings-header {
+  border-color: rgba(255, 255, 255, .06);
+}
+
+.settings-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 15px;
+  letter-spacing: -.1px;
+}
+
+.settings-version {
+  margin-left: 6px;
+  font-weight: 400;
+  font-size: 11px;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+}
+
+body.dark .settings-version {
+  color: rgba(255, 255, 255, .48);
+}
+
+.settings-close {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 6px;
+  opacity: .7;
+  transition: background .15s ease, opacity .15s ease;
+}
+
+.settings-close:hover {
+  background: rgba(0, 0, 0, .06);
+  opacity: 1;
+}
+
+body.dark .settings-close:hover {
+  background: rgba(255, 255, 255, .08);
+}
+
+/* Tab strip */
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid #e1e3e8;
+  background: #eceef2;
+}
+
+body.dark .settings-tabs {
+  background: rgba(18, 19, 28, .6);
+  border-color: rgba(255, 255, 255, .06);
+}
+
+.settings-tab {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 8px 14px;
+  border-radius: 8px 8px 0 0;
+  opacity: .7;
+  transition: background .15s ease, color .15s ease, opacity .15s ease;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.settings-tab:hover {
+  background: rgba(0, 0, 0, .05);
+  opacity: 1;
+}
+
+body.dark .settings-tab:hover {
+  background: rgba(255, 255, 255, .05);
+}
+
+.settings-tab-active {
+  opacity: 1;
+  background: #f7f8fa;
+  border-bottom-color: #1a73e8;
+  color: #1a5fb4;
+}
+
+body.dark .settings-tab-active {
+  background: rgba(22, 23, 34, .98);
+  border-bottom-color: #22d3ee;
+  color: #22d3ee;
+}
+
+/* Body (scrolling pane) — flexes to fill the dialog so tab switches
+   don't change the overall height; `min-height: 0` is required for
+   `overflow-y: auto` to work inside a flex column. */
+.settings-body {
+  padding: 18px 20px 20px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.settings-body h3 {
+  margin: 16px 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .5px;
+  text-transform: uppercase;
+  color: #666;
+}
+
+body.dark .settings-body h3 {
+  color: rgba(255, 255, 255, .62);
+}
+
+.settings-body a {
+  color: #1a73e8;
+  text-decoration: none;
+}
+
+.settings-body a:hover {
+  text-decoration: underline;
+}
+
+body.dark .settings-body a {
+  color: #22d3ee;
+}
+
+.settings-body kbd {
+  font-family: 'Fira Code', 'Consolas', monospace;
+}
+
+/* Settings tab rows */
+.settings-row {
+  padding: 12px 0;
+  border-bottom: 1px solid #eceef2;
+}
+
+.settings-row:last-child {
+  border-bottom: 0;
+}
+
+body.dark .settings-row {
+  border-color: rgba(255, 255, 255, .06);
+}
+
+.settings-row-label {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.settings-hint {
+  font-size: 11px;
+  color: #777;
+  margin-bottom: 10px;
+  line-height: 1.5;
+}
+
+body.dark .settings-hint {
+  color: rgba(255, 255, 255, .55);
+}
+
+/* Theme picker grid */
+.settings-theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 8px;
+}
+
+.settings-theme-tile {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #d0d3da;
+  border-radius: 10px;
+  background: #f0f1f4;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: all .15s ease;
+}
+
+.settings-theme-tile:hover {
+  border-color: #1a73e8;
+  background: rgba(26, 115, 232, .06);
+}
+
+body.dark .settings-theme-tile {
+  background: rgba(255, 255, 255, .04);
+  border-color: rgba(255, 255, 255, .08);
+}
+
+body.dark .settings-theme-tile:hover {
+  border-color: rgba(34, 211, 238, .4);
+  background: rgba(34, 211, 238, .08);
+  color: #22d3ee;
+}
+
+.settings-theme-tile-active {
+  border-color: #1a73e8 !important;
+  background: rgba(26, 115, 232, .12) !important;
+  color: #1a5fb4;
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px rgba(26, 115, 232, .35);
+}
+
+body.dark .settings-theme-tile-active {
+  border-color: rgba(34, 211, 238, .55) !important;
+  background: rgba(34, 211, 238, .14) !important;
+  color: #67e8f9 !important;
+  box-shadow: inset 0 0 0 1px rgba(34, 211, 238, .4);
+}
+
+.settings-theme-icon {
+  flex: 0 0 auto;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.settings-theme-label {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Summary slider */
+.settings-slider {
+  width: 100%;
+  margin: 4px 0 6px;
+  accent-color: #1a73e8;
+}
+
+body.dark .settings-slider {
+  accent-color: #22d3ee;
+}
+
+.settings-slider-readout {
+  font-size: 11px;
+  color: #555;
+  font-variant-numeric: tabular-nums;
+}
+
+body.dark .settings-slider-readout {
+  color: rgba(255, 255, 255, .65);
+}
+
+.settings-footnote {
+  margin-top: 14px;
+  font-size: 11px;
+  color: #888;
+  font-style: italic;
+}
+
+body.dark .settings-footnote {
+  color: rgba(255, 255, 255, .48);
+}
+
+/* Toolbar chip — small pill inside the ⚡ Summary button showing the
+   current budget label (e.g. "16K", "MAX"). Scales down tightly so the
+   button keeps its compact footprint. */
+.tb-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .3px;
+  border-radius: 8px;
+  background: rgba(26, 115, 232, .18);
+  color: #134694;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  vertical-align: 1px;
+}
+
+body.dark .tb-chip {
+  background: rgba(34, 211, 238, .22);
+  color: #67e8f9;
+}
+</file_content_end>

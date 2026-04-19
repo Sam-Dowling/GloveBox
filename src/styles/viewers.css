@@ -4160,18 +4160,18 @@ body.dark .help-kbd {
   color: #d4d4dc;
 }
 
+/* Tagline is the first element in the Help tab of the Settings / Help
+   modal — the legacy top-divider is dropped so the line doesn't read as
+   a stray rule at the very top of the dialog, and so the tab's content
+   fits inside the fixed-height modal without scrolling. */
 .help-tagline {
   text-align: center;
   font-size: 11px;
   color: #aaa;
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid #e8e8e8;
 }
 
 body.dark .help-tagline {
   color: rgba(255, 255, 255, .3);
-  border-color: rgba(255, 255, 255, .06);
 }
 
 /* ── Check for Updates button (in help dialog) ── */

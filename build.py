@@ -27,6 +27,8 @@ CSS_FILES = [
     'src/styles/viewers.css',
     'src/styles/themes/midnight.css',
     'src/styles/themes/solarized.css',
+    'src/styles/themes/mocha.css',
+    'src/styles/themes/latte.css',
 ]
 
 css = ''.join(read(f) for f in CSS_FILES)
@@ -149,6 +151,10 @@ JS_FILES = [
     'src/app/app-sidebar.js',
     'src/app/app-yara.js',
     'src/app/app-ui.js',
+    # app-settings.js attaches unified Settings/Help dialog methods onto
+    # App.prototype. Must load AFTER app-ui.js because the Settings tab's
+    # theme picker references the THEMES registry + _setTheme defined there.
+    'src/app/app-settings.js',
 ]
 
 app_js = '\n'.join(read(f) for f in JS_FILES)
@@ -200,14 +206,10 @@ HTML = f"""<!DOCTYPE html>
     </div>
     <div class="tb-spacer"></div>
     <div class="tb-separator"></div>
-    <button class="tb-btn" id="btn-yara" title="YARA rule editor (Y)">📐 YARA Rules</button>
-    <div class="tb-separator"></div>
     <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>
-    <button class="tb-btn tb-icon-btn" id="btn-help" title="Help &amp; About (?)">?</button>
-    <div class="tb-menu-wrap">
-      <button class="tb-btn tb-icon-btn" id="btn-theme" title="Theme — click to change" aria-haspopup="menu" aria-expanded="false">🌙</button>
-      <div class="tb-menu hidden" id="theme-menu" role="menu"></div>
-    </div>
+    <div class="tb-separator"></div>
+    <button class="tb-btn tb-icon-btn" id="btn-yara" title="YARA rule editor (Y)">📐</button>
+    <button class="tb-btn tb-icon-btn" id="btn-settings" title="Settings (,) · Help (?)">⚙</button>
     <input type="file" id="file-input" accept="{accept_attr}" style="display:none">
 
   </div>
@@ -219,7 +221,7 @@ HTML = f"""<!DOCTYPE html>
     <div id="viewer">
       <div id="viewer-toolbar" class="hidden">
         <div class="vt-group">
-          <button class="tb-btn tb-action-btn tb-accent-btn" id="btn-copy-analysis" title="Copy AI/SOC summary to clipboard">⚡ Summary</button>
+          <button class="tb-btn tb-action-btn tb-accent-btn" id="btn-copy-analysis" title="Copy AI/SOC summary to clipboard">⚡ Summary <span class="tb-chip" id="summary-budget-chip">16K</span></button>
           <div class="tb-menu-wrap">
             <button class="tb-btn tb-action-btn" id="btn-export" aria-haspopup="menu" aria-expanded="false" title="Export analysis in various formats">📤 Export <span class="tb-caret">▾</span></button>
             <div class="tb-menu hidden" id="export-menu" role="menu"></div>
