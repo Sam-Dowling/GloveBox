@@ -2469,8 +2469,24 @@ class PeRenderer {
         // note the type so the sidebar reader doesn't over-index on that.
       }
 
-      // ── Risk assessment ────────────────────────────────────────────
+      // ── Mirror classic-pivot metadata into IOC table ────────────────
+      // PE binaries carry a set of metadata fields that are actionable
+      // pivots (imphash clusters similar samples; PDB paths leak build
+      // hosts / usernames; OriginalFilename / InternalName survives
+      // renaming for tracking); these need to land in the sidebar IOC
+      // table, not just in the File Info metadata pane. Attribution
+      // fluff (CompanyName, FileDescription, ProductName) stays
+      // metadata-only per the "Option B" classic-pivot policy.
+      mirrorMetadataIOCs(findings, {
+        'Imphash':           IOC.HASH,
+        'PDB Path':          IOC.FILE_PATH,
+        'Original Filename': IOC.FILE_PATH,
+        'Internal Name':     IOC.FILE_PATH,
+        'Export DLL Name':   IOC.FILE_PATH,
+        'Go Module Path':    IOC.PATTERN,
+      });
 
+      // ── Risk assessment ────────────────────────────────────────────
       findings.autoExec = issues;
       if (riskScore >= 8) findings.risk = 'critical';
       else if (riskScore >= 5) findings.risk = 'high';

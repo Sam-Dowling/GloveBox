@@ -1958,6 +1958,56 @@ class ElfRenderer {
         }
       }
 
+      // ── Mirror dylibs + RPATHs + classic-pivot metadata into IOCs ──
+      // `findings.metadata` only stores a lib count ("Libraries" = "7");
+      // the actual NEEDED lib paths are in `elf.neededLibs` — emit each
+      // one individually so they become clickable IOCs in the sidebar.
+      // Same for RPATH/RUNPATH which are real filesystem pivots.
+      if (elf.neededLibs && elf.neededLibs.length > 0) {
+        const LIB_CAP = 40;
+        const libs = elf.neededLibs.slice(0, LIB_CAP);
+        for (const name of libs) {
+          if (!name) continue;
+          pushIOC(findings, {
+            type: IOC.FILE_PATH, value: name, severity: 'info',
+            note: 'ELF NEEDED library',
+          });
+        }
+        if (elf.neededLibs.length > LIB_CAP) {
+          pushIOC(findings, {
+            type: IOC.INFO,
+            value: `…+${elf.neededLibs.length - LIB_CAP} more NEEDED libraries`,
+            severity: 'info',
+          });
+        }
+      }
+      if (elf.rpath) {
+        // Split on ':' because DT_RPATH can encode multiple search paths.
+        for (const rp of String(elf.rpath).split(':').map(s => s.trim()).filter(Boolean)) {
+          pushIOC(findings, {
+            type: IOC.FILE_PATH, value: rp, severity: 'medium',
+            note: 'ELF DT_RPATH (library search path — hijack vector)',
+          });
+        }
+      }
+      if (elf.runpath) {
+        for (const rp of String(elf.runpath).split(':').map(s => s.trim()).filter(Boolean)) {
+          pushIOC(findings, {
+            type: IOC.FILE_PATH, value: rp, severity: 'medium',
+            note: 'ELF DT_RUNPATH (library search path — hijack vector)',
+          });
+        }
+      }
+      // Classic-pivot fields: interpreter leaks the target libc flavour,
+      // SONAME is the canonical lib identifier, Go Module Path leaks the
+      // build-host VCS URL. Attribution fluff stays metadata-only per the
+      // "Option B" classic-pivot policy.
+      mirrorMetadataIOCs(findings, {
+        'Interpreter':    IOC.FILE_PATH,
+        'SONAME':         IOC.FILE_PATH,
+        'Go Module Path': IOC.PATTERN,
+      });
+
       // ── Risk assessment ────────────────────────────────────────────
       findings.autoExec = issues;
       if (riskScore >= 8) findings.risk = 'critical';

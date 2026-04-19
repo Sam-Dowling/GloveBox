@@ -2182,6 +2182,49 @@ class MachoRenderer {
         });
       }
 
+      // ── Mirror dylibs + RPATHs as individual IOCs ──────────────────
+      // `mirrorMetadataIOCs` can't see these because the metadata row only
+      // stores a count ("Dynamic Libraries" = "5"); emit directly instead.
+      if (mo.dylibs && mo.dylibs.length) {
+        const DYLIB_CAP = 40;
+        for (const dl of mo.dylibs.slice(0, DYLIB_CAP)) {
+          const name = (typeof dl === 'string') ? dl : (dl && dl.name ? dl.name : null);
+          if (!name) continue;
+          pushIOC(findings, {
+            type: IOC.FILE_PATH, value: name, severity: 'info',
+            highlightText: name, note: 'Linked dylib',
+          });
+        }
+        if (mo.dylibs.length > DYLIB_CAP) {
+          findings.interestingStrings.push({
+            type: IOC.INFO,
+            url: `Dylib extraction truncated at ${DYLIB_CAP} — binary links ${mo.dylibs.length} libraries`,
+            severity: 'info',
+          });
+        }
+      }
+      if (mo.security && mo.security.rpaths && mo.security.rpaths.length) {
+        for (const rp of mo.security.rpaths.slice(0, 20)) {
+          pushIOC(findings, {
+            type: IOC.FILE_PATH, value: rp, severity: 'info',
+            highlightText: rp, note: 'RPATH',
+          });
+        }
+      }
+
+      // ── Mirror classic-pivot metadata into IOC table ───────────────
+      // Option-B pivots: UUID/Bundle ID/Source Version are all stable
+      // cross-sample pivots. Bundle Name/Bundle Version stay metadata-
+      // only (attribution fluff).
+      mirrorMetadataIOCs(findings, {
+        'UUID':              IOC.GUID,
+        'Bundle ID':         IOC.PATTERN,
+        'Bundle Executable': IOC.FILE_PATH,
+        'Dynamic Linker':    IOC.FILE_PATH,
+        'Library ID':        IOC.FILE_PATH,
+        'Source Version':    IOC.PATTERN,
+      });
+
       // ── Risk assessment ────────────────────────────────────────────
       findings.autoExec = issues;
       if (riskScore >= 8) findings.risk = 'critical';
