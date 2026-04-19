@@ -364,11 +364,41 @@ The `cross-renderer-sanity-check` skill grades new renderers against this
 contract; a renderer that stamps `'high'` without evidence, or stays `'low'`
 despite pushing high-severity externalRefs, will fail that audit.
 
+### IOC Push Helpers
+
+`src/constants.js` ships two helpers every renderer should prefer over
+hand-rolling `findings.interestingStrings.push({...})`:
+
+- **`pushIOC(findings, {type, value, severity?, highlightText?, note?, bucket?})`**
+  writes a canonical IOC row into `interestingStrings` (or `externalRefs` when
+  `bucket: 'externalRefs'` is passed). It pins the on-wire shape
+  (`{type, url, severity, _highlightText?, note?}`) and — crucially — **auto-emits
+  a sibling `IOC.DOMAIN` row** whenever `type === IOC.URL` and vendored `tldts`
+  resolves the URL to a registrable domain. Renderers should therefore push URLs
+  through `pushIOC`; the domain pivot falls out for free and the audit surface
+  is identical across formats. Pass `_noDomainSibling: true` in rare cases where
+  you already emit a manual domain row.
+
+- **`mirrorMetadataIOCs(findings, {metadataKey: IOC.TYPE, ...}, opts?)`** is a
+  metadata → IOC mirror. The sidebar IOC table is fed *only* from
+  `externalRefs + interestingStrings` — a value that lives on
+  `findings.metadata` alone never reaches the analyst's pivot list. Call this
+  at the end of `analyzeForSecurity()` to mirror the **classic pivot** fields
+  (hashes, paths, GUIDs, MAC, emails, cert fingerprints) into the sidebar.
+  Array-valued metadata (e.g. a `dylibs[]` list) emits one IOC per element.
+
+**Option-B rule**: mirror only classic pivots. Do **not** mirror attribution
+fluff — `CompanyName`, `FileDescription`, `ProductName`, `SubjectName` etc.
+stay on `metadata` and are visible in the viewer, but they are noise in a
+pivot list and fatten `📤 Export`'s CSV/STIX/MISP output for no operational
+gain.
+
 ### IOC Push Checklist
 
 Every IOC the renderer emits — whether onto `findings.externalRefs` or `findings.interestingStrings` — must obey this contract. The `ioc-conformity-audit` skill grades pull requests against these rules; drift here is what the audit exists to catch.
 
-1. **Type is always an `IOC.*` constant** from `src/constants.js`. Never a bespoke string literal (`type: 'url'`, `type: 'ioc'`, `type: 'email'`) — those slip past the sidebar's copy/filter/share wiring. The canonical set is `IOC.URL`, `IOC.EMAIL`, `IOC.IP`, `IOC.FILE_PATH`, `IOC.UNC_PATH`, `IOC.ATTACHMENT`, `IOC.YARA`, `IOC.PATTERN`, `IOC.INFO`, `IOC.HASH`, `IOC.COMMAND_LINE`, `IOC.PROCESS`, `IOC.HOSTNAME`, `IOC.USERNAME`, `IOC.REGISTRY_KEY`, `IOC.MAC`.
+1. **Type is always an `IOC.*` constant** from `src/constants.js`. Never a bespoke string literal (`type: 'url'`, `type: 'ioc'`, `type: 'email'`) — those slip past the sidebar's copy/filter/share wiring. The canonical set is `IOC.URL`, `IOC.EMAIL`, `IOC.IP`, `IOC.FILE_PATH`, `IOC.UNC_PATH`, `IOC.ATTACHMENT`, `IOC.YARA`, `IOC.PATTERN`, `IOC.INFO`, `IOC.HASH`, `IOC.COMMAND_LINE`, `IOC.PROCESS`, `IOC.HOSTNAME`, `IOC.USERNAME`, `IOC.REGISTRY_KEY`, `IOC.MAC`, `IOC.DOMAIN`, `IOC.GUID`, `IOC.FINGERPRINT`.
+
 2. **Severity comes from `IOC_CANONICAL_SEVERITY`** (also in `src/constants.js`) unless you have a renderer-specific reason to escalate. Escalations are fine — a URL becomes `high` in a phishing EML with `authTripleFail`, a command line lifted from a LNK trigger warrants `critical` — but they must be *escalations* from the canonical floor, not reductions.
 3. **Carry `_highlightText`, never raw offsets into a synthetic buffer.** The sidebar's click-to-focus mechanism uses `_sourceOffset` / `_sourceLength` / `_highlightText` to scroll and highlight. Offsets are only meaningful when they are true byte offsets into the rendered surface. If you extracted the value from a joined-string buffer (`strings.join('\n')`), set only `_highlightText: <value>` — the sidebar will locate it in the plaintext table at display time.
 4. **Cap large IOC lists with an `IOC.INFO` truncation marker.** When a renderer walks a large space (PE/ELF/Mach-O string tables, EVTX event fields, ZIP attachments), enforce a cap (`URL_CAP=50`, `IOC_CAP=500`, …) and *after* the cap push exactly one `IOC.INFO` row whose `url:` field explains the reason and the cap count. The Summary / Share exporters read this row — without it the analyst has no way to know they are looking at a truncated view.

@@ -82,10 +82,13 @@ const IOC = Object.freeze({
   USERNAME: 'Username',
   REGISTRY_KEY: 'Registry Key',
   MAC: 'MAC Address',
+  DOMAIN: 'Domain',
+  GUID: 'GUID',
+  FINGERPRINT: 'Fingerprint',
 });
 
 /** IOC types whose values are directly copyable in the sidebar. */
-const IOC_COPYABLE = new Set([IOC.URL, IOC.EMAIL, IOC.IP, IOC.FILE_PATH, IOC.UNC_PATH, IOC.HASH, IOC.COMMAND_LINE, IOC.PROCESS, IOC.HOSTNAME, IOC.USERNAME, IOC.REGISTRY_KEY, IOC.MAC]);
+const IOC_COPYABLE = new Set([IOC.URL, IOC.EMAIL, IOC.IP, IOC.FILE_PATH, IOC.UNC_PATH, IOC.HASH, IOC.COMMAND_LINE, IOC.PROCESS, IOC.HOSTNAME, IOC.USERNAME, IOC.REGISTRY_KEY, IOC.MAC, IOC.DOMAIN, IOC.GUID, IOC.FINGERPRINT]);
 
 /**
  * Canonical severity floors per IOC type. These are the default severities
@@ -115,7 +118,178 @@ const IOC_CANONICAL_SEVERITY = Object.freeze({
   [IOC.USERNAME]:      'info',
   [IOC.REGISTRY_KEY]:  'medium',    // persistence-key indicator
   [IOC.MAC]:           'info',
+  [IOC.DOMAIN]:        'info',      // auto-derived from URL via tldts (if loaded); pure pivot
+  [IOC.GUID]:          'info',      // droid/bundle/product codes; pure pivot
+  [IOC.FINGERPRINT]:   'info',      // cert/PGP key thumbprint; pure pivot
 });
+
+// ── Shared IOC extractors ─────────────────────────────────────────────────────
+// Used by renderers that need to pull classic pivot values out of a blob of
+// joined strings (PE/ELF/Mach-O string tables, PDF object streams, etc.).
+// All functions return a de-duplicated array capped at `cap` entries so a
+// pathological input can't blow up the IOC table.
+
+const _URL_RE   = /\b(?:https?|ftp|ftps):\/\/[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+/g;
+const _UNC_RE   = /\\\\[A-Za-z0-9._\-$]+(?:\\[A-Za-z0-9._\-$%]+){1,}/g;
+const _EMAIL_RE = /\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g;
+const _MAC_RE   = /\b(?:[0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}\b/g;
+const _GUID_RE  = /\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b/g;
+const _IPV4_RE  = /\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d?\d)\b/g;
+const _HASH_RE  = /\b(?:[A-Fa-f0-9]{32}|[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})\b/g;
+
+function _dedupCap(arr, cap) {
+  const out = [];
+  const seen = new Set();
+  const lim = cap || 200;
+  for (const v of arr) {
+    if (!v) continue;
+    const k = String(v);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(k);
+    if (out.length >= lim) break;
+  }
+  return out;
+}
+
+function extractUrls(text, cap)         { return _dedupCap((String(text || '').match(_URL_RE)   || []), cap); }
+function extractUncPaths(text, cap)     { return _dedupCap((String(text || '').match(_UNC_RE)   || []), cap); }
+function extractEmails(text, cap)       { return _dedupCap((String(text || '').match(_EMAIL_RE) || []), cap); }
+function extractMacAddresses(text, cap) {
+  const raw = String(text || '').match(_MAC_RE) || [];
+  // Filter obvious padding / null MACs
+  const filtered = raw.filter(m => {
+    const hex = m.replace(/[:\-]/g, '').toLowerCase();
+    return hex !== '000000000000' && hex !== 'ffffffffffff';
+  });
+  return _dedupCap(filtered, cap);
+}
+function extractGuids(text, cap) {
+  const raw = String(text || '').match(_GUID_RE) || [];
+  // Drop the nil GUID — it's never a pivot
+  return _dedupCap(raw.filter(g => g.toLowerCase() !== '00000000-0000-0000-0000-000000000000'), cap);
+}
+function extractIpAddresses(text, cap) {
+  const raw = String(text || '').match(_IPV4_RE) || [];
+  // Drop private / loopback / broadcast noise — pure pivot use
+  const filtered = raw.filter(ip => {
+    if (ip === '0.0.0.0' || ip === '255.255.255.255' || ip === '127.0.0.1') return false;
+    const o = ip.split('.').map(Number);
+    if (o[0] === 10) return false;
+    if (o[0] === 127) return false;
+    if (o[0] === 169 && o[1] === 254) return false;
+    if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return false;
+    if (o[0] === 192 && o[1] === 168) return false;
+    if (o[0] >= 224) return false;
+    return true;
+  });
+  return _dedupCap(filtered, cap);
+}
+function extractHashes(text, cap) { return _dedupCap((String(text || '').match(_HASH_RE) || []), cap); }
+
+/**
+ * Extract the registrable domain from a URL using tldts (if the vendor lib
+ * has been loaded). Returns `null` if tldts is unavailable or the URL
+ * doesn't parse to a public-suffix-valid domain. Used by `pushIOC` to
+ * auto-emit an `IOC.DOMAIN` sibling for every `IOC.URL`.
+ */
+function _domainFromUrl(url) {
+  try {
+    if (typeof tldts === 'undefined' || !tldts || !tldts.parse) return null;
+    const r = tldts.parse(String(url || ''));
+    if (!r || !r.domain || r.isIp) return null;
+    return r.domain;
+  } catch (_) { return null; }
+}
+
+/**
+ * Canonical IOC pusher. Every renderer that emits IOCs should route through
+ * this helper so:
+ *   • the on-wire shape is identical (`{type, url, severity, _highlightText, note}`),
+ *   • the sidebar's copy/filter logic has a single target, and
+ *   • an `IOC.URL` automatically gets a sibling `IOC.DOMAIN` if tldts is
+ *     loaded and the URL resolves to a real registrable domain.
+ *
+ * @param {object}   findings         `analyzeForSecurity()` findings object
+ * @param {object}   opts
+ * @param {string}   opts.type        one of `IOC.*`
+ * @param {string}   opts.value       the IOC value (stored in `.url` for sidebar parity)
+ * @param {string}  [opts.severity]   'info' | 'medium' | 'high' | 'critical'
+ * @param {string}  [opts.highlightText] click-to-focus needle (defaults to `value`)
+ * @param {string}  [opts.note]       short human context
+ * @param {string}  [opts.bucket]     'externalRefs' | 'interestingStrings' (default 'interestingStrings')
+ */
+function pushIOC(findings, opts) {
+  if (!findings || !opts || !opts.type || !opts.value) return;
+  const bucket = opts.bucket || 'interestingStrings';
+  if (!Array.isArray(findings[bucket])) findings[bucket] = [];
+  const sev = opts.severity || IOC_CANONICAL_SEVERITY[opts.type] || 'info';
+  const entry = {
+    type: opts.type,
+    url: String(opts.value),
+    severity: sev,
+  };
+  if (opts.highlightText) entry._highlightText = String(opts.highlightText);
+  if (opts.note) entry.note = String(opts.note);
+  findings[bucket].push(entry);
+
+  // Auto-emit domain sibling when a URL lands and tldts is loaded.
+  if (opts.type === IOC.URL && !opts._noDomainSibling) {
+    const dom = _domainFromUrl(opts.value);
+    if (dom) {
+      // Dedup: don't re-emit a domain that's already been pushed.
+      const existing = findings[bucket].some(
+        e => e && e.type === IOC.DOMAIN && e.url === dom
+      );
+      if (!existing) {
+        findings[bucket].push({
+          type: IOC.DOMAIN,
+          url: dom,
+          severity: IOC_CANONICAL_SEVERITY[IOC.DOMAIN],
+          note: 'derived from URL',
+        });
+      }
+    }
+  }
+}
+
+/**
+ * Mirror selected `findings.metadata` entries into `findings.interestingStrings`
+ * so they appear in the sidebar's IOC table (which is fed *only* from
+ * externalRefs + interestingStrings — metadata alone never reaches it).
+ *
+ * Call this at the END of `analyzeForSecurity()` after populating
+ * `findings.metadata`, passing a map of `{ metadataKey: IOC.TYPE }`. Only
+ * classic-pivot fields (hashes, paths, GUIDs, MAC, emails, fingerprints)
+ * should be mirrored — attribution fluff like CompanyName / FileDescription
+ * / ProductName should stay metadata-only.
+ *
+ * @param {object} findings
+ * @param {object} fieldMap  `{ 'Imphash': IOC.HASH, 'PDB Path': IOC.FILE_PATH, ... }`
+ * @param {object} [opts]    `{ severity: 'info', noteFn: (key,val) => string }`
+ */
+function mirrorMetadataIOCs(findings, fieldMap, opts) {
+  if (!findings || !findings.metadata || !fieldMap) return;
+  opts = opts || {};
+  for (const [key, iocType] of Object.entries(fieldMap)) {
+    const val = findings.metadata[key];
+    if (val == null || val === '') continue;
+    // Array-valued metadata (e.g. dylibs[]) → one IOC per element
+    const values = Array.isArray(val) ? val : [val];
+    for (const v of values) {
+      if (v == null || v === '') continue;
+      const sv = String(v).trim();
+      if (!sv) continue;
+      pushIOC(findings, {
+        type: iocType,
+        value: sv,
+        severity: opts.severity || IOC_CANONICAL_SEVERITY[iocType] || 'info',
+        highlightText: sv,
+        note: opts.noteFn ? opts.noteFn(key, sv) : key,
+      });
+    }
+  }
+}
 
 
 
