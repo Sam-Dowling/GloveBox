@@ -105,7 +105,7 @@ class RendererRegistry {
       exts: ['ppt'],
       magic: (ctx) => ctx.oleStreams &&
         (ctx.oleStreams.has('powerpoint document') ||
-         ctx.oleStreams.has('current user')),
+          ctx.oleStreams.has('current user')),
       description: 'Legacy PowerPoint Binary Presentation',
     },
 
@@ -317,8 +317,8 @@ class RendererRegistry {
         const b = ctx.bytes;
         if (b.length <= 32768 + 5) return false;
         return b[32769] === 0x43 && b[32770] === 0x44 // C D
-            && b[32771] === 0x30 && b[32772] === 0x30 // 0 0
-            && b[32773] === 0x31;                      // 1
+          && b[32771] === 0x30 && b[32772] === 0x30 // 0 0
+          && b[32773] === 0x31;                      // 1
       },
       description: 'ISO 9660 Disk Image',
     },
@@ -336,15 +336,15 @@ class RendererRegistry {
         if (b.length >= 8) {
           if (b[0] === 0x41 && b[1] === 0x45 && b[2] === 0x41 && b[3] === 0x31) return true; // AEA1
           if (b[0] === 0x65 && b[1] === 0x6E && b[2] === 0x63 && b[3] === 0x72
-           && b[4] === 0x63 && b[5] === 0x64 && b[6] === 0x73 && b[7] === 0x61) return true; // encrcdsa
+            && b[4] === 0x63 && b[5] === 0x64 && b[6] === 0x73 && b[7] === 0x61) return true; // encrcdsa
           if (b[0] === 0x63 && b[1] === 0x64 && b[2] === 0x73 && b[3] === 0x61
-           && b[4] === 0x65 && b[5] === 0x6E && b[6] === 0x63 && b[7] === 0x72) return true; // cdsaencr
+            && b[4] === 0x65 && b[5] === 0x6E && b[6] === 0x63 && b[7] === 0x72) return true; // cdsaencr
         }
         // UDIF 'koly' magic at the 512-byte trailer.
         if (b.length < 512) return false;
         const off = b.length - 512;
         return b[off] === 0x6B && b[off + 1] === 0x6F
-            && b[off + 2] === 0x6C && b[off + 3] === 0x79;
+          && b[off + 2] === 0x6C && b[off + 3] === 0x79;
       },
       description: 'Apple Disk Image (UDIF / .dmg)',
     },
@@ -470,8 +470,8 @@ class RendererRegistry {
         // plus the BE variants.
         const m0 = b[0], m1 = b[1], m2 = b[2], m3 = b[3];
         if ((m0 === 0xCF && m1 === 0xFA && m2 === 0xED && m3 === 0xFE)
-         || (m0 === 0xCE && m1 === 0xFA && m2 === 0xED && m3 === 0xFE)
-         || (m0 === 0xFE && m1 === 0xED && m2 === 0xFA && (m3 === 0xCE || m3 === 0xCF))) {
+          || (m0 === 0xCE && m1 === 0xFA && m2 === 0xED && m3 === 0xFE)
+          || (m0 === 0xFE && m1 === 0xED && m2 === 0xFA && (m3 === 0xCE || m3 === 0xCF))) {
           return true;
         }
         // Fat / Universal: CA FE BA BE — but only if not a Java class.
@@ -729,10 +729,10 @@ class RendererRegistry {
       for (let i = 0; i < end; i++) s += String.fromCharCode(bytes[i]);
       return s;
     };
-    const head    = sliceAscii(20);
+    const head = sliceAscii(20);
     const head200 = sliceAscii(200);
     const head500 = sliceAscii(500);
-    const head4k  = sliceAscii(4096);
+    const head4k = sliceAscii(4096);
 
     const ctx = { file, buffer, bytes, ext, head, head200, head500, head4k };
 
@@ -783,10 +783,10 @@ class RendererRegistry {
         if (!entries || !entries.has('mimetype')) return (_odf = null);
         // Search for the ODF mimetype string in the first ~200 bytes.
         const head = sliceAscii(256);
-        if (head.includes('application/vnd.oasis.opendocument.text'))          return (_odf = 'text');
-        if (head.includes('application/vnd.oasis.opendocument.presentation'))  return (_odf = 'presentation');
-        if (head.includes('application/vnd.oasis.opendocument.spreadsheet'))   return (_odf = 'spreadsheet');
-        if (head.includes('application/vnd.oasis.opendocument.graphics'))      return (_odf = 'graphics');
+        if (head.includes('application/vnd.oasis.opendocument.text')) return (_odf = 'text');
+        if (head.includes('application/vnd.oasis.opendocument.presentation')) return (_odf = 'presentation');
+        if (head.includes('application/vnd.oasis.opendocument.spreadsheet')) return (_odf = 'spreadsheet');
+        if (head.includes('application/vnd.oasis.opendocument.graphics')) return (_odf = 'graphics');
         return (_odf = null);
       },
     });
@@ -893,8 +893,8 @@ class RendererRegistry {
       && b[4] === 0x66 && b[5] === 0x74 && b[6] === 0x79 && b[7] === 0x70) {
       const brand = String.fromCharCode(b[8], b[9], b[10], b[11]);
       if (brand === 'avif' || brand === 'avis' || brand === 'heic'
-       || brand === 'heix' || brand === 'mif1' || brand === 'msf1'
-       || brand === 'heim' || brand === 'heis') return true;
+        || brand === 'heix' || brand === 'mif1' || brand === 'msf1'
+        || brand === 'heim' || brand === 'heis') return true;
     }
     return false;
   }
@@ -910,15 +910,15 @@ class RendererRegistry {
     const nonPrintable = (head4k.match(/[\x00-\x08\x0E-\x1F]/g) || []).length;
     if (nonPrintable / Math.max(head4k.length, 1) >= 0.01) return false;
     let score = 0;
-    if (/\btell\s+application\s+"/i.test(head4k))      score += 3;
-    if (/\bdo\s+shell\s+script\s+"/i.test(head4k))     score += 3;
-    if (/\bend\s+tell\b/i.test(head4k))                score += 2;
+    if (/\btell\s+application\s+"/i.test(head4k)) score += 3;
+    if (/\bdo\s+shell\s+script\s+"/i.test(head4k)) score += 3;
+    if (/\bend\s+tell\b/i.test(head4k)) score += 2;
     if (/\bon\s+run\b|\bon\s+open\b|\bon\s+idle\b/i.test(head4k)) score += 2;
-    if (/\bset\s+\w[\w ]*\s+to\s+/i.test(head4k))      score += 1;
+    if (/\bset\s+\w[\w ]*\s+to\s+/i.test(head4k)) score += 1;
     if (/\bwith\s+administrator\s+privileges\b/i.test(head4k)) score += 2;
-    if (/\bthe\s+clipboard\b/i.test(head4k))           score += 1;
-    if (/\bproperty\s+\w+\s*:/i.test(head4k))          score += 1;
-    if (/\bActiveXObject\b/.test(head4k))              score -= 3; // JScript, not JXA
+    if (/\bthe\s+clipboard\b/i.test(head4k)) score += 1;
+    if (/\bproperty\s+\w+\s*:/i.test(head4k)) score += 1;
+    if (/\bActiveXObject\b/.test(head4k)) score -= 3; // JScript, not JXA
     if (/^\s*#!/m.test(head4k) && !/osascript/i.test(head4k)) score -= 2;
     return score >= 5;
   }
@@ -953,7 +953,7 @@ class RendererRegistry {
     const scanStart = Math.max(0, bytes.length - maxScan);
     for (let i = bytes.length - 22; i >= scanStart; i--) {
       if (bytes[i] === 0x50 && bytes[i + 1] === 0x4B
-       && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) {
+        && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) {
         eocdOff = i;
         break;
       }
@@ -966,7 +966,7 @@ class RendererRegistry {
     //   off+12: size of central directory (bytes)
     //   off+16: offset of central directory from start of archive
     const totalEntries = dv.getUint16(eocdOff + 10, true);
-    const cdOff        = dv.getUint32(eocdOff + 16, true);
+    const cdOff = dv.getUint32(eocdOff + 16, true);
 
     // Cap how many entries we enumerate — even a pathological zip bomb
     // declaring millions of entries can't blow the budget.
@@ -978,8 +978,8 @@ class RendererRegistry {
     for (let i = 0; i < cap && p + 46 <= bytes.length; i++) {
       // Central directory entry signature: PK\x01\x02
       if (dv.getUint32(p, true) !== 0x02014b50) break;
-      const nameLen    = dv.getUint16(p + 28, true);
-      const extraLen   = dv.getUint16(p + 30, true);
+      const nameLen = dv.getUint16(p + 28, true);
+      const extraLen = dv.getUint16(p + 30, true);
       const commentLen = dv.getUint16(p + 32, true);
       if (p + 46 + nameLen > bytes.length) break;
       const name = dec.decode(bytes.subarray(p + 46, p + 46 + nameLen));
@@ -991,10 +991,10 @@ class RendererRegistry {
 
   // ── Bootstrap: attach `static EXTS` and `static canHandle(ctx)` to each
   //    renderer class so callers can query detection at the class level
-  //    (`PdfRenderer.canHandle(ctx)` / `PdfRenderer.EXTS`). The `.clinerules`
-  //    promise is that each renderer is self-contained; the registry is the
-  //    one authorised place that mutates them, and it only adds read-only
-  //    detection metadata — it never alters render/analyze behaviour.
+  //    (`PdfRenderer.canHandle(ctx)` / `PdfRenderer.EXTS`). Each renderer 
+  //    is self-contained; the registry is the one authorised place that
+  //    mutates them, and it only adds read-only detection metadata
+  //    — it never alters render/analyze behaviour.
   static _bootstrap() {
     for (const e of this.ENTRIES) {
       const cls = (typeof globalThis !== 'undefined') ? globalThis[e.className] : undefined;

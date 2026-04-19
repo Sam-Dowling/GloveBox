@@ -273,9 +273,9 @@ Loupe/
 
 ## Gotchas & Tripfalls
 
-The short version of these lives in `.clinerules`; this is where the
-explanations and the "why" live. If you skip reading this section your
-change will probably still build, then subtly misbehave.
+This is where the explanations and the "why" live. 
+If you skip reading this section your change will
+probably still build, then subtly misbehave.
 
 ### Build artefacts & source of truth
 
@@ -349,7 +349,7 @@ change will probably still build, then subtly misbehave.
 - **Long single-line table cells break `replace_in_file`.** Cap table-cell
   content at ~140 characters / one sentence. If you need more room, split
   the row or move the deep detail here, leaving a one-liner pointer in
-  `FEATURES.md`. See `.clinerules` → *Editing doc tables & long lines*.
+  `FEATURES.md`.
 - **New `localStorage` keys must use the `loupe_` prefix** and be added to
   the persistence-keys table in the **Persistence Keys** section below.
   Agents auditing preference state grep for `loupe_` — keys outside that

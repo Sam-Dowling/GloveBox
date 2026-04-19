@@ -469,7 +469,7 @@ def generate_markdown(js_infos, css_infos, yar_infos, cross_refs,
     w('Use `read_file(path, start_line=X, end_line=Y)` for surgical reads.')
     w('')
     w('For *how* to make changes (recipes, gotchas, docs-update requirements)')
-    w('see `.clinerules` and `CONTRIBUTING.md`. This file is pure reference.')
+    w('see `CONTRIBUTING.md`. This file is pure reference.')
     w('')
 
     # ── Quick stats ──
