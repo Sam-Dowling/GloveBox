@@ -555,7 +555,33 @@ Object.assign(App.prototype, {
       // "IOCs: N URL" click-to-flash handler below.
       finding._iocRows = finding._iocRows || [];
 
-      // Header line: severity badge + encoding type
+      // ── Compute the FULL deobfuscation lineage up-front ─────────────
+      // Every downstream UI element (header depth badge, chain pill row,
+      // size-delta row, per-hop tooltips) derives from these two values,
+      // so we build them once and share across the rest of the card.
+      //
+      // `_deepest`   — the leaf node in the innerFindings tree (may be
+      //                identical to `finding` for single-layer findings).
+      // `_fullChain` — the concatenated encoding / decoded-type lineage
+      //                from outer source all the way to the deepest
+      //                decoded output. Prefers the deepest node's chain
+      //                (the detector stores cumulative lineage there) and
+      //                falls back to the outer finding's chain when the
+      //                tree has no inner findings.
+      const _deepest = this._getDeepestFinding(finding);
+      const _outerChain = (finding.chain && finding.chain.length) ? finding.chain : [];
+      const _deepChain = (_deepest && _deepest !== finding && _deepest.chain && _deepest.chain.length)
+        ? _deepest.chain
+        : [];
+      // Dedupe consecutive repeats (defensive — the detector occasionally
+      // pushes "text" twice when a classifier and a utf-8 sniff both fire).
+      const _fullChainRaw = _deepChain.length >= _outerChain.length ? _deepChain : _outerChain;
+      const _fullChain = [];
+      for (const h of _fullChainRaw) {
+        if (!_fullChain.length || _fullChain[_fullChain.length - 1] !== h) _fullChain.push(h);
+      }
+
+      // Header line: severity badge + encoding type + depth badge
       const header = document.createElement('div');
       header.className = 'enc-finding-header';
       const badge = document.createElement('span');
@@ -567,20 +593,34 @@ Object.assign(App.prototype, {
       title.textContent = `${finding.encoding}-encoded content`;
       if (finding.hint) title.textContent += ` — ${finding.hint}`;
       header.appendChild(title);
+      // Depth badge: only shown for multi-layer findings (≥ 2 hops in the
+      // full chain). Mirrors the `⚠ payload` header badge pattern so the
+      // analyst knows at-a-glance how much peeling is going on without
+      // having to read the chain row. Singleton layers (e.g. Base64 → text)
+      // are intentionally unbadged — the chain row itself is the signal.
+      if (_fullChain.length >= 2) {
+        const depthBadge = document.createElement('span');
+        depthBadge.className = 'enc-depth-badge';
+        depthBadge.textContent = `${_fullChain.length} layers`;
+        depthBadge.title = `Deobfuscation chain has ${_fullChain.length} layers — hover the chain pills below for per-layer details`;
+        header.appendChild(depthBadge);
+      }
       card.appendChild(header);
 
       // Details
       const details = document.createElement('div');
       details.className = 'enc-finding-details';
 
-      // Size & offset
-      const meta = document.createElement('div');
-      meta.className = 'enc-finding-meta';
-      const sizeTxt = finding.decodedSize > 0
-        ? this._fmtBytes(finding.decodedSize)
-        : (finding.length ? `${finding.length} chars encoded` : `offset ${finding.offset.toLocaleString()}`);
-
-      // Convert offset to line numbers for plaintext views
+      // Compute line range for plaintext views — consumed by both the
+      // consolidated metadata strip (see below) and the card-level
+      // click / hover handlers that scroll the source into view. When
+      // the view isn't plaintext we skip the work entirely; the strip
+      // will fall back to the raw byte offset.
+      //
+      // Historically this block produced its own "95 B · line 1 🔍"
+      // meta row with an inline locate button. The button is gone now:
+      // clicking anywhere on the card does the scroll-and-flash, matching
+      // how IOC rows already behave, so there is nothing to duplicate.
       let _canLocate = false;
       if (_isPlaintextView && _sourceText && finding.length) {
         const beforeText = _sourceText.substring(0, finding.offset);
@@ -590,25 +630,8 @@ Object.assign(App.prototype, {
         const endLine = startLine + lineSpan;
         finding._startLine = startLine;
         finding._endLine = endLine;
-        meta.textContent = startLine === endLine
-          ? `${sizeTxt} · line ${startLine}`
-          : `${sizeTxt} · lines ${startLine}\u2013${endLine}`;
         _canLocate = true;
-      } else {
-        meta.textContent = `${sizeTxt} at offset ${finding.offset.toLocaleString()}`;
       }
-
-      // Clickable locate icon for plaintext views
-      if (_canLocate) {
-        const locateBtn = document.createElement('span');
-        locateBtn.className = 'enc-locate-btn';
-        locateBtn.textContent = ' \uD83D\uDD0D';
-        locateBtn.title = 'Scroll to and highlight in view';
-        meta.appendChild(locateBtn);
-        meta.classList.add('enc-meta-clickable');
-        meta.addEventListener('click', (e) => { e.stopPropagation(); this._highlightEncodedInView(finding, true); });
-      }
-      details.appendChild(meta);
 
       // Decoded/deobfuscated content preview (prioritized over raw snippet —
       // hovering the card already highlights the encoded source in the view).
@@ -674,13 +697,13 @@ Object.assign(App.prototype, {
         const snippetEl = document.createElement('div');
         snippetEl.className = 'enc-snippet';
         snippetEl.textContent = truncate(_rawSnippet);
-        if (_canLocate) {
-          snippetEl.title = 'Click to locate in view';
-          snippetEl.style.cursor = 'pointer';
-          snippetEl.addEventListener('click', () => this._highlightEncodedInView(finding, true));
-        }
+        // The snippet previously had its own click handler that duplicated
+        // the card-level locate action. With the whole card now handling
+        // scroll-and-flash on click (see below), the snippet falls through
+        // to the card's listener — no bespoke cursor / handler needed.
         details.appendChild(snippetEl);
       }
+
       // Preserve previous variable name used further below as a
       // presence flag for rendering the grey/green separator.
       const _snippetText = _rawSnippet;
@@ -842,31 +865,198 @@ Object.assign(App.prototype, {
       }
 
 
-      // Decoded type
-      if (finding.classification && finding.classification.type) {
-        const typeLine = document.createElement('div');
-        typeLine.className = 'enc-finding-type';
-        typeLine.textContent = `Decoded: ${finding.classification.type}`;
-        details.appendChild(typeLine);
+      // ── Decode chain — full lineage as pill hops ────────────────────
+      // Always rendered (even for single-hop findings) so the Deobfuscation
+      // card has a consistent visual grammar. Each hop is a coloured pill
+      // that categorises the layer (encoding / compression / payload) and
+      // tooltips with the per-layer size + classification harvested from
+      // the innerFindings tree.
+      if (_fullChain.length > 0) {
+        // Classify a hop label into a palette bucket. Case-insensitive
+        // substring match is fine here — every string comes from the
+        // detector's own fixed label vocabulary (see encoded-content-
+        // detector.js chain assignments + _classify()).
+        const hopCategory = (label) => {
+          const s = (label || '').toLowerCase();
+          // Dangerous payloads first (overrides the generic 'text' match).
+          if (/(pe executable|elf|mach-o|shellcode|powershell|vbscript|hta|wsf|jscript|shell script|deobfuscated command|javascript)/.test(s))
+            return 'payload-danger';
+          // Compression / archive layers.
+          if (/(gzip|deflate|zlib|brotli|compressed|embedded zip|rar|7z|\bzip\b)/.test(s))
+            return 'compression';
+          // Benign final classifications.
+          if (/^(text|utf-?8|utf-?16|xml|json|html|markdown|binary data|high-entropy binary)/.test(s))
+            return 'payload-benign';
+          // Default: an encoding layer (Base64, Hex, URL-encoded, etc.).
+          return 'encoding';
+        };
+
+        // Walk the innerFindings tree to build a layer-index → finding map
+        // so each pill can tooltip with "encoded X → decoded Y" info. The
+        // outer finding occupies chain-indexes up to `finding.chain.length`;
+        // each inner finding extends the chain by its own encoding hops.
+        const chainNodes = new Array(_fullChain.length).fill(null);
+        let walker = finding;
+        while (walker) {
+          const end = Math.min(walker.chain ? walker.chain.length : 0, _fullChain.length);
+          for (let i = 0; i < end; i++) {
+            if (!chainNodes[i]) chainNodes[i] = walker;
+          }
+          if (walker.innerFindings && walker.innerFindings.length) {
+            // Descend into the highest-severity inner finding — matches the
+            // priority `_getDeepestFinding` uses so the chain nodes line up
+            // with the deepest-path we're displaying.
+            const sevRank = { critical: 4, high: 3, medium: 2, info: 1 };
+            walker = walker.innerFindings.reduce((a, b) =>
+              (sevRank[b.severity] || 0) > (sevRank[a.severity] || 0) ? b : a
+            );
+          } else {
+            walker = null;
+          }
+        }
+
+        const chainWrap = document.createElement('div');
+        chainWrap.className = 'enc-finding-chain';
+        const chainLabel = document.createElement('span');
+        chainLabel.className = 'enc-chain-label';
+        chainLabel.textContent = 'Chain:';
+        chainWrap.appendChild(chainLabel);
+
+        // Ellipsise > 6 hops — keeps the card compact on pathological
+        // multi-layer samples while preserving the full chain in a tooltip
+        // on the wrapper. Show first 3 + last 2, with a "…" pill in between.
+        const MAX_HOPS = 6;
+        let displayHops;
+        let ellipsised = false;
+        if (_fullChain.length > MAX_HOPS) {
+          displayHops = [
+            ..._fullChain.slice(0, 3).map((l, i) => ({ label: l, idx: i })),
+            { label: '…', idx: -1, ellipsis: true },
+            ..._fullChain.slice(-2).map((l, i) => ({ label: l, idx: _fullChain.length - 2 + i })),
+          ];
+          ellipsised = true;
+          chainWrap.title = `Full chain:\n${_fullChain.join(' → ')}`;
+        } else {
+          displayHops = _fullChain.map((l, i) => ({ label: l, idx: i }));
+        }
+
+        for (let i = 0; i < displayHops.length; i++) {
+          const h = displayHops[i];
+          if (i > 0) {
+            const arrow = document.createElement('span');
+            arrow.className = 'enc-chain-arrow';
+            arrow.textContent = '→';
+            arrow.setAttribute('aria-hidden', 'true');
+            chainWrap.appendChild(arrow);
+          }
+          const pill = document.createElement('span');
+          pill.className = h.ellipsis
+            ? 'enc-chain-hop enc-chain-hop-ellipsis'
+            : `enc-chain-hop enc-chain-hop-${hopCategory(h.label)}`;
+          pill.textContent = h.label;
+          if (!h.ellipsis) {
+            // Per-hop tooltip: pull size + classification from the
+            // matching innerFindings node when available. Falls back to
+            // just the label for hops we couldn't map.
+            const node = chainNodes[h.idx];
+            const bits = [];
+            if (node) {
+              if (node.decodedSize > 0) bits.push(this._fmtBytes(node.decodedSize));
+              if (node.classification && node.classification.type && node.classification.type !== h.label) {
+                bits.push(node.classification.type);
+              }
+            }
+            pill.title = bits.length ? `${h.label} — ${bits.join(' · ')}` : h.label;
+          } else {
+            pill.title = `${_fullChain.length - 5} hops hidden`;
+          }
+          chainWrap.appendChild(pill);
+        }
+        details.appendChild(chainWrap);
       }
 
-      // Decode chain
-      if (finding.chain && finding.chain.length > 1) {
-        const chainLine = document.createElement('div');
-        chainLine.className = 'enc-finding-chain';
-        chainLine.textContent = `Chain: ${finding.chain.join(' → ')}`;
-        details.appendChild(chainLine);
+      // ── Consolidated metadata strip ────────────────────────────────────
+      // A single dense row of pill-chips that collapses what used to be
+      // three separate rows (location, size-delta, entropy) into one
+      // scannable line directly under the chain.
+      //
+      //   [⟨ line 12 ⟩]  [⟨ 95 B → 12 KB · 128× ⟩]  [⟨ H 7.82 ⚠ ⟩]
+      //
+      // Chips are hidden independently when their source data is absent,
+      // so an IOC-only single-layer finding still renders a compact strip.
+      // Full explanatory text lives in each chip's `title` tooltip so the
+      // visual line stays short without losing information.
+      const _encLen = finding.length || (finding.rawCandidate ? finding.rawCandidate.length : 0);
+      const _decSize = (_deepest && _deepest.decodedSize) || finding.decodedSize || 0;
+
+      const metaStrip = document.createElement('div');
+      metaStrip.className = 'enc-finding-metastrip';
+
+      // 1. Location chip — line range for plaintext views, raw offset
+      //    otherwise. When clickable, the *card* (not the chip) handles
+      //    the scroll-and-flash — see the card-level click handler further
+      //    below. The chip exists purely to surface the location info in
+      //    the strip; we do not attach its own click handler (IOC parity).
+      const locChip = document.createElement('span');
+      locChip.className = 'enc-metachip enc-metachip-loc';
+      if (_canLocate && finding._startLine) {
+        locChip.textContent = finding._startLine === finding._endLine
+          ? `line ${finding._startLine}`
+          : `lines ${finding._startLine}\u2013${finding._endLine}`;
+        locChip.title = `${this._fmtBytes(_encLen || 0) || 'encoded content'} starting at line ${finding._startLine}`;
+      } else {
+        locChip.textContent = `offset ${finding.offset.toLocaleString()}`;
+        locChip.title = `Encoded content at byte offset ${finding.offset.toLocaleString()} (no line mapping available for this view)`;
+      }
+      metaStrip.appendChild(locChip);
+
+      // 2. Size-delta chip — encoded → decoded with expansion ratio.
+      //    Colour-tinted via `.enc-sizedelta-expand` / `.enc-sizedelta-shrink`
+      //    when the ratio is notable (≥ 5× or < 0.8×).
+      if (_encLen > 0 && _decSize > 0) {
+        const sizeChip = document.createElement('span');
+        sizeChip.className = 'enc-metachip enc-metachip-size';
+        const ratio = _decSize / _encLen;
+        const ratioStr = ratio >= 10 ? ratio.toFixed(0) + '×'
+          : ratio >= 1 ? ratio.toFixed(1) + '×'
+          : (1 / ratio).toFixed(1) + '× shrink';
+        sizeChip.textContent = `${this._fmtBytes(_encLen)} → ${this._fmtBytes(_decSize)} · ${ratioStr}`;
+        sizeChip.title = `Encoded source was ${this._fmtBytes(_encLen)}; decoded output is ${this._fmtBytes(_decSize)} (ratio ${ratioStr})`;
+        if (ratio >= 5) sizeChip.classList.add('enc-sizedelta-expand');
+        else if (ratio < 0.8) sizeChip.classList.add('enc-sizedelta-shrink');
+        metaStrip.appendChild(sizeChip);
       }
 
-      // Entropy
+      // 3. Entropy chip — compact "H 7.82" form so the chip stays short.
+      //    Tint orange when > 7.5 (encrypted / packed territory); the
+      //    explanatory text ("high (encrypted/packed?)") lives in the
+      //    tooltip, preserving the old row's information at a smaller
+      //    visual footprint.
       if (finding.entropy > 0) {
-        const entLine = document.createElement('div');
-        entLine.className = 'enc-finding-entropy';
-        let entText = `Entropy: ${finding.entropy.toFixed(2)} / 8.00`;
-        if (finding.entropy > 7.5) entText += ' ⚠ high (encrypted/packed?)';
-        entLine.textContent = entText;
-        details.appendChild(entLine);
+        const entChip = document.createElement('span');
+        entChip.className = 'enc-metachip enc-metachip-entropy';
+        const entVal = finding.entropy.toFixed(2);
+        let entTip = `Shannon entropy: ${entVal} / 8.00`;
+        if (finding.entropy > 7.5) {
+          entChip.textContent = `H ${entVal} ⚠`;
+          entChip.classList.add('enc-metachip-entropy-high');
+          entTip += ' — very high, likely encrypted, packed, or already-compressed data';
+        } else if (finding.entropy > 6.5) {
+          entChip.textContent = `H ${entVal}`;
+          entTip += ' — high, compatible with compressed or encoded content';
+        } else if (finding.entropy < 1.5) {
+          entChip.textContent = `H ${entVal}`;
+          entChip.classList.add('enc-metachip-entropy-low');
+          entTip += ' — very low, likely sparse or padding';
+        } else {
+          entChip.textContent = `H ${entVal}`;
+        }
+        entChip.title = entTip;
+        metaStrip.appendChild(entChip);
       }
+
+      if (metaStrip.children.length) details.appendChild(metaStrip);
+
 
       // IOCs found in decoded content — clickable to flash IOC rows
       if (finding.iocs && finding.iocs.length) {
@@ -1016,9 +1206,14 @@ Object.assign(App.prototype, {
         const deepest = this._getDeepestFinding(finding);
         if (deepest && deepest !== finding && (deepest.decodedBytes || deepest.rawCandidate)) {
           const atwBtn = document.createElement('button');
-          atwBtn.className = 'tb-btn enc-btn-alltheway';
+          // Primary action for multi-layer findings — "All the way" is
+          // almost always what the analyst wants when a deobfuscation chain
+          // exists. The `enc-btn-primary` modifier makes it visually
+          // dominate over the sibling "Decode & Analyse" / "Load for
+          // analysis" buttons so the happy path is obvious at a glance.
+          atwBtn.className = 'tb-btn enc-btn-alltheway enc-btn-primary';
           atwBtn.textContent = 'All the way ⏩';
-          atwBtn.title = 'Follow encoding chain to deepest decoded content';
+          atwBtn.title = 'Follow encoding chain to deepest decoded content (recommended)';
           atwBtn.addEventListener('click', async () => {
             atwBtn.disabled = true;
             atwBtn.textContent = '⏳ Decoding…';
@@ -1060,15 +1255,46 @@ Object.assign(App.prototype, {
       // covered by the 3-tier preview stack above (grey → green → purple,
       // with labelled dividers showing the chain). No separate dropdown.
 
-      // Hover-to-highlight in view pane
-
+      // ── Card-level locate affordance (IOC parity) ─────────────────────
+      // Hover gives a soft "peek" highlight (no scroll); click does a hard
+      // scroll-and-flash of the encoded region in the view pane. This
+      // replaces the old inline 🔍 button — the entire card is now the
+      // click target, matching the IOC row behaviour one section up.
+      //
+      // Guards:
+      //   • Buttons in `.enc-finding-actions` stop propagation themselves
+      //     (they navigate / decode, not locate).
+      //   • The `.enc-finding-iocs` chip stops propagation too — clicking
+      //     it flashes the linked IOC rows instead of locating in source.
+      //   • Keyboard parity via tabindex + Enter / Space.
       if (_canLocate) {
         card.setAttribute('data-locatable', '');
+        card.setAttribute('tabindex', '0');
+        card.setAttribute('role', 'button');
+        card.title = 'Click to locate in source · hover to preview';
         card.addEventListener('mouseenter', () => this._highlightEncodedInView(finding, false));
         card.addEventListener('mouseleave', () => this._clearEncodedHighlight());
+        card.addEventListener('click', (e) => {
+          // Don't hijack clicks on interactive descendants (buttons in
+          // `.enc-finding-actions`, the IOCs chip, copy icons, etc.).
+          // Those handlers either stopPropagation themselves or live on
+          // <button>s that we skip explicitly here.
+          const t = e.target;
+          if (t && (t.closest('button') ||
+                    t.closest('.enc-finding-actions') ||
+                    t.closest('.enc-finding-iocs'))) return;
+          this._highlightEncodedInView(finding, /* flash = */ true);
+        });
+        card.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            this._highlightEncodedInView(finding, /* flash = */ true);
+          }
+        });
       }
 
       body.appendChild(card);
+
       cardElements.push({ el: card, severity: finding.severity });
     }
 

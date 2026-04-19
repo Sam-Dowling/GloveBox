@@ -1720,11 +1720,100 @@ body.dark .enc-finding-details {
   color: rgba(255, 255, 255, .55);
 }
 
-.enc-finding-meta {
+/* ── Consolidated metadata strip ──────────────────────────────────────
+   Single compact row of chips that replaced three separate rows:
+     • location (line / offset)         — was `.enc-finding-meta`
+     • size delta (encoded → decoded)   — was `.enc-finding-sizedelta`
+     • Shannon entropy                  — was `.enc-finding-entropy`
+   The chips share `.enc-metachip` styling; type-specific modifiers tint
+   the outliers (high entropy = amber, low entropy = red, notable size
+   expansion/shrinkage = amber/red). All explanatory text lives in
+   `title` tooltips, keeping the visible line short. */
+.enc-finding-metastrip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  line-height: 1.6;
+}
+
+.enc-metachip {
+  display: inline-block;
   font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  line-height: 1.4;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, .04);
+  border-color: rgba(0, 0, 0, .08);
+  color: #666;
+}
+
+body.dark .enc-metachip {
+  background: rgba(255, 255, 255, .04);
+  border-color: var(--hairline);
+  color: rgba(255, 255, 255, .55);
+}
+
+/* Location chip — neutral, no tint; conveys "where" not "how bad". */
+.enc-metachip-loc {
+  font-weight: 600;
+}
+
+/* Size-delta chip — tinted when the expansion / shrinkage is notable.
+   Matches the colour grammar of `.enc-chain-hop-compression` (amber,
+   "worth noting") and `.enc-chain-hop-payload-danger` (red, attention). */
+.enc-metachip-size.enc-sizedelta-expand {
+  background: rgba(251, 191, 36, .12);
+  border-color: rgba(251, 191, 36, .3);
+  color: #92400e;
+}
+body.dark .enc-metachip-size.enc-sizedelta-expand {
+  background: rgba(251, 191, 36, .15);
+  border-color: rgba(251, 191, 36, .3);
+  color: #fcd34d;
+}
+.enc-metachip-size.enc-sizedelta-shrink {
+  background: rgba(220, 38, 38, .08);
+  border-color: rgba(220, 38, 38, .25);
+  color: #991b1b;
+}
+body.dark .enc-metachip-size.enc-sizedelta-shrink {
+  background: rgba(248, 113, 113, .1);
+  border-color: rgba(248, 113, 113, .25);
+  color: #fca5a5;
+}
+
+/* Entropy chip — amber when > 7.5 (encrypted / packed territory), red
+   when < 1.5 (sparse / padding). Default variant is neutral-grey. */
+.enc-metachip-entropy.enc-metachip-entropy-high {
+  background: rgba(251, 191, 36, .12);
+  border-color: rgba(251, 191, 36, .3);
+  color: #92400e;
+  font-weight: 600;
+}
+body.dark .enc-metachip-entropy.enc-metachip-entropy-high {
+  background: rgba(251, 191, 36, .15);
+  border-color: rgba(251, 191, 36, .3);
+  color: #fcd34d;
+}
+.enc-metachip-entropy.enc-metachip-entropy-low {
+  background: rgba(220, 38, 38, .06);
+  border-color: rgba(220, 38, 38, .2);
+  color: #991b1b;
+}
+body.dark .enc-metachip-entropy.enc-metachip-entropy-low {
+  background: rgba(248, 113, 113, .08);
+  border-color: rgba(248, 113, 113, .2);
+  color: #fca5a5;
 }
 
 .enc-finding-type {
+
   font-weight: 600;
   color: #444;
 }
@@ -1733,9 +1822,157 @@ body.dark .enc-finding-type {
   color: #d4d4dc;
 }
 
+/* ── Decode chain pill row ────────────────────────────────────────────
+   `.enc-finding-chain` is a flex row of hop pills separated by thin
+   arrow glyphs. The label ("Chain:") sits at the start; each hop is a
+   categorised pill (encoding / compression / payload-danger /
+   payload-benign / ellipsis) with a subtle tinted background. Hovering
+   a pill reveals the per-layer size + classification tooltip.
+
+   The palette mirrors the severity vocabulary elsewhere in the sidebar:
+   encoding = blue (neutral/informational), compression = amber (worth
+   noting), payload-danger = red (script / executable — the analyst's
+   attention target), payload-benign = green (plain text / confirmed
+   non-executable terminal output). */
 .enc-finding-chain {
-  font-style: italic;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  font-style: normal;
+  line-height: 1.8;
 }
+
+.enc-chain-label {
+  color: #888;
+  font-weight: 600;
+  margin-right: 2px;
+}
+
+body.dark .enc-chain-label {
+  color: rgba(255, 255, 255, .45);
+}
+
+.enc-chain-arrow {
+  color: #aaa;
+  font-weight: 400;
+  font-size: 10px;
+  user-select: none;
+}
+
+body.dark .enc-chain-arrow {
+  color: rgba(255, 255, 255, .35);
+}
+
+.enc-chain-hop {
+  display: inline-block;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* Encoding layers — Base64, Hex, URL-encoded, etc. (blue, neutral). */
+.enc-chain-hop-encoding {
+  background: rgba(59, 130, 246, .1);
+  border-color: rgba(59, 130, 246, .25);
+  color: #1e40af;
+}
+body.dark .enc-chain-hop-encoding {
+  background: rgba(96, 165, 250, .15);
+  border-color: rgba(96, 165, 250, .3);
+  color: #93c5fd;
+}
+
+/* Compression / archive layers — gzip, deflate, ZIP (amber, noteworthy). */
+.enc-chain-hop-compression {
+  background: rgba(251, 191, 36, .12);
+  border-color: rgba(251, 191, 36, .3);
+  color: #92400e;
+}
+body.dark .enc-chain-hop-compression {
+  background: rgba(251, 191, 36, .15);
+  border-color: rgba(251, 191, 36, .3);
+  color: #fcd34d;
+}
+
+/* Dangerous payloads — PowerShell, VBScript, PE (red, analyst's focus). */
+.enc-chain-hop-payload-danger {
+  background: rgba(220, 38, 38, .1);
+  border-color: rgba(220, 38, 38, .3);
+  color: #991b1b;
+}
+body.dark .enc-chain-hop-payload-danger {
+  background: rgba(248, 113, 113, .12);
+  border-color: rgba(248, 113, 113, .3);
+  color: #fca5a5;
+}
+
+/* Benign payloads — text, XML, JSON, binary data (green, confirmed-safe). */
+.enc-chain-hop-payload-benign {
+  background: rgba(16, 185, 129, .1);
+  border-color: rgba(16, 185, 129, .25);
+  color: #065f46;
+}
+body.dark .enc-chain-hop-payload-benign {
+  background: rgba(52, 211, 153, .12);
+  border-color: rgba(52, 211, 153, .3);
+  color: #6ee7b7;
+}
+
+/* Ellipsis pill — shown when chain has >6 hops; tooltip carries full chain. */
+.enc-chain-hop-ellipsis {
+  background: rgba(148, 163, 184, .1);
+  border-color: rgba(148, 163, 184, .3);
+  color: #475569;
+  cursor: help;
+}
+body.dark .enc-chain-hop-ellipsis {
+  background: rgba(203, 213, 225, .1);
+  border-color: rgba(203, 213, 225, .25);
+  color: rgba(203, 213, 225, .7);
+}
+
+/* ── Header depth badge — "3 layers" next to card title when chain ≥ 2 */
+.enc-depth-badge {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(168, 85, 247, .1);
+  border: 1px solid rgba(168, 85, 247, .3);
+  color: #6b21a8;
+  line-height: 1.4;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  margin-left: auto;
+}
+body.dark .enc-depth-badge {
+  background: rgba(192, 132, 252, .12);
+  border-color: rgba(192, 132, 252, .3);
+  color: #c4b5fd;
+}
+
+/* ── Primary action button modifier ──────────────────────────────────
+
+   Applied alongside `.enc-btn-alltheway` so the "All the way ⏩" button
+   visually dominates its siblings — it's the recommended action when a
+   multi-layer chain exists. The modifier simply intensifies the purple
+   accent already on `.enc-btn-alltheway`. */
+.enc-btn-primary {
+  font-weight: 700 !important;
+  box-shadow: 0 0 0 1px rgba(124, 58, 237, .4) inset;
+}
+body.dark .enc-btn-primary {
+  box-shadow: 0 0 0 1px rgba(167, 139, 250, .5) inset;
+}
+
 
 .enc-finding-note {
   color: #856404;
@@ -1984,35 +2221,21 @@ body.dark .enc-snippet {
   color: rgba(255, 255, 255, .5);
 }
 
-/* ── Encoded content meta clickable ── */
-.enc-meta-clickable {
-  cursor: pointer;
-  transition: color .2s;
-}
-
-.enc-meta-clickable:hover {
-  color: var(--accent-deep);
-}
-
-body.dark .enc-meta-clickable:hover {
-  color: var(--accent);
-}
-
-.enc-locate-btn {
-  cursor: pointer;
-  opacity: 0.5;
-  transition: opacity .2s;
-}
-
-.enc-meta-clickable:hover .enc-locate-btn {
-  opacity: 1;
-}
-
-/* ── Encoded content card locatable hover ── */
+/* ── Encoded content card locatable hover ────────────────────────────
+   The card itself is the locate affordance — clicking anywhere on it
+   that isn't a button / IOC chip performs the scroll-and-flash
+   (mirrors IOC row behaviour in the Detections/IOCs tables). Hover
+   tints the border; click is wired in app-sidebar.js. */
 .enc-finding-card[data-locatable] {
   cursor: pointer;
   transition: border-color .2s, box-shadow .2s;
 }
+
+.enc-finding-card[data-locatable]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 
 .enc-finding-card[data-locatable]:hover {
   border-color: rgb(var(--accent-rgb) / .4);
