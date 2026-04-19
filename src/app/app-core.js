@@ -165,9 +165,29 @@ class App {
 
     // Strip HTML from copy selections inside viewer panes so that
     // Ctrl+C / drag-select copies clean plain text, not table markup.
+    //
+    // When nothing is selected, Ctrl+C / Cmd+C copies the *whole raw
+    // file* — mirrors the Export-menu "📋 Copy raw content" action so
+    // the intuitive power-user gesture just works. We bail when focus
+    // is on an editable surface (the browser's native empty-selection
+    // copy is what the user expects there) and let `_isRawCopyable()`
+    // gate out the binary denylist (PE / PDF / archives / bplist / …).
     document.addEventListener('copy', e => {
       const sel = window.getSelection();
-      if (!sel || sel.isCollapsed) return;
+      const hasSelection = sel && !sel.isCollapsed && sel.toString().length > 0;
+
+      if (!hasSelection) {
+        const ae = document.activeElement;
+        const aeTag = ((ae && ae.tagName) || '').toLowerCase();
+        const inEditable = aeTag === 'input' || aeTag === 'textarea' ||
+                           (ae && ae.isContentEditable);
+        if (inEditable) return;
+        if (!this._fileBuffer || !this._isRawCopyable()) return;
+        e.preventDefault();
+        this._copyContent();   // handles UTF-8 decode, _lastCopiedMeta, toast
+        return;
+      }
+
       const node = sel.anchorNode;
       if (!node) return;
       const el = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
