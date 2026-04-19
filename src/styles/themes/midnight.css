@@ -10,6 +10,16 @@
    Registry:   src/app/app-ui.js → THEMES
    ══════════════════════════════════════════════════════ */
 
+/* ── Token overrides ──────────────────────────────────────────────────
+   Midnight inherits the `body.dark` cyan accent — only the hairlines
+   are bumped so dividers remain visible on pure-black surfaces. */
+body.theme-midnight {
+  --hairline-soft:   rgba(255, 255, 255, .08);
+  --hairline:        rgba(255, 255, 255, .1);
+  --hairline-strong: rgba(255, 255, 255, .12);
+  --hairline-bold:   rgba(255, 255, 255, .16);
+}
+
 body.theme-midnight {
   background: #000;
   background-image: none;
