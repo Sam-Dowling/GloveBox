@@ -43,7 +43,7 @@ SOC analysts, incident responders, and security-conscious users need a way to sa
 1. **Download** — grab `loupe.html` from the release link above, or clone the repo and open `docs/index.html`.
 2. **Open** — double-click the file in any modern browser (2023+: Chrome, Firefox, Edge, Safari). No server needed.
 3. **Drop a file** — drag a suspicious file onto the drop zone, click **📁 Open File**, or paste with **Ctrl+V**.
-4. **Inspect** — press **S** to toggle the security sidebar with risk assessment, IOCs, and YARA matches. Press **Y** to open the YARA rules dialog (upload custom `.yar` files, validate, re-scan). Press **?** for all shortcuts.
+4. **Inspect** — press **S** to toggle the security sidebar, **Y** for the YARA rules dialog, **?** for all shortcuts.
 
 ---
 
@@ -75,24 +75,24 @@ Every format gets risk assessment, IOC extraction, and YARA scanning on top of t
 
 ## 🔍 What It Finds
 
-- **YARA rule engine** — 493 default rules auto-scan every file; upload your own `.yar` files to extend detection
-- **IOC extraction** — URLs, IPs, emails, file paths, UNC paths (including refanged `hxxp://` / `1[.]2[.]3[.]4`)
-- **File hashes** — MD5, SHA-1, SHA-256 with one-click VirusTotal lookup
-- **Macro / VBA analysis** — decoded source, auto-exec entry points, downloadable as `.txt` or raw `vbaProject.bin`
-- **Encoded payload detection** — Base64, hex, Base32, gzip/zlib/deflate; decodes and recursively drills in
-- **PDF JavaScript & attachment extraction** — every `/JS` body pulled with per-script hash, size, trigger and suspicious-API hints; `/EmbeddedFile` attachments open inline as a new analysis frame
-- **Native binary analysis** — PE, ELF and Mach-O with imports, sections, entropy, security features, code signatures; truncated binaries fall back to strings + hex dump so YARA/IOC scanning keeps working
-- **Certificate & PGP inspection** — X.509 / PKCS#12 / OpenPGP with weak-key and expiry flagging
-- **Archive drill-down** — click any entry inside a ZIP / TAR / ISO / MSI to open it with full analysis
-- **Exports** — one-click **⚡ Summary** for an AI/SOC clipboard brief (budget configurable from 4 K chars up to unbounded via a 10-stop log slider in ⚙ Settings; the live token chip next to the button — `4K` · `16K` · `MAX` — tells you what you'll paste), plus a **📤 Export** menu for STIX 2.1 / MISP / IOC JSON / IOC CSV (clipboard) and raw-file save
+- **YARA rule engine** — 493 default rules auto-scan every file; drop in your own `.yar` files to extend detection.
+- **IOCs** — URLs, IPs, emails, hostnames, domains, file paths, UNC paths, GUIDs, key fingerprints. Defanged indicators (`hxxp://`, `1[.]2[.]3[.]4`) are refanged automatically.
+- **File hashes** — MD5, SHA-1, SHA-256 with one-click VirusTotal lookup.
+- **Macros & scripts** — decoded VBA, PowerShell, JScript, HTA; auto-exec entry points flagged.
+- **Encoded payload drill-down** — Base64 / hex / gzip / zlib layers decoded recursively with full lineage.
+- **PDF internals** — embedded JavaScript, `/OpenAction`, `/Launch`, attachments, XFA forms.
+- **Native binaries** — PE / ELF / Mach-O with imports, sections, entropy, security features, code signatures.
+- **Certificates & keys** — X.509 and OpenPGP with weak-key and expiry flagging.
+- **Archive drill-down** — click any entry inside a ZIP / TAR / ISO / MSI / PKG / CRX to open it with full analysis.
+- **Exports** — one-click clipboard brief for tickets or LLMs, plus STIX 2.1, MISP, and IOC JSON/CSV.
 
-Plus a Midnight Glass UI with a 6-theme picker (Light / Dark / Midnight OLED / Solarized / Mocha / Latte — your choice persists), a unified **⚙ Settings / Help** dialog (`,` for Settings, `?` or `H` for Help, theme tiles included) with floating zoom, drag-pan, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
+Plus six themes (Light / Dark / Midnight OLED / Solarized / Mocha / Latte), a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
 
 ---
 
 ## 🎨 Themes
 
-Six built-in themes, selectable from the **⚙ Settings** dialog — your choice persists via `localStorage`.
+Six built-in themes, selectable from the **⚙ Settings** dialog — your choice persists.
 
 <table align="center">
   <tr>
@@ -157,15 +157,15 @@ Loupe is a **static-analysis triage tool** — it extracts, decodes, and display
 
 ## 🔒 Security Model
 
-Loupe is designed to be safe to use on potentially malicious files. Defence-in-depth layers:
+Loupe is designed to be safe to use on potentially malicious files:
 
 - **Zero network** — strict `Content-Security-Policy` (`default-src 'none'`) blocks every outbound request. No telemetry, no CDNs, no analytics.
-- **No code execution** — no `eval`, no `new Function`, no inline handlers from untrusted content. All parsing is structural.
-- **Sandboxed previews** — HTML and SVG render inside `<iframe sandbox>` with an inner CSP of `default-src 'none'`, plus an always-active drag shield.
-- **Zip-bomb & timeout defences** — centralised parser limits cap nesting depth (32), decompressed size (50 MB), per-entry compression ratio (100×), archive entry count (10 000), and wall-clock time (60 s per file).
+- **No code execution** — no `eval`, no `new Function`, no inline handlers from untrusted content.
+- **Sandboxed previews** — HTML and SVG render inside `<iframe sandbox>` with an inner CSP, plus an always-active drag shield.
+- **Zip-bomb & timeout defences** — centralised parser limits cap nesting depth, decompressed size, entry count, and wall-clock time per file.
 - **Offline by design** — works identically with Wi-Fi off or in an air-gapped environment.
 
-Full threat model and vulnerability reporting: **[SECURITY.md](SECURITY.md)**.
+Full threat model, numeric limits, and vulnerability reporting: **[SECURITY.md](SECURITY.md)**.
 
 ---
 

@@ -263,6 +263,115 @@ Loupe/
 
 ---
 
+## Gotchas & Tripfalls
+
+The short version of these lives in `.clinerules`; this is where the
+explanations and the "why" live. If you skip reading this section your
+change will probably still build, then subtly misbehave.
+
+### Build artefacts & source of truth
+
+- **`docs/index.html` is a build artefact — never edit it.** Every edit you
+  make in `docs/index.html` is discarded by the next `python build.py`. Always
+  edit `src/` and rebuild.
+- **`CODEMAP.md` is auto-generated.** Don't touch it by hand — regenerate with
+  `python generate-codemap.py` after code changes.
+- **The `JS_FILES` order in `build.py` is load-bearing.** The
+  `Object.assign(App.prototype, …)` pattern means later files override
+  earlier ones' methods. `app-settings.js` must load **after** `app-ui.js`
+  because it reuses the `THEMES` array defined there and overrides the
+  unbudgeted `_copyAnalysis` call path with the configured Summary-budget
+  step. Renderers must load before `renderer-registry.js`, which must load
+  before `app-core.js`.
+
+### CSP & runtime safety
+
+- **No `eval`, no `new Function`, no network.** The Content-Security-Policy
+  (`default-src 'none'` + `script-src 'unsafe-inline'` only for the
+  single-file bundle) will reject anything you add that needs a fetch, a
+  `<script src>`, or a dynamic code constructor. Don't relax the CSP to
+  make a feature work — find another way.
+- **Images / blobs only from `data:` and `blob:` URLs.** Anything else will
+  be blocked at load.
+- **Sandboxed previews** (`<iframe sandbox>` for HTML / SVG / MHT) have
+  their own inner `default-src 'none'` CSP. Don't assume a preview iframe
+  can load any resource that the host page can — it can't.
+
+### YARA rule files
+
+- **YARA rule files contain no comments.** `build.py` concatenates
+  `YARA_FILES` with `// @category: <name>` separator lines inserted
+  between files — those are the **only** `//` lines the in-browser YARA
+  engine expects to tolerate. Any inline `//` or `/* */` comment you
+  author inside a `.yar` file goes straight into the engine as rule
+  source and will either break the parse or produce a no-match rule. If
+  you need to explain a rule, write the explanation in `meta:` fields.
+- **Category labels are inserted by `build.py`**, not authored by hand —
+  do not add `// @category:` lines to the source files yourself.
+
+### Renderer conventions
+
+- **IOC types must use `IOC.*` constants** from `src/constants.js` — never
+  bare strings like `type: 'url'`, `type: 'ip'`, `type: 'domain'`. The
+  sidebar filters by exact type string to separate IOCs from detections;
+  a bare string silently breaks filtering, sidebar grouping, STIX / MISP
+  export mapping, and the `ioc-conformity-audit` skill.
+- **Renderer `findings.risk` starts `'low'`.** Only escalate from evidence
+  you've actually pushed onto `externalRefs`. Pre-stamping `'high'` or
+  `'medium'` produces false-positive risk colouring on benign samples and
+  fails `cross-renderer-sanity-check`. See the **Risk Tier Calibration**
+  subsection below for the canonical escalation tail.
+- **Prefer `pushIOC()` over hand-rolling `interestingStrings.push(...)`.**
+  `pushIOC` pins the on-wire shape and — crucially — auto-emits a sibling
+  `IOC.DOMAIN` row when `tldts` resolves the URL to a registrable domain.
+  If you're already emitting a manual domain row, pass
+  `_noDomainSibling: true` to suppress the auto-emitted one.
+- **`_rawText` must be `\n`-normalised.** The sidebar's click-to-focus uses
+  character offsets into `_rawText`; a single CRLF anywhere in the buffer
+  misaligns every offset after it by one byte, so every highlight after the
+  first CR will land on the wrong token.
+- **Long IOC lists must end with an `IOC.INFO` truncation marker.** When a
+  renderer walks a large space and caps at (say) 500 entries, push exactly
+  one `IOC.INFO` row after the cap explaining the reason and the cap count
+  — the Summary / Share exporters read this row, and without it the analyst
+  has no way to know they are looking at a truncated view.
+
+### Docs & persistence
+
+- **Long single-line table cells break `replace_in_file`.** Cap table-cell
+  content at ~140 characters / one sentence. If you need more room, split
+  the row or move the deep detail here, leaving a one-liner pointer in
+  `FEATURES.md`. See `.clinerules` → *Editing doc tables & long lines*.
+- **New `localStorage` keys must use the `loupe_` prefix** and be added to
+  the persistence-keys table in the **Persistence Keys** section below.
+  Agents auditing preference state grep for `loupe_` — keys outside that
+  namespace are invisible.
+
+---
+
+## Persistence Keys
+
+Every user preference lives in `localStorage` under the `loupe_` prefix so
+state is (a) easy to grep for, (b) easy to clear with a single filter, and
+(c) auditable against this table. If you add a new key, add a row here.
+
+| Key | Type | Written by | Values / shape | Notes |
+|---|---|---|---|---|
+| `loupe_theme` | string | `_setTheme()` in `src/app/app-ui.js` | one of `light` / `dark` / `midnight` / `solarized` / `mocha` / `latte` | Canonical list is the `THEMES` array at the top of `app-ui.js`. Applied before first paint by the inline `<head>` bootstrap in `build.py`; missing / invalid value falls back to OS `prefers-color-scheme`, then `dark`. |
+| `loupe_summary_chars` | integer | `_setSummaryStep()` in `src/app/app-settings.js` | one of the 10 stops in the `SUMMARY_STEPS` array (4000 … 262144, or `Infinity`) | `Infinity` means "unbudgeted — no truncation". Drives the `SCALE = budget / 64000` multiplier used by every per-renderer summary helper. |
+| `loupe_yara_rules` | string | `app-yara.js` (YARA dialog "Save" action) | raw concatenated `.yar` rule text | User-uploaded rules are merged with the default ruleset at scan time. Cleared when the user clicks "Reset to defaults" in the YARA dialog. |
+
+**Adding a new key**
+
+1. Use the `loupe_<feature>` prefix.
+2. Read and write through a named accessor (`_getMyThing()` / `_setMyThing(value)`)
+   in the owning `app-*.js` file so the write site is auditable.
+3. Validate on read — never trust the stored value. If it's outside the
+   expected range, fall back to a hard-coded default.
+4. Add a row to this table in the same PR.
+
+---
+
 ## AI Agent Support
 
 Loupe is optimised for AI coding agents (Cline, Cursor, Copilot Workspace, etc.):
