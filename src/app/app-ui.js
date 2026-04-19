@@ -2587,12 +2587,37 @@ Object.assign(App.prototype, {
   },
 
   // Apply the persisted theme on startup. Call this in App.init().
+  //
+  // Priority:
+  //   1. The explicit `localStorage.loupe_theme` value (if present and valid).
+  //   2. The OS `prefers-color-scheme` hint on FIRST boot only (no saved
+  //      pref yet) — 'dark' maps to `_DEFAULT_THEME`, 'light' maps to
+  //      `'light'`. Matches what the FOUC-prevention inline script in
+  //      build.py does so the class set in <head> never changes on first
+  //      paint.
+  //   3. Hard-coded fallback (`_DEFAULT_THEME` = 'dark').
+  //
+  // The FOUC-prevention script in build.py's <head> resolves the same
+  // priority and sets the theme + dark classes on <body> before CSS
+  // applies, so `_initTheme` is mostly a re-apply + internal-state sync.
   _initTheme() {
     let saved = null;
     try { saved = localStorage.getItem(_THEME_PREF_KEY); } catch (_) { /* storage blocked */ }
-    const id = (saved && THEMES.some(t => t.id === saved)) ? saved : _DEFAULT_THEME;
+    let id;
+    if (saved && THEMES.some(t => t.id === saved)) {
+      id = saved;
+    } else {
+      // First boot — honour the OS preference. `matchMedia` is not
+      // available in e.g. old embedded WebViews, hence the guard.
+      let prefersLight = false;
+      try {
+        prefersLight = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches);
+      } catch (_) { /* matchMedia unavailable */ }
+      id = prefersLight ? 'light' : _DEFAULT_THEME;
+    }
     this._setTheme(id);
   },
+
 
 
   _setLoading(on) {
