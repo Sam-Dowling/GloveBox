@@ -181,50 +181,41 @@ Object.assign(App.prototype, {
   },
 
 
-  // Produce the plaintext summary report. When `budget === Infinity` the
-  // per-section length caps are skipped so callers can obtain the full,
-  // unbudgeted report (used by the Plaintext export). Otherwise behaves
-  // exactly as the legacy _copyAnalysis body did — section order, tables,
-  // and budget trimming are byte-identical so Summary output is unchanged.
+  // Produce the plaintext summary report.
+  //
+  // ── Target semantics (as of the 3-phase Summarize picker) ───────────
+  // `budget` is a **target character count**, not a hard threshold. The
+  // algorithm is build-full → measure → shrink-to-fit:
+  //
+  //   1. Build every section at full fidelity (SCALE = Infinity — no row
+  //      caps, no per-field truncation). Raw scripts, full tables, full
+  //      metadata trees.
+  //   2. If the assembled total fits under `budget`, emit it unchanged.
+  //      This is the whole point: a tiny file whose raw content fits
+  //      inside the target should land in the report verbatim.
+  //   3. If over budget, walk sections from the **most expendable**
+  //      (highest priority number — 7: Format-specific, 6: Deobfuscated,
+  //      …) down toward File Info (priority 1), swapping each section's
+  //      text for a tighter-SCALE rebuild along the ladder
+  //      [4, 2, 1, 0.5, 0.25]. Re-measure after every swap; stop the
+  //      instant the total fits.
+  //   4. If still over at SCALE=0.25 for every section, fall back to the
+  //      legacy per-section `maxLen` cap + hard slice so we never exceed
+  //      the target.
+  //
+  // `budget === Infinity` (Unlimited phase) short-circuits step 1: the
+  // full-fidelity build is returned directly, no measurement, no caps.
   _buildAnalysisText(budget) {
     if (!this.findings) return '';
     const UNBUDGETED = !isFinite(budget);
     const BUDGET = UNBUDGETED ? Number.MAX_SAFE_INTEGER : budget;
     const f = this.findings;
-
-    // ── Budget-scale factor ──────────────────────────────────────────────
-    // Every per-renderer cap and per-field truncation in this report is
-    // expressed relative to the 64 K default (SCALE = 1). Raising the
-    // Settings "⚡ Summary size" slider widens row counts, string
-    // truncations, and metadata-tree depth; lowering it (down to 4 K)
-    // tightens them. Floor values (rowCap≥5, charCap≥120) keep tiny
-    // budgets from collapsing sections to nothing; at MAX every cap
-    // becomes Infinity so `.slice(0, Infinity)` / `length > Infinity`
-    // degrade to "no truncation" without a separate code path.
-    //
-    //   budget  SCALE   rowCap(30)  charCap(800)
-    //    4 000    0.25      8           200
-    //   16 000    0.25 →0.5 8 / 15      200 / 400
-    //   64 000    1.0       30          800     (legacy / default)
-    //  128 000    2.0       60        1 600
-    //  256 000    4.0      120        3 200
-    //    MAX      ∞          ∞            ∞
-    const SCALE = UNBUDGETED ? Infinity : Math.max(0.25, BUDGET / 64000);
-    const rowCap  = (n) => SCALE === Infinity ? Infinity : Math.max(5,   Math.ceil(n * SCALE));
-    const charCap = (n) => SCALE === Infinity ? Infinity : Math.max(120, Math.ceil(n * SCALE));
-    // Expose on `this` so every _copyAnalysisXxx helper (App.prototype
-    // methods, not closures over this function) can scale its own
-    // literals. Saved / restored around the body so nested calls don't
-    // leak a stale cap set.
-    const _prevCaps = this._sCaps;
-    this._sCaps = { SCALE, rowCap, charCap };
-
     const meta = this._fileMeta || {};
     const hashes = this.fileHashes || {};
-    const sections = [];
 
     // Helper: truncate a section to fit a max length. A max of Infinity
-    // short-circuits so MAX-budget reports skip the comparison entirely.
+    // short-circuits so unbudgeted / fitted reports skip the comparison
+    // entirely.
     const cap = (text, max) => {
       if (!text) return '';
       if (max === Infinity) return text;
@@ -232,184 +223,251 @@ Object.assign(App.prototype, {
     };
     // Helper: escape pipe characters for markdown tables
     const tp = (v) => String(v || '').replace(/\|/g, '∣').replace(/\n/g, ' ');
-    try {
 
-    // ═══════ 1. File Info (priority: always included) ════════════════════
-    const FMT = {
-      docx: 'Word Document', docm: 'Word Macro-Enabled Document', xlsx: 'Excel Workbook',
-      xlsm: 'Excel Macro-Enabled Workbook', xls: 'Excel 97-2003 Workbook', ods: 'OpenDocument Spreadsheet',
-      pptx: 'PowerPoint Presentation', pptm: 'PowerPoint Macro-Enabled Presentation',
-      csv: 'Comma-Separated Values', tsv: 'Tab-Separated Values', doc: 'Word 97-2003 Document',
-      msg: 'Outlook Message', eml: 'Email Message', lnk: 'Windows Shortcut', hta: 'HTML Application',
-      pdf: 'PDF Document', rtf: 'Rich Text Format', html: 'HTML Document', htm: 'HTML Document',
-      one: 'OneNote Document', iso: 'Disk Image (ISO)', img: 'Disk Image (IMG)', zip: 'ZIP Archive',
-      rar: 'RAR Archive', '7z': '7-Zip Archive', wsf: 'Windows Script File', url: 'Internet Shortcut',
-      svg: 'SVG Image', iqy: 'Internet Query File', slk: 'Symbolic Link File', evtx: 'Windows Event Log',
-      sqlite: 'SQLite Database', db: 'SQLite Database', exe: 'PE Executable', dll: 'PE Dynamic Library',
-      sys: 'PE Driver', elf: 'ELF Binary', so: 'ELF Shared Object', jar: 'Java Archive',
-      class: 'Java Class', pem: 'PEM Certificate', der: 'DER Certificate', crt: 'X.509 Certificate',
-      p12: 'PKCS#12 Keystore', war: 'Java WAR', ear: 'Java EAR', msi: 'Windows Installer',
-      reg: 'Registry File', inf: 'INF File', sct: 'Scriptlet', scpt: 'Compiled AppleScript',
-      applescript: 'AppleScript Source', jxa: 'JavaScript for Automation', plist: 'Property List',
-      pfx: 'PKCS#12 Keystore', cer: 'X.509 Certificate', odt: 'OpenDocument Text',
-      odp: 'OpenDocument Presentation', ppt: 'PowerPoint 97-2003', dylib: 'Mach-O Dynamic Library',
-      bundle: 'Mach-O Bundle', o: 'Object File', cab: 'Cabinet Archive',
-      gz: 'Gzip Archive', tgz: 'Tar Gzip Archive', tar: 'Tar Archive',
-    };
-    const fileName = (meta.name || '').toString();
-    const ext = fileName.split('.').pop().toLowerCase();
-    const fileType = FMT[ext] || (ext.toUpperCase() + ' File');
-    let s = '# File Analysis Report\n\n## File Info\n| Property | Value |\n|----------|-------|\n';
-    s += `| Filename | ${tp(fileName)} |\n| Type | ${fileType} (.${ext}) |\n`;
-    if (meta.size) s += `| Size | ${fmtBytes(meta.size)} (${meta.size.toLocaleString()} bytes) |\n`;
-    if (meta.magic) s += `| Magic | ${tp(meta.magic.label)}${meta.magic.hex ? ' [' + meta.magic.hex + ']' : ''} |\n`;
-    if (hashes.md5) s += `| MD5 | \`${hashes.md5}\` |\n`;
-    if (hashes.sha1) s += `| SHA-1 | \`${hashes.sha1}\` |\n`;
-    if (hashes.sha256) s += `| SHA-256 | \`${hashes.sha256}\` |\n`;
-    if (meta.entropy !== undefined) s += `| Entropy | ${meta.entropy.toFixed(3)} / 8.000 |\n`;
-    sections.push({ text: s, priority: 1, maxLen: charCap(800) });
+    // ── buildSectionsAtScale(SCALE) ──────────────────────────────────────
+    // Re-runs the entire section-building pipeline at a given SCALE and
+    // returns the resulting `sections` array. Every `_copyAnalysisXxx`
+    // helper in App.prototype reads caps from `this._sCaps`, so setting
+    // it here propagates to the whole format-specific deep-dive section.
+    //
+    //   SCALE   rowCap(n)              charCap(n)
+    //    ∞       Infinity               Infinity           (full fidelity)
+    //    4       max(5, ⌈n×4⌉)          max(120, ⌈n×4⌉)
+    //    2       max(5, ⌈n×2⌉)          max(120, ⌈n×2⌉)
+    //    1       max(5, n)              max(120, n)        (legacy default)
+    //    0.5     max(5, ⌈n÷2⌉)          max(120, ⌈n÷2⌉)
+    //    0.25    max(5, ⌈n÷4⌉)          max(120, ⌈n÷4⌉)   (tightest)
+    const _prevCaps = this._sCaps;
+    const buildSectionsAtScale = (SCALE) => {
+      const rowCap  = (n) => SCALE === Infinity ? Infinity : Math.max(5,   Math.ceil(n * SCALE));
+      const charCap = (n) => SCALE === Infinity ? Infinity : Math.max(120, Math.ceil(n * SCALE));
+      this._sCaps = { SCALE, rowCap, charCap };
+      const sections = [];
 
-    // ═══════ 2. Risk Assessment ══════════════════════════════════════════
-    const risk = f.risk || f.riskLevel || '';
-    if (risk) {
-      const sev = { critical: '🔴 CRITICAL', high: '🟠 HIGH', medium: '🟡 MEDIUM', low: '🟢 LOW' };
-      sections.push({ text: `\n## Risk Assessment\n**${sev[risk] || risk.toUpperCase()}**\n`, priority: 2, maxLen: charCap(200) });
-    }
+      // ═══════ 1. File Info (priority: always included) ════════════════════
+      const FMT = {
+        docx: 'Word Document', docm: 'Word Macro-Enabled Document', xlsx: 'Excel Workbook',
+        xlsm: 'Excel Macro-Enabled Workbook', xls: 'Excel 97-2003 Workbook', ods: 'OpenDocument Spreadsheet',
+        pptx: 'PowerPoint Presentation', pptm: 'PowerPoint Macro-Enabled Presentation',
+        csv: 'Comma-Separated Values', tsv: 'Tab-Separated Values', doc: 'Word 97-2003 Document',
+        msg: 'Outlook Message', eml: 'Email Message', lnk: 'Windows Shortcut', hta: 'HTML Application',
+        pdf: 'PDF Document', rtf: 'Rich Text Format', html: 'HTML Document', htm: 'HTML Document',
+        one: 'OneNote Document', iso: 'Disk Image (ISO)', img: 'Disk Image (IMG)', zip: 'ZIP Archive',
+        rar: 'RAR Archive', '7z': '7-Zip Archive', wsf: 'Windows Script File', url: 'Internet Shortcut',
+        svg: 'SVG Image', iqy: 'Internet Query File', slk: 'Symbolic Link File', evtx: 'Windows Event Log',
+        sqlite: 'SQLite Database', db: 'SQLite Database', exe: 'PE Executable', dll: 'PE Dynamic Library',
+        sys: 'PE Driver', elf: 'ELF Binary', so: 'ELF Shared Object', jar: 'Java Archive',
+        class: 'Java Class', pem: 'PEM Certificate', der: 'DER Certificate', crt: 'X.509 Certificate',
+        p12: 'PKCS#12 Keystore', war: 'Java WAR', ear: 'Java EAR', msi: 'Windows Installer',
+        reg: 'Registry File', inf: 'INF File', sct: 'Scriptlet', scpt: 'Compiled AppleScript',
+        applescript: 'AppleScript Source', jxa: 'JavaScript for Automation', plist: 'Property List',
+        pfx: 'PKCS#12 Keystore', cer: 'X.509 Certificate', odt: 'OpenDocument Text',
+        odp: 'OpenDocument Presentation', ppt: 'PowerPoint 97-2003', dylib: 'Mach-O Dynamic Library',
+        bundle: 'Mach-O Bundle', o: 'Object File', cab: 'Cabinet Archive',
+        gz: 'Gzip Archive', tgz: 'Tar Gzip Archive', tar: 'Tar Archive',
+      };
+      const fileName = (meta.name || '').toString();
+      const ext = fileName.split('.').pop().toLowerCase();
+      const fileType = FMT[ext] || (ext.toUpperCase() + ' File');
+      let s = '# File Analysis Report\n\n## File Info\n| Property | Value |\n|----------|-------|\n';
+      s += `| Filename | ${tp(fileName)} |\n| Type | ${fileType} (.${ext}) |\n`;
+      if (meta.size) s += `| Size | ${fmtBytes(meta.size)} (${meta.size.toLocaleString()} bytes) |\n`;
+      if (meta.magic) s += `| Magic | ${tp(meta.magic.label)}${meta.magic.hex ? ' [' + meta.magic.hex + ']' : ''} |\n`;
+      if (hashes.md5) s += `| MD5 | \`${hashes.md5}\` |\n`;
+      if (hashes.sha1) s += `| SHA-1 | \`${hashes.sha1}\` |\n`;
+      if (hashes.sha256) s += `| SHA-256 | \`${hashes.sha256}\` |\n`;
+      if (meta.entropy !== undefined) s += `| Entropy | ${meta.entropy.toFixed(3)} / 8.000 |\n`;
+      sections.push({ text: s, priority: 1, maxLen: charCap(800) });
 
-    // ═══════ 3. Detections ═══════════════════════════════════════════════
-    const detectionTypes = new Set([IOC.YARA, IOC.PATTERN, IOC.INFO]);
-    const allRefs = [...(f.externalRefs || []), ...(f.interestingStrings || [])];
-    const detections = allRefs.filter(r => detectionTypes.has(r.type));
-    if (detections.length) {
-      const detCap = rowCap(250);
-      let d = '\n## Detections\n| Rule | Severity | Description |\n|------|----------|-------------|\n';
-      for (const det of detections.slice(0, detCap)) {
-        d += `| ${tp(det.ruleName || det.type)} | ${(det.severity || 'info').toUpperCase()} | ${tp(det.description || det.url)} |\n`;
+      // ═══════ 2. Risk Assessment ══════════════════════════════════════════
+      const risk = f.risk || f.riskLevel || '';
+      if (risk) {
+        const sev = { critical: '🔴 CRITICAL', high: '🟠 HIGH', medium: '🟡 MEDIUM', low: '🟢 LOW' };
+        sections.push({ text: `\n## Risk Assessment\n**${sev[risk] || risk.toUpperCase()}**\n`, priority: 2, maxLen: charCap(200) });
       }
-      if (detections.length > detCap) d += `\n… and ${detections.length - detCap} more detections\n`;
-      sections.push({ text: d, priority: 3, maxLen: charCap(10000) });
-    }
 
-    // ═══════ 4. IOCs (ALL types except detections) ═══════════════════════
-    const iocSeen = new Set();
-    const iocs = [];
-    for (const r of allRefs) {
-      if (!detectionTypes.has(r.type) && r.url && !iocSeen.has(r.type + '|' + r.url)) {
-        iocSeen.add(r.type + '|' + r.url);
-        iocs.push(r);
-      }
-    }
-    if (iocs.length) {
-      const iocCap = rowCap(350);
-      let d = '\n## IOCs\n| Type | Value | Severity |\n|------|-------|----------|\n';
-      for (const ioc of iocs.slice(0, iocCap)) {
-        d += `| ${tp(ioc.type)} | \`${tp(ioc.url)}\` | ${ioc.severity || 'info'} |\n`;
-      }
-      if (iocs.length > iocCap) d += `\n… and ${iocs.length - iocCap} more IOCs\n`;
-      sections.push({ text: d, priority: 4, maxLen: charCap(10000) });
-    }
-
-    // ═══════ 5. Macros ═══════════════════════════════════════════════════
-    if (f.hasMacros && f.modules && f.modules.length) {
-      const mods = f.modules.filter(m => m.source);
-      if (mods.length) {
-        let d = '\n## Macros\n';
-        if (f.autoExec && f.autoExec.length) {
-          const items = f.autoExec.map(a => typeof a === 'string' ? a : `${a.module}: ${(a.patterns || []).join(', ')}`);
-          d += '**Auto-exec:** ' + items.join('; ') + '\n\n';
+      // ═══════ 3. Detections ═══════════════════════════════════════════════
+      const detectionTypes = new Set([IOC.YARA, IOC.PATTERN, IOC.INFO]);
+      const allRefs = [...(f.externalRefs || []), ...(f.interestingStrings || [])];
+      const detections = allRefs.filter(r => detectionTypes.has(r.type));
+      if (detections.length) {
+        const detCap = rowCap(250);
+        let d = '\n## Detections\n| Rule | Severity | Description |\n|------|----------|-------------|\n';
+        for (const det of detections.slice(0, detCap)) {
+          d += `| ${tp(det.ruleName || det.type)} | ${(det.severity || 'info').toUpperCase()} | ${tp(det.description || det.url)} |\n`;
         }
-        for (const mod of mods) {
-          d += `### ${mod.name}\n\`\`\`vba\n${mod.source}\n\`\`\`\n\n`;
+        if (detections.length > detCap) d += `\n… and ${detections.length - detCap} more detections\n`;
+        sections.push({ text: d, priority: 3, maxLen: charCap(10000) });
+      }
+
+      // ═══════ 4. IOCs (ALL types except detections) ═══════════════════════
+      const iocSeen = new Set();
+      const iocs = [];
+      for (const r of allRefs) {
+        if (!detectionTypes.has(r.type) && r.url && !iocSeen.has(r.type + '|' + r.url)) {
+          iocSeen.add(r.type + '|' + r.url);
+          iocs.push(r);
         }
-        sections.push({ text: d, priority: 5, maxLen: charCap(12000) });
       }
-    }
-
-
-    // ═══════ 6. Deobfuscated Findings ════════════════════════════════════
-    // Walk the full innerFindings tree — every decoded layer (including
-    // deeper ones like Base64 → gzip → PowerShell) becomes its own section
-    // so the analyst / LLM sees the actual payload, not just the outer
-    // encoding. Duplicates are deduped by (chain + first 120 chars of
-    // decoded text) so re-packaged identical payloads aren't emitted twice.
-    const _flattenEncoded = (ef, out) => {
-      out.push(ef);
-      for (const inner of (ef.innerFindings || [])) _flattenEncoded(inner, out);
-      return out;
-    };
-    const encoded = (f.encodedContent || []).reduce((a, ef) => _flattenEncoded(ef, a), []);
-    const meaningful = encoded.filter(ef => {
-      if (ef._deobfuscatedText) return true;
-      if (ef.decodedBytes && ef.decodedBytes.length) {
-        try {
-          const t = new TextDecoder('utf-8', { fatal: true }).decode(ef.decodedBytes.slice(0, 2000));
-          return [...t].filter(c => c.charCodeAt(0) < 32 && c !== '\n' && c !== '\r' && c !== '\t').length / t.length < 0.1;
-        } catch (_) { return false; }
+      if (iocs.length) {
+        const iocCap = rowCap(350);
+        let d = '\n## IOCs\n| Type | Value | Severity |\n|------|-------|----------|\n';
+        for (const ioc of iocs.slice(0, iocCap)) {
+          d += `| ${tp(ioc.type)} | \`${tp(ioc.url)}\` | ${ioc.severity || 'info'} |\n`;
+        }
+        if (iocs.length > iocCap) d += `\n… and ${iocs.length - iocCap} more IOCs\n`;
+        sections.push({ text: d, priority: 4, maxLen: charCap(10000) });
       }
-      return false;
-    });
-    // Dedupe identical chain+payload so nested re-wrappings don't double up.
-    const _seenLayers = new Set();
-    const uniqueLayers = [];
-    for (const ef of meaningful) {
-      const keyText = ef._deobfuscatedText
-        || (ef.decodedBytes ? (() => {
-          try { return new TextDecoder('utf-8', { fatal: true }).decode(ef.decodedBytes.slice(0, 120)); }
-          catch (_) { return ''; }
-        })() : '');
-      const key = ((ef.chain || []).join('→')) + '|' + keyText.slice(0, 120);
-      if (_seenLayers.has(key)) continue;
-      _seenLayers.add(key);
-      uniqueLayers.push(ef);
-    }
-    if (uniqueLayers.length) {
-      // Per-layer decode budget scales with the Summary size slider. The
-      // `decodeMax` is how many bytes we re-decode from the raw buffer
-      // (only used when _deobfuscatedText wasn't already cached); the
-      // `emitMax` trims the actual text we emit into the report. Default
-      // 64 K keeps legacy 16 000 / 8 000 behaviour exactly.
-      const decodeMax = charCap(16000);
-      const emitMax = charCap(8000);
-      let d = '\n## Deobfuscated Findings\n';
-      for (const ef of uniqueLayers) {
 
-        const chain = (ef.chain && ef.chain.length) ? ef.chain.join(' → ') : ef.encoding || 'decoded';
-        d += `### ${chain}\n`;
-        if (ef.severity && ef.severity !== 'info') d += `**Severity:** ${ef.severity}\n`;
-        let dec = ef._deobfuscatedText || '';
-        if (!dec && ef.decodedBytes) {
+      // ═══════ 5. Macros ═══════════════════════════════════════════════════
+      if (f.hasMacros && f.modules && f.modules.length) {
+        const mods = f.modules.filter(m => m.source);
+        if (mods.length) {
+          let d = '\n## Macros\n';
+          if (f.autoExec && f.autoExec.length) {
+            const items = f.autoExec.map(a => typeof a === 'string' ? a : `${a.module}: ${(a.patterns || []).join(', ')}`);
+            d += '**Auto-exec:** ' + items.join('; ') + '\n\n';
+          }
+          for (const mod of mods) {
+            // At shrinking SCALEs we still emit whole modules intact at
+            // the section-build stage — any trim happens through the
+            // section maxLen cap in the final fallback path. Tightening
+            // VBA source mid-decompilation produces garbage output.
+            d += `### ${mod.name}\n\`\`\`vba\n${mod.source}\n\`\`\`\n\n`;
+          }
+          sections.push({ text: d, priority: 5, maxLen: charCap(12000) });
+        }
+      }
+
+      // ═══════ 6. Deobfuscated Findings ════════════════════════════════════
+      // Walk the full innerFindings tree — every decoded layer (including
+      // deeper ones like Base64 → gzip → PowerShell) becomes its own section
+      // so the analyst / LLM sees the actual payload, not just the outer
+      // encoding. Duplicates are deduped by (chain + first 120 chars of
+      // decoded text) so re-packaged identical payloads aren't emitted twice.
+      const _flattenEncoded = (ef, out) => {
+        out.push(ef);
+        for (const inner of (ef.innerFindings || [])) _flattenEncoded(inner, out);
+        return out;
+      };
+      const encoded = (f.encodedContent || []).reduce((a, ef) => _flattenEncoded(ef, a), []);
+      const meaningful = encoded.filter(ef => {
+        if (ef._deobfuscatedText) return true;
+        if (ef.decodedBytes && ef.decodedBytes.length) {
           try {
-            const sliceN = decodeMax === Infinity ? ef.decodedBytes.length : decodeMax;
-            dec = new TextDecoder('utf-8', { fatal: true }).decode(ef.decodedBytes.slice(0, sliceN));
-          } catch (_) { }
+            const t = new TextDecoder('utf-8', { fatal: true }).decode(ef.decodedBytes.slice(0, 2000));
+            return [...t].filter(c => c.charCodeAt(0) < 32 && c !== '\n' && c !== '\r' && c !== '\t').length / t.length < 0.1;
+          } catch (_) { return false; }
         }
-        if (dec) d += '```\n' + ((emitMax !== Infinity && dec.length > emitMax) ? dec.slice(0, emitMax) + '\n… (truncated)' : dec) + '\n```\n';
-        if (ef.iocs && ef.iocs.length) d += '**IOCs:** ' + ef.iocs.map(i => `${i.type}: \`${i.url}\``).join(', ') + '\n';
-        d += '\n';
+        return false;
+      });
+      // Dedupe identical chain+payload so nested re-wrappings don't double up.
+      const _seenLayers = new Set();
+      const uniqueLayers = [];
+      for (const ef of meaningful) {
+        const keyText = ef._deobfuscatedText
+          || (ef.decodedBytes ? (() => {
+            try { return new TextDecoder('utf-8', { fatal: true }).decode(ef.decodedBytes.slice(0, 120)); }
+            catch (_) { return ''; }
+          })() : '');
+        const key = ((ef.chain || []).join('→')) + '|' + keyText.slice(0, 120);
+        if (_seenLayers.has(key)) continue;
+        _seenLayers.add(key);
+        uniqueLayers.push(ef);
       }
-      sections.push({ text: d, priority: 6, maxLen: charCap(14000) });
-    }
+      if (uniqueLayers.length) {
+        // Per-layer decode/emit budgets scale with the current SCALE so
+        // the shrink-to-fit ladder can claw back space from bulky
+        // decoded blobs without nuking the section entirely.
+        const decodeMax = charCap(16000);
+        const emitMax = charCap(8000);
+        let d = '\n## Deobfuscated Findings\n';
+        for (const ef of uniqueLayers) {
+          const chain = (ef.chain && ef.chain.length) ? ef.chain.join(' → ') : ef.encoding || 'decoded';
+          d += `### ${chain}\n`;
+          if (ef.severity && ef.severity !== 'info') d += `**Severity:** ${ef.severity}\n`;
+          let dec = ef._deobfuscatedText || '';
+          if (!dec && ef.decodedBytes) {
+            try {
+              const sliceN = decodeMax === Infinity ? ef.decodedBytes.length : decodeMax;
+              dec = new TextDecoder('utf-8', { fatal: true }).decode(ef.decodedBytes.slice(0, sliceN));
+            } catch (_) { }
+          }
+          if (dec) d += '```\n' + ((emitMax !== Infinity && dec.length > emitMax) ? dec.slice(0, emitMax) + '\n… (truncated)' : dec) + '\n```\n';
+          if (ef.iocs && ef.iocs.length) d += '**IOCs:** ' + ef.iocs.map(i => `${i.type}: \`${i.url}\``).join(', ') + '\n';
+          d += '\n';
+        }
+        sections.push({ text: d, priority: 6, maxLen: charCap(14000) });
+      }
 
+      // ═══════ 7. Format-Specific Deep Data ════════════════════════════════
+      // The per-format helpers (PE, ELF, Mach-O, PDF, MSI, EVTX, SQLite,
+      // X.509, JAR, …) all read caps from `this._sCaps`, which we set at
+      // the top of this closure.
+      const deep = this._copyAnalysisFormatSpecific(f, tp);
+      if (deep) sections.push({ text: deep, priority: 7, maxLen: BUDGET });
 
-    // ═══════ 7. Format-Specific Deep Data ════════════════════════════════
-    let deep = this._copyAnalysisFormatSpecific(f, tp);
-    if (deep) sections.push({ text: deep, priority: 7, maxLen: BUDGET }); // gets remaining
+      return sections;
+    };
 
-    // ═══════ Assemble with budget ════════════════════════════════════════
-    sections.sort((a, b) => a.priority - b.priority);
-    let remaining = BUDGET;
-    const output = [];
-    for (const sec of sections) {
-      if (remaining <= 0) break;
-      // For the last section (format-specific), give it whatever remains
-      const limit = sec.priority === 7 ? remaining : Math.min(sec.maxLen, remaining);
-      const text = cap(sec.text, limit);
-      output.push(text);
-      remaining -= text.length;
-    }
-    let report = output.join('');
-    if (report.length > BUDGET) report = report.slice(0, BUDGET) + '\n… (report truncated)';
-    return report;
+    try {
+      // ── Pass 1: full fidelity ──────────────────────────────────────────
+      const fullSections = buildSectionsAtScale(Infinity);
+      const joinSorted = (secs) =>
+        secs.slice().sort((a, b) => a.priority - b.priority).map(s => s.text).join('');
+
+      // Unlimited phase — emit full-fidelity output untouched.
+      if (UNBUDGETED) return joinSorted(fullSections);
+
+      const fullText = joinSorted(fullSections);
+      if (fullText.length <= BUDGET) return fullText;
+
+      // ── Pass 2: shrink-to-fit ladder ───────────────────────────────────
+      // Pre-build every SCALE variant once so the inner loop is just
+      // string concatenation. 5 extra builds is cheap compared with the
+      // YARA / parsing pipeline that produced `f` in the first place.
+      const SCALE_LADDER = [4, 2, 1, 0.5, 0.25];
+      const variants = new Map();
+      variants.set(Infinity, fullSections);
+      for (const SCALE of SCALE_LADDER) {
+        variants.set(SCALE, buildSectionsAtScale(SCALE));
+      }
+
+      // Walk sections from the most expendable (highest priority number)
+      // down, swapping in progressively tighter rebuilds for each one.
+      // Measure after every swap so we stop at the first fit.
+      const current = new Map(); // priority → section (start from full fidelity)
+      for (const sec of fullSections) current.set(sec.priority, sec);
+      const priorities = [...current.keys()].sort((a, b) => a - b);
+
+      for (let i = priorities.length - 1; i >= 0; i--) {
+        const prio = priorities[i];
+        for (const SCALE of SCALE_LADDER) {
+          const replacement = (variants.get(SCALE) || []).find(s => s.priority === prio);
+          if (replacement) current.set(prio, replacement);
+          const combined = joinSorted([...current.values()]);
+          if (combined.length <= BUDGET) return combined;
+        }
+      }
+
+      // ── Pass 3: last-resort hard truncation ────────────────────────────
+      // Even at SCALE=0.25 for every section the report exceeds BUDGET
+      // (rare — usually huge deobfuscated PowerShell or a massive
+      // embedded cert chain). Fall back to the legacy per-section maxLen
+      // cap + hard slice so the output is always ≤ BUDGET.
+      const finalSecs = [...current.values()].sort((a, b) => a.priority - b.priority);
+      let remaining = BUDGET;
+      const output = [];
+      for (const sec of finalSecs) {
+        if (remaining <= 0) break;
+        const limit = sec.priority === 7 ? remaining : Math.min(sec.maxLen, remaining);
+        const text = cap(sec.text, limit);
+        output.push(text);
+        remaining -= text.length;
+      }
+      let report = output.join('');
+      if (report.length > BUDGET) report = report.slice(0, BUDGET) + '\n… (report truncated)';
+      return report;
     } finally {
       // Restore caps in case a nested _buildAnalysisText call (or a
       // future re-entrancy) stashed one before us.

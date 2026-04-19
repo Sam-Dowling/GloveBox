@@ -177,7 +177,7 @@ Click any entry inside a ZIP / TAR / ISO / MSI / PKG / CRX / XPI / JAR listing t
 | Feature | What you get |
 |---|---|
 | **Six-theme picker** | Light, Dark (default), Midnight OLED, Solarized, Mocha, Latte — chosen from the ⚙ Settings tile grid. Your choice persists and is applied before first paint so you never see a flash of the wrong palette. First-boot users are matched to their OS `prefers-color-scheme`. Theme tokens flip every surface at once. *Pluggable — see CONTRIBUTING → Adding a New Theme.* |
-| **Settings / Help dialog** | `⚙` toolbar button (or `,` for Settings, `?` / `H` for Help) — a unified two-tabbed modal. Settings carries the theme picker and the Summary-size slider; Help lists every keyboard shortcut and the offline / release links. |
+| **Settings / Help dialog** | `⚙` toolbar button (or `,` for Settings, `?` / `H` for Help) — a unified two-tabbed modal. Settings carries the theme picker and the 3-phase Summarize-size picker (Default / Large / Unlimited); Help lists every keyboard shortcut and the offline / release links. |
 | **Floating zoom** | 50 – 200 % zoom via a floating control that stays out of the way |
 | **Click-and-drag panning** | Grab and drag to pan around rendered documents |
 | **Resizable sidebar** | Drag the sidebar edge to resize it between 33 % and 50 % of the viewport |
@@ -195,7 +195,7 @@ Click any entry inside a ZIP / TAR / ISO / MSI / PKG / CRX / XPI / JAR listing t
 
 ## 📤 Exports
 
-Loupe consolidates every "get this analysis out of the browser" action into a single **`📤 Export ▾`** dropdown in the viewer toolbar. Every export is generated entirely client-side — no network calls, no third-party services. The dropdown sits next to the one-shot **`⚡ Summary`** button, which handles the plaintext / Markdown analysis report.
+Loupe consolidates every "get this analysis out of the browser" action into a single **`📤 Export ▾`** dropdown in the viewer toolbar. Every export is generated entirely client-side — no network calls, no third-party services. The dropdown sits next to the one-shot **`⚡ Summarize`** button, which handles the plaintext / Markdown analysis report.
 
 **Save raw file is the only true download in the dropdown — every other action writes to the clipboard** so your one-click flow is "Export → paste into ticket / TIP / jq pipeline".
 
@@ -203,7 +203,7 @@ Loupe consolidates every "get this analysis out of the browser" action into a si
 
 Columns are export formats; rows are the sections of the analysis. A ✅ means the export carries that data; a blank cell means it's deliberately omitted because the target format has no idiomatic slot for it.
 
-| Content section              | Summary (clipboard) | IOCs JSON (clipboard) | IOCs CSV (clipboard) | STIX 2.1 bundle (clipboard) | MISP event (clipboard) |
+| Content section              | Summarize (clipboard) | IOCs JSON (clipboard) | IOCs CSV (clipboard) | STIX 2.1 bundle (clipboard) | MISP event (clipboard) |
 |------------------------------|:-------------------:|:---------------------:|:--------------------:|:---------------------------:|:----------------------:|
 | File metadata (name, size, type) | ✅              | ✅                    |                      | ✅ (file SCO)               | ✅ (filename attr)     |
 | File hashes (MD5 / SHA-1 / SHA-256) | ✅             | ✅                    |                      | ✅ (file SCO)               | ✅ (md5 / sha1 / sha256 attrs) |
@@ -213,13 +213,13 @@ Columns are export formats; rows are the sections of the analysis. A ✅ means t
 | VBA macro source              | ✅ (trimmed)        |                       |                      |                             |                        |
 | Deobfuscated payload layers   | ✅ (trimmed)        |                       |                      |                             |                        |
 | Format-specific deep data (PE / ELF / Mach-O / X.509 / JAR, email auth, LNK) | ✅ (trimmed) |        |                      |                             |                        |
-| Size budget                   | configurable        | unlimited             | unlimited            | unlimited                   | unlimited              |
+| Size budget                   | 3-phase target      | unlimited             | unlimited            | unlimited                   | unlimited              |
 
-### ⚡ Summary button
+### ⚡ Summarize button
 
 Copies a Markdown-formatted analysis report to the clipboard — File Info, Risk, Detections, IOCs, Macros, Deobfuscated layers, and format-specific deep data (PE / ELF / Mach-O / X.509 / JAR / LNK, PDF JavaScripts + embedded files, MSI CustomActions, OneNote embedded objects, RTF OLE objects, EML / MSG attachments + auth results, HTML credential forms, HTA / SVG active-content inventory, EVTX notable event IDs, SQLite schema, ZIP compression-ratio / zip-bomb indicators, ISO volume info, image EXIF, PGP key info, plist LaunchAgent persistence, AppleScript source + signatures, OOXML external relationships).
 
-The character budget is user-configurable in ⚙ Settings via a 10-stop logarithmic slider (4 K → ∞ chars, default ~64 000 chars / ~16 K tokens). The current budget is shown as a live chip inside the button (`16K`, `32K`, … `MAX`). Every per-renderer row cap, text truncation, and metadata tree depth scales with the budget — at 4 K you get a compact report, at MAX nothing is truncated.
+The size is user-configurable in ⚙ Settings via a three-phase picker — **Default** (~16 K tokens / 64 000 chars), **Large** (~50 K tokens / 200 000 chars), or **Unlimited** (no truncation). Rather than pre-shrinking every section to a fixed cap, Loupe builds the report at **full fidelity first** and only retrenches if the assembled total exceeds the chosen target: small files (a single raw script, a short config) land in the report verbatim regardless of the target. When the full build is over target, sections are walked from most expendable (format-specific deep data, deobfuscated payloads) down toward File Info / Risk and each one is re-emitted at progressively tighter row-count and text-truncation caps until the report fits. Unlimited skips every measurement — you always get the full-fidelity output.
 
 ### Export menu actions
 

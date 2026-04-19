@@ -2989,58 +2989,31 @@ body.dark .settings-theme-tile-active {
   text-overflow: ellipsis;
 }
 
-/* Summary slider */
-.settings-slider {
-  width: 100%;
-  margin: 4px 0 6px;
-  accent-color: var(--accent);
+/* Summarize target — 3-phase picker (Default / Large / Unlimited).
+   Reuses the Theme-tile visuals (.settings-theme-tile /
+   .settings-theme-tile-active) but stacks a primary label over a muted
+   sub-label instead of the icon+label row used by Theme tiles. */
+.settings-phase-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
 }
 
-body.dark .settings-slider {
-  accent-color: var(--accent);
+.settings-phase-tile {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
 }
 
-.settings-slider-readout {
+.settings-phase-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-phase-sub {
   font-size: 11px;
-  color: #555;
+  opacity: .65;
   font-variant-numeric: tabular-nums;
-}
-
-body.dark .settings-slider-readout {
-  color: rgba(255, 255, 255, .65);
-}
-
-.settings-footnote {
-  margin-top: 14px;
-  font-size: 11px;
-  color: #888;
-  font-style: italic;
-}
-
-body.dark .settings-footnote {
-  color: rgba(255, 255, 255, .48);
-}
-
-/* Toolbar chip — small pill inside the ⚡ Summary button showing the
-   current budget label (e.g. "16K", "MAX"). Scales down tightly so the
-   button keeps its compact footprint. */
-.tb-chip {
-  display: inline-block;
-  margin-left: 6px;
-  padding: 1px 7px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: .3px;
-  border-radius: 8px;
-  background: rgb(var(--accent-rgb) / .18);
-  color: #134694;
-  font-variant-numeric: tabular-nums;
-  line-height: 1.4;
-  vertical-align: 1px;
-}
-
-body.dark .tb-chip {
-  background: rgb(var(--accent-rgb) / .22);
-  color: var(--accent-hover);
 }
 </file_content_end>

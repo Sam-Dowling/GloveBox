@@ -3,7 +3,7 @@
 //
 // Two-tabbed modal: Settings + Help.
 //   - Settings tab: theme picker (reuses the THEMES registry + _setTheme in
-//     app-ui.js) and a logarithmic summary-budget slider.
+//     app-ui.js) and a 3-phase Summarize-target picker.
 //   - Help tab: 1:1 port of the legacy _openHelpDialog body (keyboard
 //     shortcuts table, tagline, 🔄 Check for Updates link).
 //
@@ -13,83 +13,77 @@
 // — those CSS rules in viewers.css are kept intact.
 //
 // Persistence keys:
-//   - loupe_summary_chars  — integer 1..10 (slider step); default 5
-//   - loupe_theme          — owned by app-ui.js (_initTheme / _setTheme)
+//   - loupe_summary_target  — 'default' | 'large' | 'unlimited'; default 'default'
+//   - loupe_theme           — owned by app-ui.js (_initTheme / _setTheme)
+//
+// A one-shot migration from the legacy `loupe_summary_chars` (integer 1..10
+// step) is applied on boot: steps 1–4 → 'default', 5–8 → 'large', 9–10 →
+// 'unlimited'. The old key is deleted after the migration write.
 // ════════════════════════════════════════════════════════════════════════════
 
-// ── Summary budget: 10-step logarithmic scale ───────────────────────────────
-// Char budgets roughly double each step. The label is a token-count
-// approximation (~4 chars/token) shown as a chip next to the ⚡ Summary
-// button so the analyst knows roughly how large the copied report will be.
-// Step 10 is unbudgeted (Infinity) — _buildAnalysisText already has an
-// UNBUDGETED code path for this exact case.
-const SUMMARY_STEPS = [
-  { step: 1, chars: 4000, label: '1K' },
-  { step: 2, chars: 8000, label: '2K' },
-  { step: 3, chars: 16000, label: '4K' },
-  { step: 4, chars: 32000, label: '8K' },
-  { step: 5, chars: 64000, label: '16K' },   // default — closest to legacy 50 000
-  { step: 6, chars: 128000, label: '32K' },
-  { step: 7, chars: 256000, label: '64K' },
-  { step: 8, chars: 512000, label: '128K' },
-  { step: 9, chars: 1048576, label: '256K' },
-  { step: 10, chars: Infinity, label: 'MAX' },
+// ── Summarize target: 3-phase picker ────────────────────────────────────────
+// The Summarize toolbar button (⚡ Summarize, _copyAnalysis in app-ui.js)
+// builds the full plaintext report at maximum fidelity, measures the
+// concatenated length, and only shrinks sections if the total exceeds the
+// chosen target. 'unlimited' short-circuits every cap so raw scripts, small
+// binaries, and tiny plists emit byte-identical to the legacy MAX output.
+const SUMMARY_TARGETS = [
+  { id: 'default',   chars: 64000,    label: 'Default',   sub: '~16K tokens' },
+  { id: 'large',     chars: 200000,   label: 'Large',     sub: '~50K tokens' },
+  { id: 'unlimited', chars: Infinity, label: 'Unlimited', sub: 'no limit'    },
 ];
-const SUMMARY_DEFAULT_STEP = 5;
-const SUMMARY_PREF_KEY = 'loupe_summary_chars';
+const SUMMARY_DEFAULT_ID = 'default';
+const SUMMARY_PREF_KEY = 'loupe_summary_target';
+const SUMMARY_LEGACY_KEY = 'loupe_summary_chars';
 
 Object.assign(App.prototype, {
   // ── Persisted state helpers ────────────────────────────────────────────
   _initSettings() {
-    let saved = SUMMARY_DEFAULT_STEP;
+    let saved = SUMMARY_DEFAULT_ID;
     try {
       const raw = localStorage.getItem(SUMMARY_PREF_KEY);
-      const n = parseInt(raw, 10);
-      if (Number.isFinite(n) && n >= 1 && n <= SUMMARY_STEPS.length) saved = n;
+      if (raw && SUMMARY_TARGETS.some(t => t.id === raw)) {
+        saved = raw;
+      } else {
+        // One-shot migration from the legacy 10-step integer key.
+        const legacy = localStorage.getItem(SUMMARY_LEGACY_KEY);
+        if (legacy != null) {
+          const n = parseInt(legacy, 10);
+          if (Number.isFinite(n)) {
+            if (n >= 9)      saved = 'unlimited';
+            else if (n >= 5) saved = 'large';
+            else             saved = 'default';
+          }
+          try { localStorage.setItem(SUMMARY_PREF_KEY, saved); } catch (_) { /* storage blocked */ }
+          try { localStorage.removeItem(SUMMARY_LEGACY_KEY); }   catch (_) { /* storage blocked */ }
+        }
+      }
     } catch (_) { /* storage blocked */ }
-    this._summaryStep = saved;
-    // Paint the Summary chip on boot so the badge reflects the restored
-    // preference even before the user opens the Settings dialog.
-    this._refreshSummaryBadge();
+    this._summaryTarget = saved;
   },
 
-  _getSummaryStep() {
-    return this._summaryStep || SUMMARY_DEFAULT_STEP;
+  _getSummaryTarget() {
+    return this._summaryTarget || SUMMARY_DEFAULT_ID;
   },
 
+  // Public accessor used by _copyAnalysis / _buildAnalysisText. Returns a
+  // character-count target (number) or Infinity for the unlimited phase.
   _getSummaryCharBudget() {
-    const s = SUMMARY_STEPS.find(x => x.step === this._getSummaryStep())
-      || SUMMARY_STEPS[SUMMARY_DEFAULT_STEP - 1];
-    return s.chars;
+    const t = SUMMARY_TARGETS.find(x => x.id === this._getSummaryTarget())
+      || SUMMARY_TARGETS[0];
+    return t.chars;
   },
 
-  _getSummaryBadgeLabel() {
-    const s = SUMMARY_STEPS.find(x => x.step === this._getSummaryStep())
-      || SUMMARY_STEPS[SUMMARY_DEFAULT_STEP - 1];
-    return s.label;
-  },
-
-  _setSummaryStep(step) {
-    const n = parseInt(step, 10);
-    if (!Number.isFinite(n) || n < 1 || n > SUMMARY_STEPS.length) return;
-    this._summaryStep = n;
-    try { localStorage.setItem(SUMMARY_PREF_KEY, String(n)); } catch (_) { /* storage blocked */ }
-    this._refreshSummaryBadge();
-  },
-
-  // Keep the chip inside `#btn-copy-analysis` in sync with the current step.
-  // Called on boot, on slider input, and whenever the viewer toolbar is
-  // (re-)built after a file load.
-  _refreshSummaryBadge() {
-    const chip = document.getElementById('summary-budget-chip');
-    if (!chip) return;
-    chip.textContent = this._getSummaryBadgeLabel();
+  _setSummaryTarget(id) {
+    if (!SUMMARY_TARGETS.some(t => t.id === id)) return;
+    this._summaryTarget = id;
+    try { localStorage.setItem(SUMMARY_PREF_KEY, id); } catch (_) { /* storage blocked */ }
   },
 
   // ── Dialog open / close ────────────────────────────────────────────────
   //
   // `tab` selects which pane is active on open:
-  //   'settings' (default) — theme picker + summary slider
+  //   'settings' (default) — theme picker + Summarize-target picker
   //   'help'               — legacy help dialog content
   _openSettingsDialog(tab) {
     const activeTab = tab === 'help' ? 'help' : 'settings';
@@ -165,7 +159,6 @@ Object.assign(App.prototype, {
     themeRow.className = 'settings-row';
     themeRow.innerHTML = `
       <div class="settings-row-label">Theme</div>
-      <div class="settings-hint">Switch the colour palette.</div>
       <div class="settings-theme-grid" id="settings-theme-grid"></div>`;
     body.appendChild(themeRow);
 
@@ -188,44 +181,36 @@ Object.assign(App.prototype, {
       grid.appendChild(tile);
     }
 
-    // Summary budget slider — logarithmic, 10 stops. Writing to
-    // localStorage happens in _setSummaryStep so the chip stays in sync.
-    const curStep = this._getSummaryStep();
-    const curInfo = SUMMARY_STEPS[curStep - 1];
-
+    // Summarize target — 3 tiles (Default / Large / Unlimited). No hint,
+    // no footnote; writing to localStorage happens in _setSummaryTarget.
+    // The writer builds the report at full fidelity and only shrinks if
+    // the total exceeds the chosen target, so picking a larger phase never
+    // injects filler — it just raises the ceiling before per-section
+    // truncation kicks in.
+    const curId = this._getSummaryTarget();
     const sumRow = document.createElement('div');
     sumRow.className = 'settings-row';
     sumRow.innerHTML = `
-      <div class="settings-row-label">⚡ Summary size</div>
-      <div class="settings-hint">Rough upper bound for the plaintext report copied by the ⚡ Summary button. Raising this also widens every table cap, per-field truncation, and metadata-tree depth — more PE imports, longer PDF/AutoHotkey scripts, fuller entitlements, deeper EVTX / SQLite table and so on.</div>
-
-      <input type="range" class="settings-slider" id="settings-summary-slider"
-             min="1" max="${SUMMARY_STEPS.length}" step="1" value="${curStep}">
-      <div class="settings-slider-readout" id="settings-summary-readout"></div>`;
+      <div class="settings-row-label">⚡ Summarize target</div>
+      <div class="settings-phase-grid" id="settings-summary-grid"></div>`;
     body.appendChild(sumRow);
 
-    const slider = sumRow.querySelector('#settings-summary-slider');
-    const readout = sumRow.querySelector('#settings-summary-readout');
-    const paintReadout = () => {
-      const step = parseInt(slider.value, 10);
-      const info = SUMMARY_STEPS[step - 1];
-      const charsStr = info.chars === Infinity
-        ? 'unbudgeted'
-        : `${info.chars.toLocaleString()} chars`;
-      readout.textContent = `~${info.label} tokens · ${charsStr}`;
-    };
-    paintReadout();
-    slider.addEventListener('input', () => {
-      this._setSummaryStep(slider.value);
-      paintReadout();
-    });
-
-    // Quick sanity note — reminds the user the current value applies to the
-    // toolbar Summary button.
-    const foot = document.createElement('div');
-    foot.className = 'settings-footnote';
-    foot.innerHTML = `Default is ~${curInfo ? SUMMARY_STEPS[SUMMARY_DEFAULT_STEP - 1].label : '16K'} tokens.`;
-    body.appendChild(foot);
+    const phaseGrid = sumRow.querySelector('#settings-summary-grid');
+    for (const t of SUMMARY_TARGETS) {
+      const tile = document.createElement('button');
+      tile.type = 'button';
+      tile.className = 'settings-theme-tile settings-phase-tile';
+      if (t.id === curId) tile.classList.add('settings-theme-tile-active');
+      tile.dataset.phaseId = t.id;
+      tile.innerHTML = `<span class="settings-phase-label">${t.label}</span><span class="settings-phase-sub">${t.sub}</span>`;
+      tile.addEventListener('click', () => {
+        this._setSummaryTarget(t.id);
+        for (const el of phaseGrid.querySelectorAll('.settings-phase-tile')) {
+          el.classList.toggle('settings-theme-tile-active', el.dataset.phaseId === t.id);
+        }
+      });
+      phaseGrid.appendChild(tile);
+    }
   },
 
   // ── Help tab ───────────────────────────────────────────────────────────
