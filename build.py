@@ -17,6 +17,8 @@ pdf_js       = read('vendor/pdf.min.js')
 pdf_wrk_js   = read('vendor/pdf.worker.min.js')
 highlight_js = read('vendor/highlight.min.js')
 utif_js      = read('vendor/utif.min.js')
+exifr_js     = read('vendor/exifr.min.js')
+tldts_js     = read('vendor/tldts.min.js')
 
 # CSS files — concatenated in order.
 # Each optional theme overlay lives in src/styles/themes/<id>.css and contains
@@ -383,6 +385,17 @@ HTML = f"""<!DOCTYPE html>
   <!-- ── UTIF.js (inlined — TIFF decoder used by image-renderer) ─────── -->
   <script>
 {utif_js}
+  </script>
+
+  <!-- ── exifr (inlined — EXIF / XMP / IPTC / GPS parser for images) ──── -->
+  <script>
+{exifr_js}
+  </script>
+
+  <!-- ── tldts (inlined — public-suffix-aware domain extractor,
+        used by pushIOC() to auto-derive IOC.DOMAIN from every URL) ──── -->
+  <script>
+{tldts_js}
   </script>
 
   <!-- ── Application ─────────────────────────────────────────────────── -->

@@ -141,7 +141,7 @@ registry and `_setTheme()` method defined there, and overrides the unbudgeted
 `_buildAnalysisText` call path in `_copyAnalysis` with the user's configured
 Summary-budget step.
 
-Vendor libraries (`vendor/jszip.min.js`, `vendor/xlsx.full.min.js`, `vendor/pdf.min.js`, `vendor/pdf.worker.min.js`, `vendor/highlight.min.js`) are inlined into separate `<script>` blocks before the application code.
+Vendor libraries (`vendor/jszip.min.js`, `vendor/xlsx.full.min.js`, `vendor/pdf.min.js`, `vendor/pdf.worker.min.js`, `vendor/highlight.min.js`, `vendor/utif.min.js`, `vendor/exifr.min.js`, `vendor/tldts.min.js`) are inlined into separate `<script>` blocks before the application code. `exifr` drives EXIF/GPS/XMP extraction inside `ImageRenderer`; `tldts` powers the public-suffix-list domain derivation wired into the shared `pushIOC` helper (every `IOC.URL` auto-emits a sibling `IOC.DOMAIN` when tldts resolves a registrable domain).
 
 ---
 
