@@ -302,25 +302,48 @@ rule VBA_Sleep_Delay
         and 2 of them
 }
 
-rule Office_DDE_AutoLink
+rule Office_DDE_AutoLink_OOXML
 {
     meta:
-        description = "Office document uses DDE or DDEAUTO for code execution"
+        description = "OOXML document contains a DDEAUTO or =DDE() field instruction"
         severity    = "critical"
         category    = "execution"
         mitre       = "T1559.002"
 
     strings:
-        $ddeauto_a = "DDEAUTO" nocase
-        $ddeauto_w = "DDEAUTO" nocase wide
-        $ddelink_a = "DDE|" nocase
-        $ddelink_w = "DDE|" nocase wide
-        $ddefml_a  = "=DDE(" nocase
-        $ddefml_w  = "=DDE(" nocase wide
+        $ddeauto = "DDEAUTO" nocase
+        $ddefml  = "=DDE(" nocase
+        $instr   = "instrText"
+        $fldchar = "fldChar"
+        $word    = "word/"
+        $xl      = "xl/"
 
     condition:
-        (uint32(0) == 0xE011CFD0 or uint16(0) == 0x4B50 or uint32(0) == 0x74725C7B)
-        and any of them
+        uint32(0) == 0x04034B50
+        and ($word or $xl)
+        and ($instr or $fldchar)
+        and ($ddeauto or $ddefml)
+}
+
+rule Office_DDE_AutoLink_Legacy
+{
+    meta:
+        description = "Legacy DOC, XLS or RTF contains a DDEAUTO field instruction"
+        severity    = "critical"
+        category    = "execution"
+        mitre       = "T1559.002"
+
+    strings:
+        $ddeauto = "DDEAUTO" nocase
+        $ddefml  = "=DDE(" nocase
+        $fldinst = "\\fldinst" nocase
+        $worddoc = "WordDocument" wide
+        $workbk  = "Workbook" wide
+
+    condition:
+        (uint32(0) == 0x74725C7B and $fldinst and ($ddeauto or $ddefml))
+        or
+        (uint32(0) == 0xE011CFD0 and ($worddoc or $workbk) and ($ddeauto or $ddefml))
 }
 
 rule Office_OLE_Embedded_Object
