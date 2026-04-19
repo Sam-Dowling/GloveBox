@@ -2443,6 +2443,8 @@ body.dark .yara-rule-source {
   flex-shrink: 0;
   color: #666;
   background: #fafafa;
+  max-height: 160px;
+  overflow-y: auto;
 }
 
 body.dark .yara-status {
@@ -2474,6 +2476,55 @@ body.dark .yara-status-warning {
 body.dark .yara-status-error {
   color: var(--risk-high) !important;
 }
+
+/* Multi-item error / warning status: summary row + bulleted list + copy btn */
+.yara-status-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.yara-status-copy-btn {
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.85;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.yara-status-copy-btn:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.yara-status-copy-btn:active {
+  transform: translateY(1px);
+}
+
+.yara-status-list {
+  margin: 6px 0 2px;
+  padding-left: 18px;
+  list-style: disc;
+  font-weight: 500;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: inherit;
+}
+
+.yara-status-list li {
+  margin: 0 0 2px;
+  word-break: break-word;
+}
+
 
 /* ── Scan results ────────────────────────────────────────────────────────── */
 .yara-results {

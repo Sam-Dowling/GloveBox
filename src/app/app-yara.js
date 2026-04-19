@@ -899,13 +899,86 @@ Object.assign(App.prototype, {
     }, 50);
   },
 
-  /** Set YARA status bar text + style. */
+  /** Set YARA status bar text + style. For multi-item error lists, renders
+   *  each item on its own line and adds a Copy button for the full text. */
   _yaraSetStatus(text, type) {
     const el = document.getElementById('yara-status');
     if (!el) return;
-    el.textContent = text;
     el.className = 'yara-status yara-status-' + (type || 'info');
+    el.innerHTML = '';
+
+    // Split error/warning lists on "; " boundary (the separator every caller uses).
+    // Anything after the first ":" in the summary header is treated as the item block.
+    const splitColon = text.indexOf(': ');
+    const isList = (type === 'error' || type === 'warning') &&
+                   splitColon !== -1 && text.indexOf('; ', splitColon) !== -1;
+
+    if (!isList) {
+      // Single-line status — keep the existing compact look
+      const span = document.createElement('span');
+      span.className = 'yara-status-text';
+      span.textContent = text;
+      el.appendChild(span);
+      return;
+    }
+
+    // Multi-item status: summary + bulleted list + copy button
+    const header = text.slice(0, splitColon);
+    const items = text.slice(splitColon + 2).split('; ').filter(Boolean);
+
+    const summary = document.createElement('div');
+    summary.className = 'yara-status-summary';
+    const summaryText = document.createElement('span');
+    summaryText.textContent = header + ' \u2014 ' + items.length +
+      (type === 'error' ? ' error' : ' warning') + (items.length === 1 ? '' : 's');
+    summary.appendChild(summaryText);
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'yara-status-copy-btn';
+    copyBtn.textContent = '\u{1F4CB} Copy';
+    copyBtn.title = 'Copy full error text to clipboard';
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const payload = header + '\n' + items.map(s => '  \u2022 ' + s).join('\n');
+      const done = () => {
+        if (this._toast) this._toast('Copied error to clipboard');
+        const orig = copyBtn.textContent;
+        copyBtn.textContent = '\u2713 Copied';
+        setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(payload).then(done, () => {
+          // Fallback to execCommand if clipboard API is blocked
+          const ta = document.createElement('textarea');
+          ta.value = payload; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.select();
+          try { document.execCommand('copy'); done(); }
+          catch (_) { if (this._toast) this._toast('Copy failed', 'error'); }
+          finally { document.body.removeChild(ta); }
+        });
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = payload; ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); }
+        catch (_) { if (this._toast) this._toast('Copy failed', 'error'); }
+        finally { document.body.removeChild(ta); }
+      }
+    });
+    summary.appendChild(copyBtn);
+    el.appendChild(summary);
+
+    const list = document.createElement('ul');
+    list.className = 'yara-status-list';
+    for (const it of items) {
+      const li = document.createElement('li');
+      li.textContent = it;
+      list.appendChild(li);
+    }
+    el.appendChild(list);
   },
+
 
   /** Render YARA scan results into the results panel. */
   _yaraRenderResults(results) {
