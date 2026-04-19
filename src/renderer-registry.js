@@ -150,11 +150,15 @@ class RendererRegistry {
           else if (n === 'install.rdf') hasInstallRdf = true;
         }
         if (hasInstallRdf) return true;
-        // A bare root-level manifest.json alone is too weak a signal;
-        // many ZIPs ship one. Without the CRX envelope we only commit
-        // to browserext when the manifest lives alongside install.rdf
-        // (legacy Firefox) — otherwise we fall through to ZipRenderer,
-        // which will still surface the file tree for manual inspection.
+        // A bare root-level manifest.json is ambiguous in isolation
+        // (many unrelated ZIPs ship one), but combined with a declared
+        // .xpi / .crx extension it is the definitive modern WebExtension
+        // shape — the legacy install.rdf marker disappeared with Firefox
+        // 57 (2017), so keying solely on install.rdf would miss every
+        // contemporary add-on. Random ZIPs that happen to carry a root
+        // manifest.json still fall through to ZipRenderer because their
+        // extension won't be xpi/crx.
+        if (hasManifest && (ctx.ext === 'xpi' || ctx.ext === 'crx')) return true;
         return false;
       },
       description: 'Chrome/Edge CRX / Firefox XPI Extension',
