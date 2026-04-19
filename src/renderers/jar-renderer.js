@@ -1371,23 +1371,46 @@ class JarRenderer {
 
   // ── Apply string analysis results to findings ────────────────────────
   _applyAnalysisToFindings(f, analysis, obfuscation) {
-    // Suspicious APIs → interestingStrings
+    // Suspicious APIs → interestingStrings (deduped by api name with occurrence count)
+    // Constant-pool strings are collected across every .class file, so the same
+    // symbol (e.g. javax/crypto/Cipher) routinely matches many times — once per
+    // class that references it, and often several times per class (raw name,
+    // field descriptor, method signature). Collapse into one row per api.
+    const apiGroups = new Map();
     for (const s of analysis.suspicious) {
+      const key = s.api;
+      const g = apiGroups.get(key);
+      if (g) {
+        g.count++;
+      } else {
+        apiGroups.set(key, { api: s.api, desc: s.desc, severity: s.severity || 'medium', count: 1 });
+      }
+    }
+    for (const g of apiGroups.values()) {
+      const suffix = g.count > 1 ? ` (×${g.count})` : '';
       f.interestingStrings.push({
         type: IOC.PATTERN,
-        url: `${s.api}: ${s.desc}`,
-        severity: s.severity || 'medium'
+        url: `${g.api}: ${g.desc}${suffix}`,
+        severity: g.severity
       });
     }
 
-    // URLs
+    // URLs (deduped — the same URL can appear in many constant pools)
+    const seenUrls = new Set();
+    const uniqueUrls = [];
     for (const url of analysis.urls) {
+      if (seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      uniqueUrls.push(url);
       f.interestingStrings.push({ type: IOC.URL, url, severity: 'info' });
     }
-    f.externalRefs = analysis.urls.map(u => ({ type: IOC.URL, url: u, severity: 'info' }));
+    f.externalRefs = uniqueUrls.map(u => ({ type: IOC.URL, url: u, severity: 'info' }));
 
-    // IPs
+    // IPs (deduped)
+    const seenIps = new Set();
     for (const ip of analysis.ips) {
+      if (seenIps.has(ip)) continue;
+      seenIps.add(ip);
       f.interestingStrings.push({ type: IOC.IP, url: ip, severity: 'medium' });
     }
 
@@ -1396,12 +1419,13 @@ class JarRenderer {
       f.interestingStrings.push({ type: IOC.PATTERN, url: `Obfuscation: ${o}`, severity: 'high' });
     }
 
-    // Risk assessment
+    // Risk assessment — count distinct APIs, not raw match occurrences, so six
+    // references to Cipher don't inflate mediumCount to 6.
     let criticalCount = 0, highCount = 0, mediumCount = 0;
-    for (const s of analysis.suspicious) {
-      if (s.severity === 'critical') criticalCount++;
-      else if (s.severity === 'high') highCount++;
-      else if (s.severity === 'medium') mediumCount++;
+    for (const g of apiGroups.values()) {
+      if (g.severity === 'critical') criticalCount++;
+      else if (g.severity === 'high') highCount++;
+      else if (g.severity === 'medium') mediumCount++;
     }
 
     if (criticalCount > 0) f.risk = 'critical';
