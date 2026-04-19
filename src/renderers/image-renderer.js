@@ -45,7 +45,7 @@ class ImageRenderer {
     });
     img.addEventListener('error', () => {
       infoDiv.textContent = `Failed to render image — file may be corrupted or unsupported format`;
-      infoDiv.style.color = '#f88';
+      infoDiv.style.color = 'var(--risk-high)';
       // Revoke blob URL on error to free memory
       URL.revokeObjectURL(blobUrl);
     });
