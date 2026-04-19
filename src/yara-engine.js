@@ -16,11 +16,18 @@ class YaraEngine {
   static parseRules(source) {
     const rules = [];
     const errors = [];
-    // Strip comments while preserving string literals (don't strip // inside "...")
-    const cleaned = source.replace(/"(?:[^"\\]|\\.)*"|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (m) => {
-      if (m[0] === '"') return m;  // keep string literals intact
-      return '';                    // strip comments
-    });
+    // Strip comments while preserving string literals and regex literals.
+    // Order matters: match strings first, then YARA regex literals of the form
+    // `= /…/` (so a trailing `\/ /` inside a regex is not treated as a line
+    // comment), then block and line comments.
+    const cleaned = source.replace(
+      /"(?:[^"\\]|\\.)*"|=\s*\/(?:[^/\\\n]|\\.)*\/[gismxuy]*|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g,
+      (m) => {
+        const c = m[0];
+        if (c === '"' || c === '=') return m;  // keep strings and regex literals
+        return '';                              // strip comments
+      }
+    );
 
     // Match rule blocks:  rule <name> [: <tags>] { ... }
     const ruleRx = /\brule\s+(\w+)\s*(?::\s*([\w\s]+?))?\s*\{([\s\S]*?)\n\}/g;
