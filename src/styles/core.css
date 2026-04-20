@@ -4152,72 +4152,182 @@ body.dark .settings-hint {
   color: rgba(255, 255, 255, .55);
 }
 
-/* Theme picker grid */
+/* ── Theme picker — 3×2 grid of preview cards ───────────────────────────
+   Six themes, always laid out 3 across × 2 down so the picker feels
+   deliberate regardless of dialog width. Each card is a vertical stack:
+
+     ┌─────────────────────┐
+     │                     │  ← preview strip (bg / accent / risk swatches
+     │   preview swatches  │      painted with the theme's own palette
+     │                     │      via inline custom properties)
+     ├─────────────────────┤
+     │  ☀ Light            │  ← icon + label row
+     │  Light              │  ← muted dark/light sub-label
+     └─────────────────────┘
+
+   Active tile gets an accent ring + a ✓ check badge in the top-right
+   corner. All colours flow through the currently-applied theme's
+   `--accent` / `--hairline*` tokens so Latte active = mauve ring,
+   Solarized active = amber ring, etc. */
 .settings-theme-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
 }
 
 .settings-theme-tile {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border: 1px solid #d0d3da;
-  border-radius: 10px;
-  background: #f0f1f4;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--hairline-strong, #d0d3da);
+  border-radius: 12px;
+  background: var(--panel-bg-raised, #f0f1f4);
   color: inherit;
   font: inherit;
-  font-size: 12px;
   cursor: pointer;
   text-align: left;
-  transition: all .15s ease;
+  transition: border-color .15s ease, background .15s ease, transform .15s ease, box-shadow .15s ease;
 }
 
 .settings-theme-tile:hover {
   border-color: var(--accent);
   background: rgb(var(--accent-rgb) / .06);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgb(var(--accent-rgb) / .1);
 }
 
 body.dark .settings-theme-tile {
-  background: rgba(255, 255, 255, .04);
+  background: rgba(255, 255, 255, .03);
   border-color: var(--hairline);
 }
 
 body.dark .settings-theme-tile:hover {
-  border-color: rgb(var(--accent-rgb) / .4);
-  background: rgb(var(--accent-rgb) / .08);
-  color: var(--accent);
+  border-color: rgb(var(--accent-rgb) / .45);
+  background: rgb(var(--accent-rgb) / .07);
+  box-shadow: 0 4px 14px rgb(var(--accent-rgb) / .18);
 }
 
 .settings-theme-tile-active {
   border-color: var(--accent) !important;
-  background: rgb(var(--accent-rgb) / .12) !important;
-  color: var(--accent-hover);
-  font-weight: 600;
-  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / .35);
+  background: rgb(var(--accent-rgb) / .1) !important;
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / .5), 0 4px 12px rgb(var(--accent-rgb) / .18);
 }
 
 body.dark .settings-theme-tile-active {
-  border-color: rgb(var(--accent-rgb) / .55) !important;
-  background: rgb(var(--accent-rgb) / .14) !important;
-  color: var(--accent-hover) !important;
-  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb) / .4);
+  border-color: rgb(var(--accent-rgb) / .6) !important;
+  background: rgb(var(--accent-rgb) / .12) !important;
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / .55), 0 4px 14px rgb(var(--accent-rgb) / .22);
+}
+
+/* Preview strip — three swatches painted from the theme's own colours.
+   The tile sets --tp-bg / --tp-accent / --tp-risk inline from the JS
+   `preview` triple, so each card shows what that theme looks like even
+   before it's applied. */
+.settings-theme-preview {
+  position: relative;
+  height: 48px;
+  border-radius: 8px;
+  background: var(--tp-bg, #fff);
+  border: 1px solid var(--hairline-strong, rgba(0, 0, 0, .1));
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+}
+
+body.dark .settings-theme-preview {
+  border-color: rgba(255, 255, 255, .1);
+}
+
+.settings-theme-preview::before {
+  /* faux "title bar" line so the preview reads as a window, not a blob */
+  content: '';
+  position: absolute;
+  top: 9px;
+  left: 10px;
+  right: 10px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--tp-accent, #1a73e8);
+  opacity: .55;
+}
+
+.settings-theme-preview-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .06);
+}
+
+.settings-theme-preview-dot-accent { background: var(--tp-accent, #1a73e8); }
+.settings-theme-preview-dot-risk   { background: var(--tp-risk,   #dc2626); }
+.settings-theme-preview-dot-muted  { background: var(--tp-accent, #1a73e8); opacity: .35; }
+
+/* Label row — icon + name + dark/light sub-label. */
+.settings-theme-label-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
 }
 
 .settings-theme-icon {
   flex: 0 0 auto;
-  font-size: 16px;
+  font-size: 14px;
   line-height: 1;
 }
 
 .settings-theme-label {
   flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.settings-theme-sub {
+  flex: 0 0 auto;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  opacity: .55;
+  font-weight: 500;
+}
+
+.settings-theme-tile-active .settings-theme-label {
+  color: var(--accent-hover);
+}
+
+/* ✓ badge on the active card — sits in the preview strip's top-right
+   corner, uses the tile's accent token so it inherits the theme colour. */
+.settings-theme-check {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+}
+
+.settings-theme-tile-active .settings-theme-check {
+  display: flex;
+}
+
 
 /* Summarize target — 3-phase picker (Default / Large / Unlimited).
    Reuses the Theme-tile visuals (.settings-theme-tile /

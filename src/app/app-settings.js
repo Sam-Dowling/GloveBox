@@ -165,7 +165,29 @@ Object.assign(App.prototype, {
       tile.className = 'settings-theme-tile';
       if (t.id === currentId) tile.classList.add('settings-theme-tile-active');
       tile.dataset.themeId = t.id;
-      tile.innerHTML = `<span class="settings-theme-icon">${t.icon}</span><span class="settings-theme-label">${t.label}</span>`;
+      tile.setAttribute('aria-label', `${t.label} theme (${t.dark ? 'dark' : 'light'})`);
+      tile.title = `Switch to ${t.label}`;
+      // Inline-paint the preview swatches from the theme's own colour
+      // triple so each card previews what that theme looks like before
+      // it's applied. `.settings-theme-preview` reads these via
+      // var(--tp-bg) / var(--tp-accent) / var(--tp-risk).
+      const p = t.preview || {};
+      const inlineVars =
+        `--tp-bg:${p.bg || '#fff'};` +
+        `--tp-accent:${p.accent || '#1a73e8'};` +
+        `--tp-risk:${p.risk || '#dc2626'};`;
+      tile.innerHTML = `
+        <span class="settings-theme-preview" style="${inlineVars}">
+          <span class="settings-theme-preview-dot settings-theme-preview-dot-accent"></span>
+          <span class="settings-theme-preview-dot settings-theme-preview-dot-muted"></span>
+          <span class="settings-theme-preview-dot settings-theme-preview-dot-risk"></span>
+        </span>
+        <span class="settings-theme-label-row">
+          <span class="settings-theme-icon">${t.icon}</span>
+          <span class="settings-theme-label">${t.label}</span>
+          <span class="settings-theme-sub">${t.dark ? 'Dark' : 'Light'}</span>
+        </span>
+        <span class="settings-theme-check" aria-hidden="true">✓</span>`;
       tile.addEventListener('click', () => {
         this._setTheme(t.id);
         for (const el of grid.querySelectorAll('.settings-theme-tile')) {
@@ -174,6 +196,7 @@ Object.assign(App.prototype, {
       });
       grid.appendChild(tile);
     }
+
 
     const curId = this._getSummaryTarget();
     const sumRow = document.createElement('div');

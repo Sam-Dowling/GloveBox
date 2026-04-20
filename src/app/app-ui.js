@@ -10,14 +10,25 @@
 //   3. Add a row to this array — no other wiring required.
 // `dark: true` toggles the legacy `body.dark` class so the ~150 existing dark
 // rules across core.css / viewers.css act as the baseline the overlay refines.
+// Each entry also carries a `preview` triple { bg, accent, risk } used by the
+// Settings-tab theme-picker to render an in-palette swatch strip per card —
+// the actual CSS custom properties only activate when the theme class is on
+// <body>, so the picker bakes the preview colours directly.
 const THEMES = [
-  { id: 'light', label: 'Light', icon: '☀', dark: false },
-  { id: 'dark', label: 'Dark', icon: '🌙', dark: true },
-  { id: 'midnight', label: 'Midnight (OLED)', icon: '🌑', dark: true },
-  { id: 'solarized', label: 'Solarized', icon: '🟡', dark: true },
-  { id: 'mocha', label: 'Mocha', icon: '🌺', dark: true },
-  { id: 'latte', label: 'Latte', icon: '🍵', dark: false },
+  { id: 'light',     label: 'Light',           icon: '☀', dark: false,
+    preview: { bg: '#ffffff', accent: '#1a73e8', risk: '#dc2626' } },
+  { id: 'dark',      label: 'Dark',            icon: '🌙', dark: true,
+    preview: { bg: '#12131c', accent: '#22d3ee', risk: '#f87171' } },
+  { id: 'midnight',  label: 'Midnight',        icon: '🌑', dark: true,
+    preview: { bg: '#000000', accent: '#22d3ee', risk: '#f87171' } },
+  { id: 'solarized', label: 'Solarized',       icon: '🟡', dark: true,
+    preview: { bg: '#073642', accent: '#b58900', risk: '#dc322f' } },
+  { id: 'mocha',     label: 'Mocha',           icon: '🌺', dark: true,
+    preview: { bg: '#1e1e2e', accent: '#cba6f7', risk: '#f38ba8' } },
+  { id: 'latte',     label: 'Latte',           icon: '🍵', dark: false,
+    preview: { bg: '#eff1f5', accent: '#8839ef', risk: '#d20f39' } },
 ];
+
 const _THEME_PREF_KEY = 'loupe_theme';
 const _DEFAULT_THEME = 'dark';
 
