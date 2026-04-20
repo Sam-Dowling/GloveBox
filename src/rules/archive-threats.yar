@@ -232,29 +232,3 @@ rule ISO_IMG_Disk_Image
     condition:
         $iso at 32769 or $iso at 34817
 }
-
-rule Zip_Bomb_Nested_Archive
-{
-    meta:
-        description = "ZIP archive contains another ZIP / GZIP / BZ2 / 7z / RAR — classic nested zip-bomb layout (r.zip / 42.zip / droste)"
-        severity    = "medium"
-        category    = "impact"
-        mitre       = "T1499.003"
-
-    strings:
-        $inner_zip = { 50 4B 03 04 }
-        $inner_gz  = { 1F 8B 08 }
-        $inner_bz  = "BZh"
-        $inner_7z  = { 37 7A BC AF 27 1C }
-        $inner_rar = "Rar!"
-
-    condition:
-        uint32(0) == 0x04034B50
-        and (
-            #inner_zip > 1 or
-            $inner_gz  in (64..filesize) or
-            $inner_bz  in (64..filesize) or
-            $inner_7z  in (64..filesize) or
-            $inner_rar in (64..filesize)
-        )
-}
