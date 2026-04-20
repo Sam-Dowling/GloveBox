@@ -84,7 +84,7 @@ Extensionless and renamed files are auto-routed via magic-byte sniff, extension 
 | **Image-metadata pivots** | EXIF GPS coordinates, camera serial numbers, software/firmware strings, XMP DocumentID / InstanceID, full XMP tree |
 | **Defanged-indicator refanging** | `hxxp://`, `1[.]2[.]3[.]4`, and similar obfuscations are refanged automatically before extraction |
 | **Metadata → IOC mirroring** | Every renderer ships the same classic-pivot fields (hashes, paths, GUIDs, MAC, emails, cert fingerprints) to the sidebar. Attribution-only strings like `CompanyName` / `FileDescription` stay metadata-only by design. |
-| **Common-infrastructure demotion** | Known-good global infrastructure (cloud APIs, package registries, CA/OCSP, XML schemas) is dimmed and sorted to the bottom with an optional "Hide" toggle; never affects Detections. |
+| **Nicelist demotion** | IOCs matching a "known-good" nicelist are dimmed and sorted to the bottom of the sidebar with an optional "Hide" toggle; never affects Detections. Ships with a curated **Default Nicelist** (global infrastructure, package registries, CA/OCSP, XML schemas) plus unlimited user-defined lists (MDR customer domains, employee emails, on-network assets) managed from ⚙ Settings → 🛡 Nicelists with CSV/JSON/TXT import + export. |
 
 ### Documents & Office
 
@@ -205,14 +205,14 @@ ZIP listings additionally surface per-entry risk signals classic archive viewers
 | Feature | What you get |
 |---|---|
 | **Six-theme picker** | Light, Dark (default), Midnight OLED, Solarized, Mocha, Latte — chosen from the ⚙ Settings tile grid. Your choice persists and is applied before first paint so you never see a flash of the wrong palette. First-boot users are matched to their OS `prefers-color-scheme`. Theme tokens flip every surface at once. |
-| **Settings / Help dialog** | `⚙` toolbar button (or `,` for Settings, `?` / `H` for Help) — a unified two-tabbed modal. Settings carries the theme picker and the 3-phase Summarize-size picker (Default / Large / Unlimited); Help lists every keyboard shortcut and the offline / release links. |
+| **Settings / Nicelists / Help dialog** | `⚙` toolbar button (or `,` for Settings, `?` / `H` for Help) — a unified three-tabbed modal. ⚙ Settings carries the theme picker and the 3-phase Summarize-size picker (Default / Large / Unlimited); 🛡 Nicelists toggles the built-in Default Nicelist and manages user-defined custom lists (create / import CSV-JSON-TXT / edit / export / delete); ? Help lists every keyboard shortcut and the offline / release links. |
 | **Floating zoom** | 50 – 200 % zoom via a floating control that stays out of the way |
 | **Click-and-drag panning** | Grab and drag to pan around rendered documents |
 | **Resizable sidebar** | Drag the sidebar edge to resize it between 33 % and 50 % of the viewport |
 | **Collapsible sidebar sections** | Single-pane sidebar with collapsible `<details>`: File Info, Macros, Signatures & IOCs |
 | **Breadcrumb navigation** | Drill-down path as a clickable crumb trail (e.g. `📦 archive.zip ▸ 📄 doc.docm ▸ 🔧 Module1.bas`). Overflow `… ▾` dropdown keeps long trails on one line; the close button is anchored so its position never shifts with filename length. |
 | **Archive browser** | Shared collapsible / searchable / sortable tree used by every archive-style renderer (ZIP, JAR / WAR / EAR, MSIX / APPX, CRX / XPI, TAR / `.tar.gz`, ISO / IMG, PKG / MPKG, CAB, RAR, 7z). Tree view with child counts and one-click drill-down; flat sortable table view; instant filter box; per-entry risk badges (executable, double-extension, ZipCrypto lock, tar-symlink target). |
-| **Keyboard shortcuts** | `S` sidebar · `Y` YARA dialog · `,` Settings · `?` / `H` Help · `F` search document · `Ctrl+C` copy raw file (when nothing is selected) · `Ctrl+V` paste file for analysis · `Esc` close dialog / clear search. **Archive browser:** `/` focus filter · `↑ ↓` navigate rows · `← →` collapse / expand folder · `Enter` / `Space` open selected file. |
+| **Keyboard shortcuts** | `S` sidebar · `Y` YARA dialog · `N` Nicelists · `,` Settings · `?` / `H` Help · `F` search document · `Ctrl+C` copy raw file (when nothing is selected) · `Ctrl+V` paste file for analysis · `Esc` close dialog / clear search. **Archive browser:** `/` focus filter · `↑ ↓` navigate rows · `← →` collapse / expand folder · `Enter` / `Space` open selected file. |
 | **Smart whole-token select** | Double-click in any monospace viewer selects the entire non-whitespace token — expanding past `/ . : = - _` and across visual line wraps — up to the nearest whitespace boundary. Great for URLs, hashes, base64 blobs, file paths, registry keys, PE imports, x509 fingerprints. |
 | **Loading overlay** | Spinner with status message while parsing large files |
 | **Toast notifications** | Non-intrusive feedback for downloads, clipboard operations, and errors |
