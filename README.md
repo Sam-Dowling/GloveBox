@@ -6,8 +6,7 @@ No server, no uploads, no tracking — just drop a file and inspect it.
 <p align="center">
   <a href="FEATURES.md">📖 Features</a> ·
   <a href="SECURITY.md">🔒 Security</a> ·
-  <a href="CONTRIBUTING.md">🛠️ Contributing</a> ·
-  <a href="VENDORED.md">📦 Vendored</a>
+  <a href="CONTRIBUTING.md">🛠️ Contributing</a>
 </p>
 
 > **<a href="https://loupe.tools/" target="_blank" rel="noopener">▶ Launch the live demo</a>**
@@ -41,38 +40,11 @@ SOC analysts, incident responders, and security-conscious users need a way to sa
 
 [⬇️ **Download latest loupe.html**](https://github.com/Loupe-tools/Loupe/releases/latest/download/loupe.html)
 
-1. **Download** — grab `loupe.html` from the release link above, or clone the repo, run `python make.py`, and open `docs/index.html` (the bundle is built from source, not tracked in git).
-2. **Open** — double-click the file in any modern browser (2023+: Chrome, Firefox, Edge, Safari). No server needed.
+1. **Download** — grab `loupe.html` from the release link above, or clone the repo, run `python make.py`, and open `docs/index.html`.
+2. **Open** — double-click the file in any modern browser (Chrome, Firefox, Edge, Safari). No server needed.
 3. **Drop a file** — drag a suspicious file onto the drop zone, click **📁 Open File**, or paste with **Ctrl+V**.
-4. **Inspect** — press **S** to toggle the security sidebar, **Y** for the YARA rules dialog, **?** for all shortcuts.
-
----
-
-## ✅ Verify Your Download
-
-Every release is signed with [Sigstore](https://www.sigstore.dev/) keyless signing — no long-lived key material, short-lived certificate issued by Fulcio to the release workflow's OIDC identity, transparency-log entry in Rekor. Each GitHub release ships three files:
-
-| File | Purpose |
-|---|---|
-| `loupe.html` | The bundle itself |
-| `loupe.html.sha256` | Plain-text SHA-256 for a quick eyeball check |
-| `loupe.html.sigstore` | Sigstore bundle (certificate + signature + Rekor inclusion proof) |
-| `loupe.cdx.json` | CycloneDX 1.5 SBOM — every vendored library with SHA-256 pin |
-| `loupe.cdx.json.sigstore` | Sigstore bundle for the SBOM |
-
-With [cosign](https://docs.sigstore.dev/cosign/installation/) installed, verify the bundle was built by the release workflow in this repository:
-
-```bash
-cosign verify-blob \
-  --bundle loupe.html.sigstore \
-  --certificate-identity "https://github.com/Loupe-tools/Loupe/.github/workflows/release.yml@refs/heads/main" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  loupe.html
-```
-
-A successful verification proves the exact bytes of `loupe.html` were produced by `.github/workflows/release.yml` in `Loupe-tools/Loupe` — it does **not** attest that the source is benign, only its provenance. See [SECURITY.md](SECURITY.md) for the full threat model.
-
-You can also **rebuild the release yourself** from the tagged source and confirm your SHA-256 matches the signed asset — see [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for the recipe.
+4. *(optional)* **Verify it** — every release is Sigstore-signed and reproducible. See [SECURITY.md § Verify Your Download](SECURITY.md#verify-your-download).
+5. **Inspect** — press **S** to toggle the security sidebar, **Y** for the YARA rules dialog, **?** for all shortcuts.
 
 ---
 
@@ -89,7 +61,7 @@ You can also **rebuild the release yourself** from the tagged source and confirm
 | **Browser extensions** | `.crx` (Chrome / Chromium / Edge) · `.xpi` (Firefox / Thunderbird) |
 | **Linux / IoT** | ELF binaries (`.so`, `.o`, `.elf`, extensionless) |
 | **macOS** | Mach-O binaries (`.dylib`, `.bundle`, Fat/Universal) · `.applescript` `.scpt` `.scptd` `.jxa` `.plist` · `.dmg` `.pkg` `.mpkg` |
-| **Certificates** | `.pem` `.der` `.crt` `.cer` `.p12` `.pfx` `.key` *(auto-disambiguated against PGP)* |
+| **Certificates** | `.pem` `.der` `.crt` `.cer` `.p12` `.pfx` `.key` |
 | **OpenPGP** | `.pgp` `.gpg` `.asc` `.sig` |
 | **Java** | `.jar` `.war` `.ear` `.class` |
 | **Scripts** | `.wsf` `.wsc` `.wsh` `.vbs` `.ps1` `.bat` `.cmd` `.js` |
@@ -98,13 +70,13 @@ You can also **rebuild the release yourself** from the tagged source and confirm
 | **Images** | `.jpg` `.png` `.gif` `.bmp` `.webp` `.ico` `.tif` `.avif` |
 | **Catch-all** | *Any file* — text or hex dump view |
 
-Every format gets risk assessment, IOC extraction, and YARA scanning on top of the format-specific parser. See **[FEATURES.md](FEATURES.md)** for the full capability reference.
+Every format gets risk assessment, IOC extraction, and YARA scanning on top of the format-specific parser. Full capability reference in **[FEATURES.md](FEATURES.md)**.
 
 ---
 
 ## 🔍 What It Finds
 
-- **YARA rule engine** — 502 default rules auto-scan every file; drop in your own `.yar` files to extend detection.
+- **YARA rule engine** — 500+ default rules auto-scan every file; drop in your own `.yar` files to extend detection.
 - **IOCs** — URLs, IPs, emails, hostnames, domains, file paths, UNC paths, GUIDs, key fingerprints. Defanged indicators (`hxxp://`, `1[.]2[.]3[.]4`) are refanged automatically.
 - **File hashes** — MD5, SHA-1, SHA-256 with one-click VirusTotal lookup.
 - **Macros & scripts** — decoded VBA, PowerShell, JScript, HTA; auto-exec entry points flagged.
@@ -112,11 +84,10 @@ Every format gets risk assessment, IOC extraction, and YARA scanning on top of t
 - **PDF internals** — embedded JavaScript, `/OpenAction`, `/Launch`, attachments, XFA forms.
 - **Native binaries** — PE / ELF / Mach-O with imports, sections, entropy, security features, code signatures.
 - **Certificates & keys** — X.509 and OpenPGP with weak-key and expiry flagging.
-- **Archive drill-down** — click any entry inside a ZIP / TAR / ISO / MSI / PKG / CRX / CAB to open it with full analysis; RAR and 7-Zip listings surface filenames, flags and encryption signals.
-
+- **Archive drill-down** — click any entry inside a ZIP / TAR / ISO / MSI / PKG / CRX / CAB to open it with full analysis.
 - **Exports** — one-click clipboard brief for tickets or LLMs, plus STIX 2.1, MISP, and IOC JSON/CSV.
 
-Plus six themes (Light / Dark / Midnight OLED / Solarized / Mocha / Latte), a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
+Six themes, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
 
 ---
 
@@ -166,13 +137,12 @@ Six built-in themes, selectable from the **⚙ Settings** dialog — your choice
 
 Drop one of these into Loupe to see it in action — the [`examples/`](examples/) directory has many more.
 
-- [`examples/encoded-payloads/nested-double-b64-ip.txt`](examples/encoded-payloads/nested-double-b64-ip.txt) — double Base64 hiding a C2 IP (recursive decode drill-down)
+- [`examples/encoded-payloads/nested-double-b64-ip.txt`](examples/encoded-payloads/nested-double-b64-ip.txt) — double Base64 hiding a C2 IP
 - [`examples/email/phishing-example.eml`](examples/email/phishing-example.eml) — SPF/DKIM/DMARC failures + tracking pixel
-- [`examples/windows-scripts/example.lnk`](examples/windows-scripts/example.lnk) — Shell Link with per-field IOC extraction, MAC/MachineID
-- [`examples/pe/signed-example.dll`](examples/pe/signed-example.dll) — Authenticode-signed DLL showing PE analysis + cert chain
+- [`examples/windows-scripts/example.lnk`](examples/windows-scripts/example.lnk) — Shell Link with per-field IOC extraction
+- [`examples/pe/signed-example.dll`](examples/pe/signed-example.dll) — Authenticode-signed DLL with PE analysis + cert chain
 - [`examples/forensics/example-security.evtx`](examples/forensics/example-security.evtx) — Windows security event log (auto-flags 4688 / 4624 / 1102)
-- [`examples/macos-scripts/example.scpt`](examples/macos-scripts/example.scpt) — compiled AppleScript with string extraction from opaque bytecode
-- [`examples/macos-system/example.pkg`](examples/macos-system/example.pkg) — flat macOS installer (xar) — install-script flagging, LaunchDaemon persistence detection
+- [`examples/macos-system/example.pkg`](examples/macos-system/example.pkg) — flat macOS installer with install-script flagging
 - [`examples/web/example-malicious.svg`](examples/web/example-malicious.svg) — script injection + foreignObject phishing form
 
 Full guided tour: **[FEATURES.md → Example Files](FEATURES.md#-example-files-guided-tour)**.
@@ -181,19 +151,15 @@ Full guided tour: **[FEATURES.md → Example Files](FEATURES.md#-example-files-g
 
 ## ⚠️ Limitations
 
-Loupe is a **static-analysis triage tool** — it extracts, decodes, and displays file contents for human review but **does not execute** macros, JavaScript, scripts, or any embedded code. It is not a replacement for dynamic analysis sandboxes (e.g., Any.Run, Joe Sandbox) or full malware reverse-engineering workflows. For files that warrant deeper investigation, use Loupe for initial triage and IOC extraction, then escalate to a dedicated sandbox or disassembly environment.
+Loupe is a **static-analysis triage tool** — it extracts, decodes, and displays file contents for human review but **does not execute** macros, JavaScript, scripts, or any embedded code. It is not a replacement for dynamic-analysis sandboxes (Any.Run, Joe Sandbox) or full reverse-engineering workflows. Use Loupe for initial triage and IOC extraction, then escalate to a sandbox or disassembly environment.
 
 ---
 
 ## 🔒 Security Model
 
-Loupe is designed to be safe to use on potentially malicious files:
-
 - **Zero network** — strict `Content-Security-Policy` (`default-src 'none'`) blocks every outbound request. No telemetry, no CDNs, no analytics.
-- **No code execution** — no `eval`, no `new Function`, no inline handlers from untrusted content.
-- **Sandboxed previews** — HTML and SVG render inside `<iframe sandbox>` with an inner CSP, plus an always-active drag shield.
-- **Zip-bomb & timeout defences** — centralised parser limits cap nesting depth, decompressed size, entry count, and wall-clock time per file.
-- **Offline by design** — works identically with Wi-Fi off or in an air-gapped environment.
+- **No code execution** — no `eval`, no `new Function`, sandboxed HTML/SVG previews.
+- **Zip-bomb & timeout defences** — centralised parser limits cap nesting depth, decompressed size, entry count, and wall-clock time.
 
 Full threat model, numeric limits, and vulnerability reporting: **[SECURITY.md](SECURITY.md)**.
 
@@ -205,7 +171,7 @@ Loupe is open source under the [Mozilla Public License 2.0](LICENSE).
 
 - ⭐ **Star the repo** — helps others discover the project
 - 🐛 **Open an issue** — bug reports, feature requests, and format support suggestions
-- 🔀 **Submit a pull request** — YARA rule submissions, new format parsers, and improvements are especially welcome
-- 📖 **See [CONTRIBUTING.md](CONTRIBUTING.md)** — build instructions, project structure, and architecture details for developers
+- 🔀 **Submit a pull request** — YARA rules, new format parsers, and improvements are especially welcome
+- 📖 **See [CONTRIBUTING.md](CONTRIBUTING.md)** — build instructions, gotchas, and conventions for developers
 
-The codebase is intentionally vanilla JavaScript (no frameworks, no bundlers) to keep the tool auditable and easy to understand.
+The codebase is vanilla JavaScript (no frameworks, no bundlers) to keep it auditable and easy to understand.
