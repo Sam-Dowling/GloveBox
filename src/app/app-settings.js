@@ -220,8 +220,6 @@ Object.assign(App.prototype, {
   _renderHelpTab(body) {
     const version = typeof LOUPE_VERSION !== 'undefined' ? LOUPE_VERSION : 'dev';
     body.innerHTML = `
-      <p class="help-tagline">A 100% offline, single-file security analyser for suspicious files.<br>No server, no uploads, no tracking — just drop a file and inspect it.</p>
-
       <h3>Keyboard Shortcuts</h3>
       <table class="help-kbd-table">
         <tr><td><kbd class="help-kbd">S</kbd></td><td>Toggle security sidebar</td></tr>
