@@ -179,7 +179,9 @@ Accepts three input shapes — an `npm pack` gzip tarball (`.tgz`), a bare `pack
 | **JAR / Java** | Parses JAR / WAR / EAR archives and standalone `.class` files — class file header, MANIFEST.MF with Main-Class and permissions, class listing with package tree, dependency extraction, constant pool string analysis with ~45 suspicious Java API patterns (deserialization, JNDI, reflection, command execution, networking) mapped to MITRE ATT&CK. Obfuscation detection (Allatori, ZKM, ProGuard, short-name heuristics). Clickable inner file extraction. 17 YARA rules. |
 | **SVG security analysis** | `<script>` extraction (inline + external), `<foreignObject>` detection (credential forms, password fields, embedded HTML), event handler scanning (~30 `on*` attributes), Base64 / data URI payload analysis, SVG-specific vectors (`<use>` external refs, `<animate>` / `<set>` href manipulation, `<feImage>` external filters), XML entity / DTD / XXE detection, JavaScript obfuscation patterns, meta refresh redirects. 18 YARA rules. |
 | **Image analysis** | Steganography indicators, polyglot file detection, hex header inspection for embedded payloads; embedded-thumbnail extraction (JPEG thumbnail renders alongside the main image so a disagreement jumps out); expanded EXIF coverage — MakerNote, ICC profile, UserComment, Interop, IFD1 tag groups |
+| **QR-code decoding** | Images, PDF pages, SVG embedded rasters, OneNote embedded images, and EML image attachments are scanned for QR payloads — decoded URL / Wi-Fi / OTP contents emitted as IOCs ("quishing" defence) |
 | **TIFF tag metadata** | Full IFD walk surfacing ImageDescription, Make / Model, Software / DateTime, Artist / HostComputer, Copyright, XMP, IPTC — the tag numbers most commonly abused as covert channels |
+
 
 ### Archive drill-down
 

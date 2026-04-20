@@ -235,6 +235,26 @@ subtly misbehave.
   contaminate Copy / Save with it.
 - **`ImageRenderer` decodes TIFFs twice via `UTIF`** — once in `render()`
   for pixels, once in `analyzeForSecurity()` for IFD tag mining.
+- **`QrDecoder` is the shared quishing entry point.** Any renderer that
+  materialises a raster surface — standalone images, PDF page canvases,
+  SVG-embedded `data:image/*` URIs, OneNote `FileDataStoreObject` blobs,
+  EML `image/*` attachments — should funnel it through
+  `QrDecoder.decodeRGBA()` (sync, for paths that already hold pixels,
+  e.g. `UTIF`) or `QrDecoder.decodeBlob()` (async, for raw image bytes)
+  and pass the result to `QrDecoder.applyToFindings(findings, result, source)`.
+  Because `decodeBlob()` is async, **the renderer's `analyzeForSecurity`
+  must itself be `async` and must `await` every decode before
+  returning** — collect the promises (`const qrPromises = [];
+  qrPromises.push(QrDecoder.decodeBlob(...).then(...));`) and
+  `await Promise.all(qrPromises)` before the final `return findings`.
+  The corresponding dispatch handler in `src/app/app-load.js` must also
+  be marked `async` and use `await r.analyzeForSecurity(...)`.
+  `_renderSidebar` paints from a one-shot snapshot of `findings` taken
+  when `analyzeForSecurity` resolves — a fire-and-forget decode that
+  mutates `findings` *after* that snapshot lands the `qrPayload` /
+  auto-emitted IOC in an object nobody is rendering. `PdfRenderer` is
+  the model: it already awaits `pdfjs` page rendering and calls the
+  sync `decodeRGBA()` on pixels it already owns.
 - **`NpmRenderer` accepts three input shapes** — gzip tarball (`.tgz`),
   a bare `package.json` manifest, or a `package-lock.json` /
   `npm-shrinkwrap.json` lockfile — routed by dedicated sniff helpers in
