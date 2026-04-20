@@ -59,6 +59,11 @@ jobs:
     permissions:
       contents: write
       id-token: write
+      # attestations: write — required by actions/attest-build-provenance
+      # to publish the SLSA v1.0 build-provenance attestation to GitHub's
+      # attestation store. Without it the action fails with
+      # "Resource not accessible by integration".
+      attestations: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -193,6 +198,47 @@ jobs:
           echo "OK  Sigstore bundles verify against workflow identity"
 
       # ──────────────────────────────────────────────────────────────
+      # SLSA v1.0 build provenance. actions/attest-build-provenance
+      # issues a signed attestation (via the same Sigstore/Fulcio/Rekor
+      # infrastructure as cosign sign-blob above) binding the exact
+      # release bytes to this workflow run — the workflow file, the
+      # commit SHA, the runner identity, the trigger event, and the
+      # build inputs. The attestation is stored in GitHub's attestation
+      # store AND emitted locally as a Sigstore bundle which we attach
+      # to the GitHub Release so offline verifiers don't need the API.
+      #
+      # Consumers verify with either:
+      #   gh attestation verify loupe.html --owner Loupe-tools
+      # or (offline):
+      #   cosign verify-blob-attestation \
+      #     --bundle loupe.html.intoto.jsonl \
+      #     --certificate-identity <workflow-identity> \
+      #     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+      #     --type slsaprovenance1 \
+      #     loupe.html
+      #
+      # This is additive: the existing cosign sign-blob bundles above
+      # are unchanged. Tightens OpenSSF Scorecard's Signed-Releases
+      # sub-check for provenance presence.
+      # ──────────────────────────────────────────────────────────────
+      - name: Generate SLSA build provenance
+        if: steps.check.outputs.exists == 'false'
+        id: provenance
+        uses: actions/attest-build-provenance@62fc1d596301d0ab9914e1fec14dc5c8d93f65cd # v3.2.0
+        with:
+          subject-path: |
+            loupe.html
+            loupe.cdx.json
+
+      - name: Attach provenance bundle next to release assets
+        # attest-build-provenance emits a single Sigstore bundle
+        # covering all `subject-path` entries. Rename it to match the
+        # conventional `.intoto.jsonl` extension so Scorecard and
+        # downstream verifiers detect it as build provenance.
+        if: steps.check.outputs.exists == 'false'
+        run: cp "${{ steps.provenance.outputs.bundle-path }}" loupe.intoto.jsonl
+
+      # ──────────────────────────────────────────────────────────────
       # Release notes: one SHA-256 line + one link to the verify /
       # reproduce recipe in SECURITY.md. Everything else comes from
       # generate_release_notes (auto-generated commit log).
@@ -223,3 +269,4 @@ jobs:
             loupe.html.sigstore
             loupe.cdx.json
             loupe.cdx.json.sigstore
+            loupe.intoto.jsonl

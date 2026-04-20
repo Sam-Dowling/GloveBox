@@ -52,6 +52,7 @@ release ships:
 | `loupe.html.sigstore` | Sigstore bundle (certificate + signature + Rekor inclusion proof) |
 | `loupe.cdx.json` | CycloneDX 1.5 SBOM — every vendored library with SHA-256 pin |
 | `loupe.cdx.json.sigstore` | Sigstore bundle for the SBOM |
+| `loupe.intoto.jsonl` | SLSA v1.0 build-provenance attestation (Sigstore bundle, `slsaprovenance1` predicate) binding the release bytes to this workflow run |
 
 With [cosign](https://docs.sigstore.dev/cosign/installation/) installed:
 
@@ -66,6 +67,37 @@ cosign verify-blob \
 A successful verification proves the bytes of `loupe.html` were produced by
 `.github/workflows/release.yml` in `Loupe-tools/Loupe`. It attests
 **provenance**, not that the source is benign.
+
+### SLSA build provenance
+
+In addition to the raw Sigstore signature above, every release ships a
+[SLSA v1.0](https://slsa.dev/spec/v1.0/provenance) build-provenance
+attestation (`loupe.intoto.jsonl`) that binds the release bytes to this
+repo, this workflow file, the exact commit SHA, the trigger event, and
+the runner identity. The attestation is issued by `actions/attest-build-provenance`
+through the same Sigstore / Fulcio / Rekor infrastructure as the
+signature above.
+
+Verify it online with the GitHub CLI:
+
+```bash
+gh attestation verify loupe.html --owner Loupe-tools
+```
+
+Or fully offline with cosign against the bundled `.intoto.jsonl`:
+
+```bash
+cosign verify-blob-attestation \
+  --bundle loupe.intoto.jsonl \
+  --certificate-identity "https://github.com/Loupe-tools/Loupe/.github/workflows/release.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --type slsaprovenance1 \
+  loupe.html
+```
+
+This is the same provenance signal OpenSSF Scorecard inspects for its
+Signed-Releases check, and is additive to the `.sigstore` bundles above —
+both remain valid and required.
 
 ---
 

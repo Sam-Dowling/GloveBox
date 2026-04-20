@@ -60,6 +60,14 @@ jobs:
         with:
           results_file: results.sarif
           results_format: sarif
+          # repo_token: a fine-grained PAT with `administration: read`
+          # (plus the default `contents: read` / `metadata: read`) stored
+          # as the `SCORECARD_TOKEN` repo secret. The default
+          # `GITHUB_TOKEN` cannot read branch-protection rules, so
+          # without this Scorecard's Branch-Protection check reports
+          # `?` (inconclusive) rather than a real score. See:
+          # https://github.com/ossf/scorecard-action#authentication-with-fine-grained-pat-optional
+          repo_token: ${{ secrets.SCORECARD_TOKEN }}
           # publish_results: true enables the public badge at
           # https://api.securityscorecards.dev/projects/github.com/Loupe-tools/Loupe
           # which is linked from README.md.
