@@ -21,15 +21,7 @@
 
 ## 🛡 Supported Formats (full reference)
 
-> **Extensionless and renamed files are auto-routed.** A single `RendererRegistry` dispatches files through three passes — magic-byte sniff, extension match, text-head sniff — so a mislabelled file still lands on the right renderer.
-
-| Pass | Signals |
-|---|---|
-| **1. Magic-byte sniff** | PE, ELF, Mach-O (incl. Fat/Universal), OLE2, ZIP, PDF, PNG / JPEG / GIF / BMP / WebP / TIFF / AVIF, ISO 9660, EVTX, SQLite, gzip, RAR, 7z, CAB, binary plist, OpenPGP packet tags, CRX, `PKCX` |
-| **2. Extension match** | Standard extension-to-renderer lookup |
-| **3. Text-head sniff** | RTF, HTML / SVG / XML roots, EML headers, AppleScript, `.url`/`.webloc`, `.reg`, `.inf`, `.sct`, `.iqy`/`.slk`, `.wsf`, ClickOnce `<assembly>`, `-----BEGIN PGP …-----` |
-
-Container disambiguation uses lazy OLE-stream and ZIP-central-directory peeks to tell DOCX / XLSX / PPTX / ODT / ODP / MSIX / JAR / CRX / XPI / generic ZIP apart, and `.doc` / `.xls` / `.ppt` / `.msg` apart inside OLE2.
+Extensionless and renamed files are auto-routed via magic-byte sniff, extension match, and text-head sniff — so a mislabelled file still lands on the right renderer.
 
 | Category | Extensions |
 |---|---|
@@ -118,7 +110,8 @@ Container disambiguation uses lazy OLE-stream and ZIP-central-directory peeks to
 | **MSI analysis** | CustomAction row parsing, Binary stream magic-sniffing, embedded CAB detection, Authenticode verdict, clickable stream drill-down, lazy stream loading to avoid memory crashes on huge installers |
 | **PE analysis** | Parses PE32 / PE32+ — DOS / COFF / Optional headers, section table with entropy, imports with ~140 flagged APIs, exports, resources, Rich header, string extraction; security features (ASLR, DEP, CFG, SEH, Authenticode); identifies XLL add-ins, compiled AutoHotkey, Inno Setup / NSIS installers, Go-compiled binaries. 31 YARA rules for packers and malware toolkits (Cobalt Strike, Mimikatz, Metasploit). |
 | **ClickOnce** | Parses `.application` / `.manifest` — assembly identity, deployment codebase + `deploymentProvider`, entry point, trust info, signature subject + thumbprint, dependent assemblies. Flags AppDomainManager hijacking, plain-HTTP deployment, FullTrust requests, and disposable-infrastructure dependencies. 4 YARA rules. |
-| **MSIX / APPX / App Installer** | Parses `.msix` / `.msixbundle` / `.appx` / `.appxbundle` packages and standalone `.appinstaller` XML — identity, capabilities (tiered: restricted / device / ordinary), applications, entry points, extensions (full-trust process, startup task, app-execution alias, protocol, COM, background tasks). Verifies the `AppxSignature.p7x` signer against the manifest's `Publisher` DN (mismatch ⇒ repackaged / re-signed), derives the canonical 13-character Windows PublisherId, flags silent auto-updates and suspicious update URIs. 9 YARA rules. Inner files clickable for recursive analysis. *Verification internals: see CONTRIBUTING → MSIX signature verification.* |
+| **MSIX / APPX / App Installer** | Parses `.msix` / `.msixbundle` / `.appx` / `.appxbundle` packages and standalone `.appinstaller` XML — identity, capabilities (tiered), applications, entry points, and extensions (full-trust process, startup task, app-execution alias, protocol, COM, background tasks). |
+| **MSIX signature verification** | Verifies the `AppxSignature.p7x` signer against the manifest's `Publisher` DN — a mismatch means the package was re-signed / repackaged. Derives the canonical 13-character Windows PublisherId; flags silent auto-updates and suspicious update URIs. 9 YARA rules. Inner files are clickable for recursive analysis. |
 
 ### Linux & macOS binaries
 
@@ -143,7 +136,7 @@ Container disambiguation uses lazy OLE-stream and ZIP-central-directory peeks to
 
 | Capability | What you get |
 |---|---|
-| **CRX (Chrome / Chromium / Edge)** | Parses both v2 and v3 envelopes; derives the canonical Chrome extension ID, decodes declared-vs-computed IDs and flags mismatches, surfaces RSA-SHA256 / ECDSA-SHA256 signature counts, flags malformed or empty headers. *Protobuf decode details: see CONTRIBUTING → CRX v3 decode pipeline.* |
+| **CRX (Chrome / Chromium / Edge)** | Parses both v2 and v3 envelopes; derives the canonical Chrome extension ID, decodes declared-vs-computed IDs and flags mismatches, surfaces RSA-SHA256 / ECDSA-SHA256 signature counts, flags malformed or empty headers. |
 | **XPI (Firefox / Thunderbird)** | Plain ZIP; parses WebExtension `manifest.json` or legacy `install.rdf` |
 | **Manifest analysis (MV2 & MV3)** | Name / version / ID / author / update URL / CSP / Key; MV3 service worker vs MV2 background scripts; content scripts with matched URL patterns; permissions tiered by risk (high: `nativeMessaging`, `<all_urls>`, `debugger`, `proxy`; medium: `cookies`, `history`, `management`, `webRequest` + `webRequestBlocking`, `declarativeNetRequest`, `tabCapture`, …); `externally_connectable`, `web_accessible_resources`, `content_security_policy` (flags `unsafe-eval` / `unsafe-inline` / remote script hosts); `chrome_url_overrides`; `update_url` off-store detection. |
 | **YARA coverage** | 12 rules — native-messaging bridges, broad host permissions, unsafe-eval CSP, wide externally-connectable, debugger / management APIs, proxy + cookies / history combos, non-store update URLs, legacy XUL bootstrap, wide `web_accessible_resources`, in-script `eval`. |
@@ -193,7 +186,7 @@ ZIP listings additionally surface per-entry risk signals classic archive viewers
 
 | Feature | What you get |
 |---|---|
-| **Six-theme picker** | Light, Dark (default), Midnight OLED, Solarized, Mocha, Latte — chosen from the ⚙ Settings tile grid. Your choice persists and is applied before first paint so you never see a flash of the wrong palette. First-boot users are matched to their OS `prefers-color-scheme`. Theme tokens flip every surface at once. *Pluggable — see CONTRIBUTING → Adding a New Theme.* |
+| **Six-theme picker** | Light, Dark (default), Midnight OLED, Solarized, Mocha, Latte — chosen from the ⚙ Settings tile grid. Your choice persists and is applied before first paint so you never see a flash of the wrong palette. First-boot users are matched to their OS `prefers-color-scheme`. Theme tokens flip every surface at once. |
 | **Settings / Help dialog** | `⚙` toolbar button (or `,` for Settings, `?` / `H` for Help) — a unified two-tabbed modal. Settings carries the theme picker and the 3-phase Summarize-size picker (Default / Large / Unlimited); Help lists every keyboard shortcut and the offline / release links. |
 | **Floating zoom** | 50 – 200 % zoom via a floating control that stays out of the way |
 | **Click-and-drag panning** | Grab and drag to pan around rendered documents |
