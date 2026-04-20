@@ -325,8 +325,12 @@ class SvgRenderer {
     // pairing against subsequent scripts in the source).
     const scriptRanges = [];
     {
-      // Closing `</script\b[^>]*>` accepts trailing attributes/whitespace
-      // the way browsers do (js/bad-tag-filter #57).
+      // Closing `<\/script\b[^>]*>` accepts trailing attributes / whitespace
+      // the way browsers do (js/bad-tag-filter #57). Backslash-escapes
+      // above are load-bearing: without them the literal end-tag bytes
+      // here would be seen by the HTML tokenizer once this file is
+      // concatenated inline into docs/index.html's inline script bundle,
+      // terminating it early.
       const re = /<script[\s>][\s\S]*?<\/script\b[^>]*>/gi;
       let mm;
       while ((mm = re.exec(text)) !== null) {
@@ -387,7 +391,7 @@ class SvgRenderer {
     }
 
     // Regex fallback for scripts in CDATA or entity-encoded.
-    // Closing `</script\b[^>]*>` mirrors the HTML parser (js/bad-tag-filter #58).
+    // Closing `<\/script\b[^>]*>` mirrors the HTML parser (js/bad-tag-filter #58).
     const scriptRegex = /<script[\s>][\s\S]*?<\/script\b[^>]*>/gi;
     let scriptMatch;
     while ((scriptMatch = scriptRegex.exec(text)) !== null) {
@@ -804,9 +808,9 @@ class SvgRenderer {
     // ── 8. Obfuscation in raw text (catches entity-encoded JS) ───────────
     // Check for common obfuscation patterns outside of <script> tags.
     // Use a fixed-point strip with a tolerant closing tag so nested or
-    // attribute-bearing </script foo> can't bypass the filter — a single
-    // pass is flagged by CodeQL js/bad-tag-filter + js/incomplete-multi-
-    // character-sanitization (#53, #59).
+    // attribute-bearing `<\/script foo>` can't bypass the filter — a
+    // single pass is flagged by CodeQL js/bad-tag-filter + js/incomplete-
+    // multi-character-sanitization (#53, #59).
     const stripScriptRe = /<script[\s>][\s\S]*?<\/script\b[^>]*>/gi;
     let textWithoutScripts = text;
     let prevScriptStrip;

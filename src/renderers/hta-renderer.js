@@ -198,9 +198,13 @@ class HtaRenderer {
 
   _extractScripts(text) {
     const blocks = [];
-    // Closing `</script\b[^>]*>` mirrors the HTML parser (it accepts
-    // trailing attributes/whitespace) — plain `</script>` is flagged by
-    // CodeQL js/bad-tag-filter (#55).
+    // Closing `<\/script\b[^>]*>` mirrors the HTML parser (it accepts
+    // trailing attributes / whitespace) — plain `<\/script>` is flagged
+    // by CodeQL js/bad-tag-filter (#55). The backslash-escaped slashes
+    // above are load-bearing: without them the literal end-tag bytes in
+    // this comment would be seen by the HTML tokenizer once this file is
+    // concatenated inline into docs/index.html's inline script bundle,
+    // terminating the whole bundle early.
     const rx = /<script([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi;
     let m;
     while ((m = rx.exec(text)) !== null) {
