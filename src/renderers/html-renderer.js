@@ -247,6 +247,7 @@ class HtmlRenderer {
       const lower = url.toLowerCase();
       // Skip data:image/* URLs — these are embedded images, not IOCs
       if (lower.startsWith('data:image/')) continue;
+      // eslint-disable-next-line no-script-url -- detecting, not navigating
       if (lower.startsWith('javascript:') || lower.startsWith('vbscript:') || lower.startsWith('data:text/html')) {
         sev = 'high';
         if (risk !== 'high') risk = 'high';

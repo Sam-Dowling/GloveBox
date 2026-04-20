@@ -686,6 +686,7 @@ class SvgRenderer {
       let sev = 'info';
       const lower = url.toLowerCase();
       if (lower.startsWith('data:image/')) continue; // skip embedded images
+      // eslint-disable-next-line no-script-url -- detecting, not navigating
       if (lower.startsWith('javascript:') || lower.startsWith('vbscript:') || lower.startsWith('data:text/html')) {
         sev = 'high';
         setRisk('high');

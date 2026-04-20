@@ -34,3 +34,6 @@ PLAN.md
 node_modules/
 eslint-out.txt
 .eslintcache
+
+# Logs
+logs_*/

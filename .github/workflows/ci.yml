@@ -10,6 +10,12 @@ on:
 permissions:
   contents: read
 
+# Cancel any in-flight runs on the same ref when a new push arrives.
+# Saves compute and stops stale runs from racing the latest build.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ──────────────────────────────────────────────────────────────────
   # Build: assembles docs/index.html and records its SHA-256 in the
@@ -162,18 +168,16 @@ jobs:
   lint:
     name: ESLint (src/)
     runs-on: ubuntu-latest
-    # Soft-launch: warnings-only behaviour during first rollout so a
-    # surprise lint regression in existing code does not block merges
-    # before the ruleset has been observed in anger. Flip to `false`
-    # (or remove this line) once CI has run clean for one release cycle.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
 
+      # Pinned to a concrete minor so CI output is deterministic and matches
+      # what developers get locally with the same invocation. Bump this in
+      # lockstep with local dev environments when upgrading the ruleset.
       - name: Run ESLint
-        run: npx --yes eslint@9 --config eslint.config.mjs "src/**/*.js"
+        run: npx --yes eslint@9.39.4 --config eslint.config.mjs "src/**/*.js"
