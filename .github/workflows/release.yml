@@ -68,6 +68,9 @@ jobs:
         # so the application hash inside the SBOM matches the signed
         # release asset byte-for-byte. Honours SOURCE_DATE_EPOCH when
         # set but is not reproducibility-critical at this step.
+        # Emitted to the repo root for the release step (co-located with
+        # loupe.html and its .sigstore sibling); the script defaults to
+        # dist/loupe.cdx.json for ordinary local runs.
         if: steps.check.outputs.exists == 'false'
         run: python scripts/generate_sbom.py --out loupe.cdx.json
 

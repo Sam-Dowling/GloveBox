@@ -19,7 +19,9 @@ desktop.ini
 # Build output (only docs/index.html is committed)
 loupe.html
 
-# Generated SBOM (emitted per-release by scripts/generate_sbom.py)
+# Generated SBOM + release artefacts (emitted by scripts/generate_sbom.py
+# and the release workflow; built into dist/ locally)
+dist/
 loupe.cdx.json
 loupe.cdx.json.sigstore
 

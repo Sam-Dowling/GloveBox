@@ -7,7 +7,7 @@ intentionally usable on its own (and driven independently by CI):
   * scripts/verify_vendored.py    — SHA-256 pin-check every file in vendor/ against VENDORED.md
   * scripts/build.py              — concatenate src/ + vendor/ into docs/index.html
   * scripts/generate_codemap.py   — (re)generate CODEMAP.md from the current src/ tree
-  * scripts/generate_sbom.py      — emit CycloneDX SBOM (loupe.cdx.json) from VENDORED.md
+  * scripts/generate_sbom.py      — emit CycloneDX SBOM (dist/loupe.cdx.json) from VENDORED.md
 
 This orchestrator chains them into a single `python make.py` invocation for
 the common local workflow (verify → build → codemap). The SBOM step is opt-in

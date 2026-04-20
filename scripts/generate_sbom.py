@@ -14,7 +14,7 @@ describing:
 
 Usage
 -----
-    python scripts/generate_sbom.py                # writes loupe.cdx.json
+    python scripts/generate_sbom.py                # writes dist/loupe.cdx.json
     python scripts/generate_sbom.py --out FILE     # custom output path
     python scripts/generate_sbom.py --stdout       # print to stdout
 
@@ -284,8 +284,8 @@ def _extract_app_version() -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
-        '--out', default=os.path.join(BASE, 'loupe.cdx.json'),
-        help='Output path (default: loupe.cdx.json in the repo root).',
+        '--out', default=os.path.join(BASE, 'dist', 'loupe.cdx.json'),
+        help='Output path (default: dist/loupe.cdx.json in the repo root).',
     )
     ap.add_argument(
         '--stdout', action='store_true',
@@ -302,6 +302,7 @@ def main() -> int:
         sys.stdout.write(payload)
         return 0
 
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)) or '.', exist_ok=True)
     with open(args.out, 'w', encoding='utf-8') as f:
         f.write(payload)
     size = os.path.getsize(args.out)

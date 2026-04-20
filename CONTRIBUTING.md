@@ -24,7 +24,7 @@ python make.py verify            # just scripts/verify_vendored.py
 python make.py build             # just scripts/build.py
 python make.py codemap           # just scripts/generate_codemap.py
 python make.py build codemap     # a subset, in the order given
-python make.py sbom              # emit loupe.cdx.json from VENDORED.md
+python make.py sbom              # emit dist/loupe.cdx.json from VENDORED.md
 ```
 
 Each underlying script remains independently runnable — `make.py` just
@@ -34,7 +34,7 @@ Each underlying script remains independently runnable — `make.py` just
 python scripts/build.py              # Concatenates src/ → docs/index.html
 python scripts/generate_codemap.py   # Regenerates CODEMAP.md (run after code changes)
 python scripts/verify_vendored.py    # Verifies vendor/*.js SHA-256 against VENDORED.md
-python scripts/generate_sbom.py      # Emits loupe.cdx.json (CycloneDX 1.5 SBOM)
+python scripts/generate_sbom.py      # Emits dist/loupe.cdx.json (CycloneDX 1.5 SBOM)
 ```
 
 The scripts directory is flat — every tool lives at `scripts/<name>.py`
@@ -204,7 +204,7 @@ Loupe/
 ├── scripts/
 │   ├── build.py                     # Build script — reads src/, writes docs/index.html
 │   ├── generate_codemap.py          # Generates CODEMAP.md (AI agent navigation map)
-│   ├── generate_sbom.py             # Emits loupe.cdx.json (CycloneDX 1.5 SBOM from VENDORED.md)
+│   ├── generate_sbom.py             # Emits dist/loupe.cdx.json (CycloneDX 1.5 SBOM from VENDORED.md)
 │   └── verify_vendored.py           # CI guard — verifies vendor/*.js SHA-256 against VENDORED.md
 ├── eslint.config.mjs                # Minimal flat ESLint config for src/ (security + bug-shape rules)
 ├── CODEMAP.md                       # Auto-generated code map with line-level symbol index

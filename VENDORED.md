@@ -9,7 +9,8 @@ Any upgrade must rotate the corresponding hash here, so every supply-chain
 change is visible in `git diff`.
 
 Each release also ships a machine-readable **[CycloneDX 1.5](https://cyclonedx.org/)**
-SBOM (`loupe.cdx.json`) generated from this table by
+SBOM (`dist/loupe.cdx.json` locally, `loupe.cdx.json` on the release)
+generated from this table by
 [`scripts/generate_sbom.py`](scripts/generate_sbom.py) — regenerate it
 locally with `python make.py sbom` or `python scripts/generate_sbom.py`.
 The SBOM is the same data as the table below, shaped for supply-chain
