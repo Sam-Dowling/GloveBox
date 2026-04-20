@@ -593,6 +593,13 @@ Object.assign(App.prototype, {
       this._wireInnerFileListener(docEl, file.name);
       return { docEl };
     },
+    async npm(file, buffer) {
+      const r = new NpmRenderer();
+      this.findings = await r.analyzeForSecurity(buffer, file.name);
+      const docEl = await r.render(buffer, file.name);
+      this._wireInnerFileListener(docEl, file.name);
+      return { docEl };
+    },
     async jar(file, buffer) {
       // body.jar-active clamps the sidebar to 33vw (vs the default 50vw)
       // — JAR viewers have dense tables, file tree, and a tab strip that

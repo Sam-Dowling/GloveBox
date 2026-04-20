@@ -85,10 +85,11 @@ const IOC = Object.freeze({
   DOMAIN: 'Domain',
   GUID: 'GUID',
   FINGERPRINT: 'Fingerprint',
+  PACKAGE_NAME: 'Package Name',
 });
 
 /** IOC types whose values are directly copyable in the sidebar. */
-const IOC_COPYABLE = new Set([IOC.URL, IOC.EMAIL, IOC.IP, IOC.FILE_PATH, IOC.UNC_PATH, IOC.HASH, IOC.COMMAND_LINE, IOC.PROCESS, IOC.HOSTNAME, IOC.USERNAME, IOC.REGISTRY_KEY, IOC.MAC, IOC.DOMAIN, IOC.GUID, IOC.FINGERPRINT]);
+const IOC_COPYABLE = new Set([IOC.URL, IOC.EMAIL, IOC.IP, IOC.FILE_PATH, IOC.UNC_PATH, IOC.HASH, IOC.COMMAND_LINE, IOC.PROCESS, IOC.HOSTNAME, IOC.USERNAME, IOC.REGISTRY_KEY, IOC.MAC, IOC.DOMAIN, IOC.GUID, IOC.FINGERPRINT, IOC.PACKAGE_NAME]);
 
 /**
  * Canonical severity floors per IOC type. These are the default severities
@@ -121,6 +122,7 @@ const IOC_CANONICAL_SEVERITY = Object.freeze({
   [IOC.DOMAIN]:        'info',      // auto-derived from URL via tldts (if loaded); pure pivot
   [IOC.GUID]:          'info',      // droid/bundle/product codes; pure pivot
   [IOC.FINGERPRINT]:   'info',      // cert/PGP key thumbprint; pure pivot
+  [IOC.PACKAGE_NAME]:  'info',      // npm / dependency identifiers; pure pivot
 });
 
 // ── Shared IOC extractors ─────────────────────────────────────────────────────

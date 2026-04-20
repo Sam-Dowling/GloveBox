@@ -539,6 +539,33 @@ class RendererRegistry {
       description: '7-Zip Archive',
     },
 
+    // ── npm package tarball / manifest / lockfile.
+    //    Must precede the generic `zip` entry (which owns `.tgz`) so npm
+    //    pack tarballs route to NpmRenderer instead of the plain archive
+    //    viewer. Detection has three legs:
+    //      • gzip-wrapped tarball whose first TAR entry name starts with
+    //        "package/"  (the npm pack invariant)
+    //      • bare `package.json` / `package-lock.json` / `npm-shrinkwrap.json`
+    //        filename match
+    //      • a JSON blob with the npm manifest shape  (name + one of
+    //        scripts/dependencies/devDependencies/main/bin/version) — gated
+    //        by the `extDisambiguator` so random `.json` files don't route
+    //        here unless the bytes agree.
+    {
+      id: 'npm',
+      className: 'NpmRenderer',
+      exts: ['tgz', 'json'],
+      magic: (ctx) => RendererRegistry._sniffNpmTarball(ctx),
+      textSniff: (ctx) => RendererRegistry._sniffNpmManifest(ctx),
+      extDisambiguator: (ctx) => {
+        if (ctx.ext === 'tgz') return RendererRegistry._sniffNpmTarball(ctx);
+        if (ctx.ext === 'json') return RendererRegistry._sniffNpmManifest(ctx)
+          || /^(?:package|package-lock|npm-shrinkwrap)\.json$/i.test(ctx.file.name || '');
+        return false;
+      },
+      description: 'npm Package (tarball / manifest / lockfile)',
+    },
+
     // ── Generic ZIP / gzip / TAR fallback.  Any OOXML / ODF / MSIX /
     //    JAR / XPI / CRX sub-format has already claimed the file by the
     //    time we get here, and the dedicated CAB / RAR / 7z entries
@@ -938,6 +965,75 @@ class RendererRegistry {
       || /<\s*(?:\w+:)?deployment\b/i.test(preview)
       || /<\s*(?:\w+:)?entryPoint\b/i.test(preview)
       || /<\s*(?:\w+:)?trustInfo\b/i.test(preview);
+  }
+
+  /**
+   * npm package tarball sniff — returns true if the bytes are a gzip
+   * stream whose first TAR member name begins with "package/". We
+   * inflate only the first ~1 KB of the gzip, enough to read the
+   * 100-byte TAR header at offset 0. `Decompressor` is available at
+   * runtime (loaded before the registry in build order); if it isn't
+   * we conservatively say "not npm" and let the generic ZipRenderer
+   * handle the tarball.
+   */
+  static _sniffNpmTarball(ctx) {
+    const b = ctx.bytes;
+    if (b.length < 10) return false;
+    // gzip magic
+    if (!(b[0] === 0x1F && b[1] === 0x8B)) return false;
+    if (typeof Decompressor === 'undefined'
+      || typeof Decompressor.inflateSync !== 'function') return false;
+    if (ctx._npmTarPeek !== undefined) return ctx._npmTarPeek;
+    try {
+      // We only need the first TAR header (512 bytes). For tarballs bigger
+      // than ~1 MB, cap the gzip slice we feed pako to avoid paying the
+      // full inflate cost during detection. For smaller inputs we pass the
+      // whole buffer; pako handles it synchronously in microseconds.
+      const slice = (b.length > 1024 * 1024) ? b.subarray(0, 256 * 1024) : b;
+      const out = Decompressor.inflateSync(slice, 'gzip');
+      if (!out || out.length < 100) return (ctx._npmTarPeek = false);
+      // First TAR header name lives at bytes 0..99, NUL-terminated.
+      let name = '';
+      for (let i = 0; i < 100 && out[i]; i++) name += String.fromCharCode(out[i]);
+      return (ctx._npmTarPeek = /^package\//.test(name));
+    } catch (_) {
+      return (ctx._npmTarPeek = false);
+    }
+  }
+
+  /**
+   * npm package.json / lockfile manifest sniff — parses the head as JSON
+   * and checks for the minimal npm shape:
+   *   • `name` (string), AND
+   *   • at least one of: version / scripts / dependencies / devDependencies
+   *     / peerDependencies / optionalDependencies / main / bin / exports
+   * OR the lockfile shape: `lockfileVersion` numeric at the root.
+   * Returns false on anything that isn't valid JSON or doesn't match.
+   */
+  static _sniffNpmManifest(ctx) {
+    const b = ctx.bytes;
+    if (b.length < 2 || b.length > 32 * 1024 * 1024) return false;
+    // Quick gate — must start with `{` (after optional UTF-8 BOM / whitespace).
+    let i = 0;
+    if (b[0] === 0xEF && b[1] === 0xBB && b[2] === 0xBF) i = 3;
+    while (i < b.length && (b[i] === 0x20 || b[i] === 0x09 || b[i] === 0x0A || b[i] === 0x0D)) i++;
+    if (i >= b.length || b[i] !== 0x7B) return false;
+    let text;
+    try {
+      text = new TextDecoder('utf-8', { fatal: false }).decode(b);
+    } catch (_) { return false; }
+    let obj;
+    try { obj = JSON.parse(text); } catch (_) { return false; }
+    if (!obj || typeof obj !== 'object') return false;
+    // Lockfile shape.
+    if (typeof obj.lockfileVersion === 'number') return true;
+    // Manifest shape.
+    if (typeof obj.name !== 'string' || !obj.name) return false;
+    const shapeKeys = ['version', 'scripts', 'dependencies', 'devDependencies',
+      'peerDependencies', 'optionalDependencies', 'bundledDependencies',
+      'main', 'bin', 'exports', 'module', 'browser', 'engines'];
+    for (const k of shapeKeys) if (k in obj) return true;
+    return false;
   }
 
   /**

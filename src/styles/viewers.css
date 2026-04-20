@@ -8991,3 +8991,92 @@ body.dark .arch-mark {
 body.dark .arch-empty {
   color: var(--text-muted);
 }
+
+/* ── npm package renderer ─────────────────────────────────────────────
+   The npm renderer reuses the ClickOnce card / section / risk chrome
+   (see `.clickonce-*` above); this block layers npm-specific accents on
+   top for the lifecycle-hook table, entry-point links, and the grouped
+   dependency sections. */
+.npm-view {
+  /* Inherits padding + typography from .clickonce-view */
+}
+
+.npm-view .npm-hook-row > td {
+  padding: 4px 8px;
+  vertical-align: top;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border, #e2e4e7);
+}
+
+body.dark .npm-view .npm-hook-row > td {
+  border-bottom-color: var(--border, #2a2d31);
+}
+
+.npm-view .npm-hook-row-critical > td:first-child,
+.npm-view .npm-hook-row-high > td:first-child {
+  color: #b91c1c;
+  font-weight: 600;
+}
+
+body.dark .npm-view .npm-hook-row-critical > td:first-child,
+body.dark .npm-view .npm-hook-row-high > td:first-child {
+  color: #fca5a5;
+}
+
+.npm-view .npm-hook-row-medium > td:first-child {
+  color: #b45309;
+  font-weight: 600;
+}
+
+body.dark .npm-view .npm-hook-row-medium > td:first-child {
+  color: #fbbf24;
+}
+
+.npm-view .npm-hook-row-low > td:first-child,
+.npm-view .npm-hook-row-info > td:first-child {
+  color: var(--text-muted, #6b7280);
+  font-weight: 600;
+}
+
+.npm-view .npm-hook-row code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.npm-view .npm-entry-link {
+  color: var(--link, #2563eb);
+  text-decoration: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.npm-view .npm-entry-link:hover {
+  text-decoration: underline;
+}
+
+body.dark .npm-view .npm-entry-link {
+  color: var(--link, #93c5fd);
+}
+
+.npm-view .npm-dep-group {
+  margin: 6px 0 10px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--border, #d1d5db);
+  background: var(--bg-muted, #f9fafb);
+}
+
+body.dark .npm-view .npm-dep-group {
+  border-left-color: var(--border, #374151);
+  background: var(--bg-muted, #1c1f24);
+}
+
+.npm-view .clickonce-warn code {
+  color: #b45309;
+  font-weight: 600;
+}
+
+body.dark .npm-view .clickonce-warn code {
+  color: #fbbf24;
+}
