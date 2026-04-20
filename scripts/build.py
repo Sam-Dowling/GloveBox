@@ -61,6 +61,7 @@ exifr_js     = read('vendor/exifr.min.js')
 tldts_js     = read('vendor/tldts.min.js')
 pako_js      = read('vendor/pako.min.js')
 lzma_js      = read('vendor/lzma-d-min.js')
+jsqr_js      = read('vendor/jsqr.min.js')
 
 # CSS files — concatenated in order.
 # Each optional theme overlay lives in src/styles/themes/<id>.css and contains
@@ -145,6 +146,7 @@ JS_FILES = [
     'src/yara-engine.js',
     'src/decompressor.js',
     'src/encoded-content-detector.js',
+    'src/qr-decoder.js',
     'src/docx-parser.js',
     'src/style-resolver.js',
     'src/numbering-resolver.js',
@@ -464,6 +466,15 @@ HTML = f"""<!DOCTYPE html>
         metadata) ───────────────────────────────────────────────── -->
   <script>
 {lzma_js}
+  </script>
+
+  <!-- ── jsQR (inlined — QR-code decoder shared by QrDecoder; consumers
+        are ImageRenderer, PdfRenderer, SvgRenderer, OneNoteRenderer,
+        EmlRenderer — any raster surface Loupe renders is scanned for
+        QR payloads and the decoded contents land in findings.metadata
+        / interestingStrings as IOCs via pushIOC()) ─────────────── -->
+  <script>
+{jsqr_js}
   </script>
 
   <!-- ── Application ─────────────────────────────────────────────────── -->
