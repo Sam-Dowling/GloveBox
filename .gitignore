@@ -48,4 +48,4 @@ eslint-out.txt
 .eslintcache
 
 # Logs
-logs_*/
+logs_*
