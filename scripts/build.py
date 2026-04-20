@@ -100,7 +100,9 @@ YARA_FILES = [
     'src/rules/msix-threats.yar',
     'src/rules/browserext-threats.yar',
     'src/rules/macos-installer-threats.yar',
+    'src/rules/npm-threats.yar',
 ]
+
 YARA_CATEGORIES = {
     'src/rules/office-macros.yar': 'Office Macros',
     'src/rules/script-threats.yar': 'Script',
@@ -122,6 +124,7 @@ YARA_CATEGORIES = {
     'src/rules/msix-threats.yar': 'MSIX / APPX',
     'src/rules/browserext-threats.yar': 'Browser Extension',
     'src/rules/macos-installer-threats.yar': 'macOS Installer',
+    'src/rules/npm-threats.yar': 'npm',
 }
 
 yar_parts = []
@@ -202,6 +205,7 @@ JS_FILES = [
     'src/renderers/clickonce-renderer.js',
     'src/renderers/msix-renderer.js',
     'src/renderers/browserext-renderer.js',
+    'src/renderers/npm-renderer.js',
     # Registry — concatenated AFTER every renderer so its `_bootstrap()`
     # can attach `static EXTS` + `static canHandle()` to each class by
     # name, and BEFORE app-core.js so `App._loadFile` can call
