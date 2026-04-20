@@ -326,14 +326,43 @@ class SevenZRenderer {
       } else if (id === PROP.kUnPackInfo) {
         this._skipCodersInfo(p, out);
       } else if (id === PROP.kSubStreamsInfo) {
-        // Follows UnPackInfo; carries substream counts / sizes / CRCs.
-        // We don't need detailed structure — bail on first kEnd.
+        // SubStreamsInfo layout:
+        //   [kNumUnPackStream NumUnPackStreamsInFolders[numFolders]]
+        //   [kSize            UnPackSizes[]]  (per folder, N−1 sizes where N>1)
+        //   [kCRC             Digests[]]     (substreams not covered by a
+        //                                     folder-level CRC from CodersInfo)
+        //   kEnd
+        // Default when kNumUnPackStream is absent: 1 substream per folder.
+        const numFolders = out.numFolders || 0;
+        let numSubstreamsPerFolder = new Array(numFolders).fill(1);
         while (!p.done()) {
           const inner = p.readByte();
           if (inner === PROP.kEnd) break;
-          // Best-effort skip — each property carries a size varnum
-          // in some cases. Rather than misparse, break.
-          break;
+          if (inner === PROP.kNumUnPackStream) {
+            numSubstreamsPerFolder = new Array(numFolders);
+            for (let i = 0; i < numFolders; i++) {
+              numSubstreamsPerFolder[i] = p.readVarNum();
+            }
+          } else if (inner === PROP.kSize) {
+            // For each folder with N>1 substreams, (N−1) sizes.
+            for (const n of numSubstreamsPerFolder) {
+              for (let i = 0; i < Math.max(0, n - 1); i++) p.readVarNum();
+            }
+          } else if (inner === PROP.kCRC) {
+            // Per the 7z spec: one digest per substream that is NOT already
+            // covered by its folder's CRC (set in CodersInfo.kCRC).
+            // A folder covers its single substream with its own CRC; folders
+            // with >1 substreams always contribute per-substream CRCs here.
+            const coveredByFolder = out._codersCrcPresent
+              ? numSubstreamsPerFolder.filter(n => n === 1).length
+              : 0;
+            const total = numSubstreamsPerFolder.reduce((s, n) => s + n, 0);
+            const digestCount = Math.max(0, total - coveredByFolder);
+            this._skipDigests(p, digestCount);
+          } else {
+            // Unknown inner id — bail rather than drift.
+            break;
+          }
         }
       } else {
         break;
@@ -345,40 +374,52 @@ class SevenZRenderer {
     const PROP = SevenZRenderer.PROP;
     // CodersInfo layout:
     //   kFolder  (numFolders + External + Folders[])
-    //   kCodersUnPackSize (UnPackSize[] for each non-out stream)
+    //   kCodersUnPackSize (UnPackSize[] per folder-output-stream)
     //   [kCRC]
     //   kEnd
+    let totalOutStreams = 0;
+    let numFolders = 0;
     while (!p.done()) {
       const id = p.readByte();
       if (id === PROP.kEnd) return;
       if (id === PROP.kFolder) {
-        const numFolders = p.readVarNum();
+        numFolders = p.readVarNum();
         out.numFolders = numFolders;
         const external = p.readByte();
         if (external === 0) {
-          for (let i = 0; i < numFolders; i++) this._parseFolder(p, out);
+          for (let i = 0; i < numFolders; i++) {
+            const nOut = this._parseFolder(p, out);
+            totalOutStreams += (nOut || 1);
+          }
         } else {
           // DataStreamIndex (VarNum) — points into additional streams.
           p.readVarNum();
         }
       } else if (id === PROP.kCodersUnPackSize) {
-        // Number of unpack-sizes equals total number of output streams.
-        // We don't track this; skip until we hit a known id or kEnd.
-        // Strategy: read varnums greedily but abort if we encounter a byte
-        // that's clearly a property id (<= 0x19 and typical).
-        // The safer approach is to break — this is only used to skip.
-        break;
+        // One varnum per output stream summed across all folders.
+        // When the folder walk couldn't compute it (fallback path above)
+        // assume one output stream per folder — correct for every real
+        // archive with a single-output-stream coder chain.
+        const n = totalOutStreams || numFolders || 1;
+        for (let i = 0; i < n; i++) p.readVarNum();
       } else if (id === PROP.kCRC) {
-        // Unknown count here; we can't skip safely — bail.
-        break;
+        // One CRC entry per folder.
+        out._codersCrcPresent = true;
+        this._skipDigests(p, numFolders || 1);
       } else {
+        // Unknown id — bail rather than drift the cursor.
         break;
       }
     }
   }
 
+  // Parses a single Folder record and returns the total number of output
+  // streams it declares (always ≥ 1 for a well-formed folder). Callers
+  // use the return value to size the subsequent kCodersUnPackSize array.
   _parseFolder(p, out) {
     const numCoders = p.readVarNum();
+    let numInStreamsTotal = 0;
+    let numOutStreamsTotal = 0;
     for (let i = 0; i < numCoders; i++) {
       const flags = p.readByte();
       const idSize = flags & 0x0F;
@@ -391,19 +432,31 @@ class SevenZRenderer {
         && coderId[2] === 0x07 && coderId[3] === 0x01) {
         out.hasEncryption = true;
       }
+      let nIn = 1, nOut = 1;
       if (isComplex) {
-        p.readVarNum(); // numInStreams
-        p.readVarNum(); // numOutStreams
+        nIn  = p.readVarNum();
+        nOut = p.readVarNum();
       }
+      numInStreamsTotal  += nIn;
+      numOutStreamsTotal += nOut;
       if (hasAttrs) {
         const propsSize = p.readVarNum();
         p.skip(propsSize);
       }
     }
-    // BindPairs + PackedStreams
-    // Without tracking inStreams/outStreams counts precisely the safe
-    // thing is to bail out of folder parsing here; we already gathered
-    // the encryption signal which is the main reason we walk this block.
+    // BindPairs: (numOutStreams − 1) × 2 varnums (inIdx, outIdx).
+    const numBindPairs = Math.max(0, numOutStreamsTotal - 1);
+    for (let i = 0; i < numBindPairs; i++) {
+      p.readVarNum(); // inIndex
+      p.readVarNum(); // outIndex
+    }
+    // PackedStreams: (numInStreams − numBindPairs) indices, but only
+    // written when that count is > 1 (a single packed stream is implicit).
+    const numPackedStreams = numInStreamsTotal - numBindPairs;
+    if (numPackedStreams > 1) {
+      for (let i = 0; i < numPackedStreams; i++) p.readVarNum();
+    }
+    return numOutStreamsTotal;
   }
 
   _skipDigests(p, count) {
