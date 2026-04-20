@@ -507,8 +507,17 @@ class PlainTextRenderer {
     const count = Math.min(lines.length, maxLines);
     const chunkSize = PlainTextRenderer.SOFT_WRAP_CHUNK;
 
+    // Logical-line → first-<tr>-index map. Soft-wrap produces multiple
+    // <tr>s per logical line, so the sidebar's YARA/IOC/encoded-content
+    // highlighter can no longer assume `rows[lineIndex]` is the right
+    // row. We stash this map on the table so app-sidebar.js can translate
+    // (logicalLine, charPos) → (rowIndex, charPosWithinChunk). When no
+    // long line is present this stays a trivial 0,1,2,… map.
+    const lineToFirstRow = new Array(count);
+
     for (let i = 0; i < count; i++) {
       const lineText = lines[i];
+      lineToFirstRow[i] = table.rows.length;
       // Soft-wrap absurdly long lines into display-only chunks so the DOM
       // doesn't have to paint a single multi-megabyte <td>. The first
       // chunk gets the real line number; continuation chunks show a
@@ -561,6 +570,15 @@ class PlainTextRenderer {
     }
 
     scr.appendChild(table);
+
+    // Stash soft-wrap map + chunk size on the <table> itself so
+    // app-sidebar.js (which finds the table via
+    // `pc.querySelector('.plaintext-table')`) can translate
+    // (logicalLineIndex, charPos) → (rowIndex, charPosWithinChunk) for
+    // YARA / IOC / encoded-content highlighting in minified-JS files.
+    table._lineToFirstRow = lineToFirstRow;
+    table._chunkSize      = chunkSize;
+    table._hasLongLine    = hasLongLine;
 
     // Stash metadata for the info bar (avoids re-decoding the whole buffer
     // in _updateInfoText just to recount lines).

@@ -2280,22 +2280,55 @@ Object.assign(App.prototype, {
 
     const rows = table.rows;
 
-    // ── 1. Compute (lineIndex, charPos, length) for each match ──────────
-    //    and group them by line so each line only gets a single rewrite.
+    // Soft-wrap map from plaintext-renderer.js — present on minified-JS
+    // files where a single logical line is split across multiple <tr>s.
+    // When absent (normal files), fall back to 1 row per logical line.
+    const lineToFirstRow = table._lineToFirstRow || null;
+    const wrapChunkSize  = (lineToFirstRow && table._chunkSize) ? table._chunkSize : 0;
+
+    // ── 1. Compute (rowIdx, charPosWithinRow, length) for each match ────
+    //    and group them by row so each row only gets a single rewrite.
+    //    For soft-wrapped lines, a single YARA/IOC match on line N may
+    //    span multiple chunk rows — expand it into one entry per row so
+    //    the highlight renders continuously across the wrap boundary.
     const perMatch = [];
-    const matchesByLine = new Map(); // lineIndex -> array of {charPos, length, matchIdx}
+    const matchesByLine = new Map(); // rowIdx -> array of {charPos, length, matchIdx}
     for (let i = 0; i < matches.length; i++) {
       const m = matches[i];
       if (m.offset == null || !m.length) continue;
       const beforeText = sourceText.substring(0, m.offset);
       const lineIndex = (beforeText.match(/\n/g) || []).length;
       const lastNewline = beforeText.lastIndexOf('\n');
-      const charPos = lastNewline === -1 ? m.offset : m.offset - lastNewline - 1;
-      if (lineIndex >= rows.length) continue;
-      perMatch.push({ matchIdx: i, lineIndex, charPos, length: m.length });
-      let arr = matchesByLine.get(lineIndex);
-      if (!arr) { arr = []; matchesByLine.set(lineIndex, arr); }
-      arr.push({ charPos, length: m.length, matchIdx: i });
+      const charInLine = lastNewline === -1 ? m.offset : m.offset - lastNewline - 1;
+
+      if (lineToFirstRow && wrapChunkSize > 0) {
+        // Translate (logicalLine, charInLine) → (rowIdx, charInRow).
+        // When the match crosses a chunk boundary, split it across rows.
+        const firstRow = lineToFirstRow[lineIndex];
+        if (firstRow == null) continue;
+        let remaining = m.length;
+        let cursor    = charInLine;
+        while (remaining > 0) {
+          const rowIdx   = firstRow + Math.floor(cursor / wrapChunkSize);
+          const charInRow = cursor % wrapChunkSize;
+          if (rowIdx >= rows.length) break;
+          const take = Math.min(remaining, wrapChunkSize - charInRow);
+          perMatch.push({ matchIdx: i, lineIndex: rowIdx, charPos: charInRow, length: take });
+          let arr = matchesByLine.get(rowIdx);
+          if (!arr) { arr = []; matchesByLine.set(rowIdx, arr); }
+          arr.push({ charPos: charInRow, length: take, matchIdx: i });
+          cursor    += take;
+          remaining -= take;
+        }
+      } else {
+        // Normal 1-row-per-line path (unchanged behaviour).
+        const charPos = charInLine;
+        if (lineIndex >= rows.length) continue;
+        perMatch.push({ matchIdx: i, lineIndex, charPos, length: m.length });
+        let arr = matchesByLine.get(lineIndex);
+        if (!arr) { arr = []; matchesByLine.set(lineIndex, arr); }
+        arr.push({ charPos, length: m.length, matchIdx: i });
+      }
     }
     if (!perMatch.length) return;
 
@@ -2679,6 +2712,12 @@ Object.assign(App.prototype, {
   },
 
   // ── Highlight encoded content in the view pane ──────────────────────────
+  //
+  // `finding._startLine` / `_endLine` are **logical** 1-based line numbers
+  // (see `_renderEncodedContentSection`). On minified / single-line files
+  // the plaintext renderer soft-wraps one logical line across many <tr>s;
+  // translate through `table._lineToFirstRow` so the highlighted range
+  // covers every chunk row of the logical span.
   _highlightEncodedInView(finding, flash) {
     this._clearEncodedHighlight();
     const pc = document.getElementById('page-container');
@@ -2687,15 +2726,33 @@ Object.assign(App.prototype, {
     if (!table || !finding._startLine) return;
 
     const rows = table.rows;
-    const start = finding._startLine - 1;
-    const end = finding._endLine - 1;
+    const lineMap = table._lineToFirstRow || null;
+
+    // Translate logical lines → row index range. When no soft-wrap map is
+    // present (normal files), this degenerates to the old 1-row-per-line
+    // behaviour. End row is "start of next logical line − 1" so all chunk
+    // rows of the final logical line are included.
+    let start, end;
+    if (lineMap) {
+      const s = finding._startLine - 1;
+      const e = finding._endLine - 1;
+      start = (s >= 0 && s < lineMap.length) ? lineMap[s] : (finding._startLine - 1);
+      if (e + 1 < lineMap.length) {
+        end = lineMap[e + 1] - 1;
+      } else {
+        end = rows.length - 1;
+      }
+    } else {
+      start = finding._startLine - 1;
+      end = finding._endLine - 1;
+    }
 
     for (let i = start; i <= end && i < rows.length; i++) {
       rows[i].classList.add('enc-highlight-line');
       if (flash) rows[i].classList.add('enc-highlight-flash');
     }
 
-    if (flash && start < rows.length) {
+    if (flash && start >= 0 && start < rows.length) {
       rows[start].scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
