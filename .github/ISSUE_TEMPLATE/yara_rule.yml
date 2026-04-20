@@ -1,0 +1,82 @@
+name: 🧪 YARA rule idea
+description: Propose a new YARA rule or detection pattern.
+title: "[Rule] "
+labels: ["yara-rules"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        YARA rules live in `src/rules/*.yar`, grouped by category. Each
+        category file is concatenated into the default rule set at build
+        time by `build.py`. See `CONTRIBUTING.md` for the internal format.
+
+        **Do not attach malware.** Share a benign synthetic sample or a
+        public MalwareBazaar / VirusShare hash.
+
+  - type: input
+    id: rule_name
+    attributes:
+      label: Proposed rule name
+      placeholder: e.g. Suspicious_PowerShell_DownloadString
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Target category
+      description: Which `src/rules/*.yar` file is the best fit?
+      options:
+        - office-macros
+        - script-threats
+        - document-threats
+        - windows-threats
+        - archive-threats
+        - encoding-threats
+        - network-indicators
+        - suspicious-patterns
+        - file-analysis
+        - pe-threats
+        - elf-threats
+        - macho-threats
+        - jar-threats
+        - svg-threats
+        - osascript-threats
+        - plist-threats
+        - clickonce-threats
+        - msix-threats
+        - browserext-threats
+        - macos-installer-threats
+        - (new category — explain below)
+    validations:
+      required: true
+
+  - type: textarea
+    id: threat
+    attributes:
+      label: Threat / behaviour to detect
+      description: What are you trying to flag, and why is it suspicious?
+    validations:
+      required: true
+
+  - type: textarea
+    id: rule
+    attributes:
+      label: Draft rule (optional but appreciated)
+      description: |
+        Draft YARA syntax. Remember YARA rule files in this repo contain
+        **no comments** except the auto-injected `// @category:` lines
+        — anything you write goes into the engine verbatim.
+      render: text
+
+  - type: textarea
+    id: samples
+    attributes:
+      label: Reference samples / hashes
+      description: MalwareBazaar or VirusShare hashes, or a link to a benign synthetic.
+
+  - type: textarea
+    id: false_positives
+    attributes:
+      label: Expected false-positive profile
+      description: Any legitimate files that might trigger this? (Red-team tools, pentest frameworks, etc.)

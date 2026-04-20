@@ -29,3 +29,8 @@ codemap.json
 # Todo / Plans
 TODO.md
 PLAN.md
+
+# Node / ESLint (CI-only — Loupe has no npm dependencies)
+node_modules/
+eslint-out.txt
+.eslintcache

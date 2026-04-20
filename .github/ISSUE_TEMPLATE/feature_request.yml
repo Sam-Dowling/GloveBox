@@ -1,0 +1,47 @@
+name: ✨ Feature request
+description: Suggest a new capability or improvement (non-format, non-rule).
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for UI changes, keyboard shortcuts, accessibility
+        improvements, sidebar/tooling features, export options, etc.
+
+        - Proposing a **new file format**? Use the **Format request** template instead.
+        - Proposing a **new YARA rule / threat detection**? Use the **YARA rule idea** template instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that's currently hard or impossible?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        What would the behaviour look like from the user's perspective?
+        Keep in mind Loupe's constraints: **100% offline, single HTML file,
+        no eval, no network, no frameworks**.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraint acknowledgement
+      options:
+        - label: I understand Loupe will not add features that require network access, external servers, or `eval`/`new Function`.
+          required: true
+        - label: I understand Loupe ships as a single HTML file with no build-time frameworks (no React, Vue, TypeScript, etc.).
+          required: true

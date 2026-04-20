@@ -1,0 +1,179 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────
+  # Build: assembles docs/index.html and records its SHA-256 in the
+  # job summary so every build has a visible, diffable supply-chain
+  # fingerprint. Also uploads the built file as an artefact so
+  # reviewers can download and diff against their own build.
+  # ──────────────────────────────────────────────────────────────────
+  build:
+    name: Build single-file bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Build docs/index.html
+        run: python build.py
+
+      - name: Verify build output exists
+        run: |
+          test -s docs/index.html || { echo "::error::docs/index.html was not produced"; exit 1; }
+          SIZE=$(stat -c '%s' docs/index.html)
+          echo "Built docs/index.html — ${SIZE} bytes"
+
+      - name: Record SHA-256 of docs/index.html
+        run: |
+          HASH=$(sha256sum docs/index.html | awk '{print $1}')
+          SIZE=$(stat -c '%s' docs/index.html)
+          {
+            echo "## 🕵🏻 Loupe build artefact"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| File | \`docs/index.html\` |"
+            echo "| Size | ${SIZE} bytes ($((SIZE / 1024)) KB) |"
+            echo "| SHA-256 | \`${HASH}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload built bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: loupe-html
+          path: docs/index.html
+          retention-days: 14
+
+  # ──────────────────────────────────────────────────────────────────
+  # Vendored-library hash verification. The source of truth is the
+  # SHA-256 table in VENDORED.md — any drift means either a vendor
+  # file was modified without rotating the pin, or a new file was
+  # added without documenting it. Both are supply-chain events.
+  # ──────────────────────────────────────────────────────────────────
+  verify-vendored:
+    name: Verify vendored SHA-256 pins
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run verify_vendored.py
+        run: python verify_vendored.py
+
+  # ──────────────────────────────────────────────────────────────────
+  # Static HTML / source checks. These enforce the invariants that
+  # make Loupe's threat model credible:
+  #   - CSP meta tag is present in the built bundle
+  #   - No HTML-attribute event handlers (onclick="…", onerror="…")
+  #     in the built bundle — CSP blocks them, but catching them at
+  #     build time surfaces author mistakes before they ship
+  #   - No real eval / new Function call sites in src/ (ESLint's
+  #     AST-aware rules handle this; a raw grep would false-positive
+  #     on the detection-regex patterns in pdf-renderer, svg-renderer,
+  #     osascript-renderer, etc.)
+  # ──────────────────────────────────────────────────────────────────
+  static-checks:
+    name: Static HTML + source checks
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download built bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: loupe-html
+          path: docs
+
+      - name: CSP meta tag present
+        run: |
+          if ! grep -q 'http-equiv="Content-Security-Policy"' docs/index.html; then
+            echo "::error file=docs/index.html::Content-Security-Policy meta tag is missing from the built bundle"
+            exit 1
+          fi
+          echo "OK  CSP meta tag present"
+
+      - name: CSP includes default-src 'none'
+        run: |
+          if ! grep -q "default-src 'none'" docs/index.html; then
+            echo "::error file=docs/index.html::CSP no longer starts with default-src 'none' — threat-model regression"
+            exit 1
+          fi
+          echo "OK  CSP default-src 'none' present"
+
+      - name: No HTML-attribute event handlers in built bundle
+        # Match attribute handlers like `onclick="…"` / `onerror='…'`
+        # but NOT the string "on" appearing inside JS / CSS / text.
+        # Anchored on whitespace + `on<word>` + `=` + quote.
+        run: |
+          set +e
+          HITS=$(grep -nE '[[:space:]]on[a-z]+[[:space:]]*=[[:space:]]*"' docs/index.html \
+               | grep -v 'http-equiv=')
+          HITS2=$(grep -nE "[[:space:]]on[a-z]+[[:space:]]*=[[:space:]]*'" docs/index.html)
+          set -e
+          if [ -n "$HITS$HITS2" ]; then
+            echo "::error file=docs/index.html::Inline HTML event handler attribute(s) found — CSP blocks these, fix at source:"
+            echo "$HITS"
+            echo "$HITS2"
+            exit 1
+          fi
+          echo "OK  No inline HTML event-handler attributes"
+
+      - name: No suspicious top-level CSP relaxations
+        # Guard against someone loosening the CSP to 'unsafe-eval' or
+        # allowing remote hosts. script-src 'unsafe-inline' is OK
+        # (it's the whole delivery mechanism) but 'unsafe-eval' is not.
+        run: |
+          if grep -q "'unsafe-eval'" docs/index.html; then
+            echo "::error file=docs/index.html::CSP contains 'unsafe-eval' — this breaks the 'no code evaluation' guarantee in SECURITY.md"
+            exit 1
+          fi
+          if grep -qE "(default-src|script-src|connect-src|img-src)[^;]*https?://" docs/index.html; then
+            echo "::error file=docs/index.html::CSP references a remote host — Loupe must remain 100% offline"
+            exit 1
+          fi
+          echo "OK  CSP has no unsafe-eval and no remote hosts"
+
+  # ──────────────────────────────────────────────────────────────────
+  # ESLint over src/. Deliberately minimal config (see eslint.config.mjs
+  # header for rationale). This is a foot-gun catcher for real bugs
+  # and the no-eval / no-new-func guarantees — it is NOT a style
+  # enforcer. Kept as a separate job so a lint regression doesn't
+  # block the build artefact from being produced and inspected.
+  # ──────────────────────────────────────────────────────────────────
+  lint:
+    name: ESLint (src/)
+    runs-on: ubuntu-latest
+    # Soft-launch: warnings-only behaviour during first rollout so a
+    # surprise lint regression in existing code does not block merges
+    # before the ruleset has been observed in anger. Flip to `false`
+    # (or remove this line) once CI has run clean for one release cycle.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run ESLint
+        run: npx --yes eslint@9 --config eslint.config.mjs "src/**/*.js"

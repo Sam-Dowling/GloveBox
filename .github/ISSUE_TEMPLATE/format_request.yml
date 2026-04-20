@@ -1,0 +1,80 @@
+name: 📄 Format request
+description: Request support for a new file format (new renderer).
+title: "[Format] "
+labels: ["format-support"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Adding a new format means creating a renderer under `src/renderers/`
+        and wiring it into `src/renderer-registry.js`. The more concrete
+        detail you can give upfront, the higher the chance it actually lands.
+
+        **Please do not attach real malware.** Link to public samples
+        (MalwareBazaar, VirusShare, your own GitHub gists of benign
+        specimens, etc.) or craft a benign minimal example.
+
+  - type: input
+    id: name
+    attributes:
+      label: Format name
+      placeholder: e.g. Windows Registry Hive (.hiv)
+    validations:
+      required: true
+
+  - type: input
+    id: extensions
+    attributes:
+      label: File extensions
+      description: All extensions that should map to this renderer.
+      placeholder: e.g. .hiv, .dat
+    validations:
+      required: true
+
+  - type: textarea
+    id: magic
+    attributes:
+      label: Magic bytes / sniff signature
+      description: |
+        How can the format be detected from the first few bytes?
+        Loupe prefers magic-byte detection over extension matching.
+      placeholder: |
+        First 4 bytes: `72 65 67 66`  ("regf")
+        …or other offset-based markers, if applicable.
+    validations:
+      required: true
+
+  - type: textarea
+    id: spec
+    attributes:
+      label: Specification / reference
+      description: Link to the official spec, a reverse-engineering write-up, or an existing open-source parser.
+      placeholder: |
+        - https://…
+        - Existing reference parser: https://github.com/…
+
+  - type: textarea
+    id: samples
+    attributes:
+      label: Sample files
+      description: Links to public benign samples. Please no malware attachments.
+
+  - type: textarea
+    id: analysis_value
+    attributes:
+      label: What security value does parsing this format add?
+      description: |
+        What IOCs, suspicious strings, embedded scripts, or risk indicators
+        would a security analyst look for inside this format?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraint acknowledgement
+      options:
+        - label: The format can be parsed in pure JavaScript in a browser with no network access.
+          required: true
+        - label: I understand that if a dedicated library is needed, it must be MIT/BSD/Apache-2.0 licensed, vendored into `vendor/`, and pinned by SHA-256 in `VENDORED.md`.
+          required: true

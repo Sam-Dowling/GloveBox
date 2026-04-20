@@ -44,7 +44,9 @@ building, shipping, or merging.
 1. Replace the file in `vendor/` with the new upstream release.
 2. Recompute its SHA-256 with the command above.
 3. Update the matching row here (version + hash).
-4. Rebuild: `python build.py`.
+4. Rebuild: `python make.py` (runs `verify_vendored.py` → `build.py` →
+   `generate-codemap.py` — the hash check guards against a stale or
+   mistyped pin before the bundle is regenerated).
 5. Commit the vendor file, the `VENDORED.md` change, and the rebuilt
    `docs/index.html` together so reviewers see one atomic supply-chain update.
 

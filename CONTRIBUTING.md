@@ -13,8 +13,26 @@
 Requires **Python 3.8+** (standard library only — no `pip install` needed).
 
 ```bash
+python make.py                   # One-shot: verify vendors, build, regenerate CODEMAP.md
+```
+
+`make.py` is a thin orchestrator that chains the three stand-alone scripts
+below. Invoke any subset by name, in any order:
+
+```bash
+python make.py verify            # just verify_vendored.py
+python make.py build             # just build.py
+python make.py codemap           # just generate-codemap.py
+python make.py build codemap     # a subset, in the order given
+```
+
+Each underlying script remains independently runnable — `make.py` just
+`subprocess.call`s them so CI and one-off invocations keep working:
+
+```bash
 python build.py                  # Concatenates src/ → docs/index.html
 python generate-codemap.py       # Regenerates CODEMAP.md (run after code changes)
+python verify_vendored.py        # Verifies vendor/*.js SHA-256 against VENDORED.md
 ```
 
 The build script reads CSS files from `src/styles/`, YARA rules from `src/rules/`, and JS source files, inlining all CSS and JavaScript (including vendor libraries) into a single self-contained HTML document:
@@ -22,6 +40,29 @@ The build script reads CSS files from `src/styles/`, YARA rules from `src/rules/
 | Output | Purpose |
 |---|---|
 | `docs/index.html` | GitHub Pages deployment (sole build output) |
+
+### Continuous Integration
+
+`.github/workflows/ci.yml` runs on every push and PR. It intentionally does
+**not** try to drive the viewer end-to-end (Puppeteer / Playwright cannot
+operate the native file picker or drag-and-drop, which are the only entry
+points into a loaded file) — CI scope stops at static verification:
+
+| Job | What it guarantees |
+|---|---|
+| `build` | `python build.py` succeeds and produces `docs/index.html`. The output's SHA-256 and size are written to the GitHub Actions job summary, and the bundle is uploaded as a retained artefact so reviewers can diff it against their own build. |
+| `verify-vendored` | `python verify_vendored.py` — every `vendor/*.js` matches the SHA-256 pin in `VENDORED.md`, no pinned file is missing, and no unpinned file has snuck into `vendor/`. |
+| `static-checks` | On the **built** `docs/index.html`: CSP meta tag is present, `default-src 'none'` is still there, no inline HTML event-handler attributes (`onclick="…"` etc.), no `'unsafe-eval'`, no remote hosts in CSP directives. |
+| `lint` | ESLint 9 over `src/**/*.js` using `eslint.config.mjs`. The ruleset is deliberately minimal (see the file header for rationale) — it targets real foot-guns (`no-eval`, `no-new-func`, `no-const-assign`, `no-unreachable`, …) rather than style. Soft-launched with `continue-on-error: true`; flip that off once the ruleset has bedded in. |
+
+The ESLint config is ESM (`eslint.config.mjs`) and uses `sourceType: 'script'`
+because the `src/` files are concatenated into a single inline `<script>` at
+build time. `no-undef` and `no-implicit-globals` are **off** — every
+cross-file class reference (`XlsxRenderer`, `App`, `OleCfbParser`, …) and
+every vendored global (`JSZip`, `XLSX`, `pdfjsLib`, `hljs`, `UTIF`, `exifr`,
+`tldts`, `pako`, `LZMA`, `DEFAULT_YARA_RULES`) is an implicit global by
+design, and asking ESLint to track them all would drown real issues in
+false positives.
 
 ### CSS Concatenation Order
 
@@ -153,14 +194,28 @@ Vendor libraries (`vendor/jszip.min.js`, `vendor/xlsx.full.min.js`, `vendor/pdf.
 
 ```
 Loupe/
+├── make.py                          # One-shot orchestrator — chains verify → build → codemap
 ├── build.py                         # Build script — reads src/, writes docs/index.html
 ├── generate-codemap.py              # Generates CODEMAP.md (AI agent navigation map)
+├── verify_vendored.py               # CI guard — verifies vendor/*.js SHA-256 against VENDORED.md
+├── eslint.config.mjs                # Minimal flat ESLint config for src/ (security + bug-shape rules)
 ├── CODEMAP.md                       # Auto-generated code map with line-level symbol index
 ├── README.md                        # Public landing page — hero, quick start, compact formats table
 ├── FEATURES.md                      # Long-form reference — every format, capability, shortcut
 ├── SECURITY.md                      # Threat model, security boundaries, disclosure policy, PGP key
 ├── CONTRIBUTING.md                  # Developer guide — this file
 ├── VENDORED.md                      # SHA-256 pins for every file in vendor/
+├── .github/
+│   ├── workflows/
+│   │   ├── ci.yml                   # CI — build, vendor-hash verify, static HTML/src checks, ESLint
+│   │   └── release.yml              # Release — tags + publishes loupe.html on docs/index.html change
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── config.yml               # Disables blank issues; routes security reports to private advisories
+│   │   ├── bug_report.yml           # Structured bug template (version, browser, repro, console)
+│   │   ├── feature_request.yml     # Non-format / non-rule feature requests (with constraint acknowledgement)
+│   │   ├── format_request.yml      # New file-format requests (extensions, magic bytes, spec, samples)
+│   │   └── yara_rule.yml           # New YARA rule proposals (category, draft, FP profile)
+│   └── PULL_REQUEST_TEMPLATE.md     # PR checklist — build, docs-to-update, security invariants
 ├── docs/
 │   └── index.html                   # Built output (GitHub Pages) — DO NOT EDIT
 ├── vendor/
@@ -385,7 +440,7 @@ state is (a) easy to grep for, (b) easy to clear with a single filter, and
 Loupe is optimised for AI coding agents (Cline, Cursor, Copilot Workspace, etc.):
 
 - **`CODEMAP.md`** — Auto-generated code map with precise line numbers for every class, method, CSS section, and YARA rule. Agents can read this file first (~24K tokens) and then use `read_file(path, start_line=X, end_line=Y)` for surgical edits without consuming their entire context window.
-- **`generate-codemap.py`** — Regenerate `CODEMAP.md` after any code changes: `python generate-codemap.py`
+- **`make.py`** — One-shot orchestrator. `python make.py` runs verify → build → codemap in a single command; `python make.py codemap` regenerates just `CODEMAP.md` after code changes (shortcut for `python generate-codemap.py`).
 - **Split CSS/YARA** — CSS and YARA rules are split into multiple files by category, keeping each file manageable. No single file dominates the context budget.
 
 ---
@@ -667,10 +722,9 @@ First-boot fallback order:
 
 1. Fork the repo
 2. Make your changes in `src/`
-3. Run `python build.py` to rebuild
+3. Run `python make.py` — chains `verify_vendored.py` → `build.py` → `generate-codemap.py` in one shot
 4. Test by opening `docs/index.html` in a browser
-5. Run `python generate-codemap.py` to update the code map
-6. Submit a pull request
+5. Submit a pull request
 
 YARA rule submissions, new format parsers, and build-process improvements are especially welcome.
 
