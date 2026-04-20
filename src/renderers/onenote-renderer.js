@@ -177,7 +177,7 @@ class OneNoteRenderer {
     return wrap;
   }
 
-  analyzeForSecurity(buffer, fileName) {
+  async analyzeForSecurity(buffer, fileName) {
     const f = {
       // Start 'low'; the embedded-object branch below flips f.risk to 'high'
       // whenever a FileDataStoreObject contains an executable (PE / ELF /
@@ -208,6 +208,24 @@ class OneNoteRenderer {
       f.metadata.embeddedObjectCount = objects.length;
       const guids = [];
       const sniffs = [];
+      // QR-decode cap for embedded image blobs. OneNote phishing samples
+      // often tile a QR under the fake "Double-click to open" button to
+      // smuggle the true payload URL past text scanners.
+      const QR_EMBED_CAP = 16;
+      let qrEmbedScanned = 0;
+      let qrIndex = 0;
+      const qrPromises = [];
+      // Map our sniff labels back to the MIME strings QrDecoder.decodeBlob
+      // accepts ("image/png", "image/jpeg", …). Non-image sniffs skip QR.
+      const sniffToMime = (t) => {
+        if (!t) return null;
+        if (/PNG/i.test(t))  return 'image/png';
+        if (/JPEG/i.test(t)) return 'image/jpeg';
+        if (/GIF/i.test(t))  return 'image/gif';
+        if (/BMP/i.test(t))  return 'image/bmp';
+        if (/WebP/i.test(t)) return 'image/webp';
+        return null;
+      };
       for (const obj of objects) {
         const label = this._label(obj);
         if (obj.storeGuid) guids.push(obj.storeGuid);
@@ -223,9 +241,36 @@ class OneNoteRenderer {
           severity: sev,
           note,
         });
+
+        // ── QR-decode embedded image blobs ─────────────────────────────
+        const mime = sniffToMime(obj.sniffedType);
+        if (mime && typeof QrDecoder !== 'undefined' &&
+            qrEmbedScanned < QR_EMBED_CAP &&
+            obj.offset != null && obj.size > 0 &&
+            obj.offset + obj.size <= bytes.length) {
+          qrEmbedScanned++;
+          const idx = ++qrIndex;
+          const slice = bytes.subarray(obj.offset, obj.offset + obj.size);
+          // Copy to a standalone ArrayBuffer — decodeBlob uses
+          // URL.createObjectURL which can't index into a subarray view.
+          const ab = new Uint8Array(slice).buffer;
+          qrPromises.push(
+            QrDecoder.decodeBlob(ab, mime)
+              .then(qr => { if (qr) QrDecoder.applyToFindings(f, qr, `onenote-embed-${idx}`); })
+              .catch(() => { /* swallow */ })
+          );
+        }
       }
+
       if (guids.length) f.metadata.fileDataStoreGuids = Array.from(new Set(guids)).slice(0, 16);
       if (sniffs.length) f.metadata.sniffedBlobTypes = Array.from(new Set(sniffs));
+
+      // Wait for every in-flight QR decode to resolve — _renderSidebar
+      // reads a one-shot snapshot of findings after this method resolves,
+      // so fire-and-forget would land the QR IOC after first paint.
+      if (qrPromises.length) {
+        try { await Promise.all(qrPromises); } catch (_) { /* swallow */ }
+      }
     }
 
     // Extract URLs from text content.

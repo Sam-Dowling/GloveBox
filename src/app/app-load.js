@@ -528,9 +528,9 @@ Object.assign(App.prototype, {
       return { docEl };
     },
 
-    onenote(file, buffer) {
+    async onenote(file, buffer) {
       const r = new OneNoteRenderer();
-      this.findings = r.analyzeForSecurity(buffer, file.name);
+      this.findings = await r.analyzeForSecurity(buffer, file.name);
       return { docEl: r.render(buffer, file.name) };
     },
 
@@ -542,9 +542,9 @@ Object.assign(App.prototype, {
       this._wireInnerFileListener(docEl, file.name);
       return { docEl };
     },
-    eml(file, buffer) {
+    async eml(file, buffer) {
       const r = new EmlRenderer();
-      this.findings = r.analyzeForSecurity(buffer);
+      this.findings = await r.analyzeForSecurity(buffer);
       const docEl = r.render(buffer);
       this._wireInnerFileListener(docEl, file.name);
       return { docEl };
@@ -678,9 +678,9 @@ Object.assign(App.prototype, {
     },
 
     // ── SVG / Plist / AppleScript — augmentedBuffer goes to YARA ────────
-    svg(file, buffer) {
+    async svg(file, buffer) {
       const r = new SvgRenderer();
-      this.findings = r.analyzeForSecurity(buffer, file.name);
+      this.findings = await r.analyzeForSecurity(buffer, file.name);
       if (this.findings.augmentedBuffer) this._yaraBuffer = this.findings.augmentedBuffer;
       return { docEl: r.render(buffer, file.name) };
     },
@@ -730,9 +730,9 @@ Object.assign(App.prototype, {
     },
 
     // ── Images ──────────────────────────────────────────────────────────
-    image(file, buffer) {
+    async image(file, buffer) {
       const r = new ImageRenderer();
-      this.findings = r.analyzeForSecurity(buffer, file.name);
+      this.findings = await r.analyzeForSecurity(buffer, file.name);
       return { docEl: r.render(buffer, file.name) };
     },
 

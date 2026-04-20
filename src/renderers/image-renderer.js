@@ -119,7 +119,7 @@ class ImageRenderer {
     return wrap;
   }
 
-  analyzeForSecurity(buffer, fileName) {
+  async analyzeForSecurity(buffer, fileName) {
     const f = {
       risk: 'low', hasMacros: false, macroSize: 0, macroHash: '',
       autoExec: [], modules: [], externalRefs: [], interestingStrings: [], metadata: {},
@@ -274,8 +274,40 @@ class ImageRenderer {
       try {
         const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
         const ifds = UTIF.decode(ab);
-        if (ifds && ifds.length) this._applyTiffTags(f, ifds);
+        if (ifds && ifds.length) {
+          this._applyTiffTags(f, ifds);
+          // Reuse the TIFF RGBA we just decoded to scan for QR codes
+          // (synchronous path — no offscreen <img> needed).
+          try {
+            UTIF.decodeImage(ab, ifds[0]);
+            const rgba = UTIF.toRGBA8(ifds[0]);
+            const w = ifds[0].width, h = ifds[0].height;
+            if (rgba && w && h && typeof QrDecoder !== 'undefined') {
+              const qr = QrDecoder.decodeRGBA(rgba, w, h);
+              if (qr) QrDecoder.applyToFindings(f, qr, 'image');
+            }
+          } catch (_) { /* QR on TIFF is best-effort */ }
+        }
       } catch (_) { /* tiff tag-dump is best-effort */ }
+    }
+
+    // ── QR-code decoding (quishing detector) ──────────────────────────
+    // For every non-TIFF raster we ship the raw bytes off to
+    // QrDecoder.decodeBlob which loads them via an offscreen <img> +
+    // canvas and extracts RGBA for jsQR. We **must** await — _renderSidebar
+    // reads a one-shot snapshot of `findings` after `analyzeForSecurity`
+    // resolves, so a fire-and-forget promise would land the decoded QR
+    // IOC into `f` after the sidebar has already painted the un-QR'd view
+    // (classic symptom: QR in PDF works, QR in PNG doesn't). TIFF is
+    // handled synchronously above to reuse the UTIF decode.
+    if (!isTiffForAnalysis && ['png','jpg','jpeg','gif','bmp','webp','ico','avif'].includes(ext)
+        && typeof QrDecoder !== 'undefined') {
+      try {
+        const mime = ImageRenderer.MIME_MAP[ext] || 'image/png';
+        const ab = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+        const qr = await QrDecoder.decodeBlob(ab, mime);
+        if (qr) QrDecoder.applyToFindings(f, qr, 'image');
+      } catch (_) { /* QR decode best-effort */ }
     }
 
     // Legacy byte-scan EXIF fallback — preserved so images in unsupported

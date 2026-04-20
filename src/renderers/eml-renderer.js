@@ -162,7 +162,7 @@ class EmlRenderer {
     return wrap;
   }
 
-  analyzeForSecurity(buffer) {
+  async analyzeForSecurity(buffer) {
     const f = {
       risk: 'low', hasMacros: false, macroSize: 0, macroHash: '',
       autoExec: [], modules: [], externalRefs: [], metadata: {}
@@ -328,6 +328,16 @@ class EmlRenderer {
 
       // ── 5. Dangerous attachments ───────────────────────────────────────
       const dangerExts = /\.(exe|scr|com|pif|bat|cmd|vbs|vbe|js|jse|wsf|wsh|ps1|hta|lnk|cpl|msi|dll|reg|inf|sct|gadget)$/i;
+      const imageExts = /\.(png|jpe?g|gif|bmp|webp)$/i;
+      // QR-decode cap for image attachments. QR-based phishing ("quishing")
+      // lures the recipient into scanning an image attachment that encodes
+      // the real payload URL — the URL never appears as text in the
+      // message body, so without this pass it slips past every text-only
+      // URL extractor above.
+      const QR_ATT_CAP = 8;
+      let qrAttScanned = 0;
+      let qrAttIndex = 0;
+      const qrPromises = [];
       for (const att of email.attachments) {
         if (dangerExts.test(att.filename)) {
           f.externalRefs.push({
@@ -337,7 +347,34 @@ class EmlRenderer {
           });
           f.risk = 'high';
         }
+
+        // ── QR-decode image attachments ────────────────────────────────
+        if (typeof QrDecoder !== 'undefined' && att.data && att.data.length &&
+            qrAttScanned < QR_ATT_CAP && imageExts.test(att.filename || '')) {
+          qrAttScanned++;
+          const idx = ++qrAttIndex;
+          const extLower = (att.filename.split('.').pop() || 'png').toLowerCase();
+          const mime = extLower === 'jpg' || extLower === 'jpeg' ? 'image/jpeg' :
+                       'image/' + extLower;
+          // decodeBlob needs a real ArrayBuffer — attachments are stored as
+          // Uint8Array, so copy into a standalone buffer to avoid subarray
+          // view issues with URL.createObjectURL.
+          const ab = new Uint8Array(att.data).buffer;
+          qrPromises.push(
+            QrDecoder.decodeBlob(ab, mime)
+              .then(qr => { if (qr) QrDecoder.applyToFindings(f, qr, `eml-attachment-${idx}`); })
+              .catch(() => { /* swallow */ })
+          );
+        }
       }
+
+      // Wait for every in-flight QR decode to resolve — _renderSidebar
+      // reads a one-shot snapshot of findings after this method resolves,
+      // so fire-and-forget would land the QR IOC after first paint.
+      if (qrPromises.length) {
+        try { await Promise.all(qrPromises); } catch (_) { /* swallow */ }
+      }
+
 
       // ── 6. Tracking pixels in HTML body ────────────────────────────────
       // Emitted as IOC.URL (not PATTERN) so they land in the IOCs pane with

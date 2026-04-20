@@ -298,15 +298,34 @@ class SvgRenderer {
    * @param {string} fileName
    * @returns {Object} findings
    */
-  analyzeForSecurity(buffer, fileName) {
+  async analyzeForSecurity(buffer, fileName) {
     const text = this._decode(buffer);
     const refs = [];
-    let risk = 'low';
+
+    // Persistent findings reference shared with async QR callbacks below.
+    // QR decoding on embedded image data: URIs goes through an offscreen
+    // <img> + canvas and is therefore async — we collect every decode
+    // promise into `qrPromises` and await them all before returning so
+    // _renderSidebar (which reads a one-shot snapshot of findings) sees
+    // the decoded QR IOCs on first paint.
+    const findingsRef = {
+      risk: 'low',
+      hasMacros: false, modules: [], autoExec: [], signatureMatches: [],
+      externalRefs: refs,
+      metadata: {},
+    };
+
+    // QR-decode cap for embedded image data: URIs (SVG phishing hides the
+    // real payload URL in an <image href="data:image/png;base64,..."> QR).
+    const QR_IMAGE_CAP = 8;
+    let qrImagesScanned = 0;
+    const qrPromises = [];
 
     const setRisk = (level) => {
       const levels = { low: 0, medium: 1, high: 2, critical: 3 };
-      if (levels[level] > levels[risk]) risk = level;
+      if (levels[level] > levels[findingsRef.risk]) findingsRef.risk = level;
     };
+
 
     // Parse SVG as XML
     const parser = new DOMParser();
@@ -626,8 +645,28 @@ class SvgRenderer {
             }
           }
         } catch (_) { }
+        // QR-code decode on embedded image data: URIs. SVG phishing
+        // increasingly hides the real URL in a <image href="data:image/png
+        // ;base64,…"> QR that never touches the source text, so every
+        // embedded image raster gets scanned through QrDecoder. Capped
+        // at QR_IMAGE_CAP; async — findings get updated in-place after
+        // the first sidebar paint.
+        if (typeof QrDecoder !== 'undefined' && qrImagesScanned < QR_IMAGE_CAP) {
+          qrImagesScanned++;
+          try {
+            const bin = atob(payload);
+            const ab = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) ab[i] = bin.charCodeAt(i);
+            qrPromises.push(
+              QrDecoder.decodeBlob(ab.buffer, mimeType)
+                .then(qr => { if (qr) QrDecoder.applyToFindings(findingsRef, qr, 'svg-embed'); })
+                .catch(() => { /* swallow */ })
+            );
+          } catch (_) { /* invalid base64 — skip */ }
+        }
       }
     }
+
 
     // Bare long base64 literals inside <script> or JS strings
     const bareB64Regex = /[A-Za-z0-9+/]{120,}={0,2}/g;
@@ -915,17 +954,30 @@ class SvgRenderer {
     if (sniffedBlobTypes.length) metadata.sniffedBlobTypes = Array.from(new Set(sniffedBlobTypes));
     if (obfuscationHits.length) metadata.obfuscationFingerprints = obfuscationHits;
 
+    // Merge into the shared findingsRef so QR callbacks that have already
+    // written qr* keys into findingsRef.metadata are preserved.
+    Object.assign(findingsRef.metadata, metadata);
+
+    // Wait for every in-flight QR decode to resolve — _renderSidebar
+    // reads a one-shot snapshot of findings, so fire-and-forget here
+    // means the QR IOC lands after the sidebar has already painted.
+    if (qrPromises.length) {
+      try { await Promise.all(qrPromises); } catch (_) { /* swallow */ }
+    }
+
     return {
-      risk,
+      risk: findingsRef.risk,
       externalRefs: refs,
-      metadata,
+      metadata: findingsRef.metadata,
       hasMacros: false,
       modules: [],
       autoExec: [],
       signatureMatches: [],
-      augmentedBuffer: augmentBytes.buffer
+      augmentedBuffer: augmentBytes.buffer,
     };
+
   }
+
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Internal helpers

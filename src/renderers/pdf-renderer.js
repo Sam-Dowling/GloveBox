@@ -447,11 +447,38 @@ class PdfRenderer {
         }
       } catch (_) { /* attachments not available */ }
 
-      // Extract URLs from link annotations + per-page JS actions
+      // Extract URLs from link annotations + per-page JS actions.
+      // Also rasterize each page (up to QR_PAGE_CAP) and scan for QR codes —
+      // "quishing" hides the real phishing URL inside a rendered QR that
+      // never touches the text layer or any /URI string, so a per-page
+      // raster scan is the only reliable way to surface it.
+      const QR_PAGE_CAP = 10;
+      let qrPagesScanned = 0;
       for (let p = 1; p <= pdf.numPages; p++) {
         try {
           const page = await pdf.getPage(p);
+
+          // ─── QR decode on page raster ───────────────────────────────
+          // Rasterize at 1.5× scale to roughly match the viewer's
+          // canvas size. Capped so a 300-page PDF doesn't turn analysis
+          // into a render loop.
+          if (typeof QrDecoder !== 'undefined' && qrPagesScanned < QR_PAGE_CAP) {
+            try {
+              const qrVp = page.getViewport({ scale: 1.5 });
+              const qrCanvas = document.createElement('canvas');
+              qrCanvas.width = Math.ceil(qrVp.width);
+              qrCanvas.height = Math.ceil(qrVp.height);
+              const qrCtx = qrCanvas.getContext('2d');
+              await page.render({ canvasContext: qrCtx, viewport: qrVp }).promise;
+              const imgData = qrCtx.getImageData(0, 0, qrCanvas.width, qrCanvas.height);
+              const qr = QrDecoder.decodeRGBA(imgData.data, qrCanvas.width, qrCanvas.height);
+              if (qr) QrDecoder.applyToFindings(f, qr, `pdf-page-${p}`);
+              qrPagesScanned++;
+            } catch (_) { /* QR raster/decode is best-effort */ }
+          }
+
           const annots = await page.getAnnotations();
+
           for (const a of annots) {
             for (const field of ['url', 'unsafeUrl']) {
               const val = a[field];
