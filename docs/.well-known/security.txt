@@ -1,0 +1,7 @@
+Contact: mailto:security@loupe.tools
+OpenPGP: https://loupe.tools/.well-known/public_key.asc
+Key-Server: hkps://keys.openpgp.org
+Preferred-Languages: en
+Canonical: https://loupe.tools/.well-known/security.txt
+Expires: 2027-04-20T00:00:00.000Z
+Encryption: openpgp4fpr:D8F02D60C6200F3681F9385D7D97741362BEB570
