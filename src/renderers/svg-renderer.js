@@ -325,7 +325,9 @@ class SvgRenderer {
     // pairing against subsequent scripts in the source).
     const scriptRanges = [];
     {
-      const re = /<script[\s>][^]*?<\/script>/gi;
+      // Closing `</script\b[^>]*>` accepts trailing attributes/whitespace
+      // the way browsers do (js/bad-tag-filter #57).
+      const re = /<script[\s>][\s\S]*?<\/script\b[^>]*>/gi;
       let mm;
       while ((mm = re.exec(text)) !== null) {
         scriptRanges.push({ offset: mm.index, length: mm[0].length, text: mm[0], taken: false });
@@ -384,8 +386,9 @@ class SvgRenderer {
       }
     }
 
-    // Regex fallback for scripts in CDATA or entity-encoded
-    const scriptRegex = /<script[\s>][^]*?<\/script>/gi;
+    // Regex fallback for scripts in CDATA or entity-encoded.
+    // Closing `</script\b[^>]*>` mirrors the HTML parser (js/bad-tag-filter #58).
+    const scriptRegex = /<script[\s>][\s\S]*?<\/script\b[^>]*>/gi;
     let scriptMatch;
     while ((scriptMatch = scriptRegex.exec(text)) !== null) {
       if (scriptEls.length === 0) {
@@ -685,12 +688,24 @@ class SvgRenderer {
     for (const url of urls) {
       let sev = 'info';
       const lower = url.toLowerCase();
-      if (lower.startsWith('data:image/')) continue; // skip embedded images
+      // Strip ASCII whitespace/C0 controls so "\tjavascript:" and
+      // "java\nscript:" can't bypass the scheme check — browsers strip
+      // these when resolving the URL (js/incomplete-url-scheme-check #61).
+      const normalized = lower.replace(/[\x00-\x20\x7f]/g, '');
+      // Pre-filter: skip `data:image/*` before the broader `data:` check
+      // below. image/* is the only data: subtype considered benign when
+      // inlined into a document; everything else (text/html,
+      // text/javascript, application/pdf;base64, application/octet-stream,
+      // text/xml polyglots, …) is treated as high-severity. CodeQL's
+      // js/incomplete-url-scheme-check requires the guard to match bare
+      // `data:`, not a sub-MIME, to be considered complete.
+      if (normalized.startsWith('data:image/')) continue;
       // eslint-disable-next-line no-script-url -- detecting, not navigating
-      if (lower.startsWith('javascript:') || lower.startsWith('vbscript:') || lower.startsWith('data:text/html')) {
+      if (normalized.startsWith('javascript:') || normalized.startsWith('vbscript:') || normalized.startsWith('data:')) {
+
         sev = 'high';
         setRisk('high');
-      } else if (lower.startsWith('http:') || lower.startsWith('https:') || lower.startsWith('//')) {
+      } else if (normalized.startsWith('http:') || normalized.startsWith('https:') || normalized.startsWith('//')) {
         sev = 'medium';
         setRisk('medium');
       }
@@ -787,8 +802,18 @@ class SvgRenderer {
     }
 
     // ── 8. Obfuscation in raw text (catches entity-encoded JS) ───────────
-    // Check for common obfuscation patterns outside of <script> tags
-    const textWithoutScripts = text.replace(/<script[\s>][^]*?<\/script>/gi, '');
+    // Check for common obfuscation patterns outside of <script> tags.
+    // Use a fixed-point strip with a tolerant closing tag so nested or
+    // attribute-bearing </script foo> can't bypass the filter — a single
+    // pass is flagged by CodeQL js/bad-tag-filter + js/incomplete-multi-
+    // character-sanitization (#53, #59).
+    const stripScriptRe = /<script[\s>][\s\S]*?<\/script\b[^>]*>/gi;
+    let textWithoutScripts = text;
+    let prevScriptStrip;
+    do {
+      prevScriptStrip = textWithoutScripts;
+      textWithoutScripts = textWithoutScripts.replace(stripScriptRe, '');
+    } while (textWithoutScripts !== prevScriptStrip);
     this._checkJsSuspicious(textWithoutScripts, refs, setRisk, true);
 
     // ── 8b. Forcepoint X-Labs obfuscation fingerprints ───────────────────

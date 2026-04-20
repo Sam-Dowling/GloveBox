@@ -602,16 +602,22 @@ class ArchiveTree {
           }
         });
         tree.querySelectorAll('.arch-tree-hidden').forEach(el => el.classList.remove('arch-tree-hidden'));
-        // Restore any highlighted substring spans.
+        // Restore any highlighted substring spans. We saved the raw text in
+        // data-arch-orig (not HTML), so restoring via textContent avoids any
+        // possibility of reinterpreting attacker-controlled filename text as
+        // HTML on reset.
         tree.querySelectorAll('.arch-tree-name[data-arch-orig]').forEach(n => {
-          n.innerHTML = n.getAttribute('data-arch-orig');
+          n.textContent = n.getAttribute('data-arch-orig') || '';
           n.removeAttribute('data-arch-orig');
         });
 
         if (hasQuery) {
           const files = tree.querySelectorAll('li.arch-tree-file');
           let treeHits = 0;
-          const re = new RegExp(escapeRegex(q), 'ig');
+          // Highlight operates on the *escaped* text, so the needle must be
+          // escaped with the same transform to line up — otherwise a query
+          // containing '<' would fail to highlight a filename containing '<'.
+          const markRe = new RegExp(escapeRegex(escHtml(q)), 'ig');
           files.forEach(li => {
             const path = (li.getAttribute('data-arch-file-path') || '').toLowerCase();
             const name = (li.getAttribute('data-arch-file-name') || '').toLowerCase();
@@ -622,8 +628,13 @@ class ArchiveTree {
               // Highlight inside the displayed name (not the full path).
               const nameEl = li.querySelector('.arch-tree-name');
               if (nameEl) {
-                nameEl.setAttribute('data-arch-orig', nameEl.innerHTML);
-                nameEl.innerHTML = nameEl.textContent.replace(re, (m) => `<mark class="arch-mark">${escHtml(m)}</mark>`);
+                // Save raw text (never HTML) so a malicious filename like
+                // `<img onerror=…>` can never be reinterpreted as HTML when
+                // the search is cleared and this element is restored.
+                const rawText = nameEl.textContent;
+                nameEl.setAttribute('data-arch-orig', rawText);
+                nameEl.innerHTML = escHtml(rawText).replace(
+                  markRe, (m) => `<mark class="arch-mark">${m}</mark>`);
               }
               // Auto-expand ancestors
               let parent = li.parentElement;
@@ -650,10 +661,14 @@ class ArchiveTree {
       // Flat filter ---------------------------------------------------------
       const flat = root.querySelector('.arch-flat-table');
       if (flat) {
-        const re = hasQuery ? new RegExp(escapeRegex(q), 'ig') : null;
+        // Highlight regex operates on *escaped* text (so the needle is also
+        // escaped) — guarantees that a filename containing HTML
+        // meta-characters can never be re-interpreted as markup.
+        const markRe = hasQuery ? new RegExp(escapeRegex(escHtml(q)), 'ig') : null;
         const rows = flat.querySelectorAll('tbody tr');
         rows.forEach(tr => {
-          // Restore original text first
+          // Restore original text first (archOrig stores *sanitised* HTML
+          // produced below, so reusing it as innerHTML is safe)
           const pathCell = tr.querySelector('.arch-col-path');
           if (pathCell && pathCell.dataset.archOrig) {
             pathCell.innerHTML = pathCell.dataset.archOrig;
@@ -666,11 +681,14 @@ class ArchiveTree {
             tr.classList.remove('arch-flat-hidden');
             tr.classList.add('arch-flat-hit');
             if (pathCell) {
-              // Preserve badges by highlighting only the text node.
+              // Preserve badges by highlighting only the text node. The raw
+              // path is escaped *first*, then the highlight marks are
+              // injected — so filename text can never become live HTML.
               const text = tr.dataset.archPath || '';
               const badges = Array.from(pathCell.querySelectorAll('.arch-badge')).map(b => b.outerHTML).join('');
               pathCell.dataset.archOrig = pathCell.innerHTML;
-              pathCell.innerHTML = text.replace(re, (m) => `<mark class="arch-mark">${escHtml(m)}</mark>`) + badges;
+              pathCell.innerHTML = escHtml(text).replace(
+                markRe, (m) => `<mark class="arch-mark">${m}</mark>`) + badges;
             }
             // Count flat hits separately only if tree isn't present — otherwise
             // the tree count is authoritative (they render the same entries).

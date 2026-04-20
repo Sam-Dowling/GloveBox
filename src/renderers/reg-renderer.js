@@ -311,8 +311,17 @@ class RegRenderer {
             if (rawData.startsWith('"')) {
               type = 'REG_SZ';
               data = rawData.slice(1, rawData.lastIndexOf('"'));
-              // Unescape REG_SZ string: \\ → \ and \" → "
-              data = data.replace(/\\\\/g, '\\').replace(/\\"/g, '"');
+              // Unescape REG_SZ string in a single pass. The previous
+              // two-step form `replace(/\\\\/g, '\\').replace(/\\"/g, '"')`
+              // triggered CodeQL js/identity-replacement (the first pass
+              // looks like '\\' → '\\') and, worse, was wrong for inputs
+              // like  \\"  (a literal backslash followed by an escaped
+              // quote): step 1 collapsed the first two characters to a
+              // single backslash, then step 2 saw `\"` and turned it into
+              // `"` — producing the string  \"  instead of the correct
+              // \". A single alternation pass handles both escape forms
+              // atomically and is immune to that reordering hazard.
+              data = data.replace(/\\([\\"])/g, '$1');
             } else if (rawData.startsWith('dword:')) {
               type = 'REG_DWORD';
               data = rawData.slice(6);

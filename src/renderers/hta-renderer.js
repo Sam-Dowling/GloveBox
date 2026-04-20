@@ -198,7 +198,10 @@ class HtaRenderer {
 
   _extractScripts(text) {
     const blocks = [];
-    const rx = /<script([^>]*)>([\s\S]*?)<\/script>/gi;
+    // Closing `</script\b[^>]*>` mirrors the HTML parser (it accepts
+    // trailing attributes/whitespace) — plain `</script>` is flagged by
+    // CodeQL js/bad-tag-filter (#55).
+    const rx = /<script([^>]*)>([\s\S]*?)<\/script\b[^>]*>/gi;
     let m;
     while ((m = rx.exec(text)) !== null) {
       const attrs = m[1] || '';

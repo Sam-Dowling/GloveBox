@@ -94,7 +94,7 @@ class PdfRenderer {
 
     // URIs — parenthesised
     const uriSeen = new Set();
-    for (const m of raw.matchAll(/\/URI\s*\(((?:\\\)|\\\\|[^)])+)\)/g)) {
+    for (const m of raw.matchAll(/\/URI\s*\(((?:\\[\s\S]|[^\\)])*)\)/g)) {
       const uri = this._unescapePdfString(m[1]);
       if (uri && !uriSeen.has(uri)) {
         uriSeen.add(uri);
@@ -116,7 +116,7 @@ class PdfRenderer {
     }
 
     // ── /Launch actions (F / Win launch) ───────────────────────────────────
-    for (const m of raw.matchAll(/\/Launch\b[^>]{0,400}?\/F\s*\(((?:\\\)|\\\\|[^)])+)\)/g)) {
+    for (const m of raw.matchAll(/\/Launch\b[^>]{0,400}?\/F\s*\(((?:\\[\s\S]|[^\\)])*)\)/g)) {
       const target = this._unescapePdfString(m[1]);
       if (target) {
         f.externalRefs.push({
@@ -127,7 +127,7 @@ class PdfRenderer {
       }
     }
     // /Launch with embedded Win dict
-    for (const m of raw.matchAll(/\/Win\b[^>]{0,400}?\/F\s*\(((?:\\\)|\\\\|[^)])+)\)/g)) {
+    for (const m of raw.matchAll(/\/Win\b[^>]{0,400}?\/F\s*\(((?:\\[\s\S]|[^\\)])*)\)/g)) {
       const target = this._unescapePdfString(m[1]);
       if (target) {
         f.externalRefs.push({
@@ -139,7 +139,7 @@ class PdfRenderer {
     }
 
     // ── /GoToR (remote file jump) ──────────────────────────────────────────
-    for (const m of raw.matchAll(/\/S\s*\/GoToR\b[^>]{0,400}?\/F\s*\(((?:\\\)|\\\\|[^)])+)\)/g)) {
+    for (const m of raw.matchAll(/\/S\s*\/GoToR\b[^>]{0,400}?\/F\s*\(((?:\\[\s\S]|[^\\)])*)\)/g)) {
       const target = this._unescapePdfString(m[1]);
       if (target) {
         const isUrl = /^(https?|ftp):\/\//i.test(target);
@@ -587,11 +587,11 @@ class PdfRenderer {
     let m;
     while ((m = fsRe.exec(raw)) !== null) {
       const body = m[1];
-      const name = this._pdfStr(body, /\/UF\s*\(((?:\\\)|\\\\|[^)])+)\)/) ||
-                   this._pdfStr(body, /\/F\s*\(((?:\\\)|\\\\|[^)])+)\)/) ||
+      const name = this._pdfStr(body, /\/UF\s*\(((?:\\[\s\S]|[^\\)])*)\)/) ||
+                   this._pdfStr(body, /\/F\s*\(((?:\\[\s\S]|[^\\)])*)\)/) ||
                    this._pdfHex(body, /\/UF\s*<([0-9A-Fa-f]+)>/) ||
                    this._pdfHex(body, /\/F\s*<([0-9A-Fa-f]+)>/);
-      const desc = this._pdfStr(body, /\/Desc\s*\(((?:\\\)|\\\\|[^)])+)\)/);
+      const desc = this._pdfStr(body, /\/Desc\s*\(((?:\\[\s\S]|[^\\)])*)\)/);
       // Subtype is the MIME (as Name, maybe hex-encoded). PDF names begin with /.
       const mime = (body.match(/\/Subtype\s*\/([^\s\/\>]+)/) || [])[1] || '';
       // Size sometimes in /Params /Size
@@ -639,7 +639,7 @@ class PdfRenderer {
 
     // 1. Literal strings ---------------------------------------------------
     // We greedily match up to a closing paren with PDF escape handling.
-    for (const m of raw.matchAll(/\/JS\s*\(((?:\\\)|\\\\|[^)])+)\)/g)) {
+    for (const m of raw.matchAll(/\/JS\s*\(((?:\\[\s\S]|[^\\)])*)\)/g)) {
       const src = this._unescapePdfString(m[1]);
       if (src && src.trim()) out.push({ trigger: '/JS literal string', source: src });
     }
@@ -870,7 +870,10 @@ class PdfRenderer {
       // Suspicious script constructs (XFA scripts are JS-like)
       if (/<script[^>]*>/i.test(m[0])) {
         // count script blocks and collect unique hints
-        const scripts = m[0].match(/<script[^>]*>([\s\S]*?)<\/script>/gi) || [];
+        // Tolerant closing tag — `</script foo>` is accepted by browsers
+        // and would bypass a plain `</script>` (js/bad-tag-filter #56).
+        const scripts = m[0].match(/<script[^>]*>[\s\S]*?<\/script\b[^>]*>/gi) || [];
+
         const hintPatterns = [
           { pat: /\bapp\.launchURL\b/i,      label: 'XFA: app.launchURL' },
           { pat: /\bxfa\.host\.messageBox\b/i, label: 'XFA: messageBox' },

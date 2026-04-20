@@ -2910,32 +2910,71 @@ Object.assign(App.prototype, {
     const localNum = parseFloat(localVersion) || 0;
     const isUpToDate = localVersion !== 'dev' && remoteNum >= localNum;
 
-    // Build popup
+    // Build popup using createElement/textContent so the `?v=` query param
+    // (attacker-controlled) can never reach the DOM as HTML. CodeQL flags the
+    // previous innerHTML template form (alerts js/xss-through-dom #64, #65)
+    // because the `incoming` value is interpolated into an HTML template
+    // string — even though LOUPE_VERSION is a build constant, the
+    // remoteVersion pathway is not. Using textContent here neutralises both.
     const overlay = document.createElement('div');
     overlay.className = 'help-overlay update-check-overlay';
 
+    const dialog = document.createElement('div');
+    dialog.className = 'update-dialog';
+
+    const icon = document.createElement('div');
+    icon.className = isUpToDate ? 'update-icon update-icon-ok' : 'update-icon update-icon-new';
+    icon.textContent = isUpToDate ? '✅' : '🔄';
+    dialog.appendChild(icon);
+
+    const title = document.createElement('h2');
+    title.className = 'update-title';
+    title.textContent = isUpToDate ? "You're up to date!" : 'New update available!';
+    dialog.appendChild(title);
+
+    const detail = document.createElement('p');
+    detail.className = 'update-detail';
     if (isUpToDate) {
-      overlay.innerHTML = `
-        <div class="update-dialog">
-          <div class="update-icon update-icon-ok">✅</div>
-          <h2 class="update-title">You're up to date!</h2>
-          <p class="update-detail">Your version <strong>v${remoteVersion}</strong> matches the latest release.</p>
-          <button class="update-btn update-btn-close">Close</button>
-        </div>`;
+      detail.appendChild(document.createTextNode('Your version '));
+      const s = document.createElement('strong');
+      s.textContent = 'v' + remoteVersion;
+      detail.appendChild(s);
+      detail.appendChild(document.createTextNode(' matches the latest release.'));
     } else {
-      const dlUrl = 'https://github.com/Loupe-tools/Loupe/releases/latest/download/loupe.html';
-      overlay.innerHTML = `
-        <div class="update-dialog">
-          <div class="update-icon update-icon-new">🔄</div>
-          <h2 class="update-title">New update available!</h2>
-          <p class="update-detail">You have <strong>v${remoteVersion}</strong> — the latest version is <strong>v${localVersion}</strong>.</p>
-          <div class="update-actions">
-            <a class="update-btn update-btn-download" href="${dlUrl}" target="_blank" rel="noopener">⬇️ Download Latest</a>
-            <button class="update-btn update-btn-close">Close</button>
-          </div>
-        </div>`;
+      detail.appendChild(document.createTextNode('You have '));
+      const s1 = document.createElement('strong');
+      s1.textContent = 'v' + remoteVersion;
+      detail.appendChild(s1);
+      detail.appendChild(document.createTextNode(' — the latest version is '));
+      const s2 = document.createElement('strong');
+      s2.textContent = 'v' + localVersion;
+      detail.appendChild(s2);
+      detail.appendChild(document.createTextNode('.'));
+    }
+    dialog.appendChild(detail);
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'update-btn update-btn-close';
+    closeBtn.textContent = 'Close';
+
+    if (isUpToDate) {
+      dialog.appendChild(closeBtn);
+    } else {
+      const actions = document.createElement('div');
+      actions.className = 'update-actions';
+      const dl = document.createElement('a');
+      dl.className = 'update-btn update-btn-download';
+      // Static constant — not attacker-derived — so it's safe as an href.
+      dl.href = 'https://github.com/Loupe-tools/Loupe/releases/latest/download/loupe.html';
+      dl.target = '_blank';
+      dl.rel = 'noopener';
+      dl.textContent = '⬇️ Download Latest';
+      actions.appendChild(dl);
+      actions.appendChild(closeBtn);
+      dialog.appendChild(actions);
     }
 
+    overlay.appendChild(dialog);
     document.body.appendChild(overlay);
 
     // Close handlers

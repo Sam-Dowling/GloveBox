@@ -275,7 +275,10 @@ class ContentRenderer {
       const rId = blip.getAttributeNS(R_NS, 'embed') || blip.getAttribute('r:embed');
       if (!rId || !this.rels[rId]) return null;
       const target = this.rels[rId].target.replace(/^\.\.\/word\//, '').replace(/^\//, '');
-      const src = this.parsed.media[target] || this.parsed.media[target.replace(/^media\//, 'media/')];
+      // `this.parsed.media` is keyed as "media/<filename>" by docx-parser.js
+      // (`m[p.replace('word/', '')]`), and relationship targets already use
+      // that same shape, so a single direct lookup is sufficient here.
+      const src = this.parsed.media[target];
       if (!src) return null;
       const img = document.createElement('img'); img.src = src; img.alt = '';
       img.style.maxWidth = '100%';

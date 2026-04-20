@@ -286,7 +286,9 @@ class DmgRenderer {
     let urlCount = 0, urlTrunc = false;
     for (const u of strings.urls) {
       if (seenUrl.has(u)) continue; seenUrl.add(u);
-      if (/apple\.com|opensource\.apple\.com/.test(u)) continue;
+      // Anchor the host check to the URL's hostname so "evil-apple.com.bad.example"
+      // isn't silently whitelisted as an apple.com URL by a substring match.
+      if (this._isAppleHost(u)) continue;
       f.externalRefs.push({ type: IOC.URL, url: u, severity: 'info' });
       urlCount++;
       if (f.externalRefs.length > 200) { urlTrunc = true; break; }
@@ -604,5 +606,17 @@ class DmgRenderer {
     if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
     if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
     return (n / 1073741824).toFixed(1) + ' GB';
+  }
+
+  // Host whitelist check anchored to the URL's hostname (not a substring of
+  // the full URL) so a domain like "evil-apple.com.attacker.example" is not
+  // silently treated as Apple-owned. An unparsable URL is treated as NOT
+  // Apple-owned — we'd rather over-report than hide a bad URL.
+  _isAppleHost(u) {
+    let host;
+    try { host = new URL(u).hostname.toLowerCase(); }
+    catch (e) { return false; }
+    return host === 'apple.com'
+      || host.endsWith('.apple.com');
   }
 }

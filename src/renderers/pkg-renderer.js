@@ -253,7 +253,9 @@ class PkgRenderer {
         }
         const urls = body.match(/https?:\/\/[^\s"'<>`]+/g) || [];
         for (const u of urls.slice(0, 20)) {
-          if (/apple\.com|opensource\.apple\.com/.test(u)) continue;
+          // Hostname-anchored whitelist — see _isAppleHost for why a plain
+          // substring test on the URL is unsafe (evil-apple.com.bad.example).
+          if (this._isAppleHost(u)) continue;
           f.externalRefs.push({ type: IOC.URL, url: u, severity: 'medium' });
           if (f.externalRefs.length > 200) break;
         }
@@ -264,8 +266,11 @@ class PkgRenderer {
     // Harvest URLs from distribution XML (installer-check callouts, update
     // URLs, license servers) — very often the C2 in malicious packages.
     if (pkg.distributionXml) {
+      // Hostname-anchored whitelist — same reasoning as the script-body
+      // branch above: substring matches against the full URL accidentally
+      // exempt lookalikes like "evil-apple.com.bad.example".
       const urls = (pkg.distributionXml.match(/https?:\/\/[^\s"'<>]+/g) || [])
-        .filter(u => !/apple\.com|opensource\.apple\.com/.test(u));
+        .filter(u => !this._isAppleHost(u));
       const seen = new Set();
       for (const u of urls) {
         if (seen.has(u)) continue; seen.add(u);
@@ -543,5 +548,18 @@ class PkgRenderer {
     if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
     if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
     return (n / 1073741824).toFixed(1) + ' GB';
+  }
+
+  // Host whitelist check anchored to the URL's hostname (not a substring of
+  // the full URL) so a domain like "evil-apple.com.attacker.example" is not
+  // silently treated as Apple-owned. An unparsable URL is treated as NOT
+  // Apple-owned — we'd rather over-report than hide a bad URL. Also covers
+  // opensource.apple.com implicitly via the endsWith('.apple.com') branch.
+  _isAppleHost(u) {
+    let host;
+    try { host = new URL(u).hostname.toLowerCase(); }
+    catch (e) { return false; }
+    return host === 'apple.com'
+      || host.endsWith('.apple.com');
   }
 }

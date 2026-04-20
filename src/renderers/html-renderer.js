@@ -245,13 +245,25 @@ class HtmlRenderer {
     for (const url of domInfo.urls) {
       let sev = 'info';
       const lower = url.toLowerCase();
-      // Skip data:image/* URLs — these are embedded images, not IOCs
-      if (lower.startsWith('data:image/')) continue;
+      // Normalise by stripping ASCII whitespace and C0 controls before
+      // scheme matching — browsers strip these when resolving a URL, so
+      // "\tjavascript:" and "java\nscript:" both resolve to javascript:
+      // (see CodeQL js/incomplete-url-scheme-check #60).
+      const normalized = lower.replace(/[\x00-\x20\x7f]/g, '');
+      // Pre-filter: skip `data:image/*` before the broader `data:` check
+      // below. image/* is the only data: subtype considered benign when
+      // inlined into a document; everything else (text/html,
+      // text/javascript, application/pdf;base64, application/octet-stream,
+      // text/xml polyglots, …) is treated as high-severity. CodeQL's
+      // js/incomplete-url-scheme-check requires the guard to match bare
+      // `data:`, not a sub-MIME, to be considered complete.
+      if (normalized.startsWith('data:image/')) continue;
       // eslint-disable-next-line no-script-url -- detecting, not navigating
-      if (lower.startsWith('javascript:') || lower.startsWith('vbscript:') || lower.startsWith('data:text/html')) {
+      if (normalized.startsWith('javascript:') || normalized.startsWith('vbscript:') || normalized.startsWith('data:')) {
+
         sev = 'high';
         if (risk !== 'high') risk = 'high';
-      } else if (lower.startsWith('http:') || lower.startsWith('https:')) {
+      } else if (normalized.startsWith('http:') || normalized.startsWith('https:')) {
         sev = 'medium';
         if (risk === 'low') risk = 'medium';
       }
@@ -292,8 +304,17 @@ class HtmlRenderer {
 
     // ── 4. Metadata extraction ───────────────────────────────────────────
     const metadata = {};
-    const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-    if (titleMatch) metadata.title = titleMatch[1].replace(/<[^>]*>/g, '').trim().slice(0, 200);
+    const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title\b[^>]*>/i);
+    if (titleMatch) {
+      // Fixed-point tag strip — a single pass can be bypassed by fragments
+      // like "<img" with no closing ">" because the regex is greedy up to
+      // the next ">" (js/incomplete-multi-character-sanitization #52).
+      let stripped = titleMatch[1];
+      let prev;
+      do { prev = stripped; stripped = stripped.replace(/<[^>]*>/g, ''); } while (stripped !== prev);
+      metadata.title = stripped.trim().slice(0, 200);
+    }
+
 
     return {
       risk,
