@@ -18,25 +18,41 @@ name: Release
 #     YYYYMMDD.HHMM UTC), so the release tag (vLOUPE_VERSION) is a direct
 #     function of the commit timestamp too.
 #
-#   * The trigger is `paths` scoped to bundle inputs (src/, vendor/,
-#     scripts/build.py) so doc-only / workflow-only commits don't cut a
-#     release. Edge case: a commit that touches nothing-under-paths but
-#     would still produce a new LOUPE_VERSION minute is intentionally
-#     ignored — we only release when the bundle bytes have reason to
-#     have changed.
+#   * The trigger is `workflow_run` gated on a successful CI run on `main`.
+#     This keeps Pages and Releases in lockstep: CI is the single entry
+#     point, it decides whether a commit is shippable (build + lint +
+#     static checks + vendor hash verification), and only then does this
+#     workflow fire. The old `paths:` filter on src/ + vendor/ +
+#     scripts/build.py was asymmetric with ci.yml's unfiltered trigger,
+#     which let Pages deploy a new LOUPE_VERSION on doc-only commits
+#     while Release stayed behind — the very skew this file now prevents.
+#     Same-minute pushes still collapse to one Release thanks to the
+#     "tag already exists → skip" guard below.
+#
+#   * Because workflow_run-triggered jobs default to checking out the
+#     default branch's tip (which may have moved past the commit CI
+#     green-lit), every `actions/checkout` here pins
+#     `ref: ${{ github.event.workflow_run.head_sha || github.sha }}`
+#     and `target_commitish` on the Release step uses the same SHA. The
+#     released tag therefore points at exactly the commit CI validated,
+#     not at whatever `main` happens to be when this job lands on a
+#     runner.
+#
+#   * Release trusts CI's gate: verify-vendored, static-checks (CSP,
+#     inline-handler audit) and lint all ran successfully before this
+#     workflow was triggered (see the `if:` on the job). We deliberately
+#     do NOT re-run those checks here — duplicating them would just
+#     add runtime without changing the invariant.
 #
 # All third-party actions are pinned by full 40-char commit SHA (with
 # the human-readable version in the trailing comment) per OpenSSF
 # Scorecard's Pinned-Dependencies check. Dependabot bumps these
 # weekly — see .github/dependabot.yml.
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'vendor/**'
-      - 'scripts/build.py'
-      - 'scripts/generate_sbom.py'
   workflow_dispatch:
 
 # Top-level permissions are read-only; the `release` job below
@@ -49,6 +65,16 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Gate: only fire for a successful CI run on main, or a manual
+    # workflow_dispatch. `workflow_run` fires on *every* CI conclusion
+    # (success, failure, cancelled, skipped) so the explicit conclusion
+    # check is mandatory. `head_branch` pins us to main even though the
+    # top-level `branches:` filter already does — defence in depth.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_branch == 'main')
     # Job-level permissions:
     #   contents: write  — required to create the git tag + GitHub
     #                      Release for the signed bundle.
@@ -65,9 +91,17 @@ jobs:
       # "Resource not accessible by integration".
       attestations: write
     steps:
+      # Pin the checkout to the exact commit CI green-lit. Without
+      # `ref:`, workflow_run-triggered jobs default to the default
+      # branch's current tip, which may have moved past head_sha by
+      # the time this runner starts — that would tag / release a
+      # different commit than the one that actually passed CI.
+      # workflow_dispatch falls through to github.sha (the ref the
+      # user dispatched).
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -82,6 +116,9 @@ jobs:
       #     TZ=UTC LC_ALL=C.UTF-8 python scripts/build.py
       # gets byte-identical output — see SECURITY.md § Reproducible Build.
       # ──────────────────────────────────────────────────────────────
+      # `git log -1 --format=%ct HEAD` here reads the commit the
+      # checkout step just pinned us to (head_sha), so this is the
+      # same integer the auditor's local rebuild will produce.
       - name: Compute SOURCE_DATE_EPOCH from HEAD
         id: epoch
         run: |
@@ -259,7 +296,14 @@ jobs:
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           tag_name: ${{ steps.version.outputs.version }}
-          target_commitish: ${{ github.sha }}
+          # Point the tag at exactly the commit CI validated. On
+          # workflow_run this is the triggering CI run's head_sha; on
+          # workflow_dispatch we fall back to github.sha (the dispatched
+          # ref), which matches the checkout above. Note: the release
+          # notes link to SECURITY.md#verify-your-download at this tag;
+          # the tag is created by this step so the link resolves the
+          # moment the release is published.
+          target_commitish: ${{ github.event.workflow_run.head_sha || github.sha }}
           body_path: release-notes.md
           append_body: true
           generate_release_notes: true

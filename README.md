@@ -13,11 +13,12 @@ No server, no uploads, no tracking — just drop a file and inspect it.
 
 
 ![License: MPL-2.0](https://img.shields.io/badge/License-MPL%202.0-brightgreen.svg)
-![100% Offline](https://img.shields.io/badge/100%25-Offline-brightgreen)
-![Single HTML File](https://img.shields.io/badge/Single_File-HTML-orange)
-![Browser Based](https://img.shields.io/badge/Runs_In-Browser-blueviolet)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/12604/badge)](https://www.bestpractices.dev/projects/12604)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Loupe-tools/Loupe/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Loupe-tools/Loupe)
+![100% Offline](https://img.shields.io/badge/100%25-Offline-blueviolet)
+![Single HTML File](https://img.shields.io/badge/Single_File-HTML-orange)
+
+
 
 <p align="center">
 <img src="screenshots/hero.png" alt="Loupe interface — 100% offline static analysis" width="800">

@@ -73,6 +73,22 @@ Two additional workflows run on push-to-main + weekly cron:
 | `codeql.yml` | GitHub CodeQL static analysis over `src/**/*.js` and `scripts/**/*.py` with the `security-extended` query pack. Satisfies OpenSSF Scorecard's SAST check and surfaces real tainted-sink / deserialisation / weak-crypto findings in the Security tab. |
 | `scorecard.yml` | Weekly OpenSSF Scorecard run. Results publish to the Security tab and to `api.securityscorecards.dev` (the README badge). |
 
+`.github/workflows/release.yml` is chained off CI via `workflow_run` — it
+only fires after a `push`-triggered CI run on `main` concludes
+successfully, and it checks out the exact `head_sha` that CI validated
+(not `main`'s current tip, which may have moved on). This gives the
+repo a single shipping invariant:
+
+> **A commit gets a GitHub Release ⇔ its CI run went green on `main`
+> and its bundle was deployed to Pages.**
+
+Consequently, Pages and Releases can't drift in LOUPE_VERSION: both
+are downstream of the same CI run. Same-minute pushes collapse to one
+Release thanks to the existing "tag already exists → skip" guard in
+`release.yml`. The release job deliberately does **not** re-run
+`verify-vendored` / `static-checks` / `lint` — those already gated CI,
+and CI's success is this workflow's trigger.
+
 The ESLint config is ESM (`eslint.config.mjs`) and uses `sourceType: 'script'`
 because the `src/` files are concatenated into a single inline `<script>` at
 build time. `no-undef` and `no-implicit-globals` are **off** — every
