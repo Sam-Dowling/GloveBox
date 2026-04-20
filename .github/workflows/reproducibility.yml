@@ -1,0 +1,120 @@
+name: Reproducibility
+
+# Reproducibility check — builds docs/index.html twice in independent
+# runner environments with a fixed SOURCE_DATE_EPOCH and compares the
+# two SHA-256 hashes. If the bundle is not byte-identical across the
+# two runs, something in the build has become non-deterministic and
+# the job fails with a diff pointer.
+#
+# Why this matters: Loupe is a single-file HTML app that ships signed.
+# A user who wants to independently audit the release should be able
+# to run `SOURCE_DATE_EPOCH=<epoch> python scripts/build.py` from the
+# tagged source tree and get the same bytes as the signed release
+# asset. That property is the whole point of reproducible builds —
+# it lets auditors verify that the asset corresponds to the source
+# without trusting the build infrastructure.
+#
+# See REPRODUCIBILITY.md for the full recipe and non-goals.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reproducibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Two parallel builds in clean runners. Using matrix + a shared fixed
+  # epoch forces any non-determinism (timestamps, iteration order,
+  # locale-dependent sort) to surface.
+  build:
+    name: Build ${{ matrix.run }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [a, b]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Build with fixed SOURCE_DATE_EPOCH
+        # 1700000000 = 2023-11-14T22:13:20Z. Any fixed value works —
+        # the point is that both matrix runs use the same one so the
+        # LOUPE_VERSION timestamp and any other epoch-derived field
+        # come out identical.
+        env:
+          SOURCE_DATE_EPOCH: '1700000000'
+          TZ: UTC
+          LC_ALL: C.UTF-8
+        run: python scripts/build.py
+
+      - name: Record hash
+        id: hash
+        run: |
+          HASH=$(sha256sum docs/index.html | awk '{print $1}')
+          echo "hash=${HASH}" >> "$GITHUB_OUTPUT"
+          echo "Build ${{ matrix.run }} → ${HASH}"
+
+      - name: Upload bundle + hash
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-${{ matrix.run }}
+          path: |
+            docs/index.html
+          retention-days: 7
+
+  # Compare the two hashes. Artefacts carry the full bundle so a
+  # failure gives auditors the raw bytes to diff locally.
+  compare:
+    name: Compare hashes
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download run A
+        uses: actions/download-artifact@v4
+        with:
+          name: repro-a
+          path: run-a
+
+      - name: Download run B
+        uses: actions/download-artifact@v4
+        with:
+          name: repro-b
+          path: run-b
+
+      - name: Assert byte-identical
+        run: |
+          HASH_A=$(sha256sum run-a/index.html | awk '{print $1}')
+          HASH_B=$(sha256sum run-b/index.html | awk '{print $1}')
+          SIZE_A=$(stat -c '%s' run-a/index.html)
+          SIZE_B=$(stat -c '%s' run-b/index.html)
+
+          {
+            echo "## 🔁 Reproducibility"
+            echo ""
+            echo "| Run | Size | SHA-256 |"
+            echo "|---|---|---|"
+            echo "| A | ${SIZE_A} | \`${HASH_A}\` |"
+            echo "| B | ${SIZE_B} | \`${HASH_B}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${HASH_A}" != "${HASH_B}" ]; then
+            echo "::error::Non-deterministic build — hashes differ between runs"
+            echo "::group::cmp output"
+            cmp -l run-a/index.html run-b/index.html | head -n 20 || true
+            echo "::endgroup::"
+            exit 1
+          fi
+          echo "OK  Build is reproducible under SOURCE_DATE_EPOCH=1700000000"

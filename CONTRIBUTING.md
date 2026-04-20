@@ -20,20 +20,26 @@ python make.py                   # One-shot: verify vendors, build, regenerate C
 below. Invoke any subset by name, in any order:
 
 ```bash
-python make.py verify            # just verify_vendored.py
-python make.py build             # just build.py
-python make.py codemap           # just generate-codemap.py
+python make.py verify            # just scripts/verify_vendored.py
+python make.py build             # just scripts/build.py
+python make.py codemap           # just scripts/generate_codemap.py
 python make.py build codemap     # a subset, in the order given
+python make.py sbom              # emit loupe.cdx.json from VENDORED.md
 ```
 
 Each underlying script remains independently runnable — `make.py` just
 `subprocess.call`s them so CI and one-off invocations keep working:
 
 ```bash
-python build.py                  # Concatenates src/ → docs/index.html
-python generate-codemap.py       # Regenerates CODEMAP.md (run after code changes)
-python verify_vendored.py        # Verifies vendor/*.js SHA-256 against VENDORED.md
+python scripts/build.py              # Concatenates src/ → docs/index.html
+python scripts/generate_codemap.py   # Regenerates CODEMAP.md (run after code changes)
+python scripts/verify_vendored.py    # Verifies vendor/*.js SHA-256 against VENDORED.md
+python scripts/generate_sbom.py      # Emits loupe.cdx.json (CycloneDX 1.5 SBOM)
 ```
+
+The scripts directory is flat — every tool lives at `scripts/<name>.py`
+and is free to be invoked directly or via `make.py`. The only file kept
+at the repo root is `make.py`, the thin orchestrator.
 
 The build script reads CSS files from `src/styles/`, YARA rules from `src/rules/`, and JS source files, inlining all CSS and JavaScript (including vendor libraries) into a single self-contained HTML document:
 
@@ -50,8 +56,8 @@ points into a loaded file) — CI scope stops at static verification:
 
 | Job | What it guarantees |
 |---|---|
-| `build` | `python build.py` succeeds and produces `docs/index.html`. The output's SHA-256 and size are written to the GitHub Actions job summary, and the bundle is uploaded as a retained artefact so reviewers can diff it against their own build. |
-| `verify-vendored` | `python verify_vendored.py` — every `vendor/*.js` matches the SHA-256 pin in `VENDORED.md`, no pinned file is missing, and no unpinned file has snuck into `vendor/`. |
+| `build` | `python scripts/build.py` succeeds and produces `docs/index.html`. The output's SHA-256 and size are written to the GitHub Actions job summary, and the bundle is uploaded as a retained artefact so reviewers can diff it against their own build. |
+| `verify-vendored` | `python scripts/verify_vendored.py` — every `vendor/*.js` matches the SHA-256 pin in `VENDORED.md`, no pinned file is missing, and no unpinned file has snuck into `vendor/`. |
 | `static-checks` | On the **built** `docs/index.html`: CSP meta tag is present, `default-src 'none'` is still there, no inline HTML event-handler attributes (`onclick="…"` etc.), no `'unsafe-eval'`, no remote hosts in CSP directives. |
 | `lint` | ESLint 9 over `src/**/*.js` using `eslint.config.mjs`. The ruleset is deliberately minimal (see the file header for rationale) — it targets real foot-guns (`no-eval`, `no-new-func`, `no-const-assign`, `no-unreachable`, …) rather than style. Soft-launched with `continue-on-error: true`; flip that off once the ruleset has bedded in. |
 
@@ -79,7 +85,7 @@ Light and Dark are the baseline palettes and live in `core.css` (`body` / `body.
 selectors). Each extra theme is a pure-overlay file under `src/styles/themes/<id>.css`
 scoped to `body.theme-<id>` and layered on top of `body.dark`. Register a new theme in
 the `THEMES` array in `src/app/app-ui.js` and add the CSS path to `CSS_FILES` in
-`build.py` — see the "Add a new theme" recipe below.
+`scripts/build.py` — see the "Add a new theme" recipe below.
 
 ### YARA Rule Files
 
@@ -195,9 +201,11 @@ Vendor libraries (`vendor/jszip.min.js`, `vendor/xlsx.full.min.js`, `vendor/pdf.
 ```
 Loupe/
 ├── make.py                          # One-shot orchestrator — chains verify → build → codemap
-├── build.py                         # Build script — reads src/, writes docs/index.html
-├── generate-codemap.py              # Generates CODEMAP.md (AI agent navigation map)
-├── verify_vendored.py               # CI guard — verifies vendor/*.js SHA-256 against VENDORED.md
+├── scripts/
+│   ├── build.py                     # Build script — reads src/, writes docs/index.html
+│   ├── generate_codemap.py          # Generates CODEMAP.md (AI agent navigation map)
+│   ├── generate_sbom.py             # Emits loupe.cdx.json (CycloneDX 1.5 SBOM from VENDORED.md)
+│   └── verify_vendored.py           # CI guard — verifies vendor/*.js SHA-256 against VENDORED.md
 ├── eslint.config.mjs                # Minimal flat ESLint config for src/ (security + bug-shape rules)
 ├── CODEMAP.md                       # Auto-generated code map with line-level symbol index
 ├── README.md                        # Public landing page — hero, quick start, compact formats table
@@ -336,11 +344,11 @@ probably still build, then subtly misbehave.
 ### Build artefacts & source of truth
 
 - **`docs/index.html` is a build artefact — never edit it.** Every edit you
-  make in `docs/index.html` is discarded by the next `python build.py`. Always
-  edit `src/` and rebuild.
+  make in `docs/index.html` is discarded by the next `python scripts/build.py`.
+  Always edit `src/` and rebuild.
 - **`CODEMAP.md` is auto-generated.** Don't touch it by hand — regenerate with
-  `python generate-codemap.py` after code changes.
-- **The `JS_FILES` order in `build.py` is load-bearing.** The
+  `python scripts/generate_codemap.py` after code changes.
+- **The `JS_FILES` order in `scripts/build.py` is load-bearing.** The
   `Object.assign(App.prototype, …)` pattern means later files override
   earlier ones' methods. `app-settings.js` must load **after** `app-ui.js`
   because it reuses the `THEMES` array defined there and overrides the
@@ -363,14 +371,14 @@ probably still build, then subtly misbehave.
 
 ### YARA rule files
 
-- **YARA rule files contain no comments.** `build.py` concatenates
+- **YARA rule files contain no comments.** `scripts/build.py` concatenates
   `YARA_FILES` with `// @category: <name>` separator lines inserted
   between files — those are the **only** `//` lines the in-browser YARA
   engine expects to tolerate. Any inline `//` or `/* */` comment you
   author inside a `.yar` file goes straight into the engine as rule
   source and will either break the parse or produce a no-match rule. If
   you need to explain a rule, write the explanation in `meta:` fields.
-- **Category labels are inserted by `build.py`**, not authored by hand —
+- **Category labels are inserted by `scripts/build.py`**, not authored by hand —
   do not add `// @category:` lines to the source files yourself.
 
 ### Renderer conventions
@@ -421,7 +429,7 @@ state is (a) easy to grep for, (b) easy to clear with a single filter, and
 
 | Key | Type | Written by | Values / shape | Notes |
 |---|---|---|---|---|
-| `loupe_theme` | string | `_setTheme()` in `src/app/app-ui.js` | one of `light` / `dark` / `midnight` / `solarized` / `mocha` / `latte` | Canonical list is the `THEMES` array at the top of `app-ui.js`. Applied before first paint by the inline `<head>` bootstrap in `build.py`; missing / invalid value falls back to OS `prefers-color-scheme`, then `dark`. |
+| `loupe_theme` | string | `_setTheme()` in `src/app/app-ui.js` | one of `light` / `dark` / `midnight` / `solarized` / `mocha` / `latte` | Canonical list is the `THEMES` array at the top of `app-ui.js`. Applied before first paint by the inline `<head>` bootstrap in `scripts/build.py`; missing / invalid value falls back to OS `prefers-color-scheme`, then `dark`. |
 | `loupe_summary_target` | string | `_setSummaryTarget()` in `src/app/app-settings.js` | one of `default` / `large` / `unlimited` (from the `SUMMARY_TARGETS` array — character budgets `64 000` / `200 000` / `Infinity` respectively) | Drives the build-full → measure → shrink-to-fit assembler in `_buildAnalysisText()`. `unlimited` short-circuits truncation entirely; the two bounded phases first build at full fidelity and only fall back to the SCALE ladder (`[4, 2, 1, 0.5, 0.25]`) when the assembled report exceeds the target. Legacy `loupe_summary_chars` values (1-10 stop index from the retired slider) are one-shot migrated to `default`/`large`/`unlimited` on first read and the old key is deleted. |
 | `loupe_yara_rules` | string | `app-yara.js` (YARA dialog "Save" action) | raw concatenated `.yar` rule text | User-uploaded rules are merged with the default ruleset at scan time. Cleared when the user clicks "Reset to defaults" in the YARA dialog. |
 
@@ -441,14 +449,14 @@ state is (a) easy to grep for, (b) easy to clear with a single filter, and
 Loupe is optimised for AI coding agents (Cline, Cursor, Copilot Workspace, etc.):
 
 - **`CODEMAP.md`** — Auto-generated code map with precise line numbers for every class, method, CSS section, and YARA rule. Agents can read this file first (~24K tokens) and then use `read_file(path, start_line=X, end_line=Y)` for surgical edits without consuming their entire context window.
-- **`make.py`** — One-shot orchestrator. `python make.py` runs verify → build → codemap in a single command; `python make.py codemap` regenerates just `CODEMAP.md` after code changes (shortcut for `python generate-codemap.py`).
+- **`make.py`** — One-shot orchestrator. `python make.py` runs verify → build → codemap in a single command; `python make.py codemap` regenerates just `CODEMAP.md` after code changes (shortcut for `python scripts/generate_codemap.py`).
 - **Split CSS/YARA** — CSS and YARA rules are split into multiple files by category, keeping each file manageable. No single file dominates the context budget.
 
 ---
 
 ## Architecture
 
-- **Single output file** — `build.py` inlines all CSS and JavaScript so the viewer works by opening one `.html` file with zero external dependencies.
+- **Single output file** — `scripts/build.py` inlines all CSS and JavaScript so the viewer works by opening one `.html` file with zero external dependencies.
 - **No eval, no network** — the Content-Security-Policy (`default-src 'none'`) blocks all external fetches; images are rendered only from `data:` and `blob:` URLs.
 - **App class split** — `App` is defined in `app-core.js`; additional methods are attached via `Object.assign(App.prototype, {...})` in `app-load.js`, `app-sidebar.js`, `app-yara.js`, `app-ui.js`, and `app-settings.js`, keeping each file focused.
 - **User preferences** — user-configurable settings persist via `localStorage` under the `loupe_*` namespace. Current keys: `loupe_theme` (one of `light` / `dark` / `midnight` / `solarized` / `mocha` / `latte`, written by `_setTheme()` in `app-ui.js` — the canonical list lives in the `THEMES` array at the top of that file, so adding a new `src/styles/themes/<id>.css` overlay plus a `THEMES` row is all it takes to extend the set) and `loupe_summary_target` (one of `default` / `large` / `unlimited`, written by `_setSummaryTarget()` in `app-settings.js`; the three phases live in the `SUMMARY_TARGETS` array at the top of that file, with character budgets `64 000` / `200 000` / `Infinity` respectively — `unlimited` means "emit full fidelity, no truncation"). The Summarize pipeline is build-full → measure → shrink-to-fit: sections are first assembled at `SCALE=Infinity`, and only when the total exceeds the target does `_buildAnalysisText()` walk sections from most expendable downward and rebuild each along the `[4, 2, 1, 0.5, 0.25]` SCALE ladder until the total fits. The YARA dialog owns its own key (`loupe_yara_rules`) documented in `app-yara.js`. New preference keys should follow the `loupe_<feature>` prefix so they are easy to audit and clear. The theme picker itself is exposed only through the ⚙ Settings dialog's tile grid — there is no toolbar theme dropdown.
@@ -582,7 +590,7 @@ Every IOC the renderer emits — whether onto `findings.externalRefs` or `findin
 
 **Docs to update (required) when adding a new renderer that emits IOCs:**
 
-- Regenerate `CODEMAP.md` (`python generate-codemap.py`).
+- Regenerate `CODEMAP.md` (`python scripts/generate_codemap.py`).
 - No hand-edits to the docs are required for IOC plumbing alone — but the next `ioc-conformity-audit` run should come back 🟢 on your diff.
 
 ---
@@ -608,7 +616,7 @@ Adding a new format is a three-step change:
 
 - `FEATURES.md` → add a column to the format × contents matrix in the **📤 Exports** section, plus a row to the menu-actions table.
 - `README.md` → only if the new format belongs in the capabilities one-liner under **What It Finds**.
-- `CODEMAP.md` → regenerate with `python generate-codemap.py`.
+- `CODEMAP.md` → regenerate with `python scripts/generate_codemap.py`.
 
 **Do not:**
 
@@ -671,7 +679,7 @@ return `.hljs-*` syntax-highlighting rules (which are intentionally fixed).
    ```
 
 2. **Register in `CSS_FILES`** — append the overlay path to the
-   `CSS_FILES` list in `build.py` so the bytes are inlined into
+   `CSS_FILES` list in `scripts/build.py` so the bytes are inlined into
    `docs/index.html`.
 
 3. **Register in `THEMES`** — add a `{ id, label, icon, dark }` row to the
@@ -680,18 +688,18 @@ return `.hljs-*` syntax-highlighting rules (which are intentionally fixed).
    `body.dark` so `core.css`'s dark-baseline rules apply under the overlay.
 
 4. **Update the FOUC bootstrap** — add the new id to the `THEME_IDS` array
-   in the inline `<script>` in `build.py` (just after the `<style>` block).
+   in the inline `<script>` in `scripts/build.py` (just after the `<style>` block).
    If the theme is dark, also add its id to the `DARK_THEMES` map. Without
    this the FOUC bootstrap will refuse to apply the saved theme and the
    user will see a one-frame flash of Light/Dark before `_initTheme()` in
    `app-ui.js` catches up.
 
-5. **Rebuild and test** — `python build.py`, then open
+5. **Rebuild and test** — `python scripts/build.py`, then open
    `docs/index.html` and click through every tile in ⚙ Settings → Theme.
    Every panel, chip, border, and risk colour should flip; no hard-coded
    hex should leak through.
 
-6. **Regenerate the code map** — `python generate-codemap.py`.
+6. **Regenerate the code map** — `python scripts/generate_codemap.py`.
 
 **Docs to update (required):**
 
@@ -703,7 +711,7 @@ return `.hljs-*` syntax-highlighting rules (which are intentionally fixed).
 
 ### FOUC prevention
 
-The inline `<script>` in `build.py` (`<head>`, immediately after the
+The inline `<script>` in `scripts/build.py` (`<head>`, immediately after the
 `<style>` block) applies the saved theme class to `<body>` before the
 first paint so users never see a flash of the default palette. The logic
 mirrors `_initTheme()` in `src/app/app-ui.js` and is covered by CSP's
@@ -723,10 +731,10 @@ First-boot fallback order:
 
 1. Fork the repo
 2. Make your changes in `src/`
-3. Run `python make.py` — chains `verify_vendored.py` → `build.py` → `generate-codemap.py` in one shot
+3. Run `python make.py` — chains `scripts/verify_vendored.py` → `scripts/build.py` → `scripts/generate_codemap.py` in one shot
 4. Test by opening `docs/index.html` in a browser
 5. Submit a pull request
 
 YARA rule submissions, new format parsers, and build-process improvements are especially welcome.
 
-The codebase is intentionally vanilla JavaScript (no frameworks, no bundlers beyond the simple `build.py` concatenator) to keep the tool auditable and easy to understand.
+The codebase is intentionally vanilla JavaScript (no frameworks, no bundlers beyond the simple `scripts/build.py` concatenator) to keep the tool auditable and easy to understand.

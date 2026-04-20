@@ -17,6 +17,7 @@ No server, no uploads, no tracking — just drop a file and inspect it.
 ![100% Offline](https://img.shields.io/badge/100%25-Offline-brightgreen)
 ![Single HTML File](https://img.shields.io/badge/Single_File-HTML-orange)
 ![Browser Based](https://img.shields.io/badge/Runs_In-Browser-blueviolet)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/Loupe-tools/Loupe/badge)](https://securityscorecards.dev/viewer/?uri=github.com/Loupe-tools/Loupe)
 
 <p align="center">
 <img src="screenshots/hero.png" alt="Loupe interface — 100% offline static analysis" width="800">
@@ -56,6 +57,8 @@ Every release is signed with [Sigstore](https://www.sigstore.dev/) keyless signi
 | `loupe.html` | The bundle itself |
 | `loupe.html.sha256` | Plain-text SHA-256 for a quick eyeball check |
 | `loupe.html.sigstore` | Sigstore bundle (certificate + signature + Rekor inclusion proof) |
+| `loupe.cdx.json` | CycloneDX 1.5 SBOM — every vendored library with SHA-256 pin |
+| `loupe.cdx.json.sigstore` | Sigstore bundle for the SBOM |
 
 With [cosign](https://docs.sigstore.dev/cosign/installation/) installed, verify the bundle was built by the release workflow in this repository:
 
@@ -68,6 +71,8 @@ cosign verify-blob \
 ```
 
 A successful verification proves the exact bytes of `loupe.html` were produced by `.github/workflows/release.yml` in `Loupe-tools/Loupe` — it does **not** attest that the source is benign, only its provenance. See [SECURITY.md](SECURITY.md) for the full threat model.
+
+You can also **rebuild the release yourself** from the tagged source and confirm your SHA-256 matches the signed asset — see [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for the recipe.
 
 ---
 

@@ -2,7 +2,7 @@
 Thanks for contributing to Loupe!
 
 Before submitting, please confirm the checkboxes below. Anything that touches
-src/, vendor/, or build.py almost always requires a matching docs change —
+src/, vendor/, or scripts/build.py almost always requires a matching docs change —
 docs drift is the primary rot vector in this repo.
 -->
 
@@ -33,7 +33,7 @@ Closes #
 - [ ] Manually smoke-tested in a browser with at least one relevant sample from `examples/`
 
 *(`make.py` is a thin orchestrator — if you'd rather run them separately,
-`python verify_vendored.py && python build.py && python generate-codemap.py`
+`python scripts/verify_vendored.py && python scripts/build.py && python scripts/generate_codemap.py`
 is equivalent.)*
 
 ## Docs touched (tick whichever apply)
@@ -50,7 +50,7 @@ Per the doc-map in `CONTRIBUTING.md`:
 ## Security considerations
 
 - [ ] This change does not add any `eval`, `new Function`, or `Function()` call site
-- [ ] This change does not relax the top-level Content-Security-Policy in `build.py`
+- [ ] This change does not relax the top-level Content-Security-Policy in `scripts/build.py`
 - [ ] This change does not introduce any network request (fetch, XHR, WebSocket, external `<img>`, etc.)
 
 <!--

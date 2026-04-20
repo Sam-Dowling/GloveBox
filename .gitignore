@@ -19,6 +19,10 @@ desktop.ini
 # Build output (only docs/index.html is committed)
 loupe.html
 
+# Generated SBOM (emitted per-release by scripts/generate_sbom.py)
+loupe.cdx.json
+loupe.cdx.json.sigstore
+
 # Generated files (optional machine-readable codemap)
 codemap.json
 

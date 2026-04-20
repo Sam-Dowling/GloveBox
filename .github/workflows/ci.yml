@@ -35,7 +35,7 @@ jobs:
           python-version: '3.x'
 
       - name: Build docs/index.html
-        run: python build.py
+        run: python scripts/build.py
 
       - name: Verify build output exists
         run: |
@@ -82,7 +82,7 @@ jobs:
           python-version: '3.x'
 
       - name: Run verify_vendored.py
-        run: python verify_vendored.py
+        run: python scripts/verify_vendored.py
 
   # ──────────────────────────────────────────────────────────────────
   # Static HTML / source checks. These enforce the invariants that

@@ -8,6 +8,13 @@ This file pins the **exact bytes** of each vendored library by SHA-256.
 Any upgrade must rotate the corresponding hash here, so every supply-chain
 change is visible in `git diff`.
 
+Each release also ships a machine-readable **[CycloneDX 1.5](https://cyclonedx.org/)**
+SBOM (`loupe.cdx.json`) generated from this table by
+[`scripts/generate_sbom.py`](scripts/generate_sbom.py) — regenerate it
+locally with `python make.py sbom` or `python scripts/generate_sbom.py`.
+The SBOM is the same data as the table below, shaped for supply-chain
+tooling (Dependency-Track, Trivy, etc.).
+
 | File | Version | Licence | SHA-256 | Upstream |
 |---|---|---|---|---|
 | `vendor/exifr.min.js` | exifr **v7.1.3** | MIT | `2bd05117781c12ddd965dee846de3b3f986b5ecb4c7f6a78f2d2ec1db7c65ae7` | https://github.com/MikeKovarik/exifr |
@@ -44,16 +51,17 @@ building, shipping, or merging.
 1. Replace the file in `vendor/` with the new upstream release.
 2. Recompute its SHA-256 with the command above.
 3. Update the matching row here (version + hash).
-4. Rebuild: `python make.py` (runs `verify_vendored.py` → `build.py` →
-   `generate-codemap.py` — the hash check guards against a stale or
-   mistyped pin before the bundle is regenerated).
+4. Rebuild: `python make.py` (runs `scripts/verify_vendored.py` →
+   `scripts/build.py` → `scripts/generate_codemap.py` — the hash check
+   guards against a stale or mistyped pin before the bundle is
+   regenerated).
 5. Commit the vendor file, the `VENDORED.md` change, and the rebuilt
    `docs/index.html` together so reviewers see one atomic supply-chain update.
 
 ## Adding a new library
 
 1. Place the upstream release bytes under `vendor/<name>.js` — **do not modify**.
-2. Read and inline the file in `build.py` alongside the other vendor reads.
+2. Read and inline the file in `scripts/build.py` alongside the other vendor reads.
 3. Add a new row to the table above with version, licence, SHA-256, and
    upstream URL. A vendor change without a `VENDORED.md` change is a broken
    commit.

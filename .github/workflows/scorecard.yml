@@ -1,0 +1,73 @@
+name: Scorecard
+
+# OpenSSF Scorecard — weekly automated supply-chain health scoring.
+# Scorecard checks things like pinned dependencies, branch protection,
+# token permissions, signed releases, SAST coverage, and the presence
+# of a security policy. Results publish to:
+#
+#   * the repo's Security tab (code-scanning alerts)
+#   * api.securityscorecards.dev (for the public badge in README)
+#
+# Runs weekly on a fixed UTC cron + on every push to main so new
+# main-branch commits are scored promptly. PRs are intentionally
+# excluded — Scorecard inspects repository settings and history,
+# which do not change per-PR, and the action cannot publish results
+# from a fork.
+#
+# Docs: https://github.com/ossf/scorecard-action
+#       https://securityscorecards.dev
+
+on:
+  branch_protection_rule:
+  schedule:
+    # Mondays 07:00 UTC — a fresh score at the start of each working
+    # week, off-peak for both US + EU office hours.
+    - cron: '0 7 * * 1'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      # Needed to upload SARIF results to the Security tab.
+      security-events: write
+      # Needed for keyless publication of results to the public
+      # Scorecard API (OIDC token → signed attestation).
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2.4.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # publish_results: true enables the public badge at
+          # https://api.securityscorecards.dev/projects/github.com/Loupe-tools/Loupe
+          # which is linked from README.md.
+          publish_results: true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SARIF file
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload to code-scanning
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif

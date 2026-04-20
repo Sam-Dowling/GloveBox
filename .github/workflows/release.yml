@@ -20,6 +20,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Extract version
         id: version
         run: |
@@ -44,16 +49,27 @@ jobs:
       #   loupe.html              — the bundle itself
       #   loupe.html.sha256       — plain-text SHA-256 for eyeball / CI diff
       #   loupe.html.sigstore     — Sigstore bundle (cert + sig + Rekor proof)
+      #   loupe.cdx.json          — CycloneDX 1.5 SBOM (vendored libs + hash)
+      #   loupe.cdx.json.sigstore — Sigstore bundle for the SBOM
       #
-      # The bundle is signed via Sigstore keyless (Fulcio short-lived
-      # cert issued to this workflow's OIDC identity, Rekor transparency
-      # log entry). Users verify with `cosign verify-blob --bundle …`
-      # anchored to the workflow identity — see README § Verify your
-      # download. No long-lived key material is stored in this repo.
+      # Both the bundle and the SBOM are signed via Sigstore keyless
+      # (Fulcio short-lived cert issued to this workflow's OIDC identity,
+      # Rekor transparency log entry). Users verify with
+      # `cosign verify-blob --bundle …` anchored to the workflow identity
+      # — see README § Verify your download. No long-lived key material
+      # is stored in this repo.
       # ──────────────────────────────────────────────────────────────
       - name: Record SHA-256
         if: steps.check.outputs.exists == 'false'
         run: sha256sum loupe.html | awk '{print $1"  loupe.html"}' > loupe.html.sha256
+
+      - name: Generate CycloneDX SBOM
+        # Builds an SBOM from VENDORED.md + the just-built docs/index.html
+        # so the application hash inside the SBOM matches the signed
+        # release asset byte-for-byte. Honours SOURCE_DATE_EPOCH when
+        # set but is not reproducibility-critical at this step.
+        if: steps.check.outputs.exists == 'false'
+        run: python scripts/generate_sbom.py --out loupe.cdx.json
 
       - name: Install cosign
         if: steps.check.outputs.exists == 'false'
@@ -67,8 +83,20 @@ jobs:
             --bundle loupe.html.sigstore \
             loupe.html
 
-      - name: Self-verify signed bundle
-        # Fail the release rather than ship an asset nobody can verify.
+      - name: Sign loupe.cdx.json with Sigstore keyless
+        # Signing the SBOM binds it to the same workflow identity as
+        # the bundle. Consumers can cross-verify that the components
+        # list was produced by the real release pipeline, not attached
+        # after the fact.
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          cosign sign-blob \
+            --yes \
+            --bundle loupe.cdx.json.sigstore \
+            loupe.cdx.json
+
+      - name: Self-verify signed artefacts
+        # Fail the release rather than ship assets nobody can verify.
         # Identity is anchored to this workflow file on refs/heads/main
         # — the same values the README instructs downstream users to
         # pass to `cosign verify-blob`.
@@ -82,7 +110,12 @@ jobs:
             --certificate-identity "${COSIGN_IDENTITY}" \
             --certificate-oidc-issuer "${COSIGN_ISSUER}" \
             loupe.html
-          echo "OK  Sigstore bundle verifies against workflow identity"
+          cosign verify-blob \
+            --bundle loupe.cdx.json.sigstore \
+            --certificate-identity "${COSIGN_IDENTITY}" \
+            --certificate-oidc-issuer "${COSIGN_ISSUER}" \
+            loupe.cdx.json
+          echo "OK  Sigstore bundles verify against workflow identity"
 
       - name: Create Release
         if: steps.check.outputs.exists == 'false'
@@ -93,4 +126,6 @@ jobs:
             loupe.html
             loupe.html.sha256
             loupe.html.sigstore
+            loupe.cdx.json
+            loupe.cdx.json.sigstore
           generate_release_notes: true

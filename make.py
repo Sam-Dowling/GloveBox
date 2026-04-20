@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 """make.py — single-command orchestrator for Loupe's build toolchain.
 
-Loupe ships with three standalone Python scripts in the repo root — each
+Loupe ships with four standalone Python scripts under ``scripts/`` — each
 intentionally usable on its own (and driven independently by CI):
 
-  * verify_vendored.py    — SHA-256 pin-check every file in vendor/ against VENDORED.md
-  * build.py              — concatenate src/ + vendor/ into docs/index.html
-  * generate-codemap.py   — (re)generate CODEMAP.md from the current src/ tree
+  * scripts/verify_vendored.py    — SHA-256 pin-check every file in vendor/ against VENDORED.md
+  * scripts/build.py              — concatenate src/ + vendor/ into docs/index.html
+  * scripts/generate_codemap.py   — (re)generate CODEMAP.md from the current src/ tree
+  * scripts/generate_sbom.py      — emit CycloneDX SBOM (loupe.cdx.json) from VENDORED.md
 
 This orchestrator chains them into a single `python make.py` invocation for
-the common local workflow (verify → build → codemap). The underlying scripts
-are untouched — CI and one-off usage keep working exactly as before.
+the common local workflow (verify → build → codemap). The SBOM step is opt-in
+because it is only relevant at release time. The underlying scripts are
+untouched — CI and one-off usage keep working exactly as before.
 
 Usage
 -----
-    python make.py                 # run all three in order (verify, build, codemap)
+    python make.py                 # run verify, build, codemap (default)
     python make.py all             # same as default
     python make.py verify          # just verify_vendored.py
     python make.py build           # just build.py
-    python make.py codemap         # just generate-codemap.py
+    python make.py codemap         # just generate_codemap.py
+    python make.py sbom            # just generate_sbom.py  (opt-in)
     python make.py build codemap   # any subset, in the order given
 
 Exit code is the first non-zero exit code encountered. Subsequent steps are
@@ -41,13 +44,17 @@ if hasattr(sys.stderr, 'reconfigure'):
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
-# step id → (human label, script filename). Kept in canonical execution order.
+# step id → (human label, script path relative to BASE). Kept in canonical
+# execution order. 'sbom' is deliberately omitted from DEFAULT_STEPS — it is
+# only relevant at release time and the artefact is regenerated in CI.
 STEPS: dict[str, tuple[str, str]] = {
-    'verify':  ('Verify vendored SHA-256 pins', 'verify_vendored.py'),
-    'build':   ('Build docs/index.html',        'build.py'),
-    'codemap': ('Regenerate CODEMAP.md',        'generate-codemap.py'),
+    'verify':  ('Verify vendored SHA-256 pins', 'scripts/verify_vendored.py'),
+    'build':   ('Build docs/index.html',        'scripts/build.py'),
+    'codemap': ('Regenerate CODEMAP.md',        'scripts/generate_codemap.py'),
+    'sbom':    ('Generate CycloneDX SBOM',      'scripts/generate_sbom.py'),
 }
 
+DEFAULT_STEPS = ['verify', 'build', 'codemap']
 ALL_STEPS = list(STEPS.keys())
 
 
@@ -74,7 +81,7 @@ def _run(step: str) -> int:
 
 def _parse_args(argv: list[str]) -> list[str]:
     if not argv or argv == ['all']:
-        return list(ALL_STEPS)
+        return list(DEFAULT_STEPS)
     # Allow any subset, preserving order, deduplicated.
     seen: set[str] = set()
     out: list[str] = []
@@ -83,8 +90,10 @@ def _parse_args(argv: list[str]) -> list[str]:
             print(__doc__)
             sys.exit(0)
         if a == 'all':
-            # 'all' inside a list just means "the rest" — expand and stop.
-            for s in ALL_STEPS:
+            # 'all' inside a list just means "the rest of the defaults" —
+            # expand and stop. To run every step including sbom, list them
+            # explicitly (e.g. `python make.py verify build codemap sbom`).
+            for s in DEFAULT_STEPS:
                 if s not in seen:
                     seen.add(s)
                     out.append(s)
