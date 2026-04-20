@@ -28,9 +28,29 @@ class ZipRenderer {
     'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'jpg', 'png', 'gif', 'txt', 'rtf',
   ]);
 
-  // Common passwords for malware samples
-  static PASSWORD_LIST = ['password', 'infected', 'suspicious', 'malware', 'virus', 'sample',
-    'test', '123456', 'Password1', 'infected!', 'abc123'];
+  // Common passwords for malware samples. Order matters — malware-sample
+  // culture first (highest prior on the files an analyst actually drops
+  // here), then generic weak passwords, then locale variants. With the
+  // inflate+CRC verifier in `_verifyPassword`, the cost of a non-matching
+  // attempt is ~12 byte-decrypts (the header check short-circuits before
+  // we ever inflate), so a list of this size adds no perceptible delay
+  // on miss and still catches the common hits on the first few tries.
+  static PASSWORD_LIST = [
+    // Malware-sample culture — distributed with samples by feed / researcher
+    'infected', 'malware', 'virus', 'sample', 'suspicious',
+    'infected!', 'infected666', 'malw@re', 'mlw', 'dangerous',
+    'unpacked', 'packed', 'cuckoo', 'virustotal', 'vxshare',
+    'vxug', 'theZoo', 'contagio', 'kleissner', 'tuts4you', 'crackmes',
+    // Generic weak passwords — ordered by HIBP-style prevalence
+    'password', 'Password1', 'password1', 'password123',
+    '123456', '12345', '1234', '1234567', '12345678', '123456789',
+    '0000', 'abc123', 'qwerty', 'admin', 'root',
+    'letmein', 'welcome', 'changeme', 'default', 'guest', 'unlock', 'test',
+    // Common case variants of the above
+    'PASSWORD', 'Infected', 'INFECTED', 'Malware', 'MALWARE', 'Test', 'TEST',
+    // Locale variants seen in phishing kits / regional malware campaigns
+    'contraseña', 'passwort', 'motdepasse', 'senha', 'пароль',
+  ];
 
   async render(buffer, fileName) {
     const wrap = document.createElement('div'); wrap.className = 'zip-view';
@@ -519,69 +539,95 @@ class ZipRenderer {
     // Try common passwords
     const result = await this._tryPasswords(bytes, ZipRenderer.PASSWORD_LIST);
 
-    if (result.success) {
-      // Password found!
+    // ── AES-encrypted archives are not supported in-browser ─────────────────
+    // Our decryptor only speaks traditional ZipCrypto. If every encrypted
+    // entry uses the strong-encryption flag (bit 6), surface that clearly
+    // rather than leaving the user to interpret "password not in common
+    // list" as "one of my 12 guesses should have worked". Skip the manual
+    // password box too — no password we ask for would unlock an AES entry.
+    if (result.aes) {
       encBanner.innerHTML = '';
-      const successW = document.createElement('div'); successW.className = 'zip-warning zip-warning-medium';
-      successW.innerHTML = `🔓 <strong>Password cracked:</strong> "${escHtml(result.password)}" — archive decrypted successfully`;
-      encBanner.appendChild(successW);
+      const aesW = document.createElement('div'); aesW.className = 'zip-warning zip-warning-high';
+      aesW.textContent = '🔒 AES-encrypted archive (WinZip / AE-1 / AE-2) — password cracking not supported in-browser. File names are shown below for triage.';
+      encBanner.appendChild(aesW);
+      this._showEncryptedListing(wrap, bytes);
+      return wrap;
+    }
 
-      // Load decrypted ZIP
+    if (result.success) {
+      // Password verified end-to-end (inflate + CRC-32). Try to load the
+      // decrypted buffer via JSZip; on the rare failure fall through to the
+      // wrong-password branch so the UI stays recoverable instead of
+      // dead-ending on a red error paragraph.
       try {
         const zip = await JSZip.loadAsync(result.decryptedBuffer);
         this._zip = zip;
+        encBanner.innerHTML = '';
+        const successW = document.createElement('div'); successW.className = 'zip-warning zip-warning-medium';
+        successW.innerHTML = `🔓 <strong>Password cracked:</strong> "${escHtml(result.password)}" — archive decrypted successfully`;
+        encBanner.appendChild(successW);
         return this._renderZipContents(wrap, zip, result.decryptedBuffer, fileName);
       } catch (e) {
-        const errP = document.createElement('p'); errP.style.cssText = 'color:var(--risk-high);padding:10px;';
-        errP.textContent = 'Decryption appeared successful but ZIP parsing failed: ' + e.message;
-        wrap.appendChild(errP);
+        // Defensive: the verifier already inflated + CRC-checked a real
+        // entry, so a post-verify loadAsync failure means something
+        // unusual (split archive, ZIP64 edge case, bogus central dir).
+        // Don't trust the apparent "success" — present the manual
+        // password UI so the analyst isn't stranded.
+        console.warn('ZipRenderer: post-verify JSZip.loadAsync failed:', e && e.message);
+        result.success = false;
+        result.loadFailed = true;
       }
-    } else {
-      // Password not found
-      encBanner.innerHTML = '';
-      const failW = document.createElement('div'); failW.className = 'zip-warning zip-warning-high';
-      failW.textContent = `🔒 Password not in common list (tried: ${ZipRenderer.PASSWORD_LIST.join(', ')})`;
-      encBanner.appendChild(failW);
-
-      // Show manual password input
-      const inputDiv = document.createElement('div'); inputDiv.style.cssText = 'padding:12px;display:flex;gap:8px;align-items:center;';
-      const input = document.createElement('input');
-      input.type = 'text'; input.placeholder = 'Enter password…'; input.className = 'ext-search';
-      input.style.cssText = 'flex:1;max-width:300px;';
-      const btn = document.createElement('button'); btn.className = 'tb-btn';
-      btn.textContent = '🔑 Try Password';
-      btn.addEventListener('click', async () => {
-        const pwd = input.value.trim();
-        if (!pwd) return;
-        btn.disabled = true; btn.textContent = 'Trying…';
-        const r = await this._tryPasswords(bytes, [pwd]);
-        if (r.success) {
-          try {
-            const zip = await JSZip.loadAsync(r.decryptedBuffer);
-            this._zip = zip;
-            // Clear and re-render
-            while (wrap.firstChild) wrap.removeChild(wrap.firstChild);
-            const successBanner = document.createElement('div'); successBanner.className = 'doc-extraction-banner';
-            successBanner.innerHTML = `<strong>Archive Contents</strong> — decrypted with password "<strong>${escHtml(pwd)}</strong>". Click any file to open it.`;
-            wrap.appendChild(successBanner);
-            this._renderZipContents(wrap, zip, r.decryptedBuffer, fileName);
-          } catch (e) {
-            btn.disabled = false; btn.textContent = '🔑 Try Password';
-            input.style.borderColor = 'var(--risk-high)';
-          }
-        } else {
-          btn.disabled = false; btn.textContent = '🔑 Try Password';
-          input.style.borderColor = 'var(--risk-high)';
-          input.value = ''; input.placeholder = 'Wrong password — try again…';
-        }
-      });
-      input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
-      inputDiv.appendChild(input); inputDiv.appendChild(btn);
-      wrap.appendChild(inputDiv);
-
-      // Still show file listing from central directory (names are not encrypted)
-      this._showEncryptedListing(wrap, bytes);
     }
+
+    // Password not found (or post-verify load failure handled above)
+    encBanner.innerHTML = '';
+    const failW = document.createElement('div'); failW.className = 'zip-warning zip-warning-high';
+    failW.textContent = result.loadFailed
+      ? '🔒 A password appeared to decrypt the archive but JSZip could not parse the result — the container may be split, ZIP64, or corrupted. Enter a password manually to retry, or inspect the listing below.'
+      : '🔒 Password not in common list. Enter a password manually to try again.';
+    encBanner.appendChild(failW);
+
+    // Show manual password input
+    const inputDiv = document.createElement('div'); inputDiv.style.cssText = 'padding:12px;display:flex;gap:8px;align-items:center;';
+    const input = document.createElement('input');
+    input.type = 'text'; input.placeholder = 'Enter password…'; input.className = 'ext-search';
+    input.style.cssText = 'flex:1;max-width:300px;';
+    const btn = document.createElement('button'); btn.className = 'tb-btn';
+    btn.textContent = '🔑 Try Password';
+    const resetBtn = () => { btn.disabled = false; btn.textContent = '🔑 Try Password'; };
+    btn.addEventListener('click', async () => {
+      const pwd = input.value;
+      if (!pwd) return;
+      btn.disabled = true; btn.textContent = 'Trying…';
+      const r = await this._tryPasswords(bytes, [pwd]);
+      if (r.success) {
+        try {
+          const zip = await JSZip.loadAsync(r.decryptedBuffer);
+          this._zip = zip;
+          // Clear and re-render
+          while (wrap.firstChild) wrap.removeChild(wrap.firstChild);
+          const successBanner = document.createElement('div'); successBanner.className = 'doc-extraction-banner';
+          successBanner.innerHTML = `<strong>Archive Contents</strong> — decrypted with password "<strong>${escHtml(pwd)}</strong>". Click any file to open it.`;
+          wrap.appendChild(successBanner);
+          this._renderZipContents(wrap, zip, r.decryptedBuffer, fileName);
+        } catch (e) {
+          resetBtn();
+          input.style.borderColor = 'var(--risk-high)';
+          input.title = 'JSZip failed to parse the decrypted buffer: ' + (e && e.message);
+        }
+      } else {
+        resetBtn();
+        input.style.borderColor = 'var(--risk-high)';
+        input.value = ''; input.placeholder = 'Wrong password — try again…';
+      }
+    });
+    input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
+    input.addEventListener('input', () => { input.style.borderColor = ''; });
+    inputDiv.appendChild(input); inputDiv.appendChild(btn);
+    wrap.appendChild(inputDiv);
+
+    // Still show file listing from central directory (names are not encrypted)
+    this._showEncryptedListing(wrap, bytes);
 
     return wrap;
   }
@@ -618,28 +664,177 @@ class ZipRenderer {
 
 
   // ── ZipCrypto decryption implementation ───────────────────────────────────
+  //
+  // Correctness notes — read before touching this block:
+  //
+  //   1. Traditional ZipCrypto's per-entry 12-byte encryption header ends
+  //      with one check byte equal to either `crc32 >> 24` (PKZIP default)
+  //      or `modTime >> 8` (only used when GP flag bit 3 is set, i.e.
+  //      streamed / data-descriptor entries). Using BOTH unconditionally
+  //      doubles the false-positive rate for no good reason — limit the
+  //      `timeCheck` branch to flag bit 3 so normal archives get the
+  //      strict 1/256 filter.
+  //
+  //   2. The 1-byte filter still lets ~1/256 of random guesses through
+  //      per entry. We do NOT declare victory on a header match alone.
+  //      `_verifyPassword` decrypts a real entry's payload end-to-end,
+  //      inflates it (method 8) or takes it verbatim (method 0), then
+  //      checks CRC-32 against `entry.crc32`. That drops the overall
+  //      false-positive rate from ~1/256 to ~1/2^32 and removes the
+  //      "decrypted buffer that JSZip can't parse" failure mode.
+  //
+  //   3. The full-archive decrypt (`_decryptZip`) is all-or-nothing. If
+  //      any entry's header byte mismatches inside a candidate password,
+  //      we abort with `null` and do NOT mutate the output buffer. The
+  //      central-directory sweep is only reached when every encrypted
+  //      entry's local header check passed, so local + central stay in
+  //      lockstep.
+  //
+  //   4. AES (WinZip AE-1/AE-2) entries are gated by GP flag bit 6 and
+  //      use compression method 99 with a separate key schedule. Our
+  //      ZipCrypto byte-XOR decryptor cannot touch them. `_tryPasswords`
+  //      short-circuits when the test entry is AES and returns
+  //      `{ success: false, aes: true }` so the caller can surface a
+  //      clear message instead of a generic "wrong password".
 
   async _tryPasswords(bytes, passwords) {
     const entries = this._parseCentralDirectory(bytes);
     if (!entries.length) return { success: false };
 
-    // Find first non-directory entry to test against
-    const testEntry = entries.find(e => e.compSize > 0);
+    // Find first encrypted non-directory entry to verify against.
+    const testEntry = entries.find(e => e.encrypted && e.compSize > 0);
     if (!testEntry) return { success: false };
+
+    // AES / strong encryption — our traditional-ZipCrypto decryptor
+    // cannot handle these. Bail early with a clear signal.
+    if (testEntry.isAES || testEntry.method === 99) {
+      return { success: false, aes: true };
+    }
+
+    // Precompute the entry's local data offset once; every password
+    // retries from the same starting bytes.
+    const localOff = testEntry.localHeaderOffset;
+    if (localOff + 30 > bytes.length) return { success: false };
+    const nameLen = bytes[localOff + 26] | (bytes[localOff + 27] << 8);
+    const extraLen = bytes[localOff + 28] | (bytes[localOff + 29] << 8);
+    const dataOff = localOff + 30 + nameLen + extraLen;
+    if (dataOff + testEntry.compSize > bytes.length) return { success: false };
 
     for (const password of passwords) {
       try {
+        // Fast reject via the 1-byte header check first.
+        if (!this._headerMatches(bytes, dataOff, testEntry, password)) continue;
+
+        // Cheap gate passed — do the real verification (inflate + CRC).
+        // Yielding to the event loop between real verifications keeps
+        // the UI responsive if someone ever grows the password list
+        // into genuinely expensive territory.
+        // eslint-disable-next-line no-await-in-loop
+        const verified = await this._verifyPassword(bytes, dataOff, testEntry, password);
+        if (!verified) continue;
+
+        // Password is real — now decrypt the whole archive in-place.
         const decrypted = this._decryptZip(bytes, password, entries);
         if (decrypted) {
           return { success: true, password, decryptedBuffer: decrypted.buffer };
         }
-      } catch (e) { /* password didn't work */ }
+        // If full decrypt failed despite a passing verify, treat as
+        // wrong password and keep scanning — don't hand a malformed
+        // buffer to JSZip.
+      } catch (_) { /* password didn't work — move on */ }
     }
     return { success: false };
   }
 
+  // Cheap 1-byte ZipCrypto header check. Does not mutate `bytes`.
+  // Returns true if `password`'s stream cipher produces a 12th plaintext
+  // byte that matches the entry's expected check byte.
+  _headerMatches(bytes, dataOff, entry, password) {
+    const keys = this._initKeys(password);
+    let last = 0;
+    for (let i = 0; i < 12; i++) {
+      last = this._decryptByte(keys, bytes[dataOff + i]);
+    }
+    const crcCheck = (entry.crc32 >>> 24) & 0xFF;
+    if (last === crcCheck) return true;
+    // `modTime` check byte is only valid when GP flag bit 3 (data
+    // descriptor) is set — without it the CRC is authoritative and
+    // accepting a modTime match is just a free false positive.
+    const hasDataDescriptor = (entry.flags & 0x08) !== 0;
+    if (hasDataDescriptor) {
+      const timeCheck = (entry.modTime >>> 8) & 0xFF;
+      if (last === timeCheck) return true;
+    }
+    return false;
+  }
+
+  // Full end-to-end verification: decrypt the entry payload, inflate,
+  // and compare CRC-32 against the stored value. Returns true only when
+  // CRC matches — making the cracker mathematically sure of the password
+  // rather than probabilistically hopeful.
+  async _verifyPassword(bytes, dataOff, entry, password) {
+    const encDataLen = entry.compSize;
+    if (encDataLen < 12) return false;
+
+    const keys = this._initKeys(password);
+    // Consume the 12-byte encryption header.
+    for (let i = 0; i < 12; i++) this._decryptByte(keys, bytes[dataOff + i]);
+
+    // Decrypt the payload into a standalone buffer (we never mutate
+    // the source here — the full-archive copy happens only if this
+    // verifier succeeds).
+    const payloadLen = encDataLen - 12;
+    const plain = new Uint8Array(payloadLen);
+    for (let i = 0; i < payloadLen; i++) {
+      plain[i] = this._decryptByte(keys, bytes[dataOff + 12 + i]);
+    }
+
+    // Decompress according to the stored method. Only two methods show
+    // up in practice for ZipCrypto: stored (0) and deflate (8). Anything
+    // else — LZMA (14), bzip2 (12), Deflate64 (9) etc. — we can't
+    // verify without extra code, so we fall back to trusting the header
+    // check (already filtered to ~1/256). That's still strictly better
+    // than the old code's blind accept.
+    let raw;
+    if (entry.method === 0) {
+      raw = plain;
+    } else if (entry.method === 8) {
+      try {
+        raw = await Decompressor.inflate(plain, 'deflate-raw');
+      } catch (_) { return false; }
+      if (!raw) return false;
+    } else {
+      // Unverifiable method — header check is our only signal. Accept
+      // it (we still validated the 1-byte check above) and let
+      // JSZip's own CRC verification catch it at extract time.
+      return true;
+    }
+
+    // Uncompressed-size sanity check. Entries with the data-descriptor
+    // flag may legitimately have a zero uncompSize in the central dir,
+    // so only enforce when it's non-zero.
+    if (entry.uncompSize && raw.length !== entry.uncompSize) return false;
+
+    // Final CRC-32 check.
+    return this._crc32(raw) === entry.crc32;
+  }
+
+  // Streaming CRC-32 over a byte array using the class's precomputed
+  // table. Result is a unsigned 32-bit integer matching the on-disk
+  // `crc32` field in the central directory.
+  _crc32(bytes) {
+    let c = 0xFFFFFFFF;
+    const t = ZipRenderer._CRC32_TABLE;
+    for (let i = 0; i < bytes.length; i++) {
+      c = t[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    }
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  // All-or-nothing decrypt of the whole archive. Mutates a fresh copy
+  // of `zipBytes` only — never the caller's buffer. Returns `null` on
+  // any per-entry mismatch so the caller knows to keep scanning.
   _decryptZip(zipBytes, password, entries) {
-    // Create a copy and decrypt all entries in-place
     const out = new Uint8Array(zipBytes.length);
     out.set(zipBytes);
 
@@ -647,76 +842,73 @@ class ZipRenderer {
 
     for (const entry of entries) {
       if (!entry.encrypted || entry.compSize === 0) continue;
+      // AES entries are untouched — we can't decrypt them. Leave the
+      // flag set and the data encrypted; JSZip will lock them in the
+      // listing but any ZipCrypto entries will still be usable.
+      if (entry.isAES || entry.method === 99) continue;
 
-      // Initialize ZipCrypto keys from password
       const keys = this._initKeys(password);
 
-      // Find the local file header for this entry
       const localOff = entry.localHeaderOffset;
-      if (localOff + 30 > out.length) continue;
+      if (localOff + 30 > out.length) return null;
 
-      // Read local file header to get actual data offset
       const nameLen = out[localOff + 26] | (out[localOff + 27] << 8);
       const extraLen = out[localOff + 28] | (out[localOff + 29] << 8);
       const dataOff = localOff + 30 + nameLen + extraLen;
 
-      // Encrypted data = 12-byte encryption header + compressed data
       const encDataLen = entry.compSize;
-      if (dataOff + encDataLen > out.length) continue;
+      if (dataOff + encDataLen > out.length) return null;
 
-      // Decrypt the 12-byte header
-      const header = new Uint8Array(12);
+      // Decrypt the 12-byte header and run the same strict check used
+      // in the pre-filter — mismatches abort the whole attempt rather
+      // than leaving a half-decrypted archive.
+      let last = 0;
       for (let i = 0; i < 12; i++) {
-        header[i] = this._decryptByte(keys, out[dataOff + i]);
+        last = this._decryptByte(keys, out[dataOff + i]);
       }
-
-      // Validate: last byte of header should match high byte of CRC or file time
-      // Traditional ZipCrypto uses CRC >> 24 for validation
       const crcCheck = (entry.crc32 >>> 24) & 0xFF;
-      const timeCheck = (entry.modTime >>> 8) & 0xFF;
-      if (header[11] !== crcCheck && header[11] !== timeCheck) {
-        continue; // Wrong password
+      const hasDataDescriptor = (entry.flags & 0x08) !== 0;
+      const timeCheck = hasDataDescriptor ? (entry.modTime >>> 8) & 0xFF : -1;
+      if (last !== crcCheck && last !== timeCheck) {
+        return null; // abort — partial decrypt would corrupt the archive
       }
 
-      // Decrypt the rest of the data
+      // Decrypt the rest of the payload.
       for (let i = 12; i < encDataLen; i++) {
         out[dataOff + i] = this._decryptByte(keys, out[dataOff + i]);
       }
 
-      // Shift decrypted data to remove 12-byte header
-      // Update compressed size in local and central headers
+      // Shift plaintext up by 12 bytes to drop the encryption header
+      // (JSZip will then read a normal entry).
       const newCompSize = encDataLen - 12;
       out.copyWithin(dataOff, dataOff + 12, dataOff + encDataLen);
 
-      // Update local file header: compressed size and clear encryption flag
+      // Zero the trailing 12 bytes we just made unreachable so they
+      // can't pollute future parses of this buffer.
+      for (let i = 0; i < 12; i++) out[dataOff + newCompSize + i] = 0;
+
+      // Update local file header: compressed size and clear encryption flag.
       out[localOff + 18] = newCompSize & 0xFF;
       out[localOff + 19] = (newCompSize >> 8) & 0xFF;
       out[localOff + 20] = (newCompSize >> 16) & 0xFF;
       out[localOff + 21] = (newCompSize >> 24) & 0xFF;
-      // Clear encryption bit (bit 0 of general purpose flag)
-      out[localOff + 6] &= 0xFE;
+      out[localOff + 6] &= 0xFE; // clear GP flag bit 0
+
+      // Update central directory in lockstep with the local header —
+      // keep the two in sync so JSZip doesn't disagree with itself.
+      const cdOff = entry.centralDirOffset;
+      if (cdOff + 46 <= out.length) {
+        out[cdOff + 20] = newCompSize & 0xFF;
+        out[cdOff + 21] = (newCompSize >> 8) & 0xFF;
+        out[cdOff + 22] = (newCompSize >> 16) & 0xFF;
+        out[cdOff + 23] = (newCompSize >> 24) & 0xFF;
+        out[cdOff + 8] &= 0xFE; // clear GP flag bit 0
+      }
 
       anyDecrypted = true;
     }
 
-    if (!anyDecrypted) return null;
-
-    // Also update central directory entries
-    for (const entry of entries) {
-      if (!entry.encrypted) continue;
-      const cdOff = entry.centralDirOffset;
-      if (cdOff + 46 > out.length) continue;
-
-      const newCompSize = entry.compSize - 12;
-      out[cdOff + 20] = newCompSize & 0xFF;
-      out[cdOff + 21] = (newCompSize >> 8) & 0xFF;
-      out[cdOff + 22] = (newCompSize >> 16) & 0xFF;
-      out[cdOff + 23] = (newCompSize >> 24) & 0xFF;
-      // Clear encryption bit
-      out[cdOff + 8] &= 0xFE;
-    }
-
-    return out;
+    return anyDecrypted ? out : null;
   }
 
   // ── ZipCrypto key management ──────────────────────────────────────────────
@@ -826,7 +1018,7 @@ class ZipRenderer {
       const isAES = !!(flags & 0x40); // Strong encryption flag
 
       entries.push({
-        name, encrypted, isAES, method, modTime, crc32,
+        name, flags, encrypted, isAES, method, modTime, crc32,
         compSize, uncompSize, localHeaderOffset,
         centralDirOffset: cdOffset,
       });
