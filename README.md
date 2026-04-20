@@ -59,6 +59,7 @@ SOC analysts, incident responders, and security-conscious users need a way to sa
 | **Archives** | `.zip` `.gz` `.gzip` `.tar` `.tgz` `.rar` `.7z` `.cab` `.iso` `.img` |
 | **Windows** | `.lnk` `.hta` `.url` `.webloc` `.website` `.reg` `.inf` `.sct` `.msi` `.exe` `.dll` `.sys` `.scr` `.cpl` `.ocx` `.drv` `.com` `.xll` `.application` `.manifest` `.msix` `.msixbundle` `.appx` `.appxbundle` `.appinstaller` |
 | **Browser extensions** | `.crx` (Chrome / Chromium / Edge) · `.xpi` (Firefox / Thunderbird) |
+| **npm packages** | `.tgz` (npm-packed tarball) · `package.json` · `package-lock.json` / `npm-shrinkwrap.json` |
 | **Linux / IoT** | ELF binaries (`.so`, `.o`, `.elf`, extensionless) |
 | **macOS** | Mach-O binaries (`.dylib`, `.bundle`, Fat/Universal) · `.applescript` `.scpt` `.scptd` `.jxa` `.plist` · `.dmg` `.pkg` `.mpkg` |
 | **Certificates** | `.pem` `.der` `.crt` `.cer` `.p12` `.pfx` `.key` |

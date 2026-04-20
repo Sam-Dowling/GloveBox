@@ -219,6 +219,19 @@ subtly misbehave.
   contaminate Copy / Save with it.
 - **`ImageRenderer` decodes TIFFs twice via `UTIF`** — once in `render()`
   for pixels, once in `analyzeForSecurity()` for IFD tag mining.
+- **`NpmRenderer` accepts three input shapes** — gzip tarball (`.tgz`),
+  a bare `package.json` manifest, or a `package-lock.json` /
+  `npm-shrinkwrap.json` lockfile — routed by dedicated sniff helpers in
+  `src/renderer-registry.js`. The `.tgz` sniff calls
+  `Decompressor.inflateSync` (sync pako path) so `detect()` stays
+  synchronous, and the npm entry is registered **before** the generic
+  `zip` entry so it wins the `.tgz` extension match. The JSON sniff
+  requires `name` plus one of `version` / `scripts` / `dependencies`,
+  or a numeric `lockfileVersion`, so unrelated JSON is not hijacked.
+  Lifecycle-hook script bodies are folded into `findings.augmentedBuffer`
+  (capped at 2 MB) before YARA scans so hook source contributes rule
+  matches without contaminating the Copy / Save path.
+
 
 ---
 

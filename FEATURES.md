@@ -37,6 +37,7 @@ Extensionless and renamed files are auto-routed via magic-byte sniff, extension 
 | **OneNote** | `.one` — embedded object extraction + phishing detection |
 | **Windows** | `.lnk` · `.hta` · `.url` `.webloc` `.website` · `.reg` · `.inf` · `.sct` · `.msi` · PE executables (`.exe` `.dll` `.sys` `.scr` `.cpl` `.ocx` `.drv` `.com`) · `.xll` (Excel add-in DLL) · `.application` `.manifest` (ClickOnce) · `.msix` `.msixbundle` `.appx` `.appxbundle` · `.appinstaller` |
 | **Browser extensions** | `.crx` (Chrome / Chromium / Edge) · `.xpi` (Firefox / Thunderbird) |
+| **npm packages** | `.tgz` (npm-packed tarball) · `package.json` · `package-lock.json` / `npm-shrinkwrap.json` |
 | **Linux / IoT** | ELF binaries — `.so`, `.o`, `.elf`, extensionless executables (ELF32 / ELF64, LE/BE) |
 | **macOS (binaries)** | Mach-O — `.dylib`, `.bundle`, extensionless executables, Fat/Universal (32/64-bit) |
 | **macOS (scripts)** | `.applescript` `.scpt` `.scptd` `.jxa` — source + compiled bytecode, highlighted |
@@ -141,6 +142,20 @@ Extensionless and renamed files are auto-routed via magic-byte sniff, extension 
 | **Manifest analysis (MV2 & MV3)** | Name / version / ID / author / update URL / CSP / Key; MV3 service worker vs MV2 background scripts; content scripts with matched URL patterns; permissions tiered by risk (high: `nativeMessaging`, `<all_urls>`, `debugger`, `proxy`; medium: `cookies`, `history`, `management`, `webRequest` + `webRequestBlocking`, `declarativeNetRequest`, `tabCapture`, …); `externally_connectable`, `web_accessible_resources`, `content_security_policy` (flags `unsafe-eval` / `unsafe-inline` / remote script hosts); `chrome_url_overrides`; `update_url` off-store detection. |
 | **YARA coverage** | 12 rules — native-messaging bridges, broad host permissions, unsafe-eval CSP, wide externally-connectable, debugger / management APIs, proxy + cookies / history combos, non-store update URLs, legacy XUL bootstrap, wide `web_accessible_resources`, in-script `eval`. |
 | **Inner-file drill-down** | Manifest, scripts, icons are clickable for recursive analysis |
+
+### npm packages
+
+Accepts three input shapes — an `npm pack` gzip tarball (`.tgz`), a bare `package.json` manifest, or a `package-lock.json` / `npm-shrinkwrap.json`. Auto-routed via gzip-magic + tar-content sniffing for tarballs and a JSON shape check (`name` plus `version` / `scripts` / `dependencies`, or numeric `lockfileVersion`) for manifests and lockfiles.
+
+| Capability | What you get |
+|---|---|
+| **Manifest view** | Name / version / description / license / author / repository / homepage / bugs URL, declared entry points (`main`, `module`, `types`, `exports` map, `bin` targets), `engines`, publishConfig registry, `files` allowlist, workspaces. |
+| **Lifecycle hook analysis** | Per-hook rows for `preinstall` / `install` / `postinstall` / `preuninstall` / `postuninstall` / `prepare` / `prepublish` / `postpublish`, each with severity. Hook script bodies are folded into the YARA scan buffer so rule matches on hook source surface as detections. |
+| **Dependency walk** | `dependencies`, `devDependencies`, `peerDependencies`, `optionalDependencies`, `bundledDependencies` listed per group; each package name is emitted as a clickable `Package Name` IOC. Non-registry `resolved` URLs (git / tarball / file / HTTP) are flagged. |
+| **Lockfile scan** | `package-lock.json` / `npm-shrinkwrap.json` walked for `resolved` integrity, git-commit / tarball / filesystem / plain-HTTP sources, and mismatched registry hosts; each resolved package surfaces as its own IOC row. |
+| **Permission & surface signals** | Plain-HTTP repository / bugs / homepage URLs, non-official `publishConfig.registry`, shell-wrapper `bin` targets, native `binding.gyp` / `.node` artefacts, dependency-count outliers, and entry-point outliers are flagged. |
+| **YARA coverage** | 15 rules (`npm-threats.yar`) — lifecycle-hook `curl`/`wget` download, hook `eval` / `child_process` chains, Shai-Hulud GitHub-Actions workflow, repo-exfil / bundle-stealer staging, `.npmrc` token exfil, env-var / wallet / clipboard harvesting, webhook beacons, `obfuscator.io` output, native-binary droppers, typosquat lookalike strings, bin shell-wrappers, lockfile non-registry `resolved`. |
+| **Inner-file drill-down** | For `.tgz` tarballs the archive browser lists every `package/*` entry; click any file to re-analyse it (manifest → JSON viewer, JS → script analysis, etc.). |
 
 ### Forensics
 
