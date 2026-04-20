@@ -2,8 +2,15 @@
 // ════════════════════════════════════════════════════════════════════════════
 // plaintext-renderer.js — Catch-all viewer for unsupported file types
 // Shows plain text (with line numbers) or hex dump depending on content.
-// Supports encoding auto-detection (UTF-8, UTF-16LE, UTF-16BE, Latin-1)
-// and a toggle between text / hex views.
+// Supports encoding auto-detection (UTF-8, UTF-16LE, UTF-16BE, Latin-1),
+// a toggle between text / hex views, and a syntax-highlight on/off toggle
+// persisted as `loupe_plaintext_highlight`.
+//
+// Minified-JS footgun: a single logical line can be multiple megabytes.
+// This renderer splits absurdly long lines into display-only chunks so the
+// browser does not choke on a single 2 MB <td>, and disables hljs for such
+// files regardless of total size (hljs produces a gigantic span tree on one
+// long line even if the byte total is modest).
 // ════════════════════════════════════════════════════════════════════════════
 class PlainTextRenderer {
 
@@ -142,8 +149,36 @@ class PlainTextRenderer {
     'text/x-markdown': 'markdown',
   };
 
-  // Size limit for syntax highlighting (100 KB)
+  // Size limit for syntax highlighting (100 KB total text)
   static HIGHLIGHT_SIZE_LIMIT = 100 * 1024;
+  // Per-line length limit — above this hljs is disabled AND lines are
+  // soft-wrapped into display-only chunks (minified-JS defence).
+  static LONG_LINE_THRESHOLD = 5000;
+  // Display-only chunk size for soft-wrap (characters).
+  static SOFT_WRAP_CHUNK = 2000;
+  // Hard cap on total lines rendered to the DOM.
+  static MAX_LINES = 50000;
+  // localStorage key for the syntax-highlight on/off toggle.
+  static HIGHLIGHT_PREF_KEY = 'loupe_plaintext_highlight';
+
+  // ── Preference accessors ────────────────────────────────────────────────
+
+  /** Read the user's syntax-highlight preference (default: on). */
+  static _readHighlightPref() {
+    try {
+      const v = localStorage.getItem(PlainTextRenderer.HIGHLIGHT_PREF_KEY);
+      return v !== 'off';
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /** Persist the user's syntax-highlight preference. */
+  static _writeHighlightPref(enabled) {
+    try {
+      localStorage.setItem(PlainTextRenderer.HIGHLIGHT_PREF_KEY, enabled ? 'on' : 'off');
+    } catch (_) { /* quota / disabled — ignore */ }
+  }
 
   // ── Render ──────────────────────────────────────────────────────────────
 
@@ -158,8 +193,10 @@ class PlainTextRenderer {
     const wrap = document.createElement('div');
     wrap.className = isTextByDefault ? 'plaintext-view' : 'hex-view';
 
-    // Decode text using detected encoding
-    const decodedText = this._decodeAs(bytes, detected.encoding);
+    // Decode text using detected encoding — normalised to \n so downstream
+    // consumers (sidebar click-to-focus offsets, YARA scan buffer, IOC
+    // extraction) don't drift on CRLF files. See `.clinerules` gotcha.
+    const decodedText = this._normalizeNewlines(this._decodeAs(bytes, detected.encoding));
 
     // ── Info bar with toggle + encoding selector ──────────────────────
     const info = document.createElement('div');
@@ -177,6 +214,19 @@ class PlainTextRenderer {
     const spacer = document.createElement('span');
     spacer.style.flex = '1';
     info.appendChild(spacer);
+
+    // Syntax-highlight toggle (persisted)
+    const hlLabel = document.createElement('label');
+    hlLabel.className = 'plaintext-enc-label';
+    hlLabel.textContent = 'Highlight:';
+    info.appendChild(hlLabel);
+
+    const hlBtn = document.createElement('button');
+    hlBtn.className = 'plaintext-toggle-btn';
+    let highlightEnabled = PlainTextRenderer._readHighlightPref();
+    hlBtn.textContent = highlightEnabled ? 'On' : 'Off';
+    hlBtn.title = 'Toggle syntax highlighting (persisted)';
+    info.appendChild(hlBtn);
 
     // Encoding selector
     const encLabel = document.createElement('label');
@@ -196,7 +246,7 @@ class PlainTextRenderer {
     }
     info.appendChild(encSelect);
 
-    // Toggle button
+    // Text/Hex toggle button
     const toggleBtn = document.createElement('button');
     toggleBtn.className = 'plaintext-toggle-btn';
     toggleBtn.textContent = isTextByDefault ? '⬡ Hex' : '🔡 Text';
@@ -210,7 +260,7 @@ class PlainTextRenderer {
     contentArea.className = 'plaintext-content-area';
 
     // Build both views
-    const textPane = this._buildTextPane(decodedText, fileName, this._mimeType);
+    const textPane = this._buildTextPane(decodedText, fileName, this._mimeType, highlightEnabled);
     const hexPane = this._buildHexPane(bytes, fileName);
 
     // Show the correct one by default
@@ -224,21 +274,33 @@ class PlainTextRenderer {
     // ── State tracking ───────────────────────────────────────────────────
     let showingText = isTextByDefault;
     let currentEncoding = detected.encoding;
+    let currentText = decodedText;
     let detectedLang = textPane._detectedLang || null;
 
     // Update initial info text now that we have the detected language
     if (isTextByDefault) {
-      this._updateInfoText(infoText, true, bytes, currentEncoding, detectedLang);
+      this._updateInfoText(infoText, true, bytes, currentEncoding, detectedLang, textPane._lineCount);
     }
 
     // Store raw decoded text for analysis pipeline (IOC extraction, encoded content detection)
-    wrap._rawText = decodedText;
+    wrap._rawText = currentText;
     wrap._rawBytes = bytes;
 
-    // Mutable reference to the current text pane (may be replaced on encoding change)
+    // Mutable reference to the current text pane (may be replaced on re-render)
     contentArea._textPane = textPane;
 
-    // ── Toggle handler ───────────────────────────────────────────────────
+    // Rebuild helper — used by both encoding change and highlight toggle
+    const rebuildTextPane = () => {
+      const oldTextPane = contentArea._textPane;
+      const newTextPane = this._buildTextPane(currentText, fileName, this._mimeType, highlightEnabled);
+      newTextPane.style.display = oldTextPane.style.display;
+      contentArea.replaceChild(newTextPane, oldTextPane);
+      contentArea._textPane = newTextPane;
+      detectedLang = newTextPane._detectedLang || null;
+      this._updateInfoText(infoText, showingText, bytes, currentEncoding, detectedLang, newTextPane._lineCount);
+    };
+
+    // ── Toggle handler (text ⇄ hex) ──────────────────────────────────────
     toggleBtn.addEventListener('click', () => {
       showingText = !showingText;
       const currentTextPane = contentArea._textPane;
@@ -247,25 +309,28 @@ class PlainTextRenderer {
       toggleBtn.textContent = showingText ? '⬡ Hex' : '🔡 Text';
       toggleBtn.title = showingText ? 'Switch to hex dump view' : 'Switch to plain text view';
       wrap.className = showingText ? 'plaintext-view' : 'hex-view';
-      // Show/hide encoding selector (only relevant for text view)
+      // Show/hide encoding selector + highlight toggle (only relevant for text view)
       encLabel.style.display = showingText ? '' : 'none';
       encSelect.style.display = showingText ? '' : 'none';
-      this._updateInfoText(infoText, showingText, bytes, currentEncoding, detectedLang);
+      hlLabel.style.display = showingText ? '' : 'none';
+      hlBtn.style.display = showingText ? '' : 'none';
+      this._updateInfoText(infoText, showingText, bytes, currentEncoding, detectedLang, contentArea._textPane._lineCount);
     });
 
     // ── Encoding change handler ──────────────────────────────────────────
     encSelect.addEventListener('change', () => {
       currentEncoding = encSelect.value;
-      const newText = this._decodeAs(bytes, currentEncoding);
-      const oldTextPane = contentArea._textPane;
-      const newTextPane = this._buildTextPane(newText, fileName, this._mimeType);
-      newTextPane.style.display = oldTextPane.style.display;
-      contentArea.replaceChild(newTextPane, oldTextPane);
-      contentArea._textPane = newTextPane;
-      wrap._rawText = newText;
-      // Update detected language from new text pane
-      detectedLang = newTextPane._detectedLang || null;
-      this._updateInfoText(infoText, showingText, bytes, currentEncoding, detectedLang);
+      currentText = this._normalizeNewlines(this._decodeAs(bytes, currentEncoding));
+      wrap._rawText = currentText;
+      rebuildTextPane();
+    });
+
+    // ── Highlight toggle handler ─────────────────────────────────────────
+    hlBtn.addEventListener('click', () => {
+      highlightEnabled = !highlightEnabled;
+      PlainTextRenderer._writeHighlightPref(highlightEnabled);
+      hlBtn.textContent = highlightEnabled ? 'On' : 'Off';
+      rebuildTextPane();
     });
 
     return wrap;
@@ -367,10 +432,29 @@ class PlainTextRenderer {
     }
   }
 
+  /**
+   * Normalise CRLF / CR to LF. Required because `_rawText` is used by the
+   * sidebar click-to-focus highlighter which indexes by character offset —
+   * CR bytes left in the buffer misalign every offset after the first one.
+   */
+  _normalizeNewlines(text) {
+    return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  }
+
   // ── Build text pane (line-numbered view with syntax highlighting) ────────
 
-  _buildTextPane(text, fileName, mimeType) {
-    const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+  _buildTextPane(text, fileName, mimeType, highlightEnabled) {
+    const lines = text.split('\n');
+
+    // Detect any pathologically long line — common in minified JS, CSS, JSON.
+    // If one is present we disable hljs (span tree would explode on a
+    // single-line megabyte) regardless of the global size gate.
+    let maxLineLen = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].length > maxLineLen) maxLineLen = lines[i].length;
+      if (maxLineLen > PlainTextRenderer.LONG_LINE_THRESHOLD) break;
+    }
+    const hasLongLine = maxLineLen > PlainTextRenderer.LONG_LINE_THRESHOLD;
 
     // Get file extension and determine language
     const ext = (fileName || '').split('.').pop().toLowerCase();
@@ -380,9 +464,12 @@ class PlainTextRenderer {
       lang = PlainTextRenderer.MIME_TO_LANG[mimeType];
     }
 
-    // Determine if we should highlight (check availability and size limit)
-    const shouldHighlight = typeof hljs !== 'undefined' &&
-                            text.length < PlainTextRenderer.HIGHLIGHT_SIZE_LIMIT;
+    // Gate: hljs must be available AND user preference on AND text small
+    // enough AND no pathologically long line present.
+    const shouldHighlight = highlightEnabled &&
+                            typeof hljs !== 'undefined' &&
+                            text.length < PlainTextRenderer.HIGHLIGHT_SIZE_LIMIT &&
+                            !hasLongLine;
 
     let highlightedLines = null;
     let detectedLang = null;
@@ -405,6 +492,9 @@ class PlainTextRenderer {
         // Fallback to plain text on error
         highlightedLines = null;
       }
+    } else if (lang) {
+      // Not highlighting but still advertise the detected language
+      detectedLang = lang;
     }
 
     const scr = document.createElement('div');
@@ -413,10 +503,33 @@ class PlainTextRenderer {
     const table = document.createElement('table');
     table.className = 'plaintext-table';
 
-    const maxLines = 50000;
+    const maxLines = PlainTextRenderer.MAX_LINES;
     const count = Math.min(lines.length, maxLines);
+    const chunkSize = PlainTextRenderer.SOFT_WRAP_CHUNK;
 
     for (let i = 0; i < count; i++) {
+      const lineText = lines[i];
+      // Soft-wrap absurdly long lines into display-only chunks so the DOM
+      // doesn't have to paint a single multi-megabyte <td>. The first
+      // chunk gets the real line number; continuation chunks show a
+      // dimmed ellipsis to signal the visual wrap.
+      if (hasLongLine && lineText.length > chunkSize) {
+        const chunks = Math.ceil(lineText.length / chunkSize);
+        for (let c = 0; c < chunks; c++) {
+          const tr = document.createElement('tr');
+          const tdNum = document.createElement('td');
+          tdNum.className = 'plaintext-ln';
+          tdNum.textContent = c === 0 ? (i + 1) : '↳';
+          const tdCode = document.createElement('td');
+          tdCode.className = 'plaintext-code';
+          tdCode.textContent = lineText.substr(c * chunkSize, chunkSize);
+          tr.appendChild(tdNum);
+          tr.appendChild(tdCode);
+          table.appendChild(tr);
+        }
+        continue;
+      }
+
       const tr = document.createElement('tr');
       const tdNum = document.createElement('td');
       tdNum.className = 'plaintext-ln';
@@ -429,7 +542,7 @@ class PlainTextRenderer {
         tdCode.innerHTML = highlightedLines[i] || '';
       } else {
         // Plain text fallback
-        tdCode.textContent = lines[i];
+        tdCode.textContent = lineText;
       }
 
       tr.appendChild(tdNum);
@@ -449,8 +562,11 @@ class PlainTextRenderer {
 
     scr.appendChild(table);
 
-    // Store detected language for info display
+    // Stash metadata for the info bar (avoids re-decoding the whole buffer
+    // in _updateInfoText just to recount lines).
     scr._detectedLang = detectedLang;
+    scr._lineCount = lines.length;
+    scr._hasLongLine = hasLongLine;
 
     return scr;
   }
@@ -495,13 +611,16 @@ class PlainTextRenderer {
 
   // ── Update info text helper ─────────────────────────────────────────────
 
-  _updateInfoText(infoText, showingText, bytes, encoding, detectedLang) {
+  _updateInfoText(infoText, showingText, bytes, encoding, detectedLang, cachedLineCount) {
     if (showingText) {
-      const text = this._decodeAs(bytes, encoding);
-      const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+      // Use the cached line count from the current text pane to avoid
+      // re-decoding the entire buffer on every toggle / encoding change.
+      const lineCount = (typeof cachedLineCount === 'number')
+        ? cachedLineCount
+        : this._normalizeNewlines(this._decodeAs(bytes, encoding)).split('\n').length;
       const encLabel = PlainTextRenderer.ENCODINGS.find(e => e.value === encoding);
       const encName = encLabel ? encLabel.label : encoding;
-      let info = `${lines.length} line${lines.length !== 1 ? 's' : ''}  ·  ${this._fmtBytes(bytes.length)}  ·  ${encName}`;
+      let info = `${lineCount} line${lineCount !== 1 ? 's' : ''}  ·  ${this._fmtBytes(bytes.length)}  ·  ${encName}`;
       if (detectedLang) {
         // Capitalize first letter and prettify language name
         const langDisplay = this._prettifyLangName(detectedLang);

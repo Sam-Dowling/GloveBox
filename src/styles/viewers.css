@@ -1073,9 +1073,27 @@ body.dark .hta-script-label {
 }
 
 /* ── Plain-text / catch-all view ───────────────────────────────────────── */
+/*
+ * The plaintext renderer is mounted inside `#viewer`, which is
+ * `display: flex; flex-direction: column; align-items: center`. An
+ * unconstrained child (e.g. a <table> containing a multi-megabyte minified
+ * JS file on one logical line) will shrink-wrap to its own content width
+ * and push the whole app off-screen. Anchor this root to the full viewer
+ * width with `min-width: 0` so flex shrink kicks in, and make it a flex
+ * column so the scroll pane can fill the remaining height without the old
+ * `calc(100vh - 120px)` magic number.
+ */
 .plaintext-view,
 .hex-view {
   padding: 0;
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 0;
 }
 
 .plaintext-info {
@@ -1167,13 +1185,22 @@ body.dark .plaintext-toggle-btn:hover {
   color: var(--accent);
 }
 
+/*
+ * `display: contents` keeps the info bar + scroll pane as direct flex
+ * children of `.plaintext-view` / `.hex-view`, so they inherit the
+ * column layout declared above instead of needing their own magic
+ * heights.
+ */
 .plaintext-content-area {
   display: contents;
 }
 
 .plaintext-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  min-width: 0;
   overflow: auto;
-  max-height: calc(100vh - 120px);
   background: #fff;
 }
 
@@ -1181,13 +1208,25 @@ body.dark .plaintext-scroll {
   background: var(--panel-bg-inset);
 }
 
+/*
+ * `table-layout: fixed` is the load-bearing fix for the multi-megabyte
+ * minified-JS case. Without it, the table width is driven by the widest
+ * cell — a single logical line of 2 MB pushes the table (and the entire
+ * `#viewer`) off-screen. With `fixed`, the table respects its parent's
+ * width, the line-number column stays at its `width: 1%` minimum, and
+ * `.plaintext-code { word-break: break-all }` can finally engage and wrap
+ * at the viewport edge.
+ */
 .plaintext-table {
   border-collapse: collapse;
   width: 100%;
+  max-width: 100%;
+  table-layout: fixed;
   font-family: 'Fira Code', 'Consolas', 'Monaco', monospace;
   font-size: 13px;
   line-height: 1.5;
 }
+
 
 .plaintext-table tr:hover {
   background: rgba(0, 120, 215, .06);
