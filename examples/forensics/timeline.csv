@@ -1,0 +1,15 @@
+DateTime,Artifact,EventID,Message,User,Source
+2024-05-20T10:00:01Z,EventLog,4624,Successful Login,admin,192.168.1.10
+2024-05-20T10:05:22Z,Sysmon,1,Process Created: powershell.exe,admin,192.168.1.10
+2024-05-20T10:06:00Z,EventLog,4688,Suspicious Command Executed,admin,192.168.1.10
+2024-05-20T10:06:15Z,Sysmon,1,Process Created: cmd.exe,admin,192.168.1.10
+2024-05-20T10:06:45Z,Sysmon,3,Network Connection: TCP to external IP,admin,192.168.1.10
+2024-05-20T10:07:10Z,EventLog,4688,Process Created: whoami.exe,admin,192.168.1.10
+2024-05-20T10:07:35Z,Sysmon,11,File Created: C:\temp\script.ps1,admin,192.168.1.10
+2024-05-20T10:08:20Z,Sysmon,22,DNS Query: suspicious-domain.example,admin,192.168.1.10
+2024-05-20T10:09:05Z,EventLog,4697,Service Installed: persistence-service,admin,192.168.1.10
+2024-05-20T10:10:12Z,Sysmon,1,Process Created: net.exe,admin,192.168.1.10
+2024-05-20T10:11:30Z,EventLog,4688,Process Created: powershell.exe (encoded command),admin,192.168.1.10
+2024-05-20T10:13:45Z,Sysmon,3,Network Connection: Outbound to C2 server,admin,192.168.1.10
+2024-05-20T10:15:22Z,Sysmon,11,File Created: C:\Windows\System32\malicious.dll,admin,192.168.1.10
+2024-05-20T10:18:10Z,EventLog,4672,Special Privileges Assigned,admin,192.168.1.10
