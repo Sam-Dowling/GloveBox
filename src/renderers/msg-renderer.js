@@ -270,7 +270,6 @@ class MsgRenderer {
           }
 
           if (unwrapped) {
-            sawUnwrap = true;
             // Wrapper (info) — the URL visible in the HTML body.
             f.externalRefs.push({
               type: IOC.URL,
@@ -279,10 +278,15 @@ class MsgRenderer {
               note: `${unwrapped.provider} wrapper`,
               _highlightText: u,
             });
-            // Decoded inner URL (high) — the real destination.
+            // Decoded inner URL (high) — the real destination. Only
+            // count the unwrap as material (`sawUnwrap`) when we actually
+            // emit the inner IOC: an empty-`u=` Proofpoint wrapper would
+            // otherwise vacuously escalate `f.risk` low → medium without
+            // adding any new information for the analyst.
             const innerKey = (unwrapped.originalUrl || '').toLowerCase();
             if (unwrapped.originalUrl && !seenUrls.has(innerKey)) {
               seenUrls.add(innerKey);
+              sawUnwrap = true;
               f.externalRefs.push({
                 type: IOC.URL,
                 url: unwrapped.originalUrl,
