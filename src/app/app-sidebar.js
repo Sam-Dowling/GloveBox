@@ -2536,12 +2536,27 @@ Object.assign(App.prototype, {
       cell.normalize();
     }
 
-    // Also clear CSV detail pane highlights
+    // Renderer-owned CSV YARA highlight — ask the active view to clear its
+    // state; its re-render will naturally drop marks and the row-tint class.
+    const activeYaraView = this._yaraHighlightActiveView;
+    if (activeYaraView && activeYaraView._csvFilters && activeYaraView._csvFilters.clearYaraHighlight) {
+      activeYaraView._csvFilters.clearYaraHighlight();
+    }
+    this._yaraHighlightActiveView = null;
+
+    // Also clear CSV detail pane highlights (legacy DOM sweep — covers stale
+    // renderer builds and any residue from other views).
     const csvMarks = pc.querySelectorAll('mark.csv-yara-highlight');
     for (const mark of csvMarks) {
       const textNode = document.createTextNode(mark.textContent);
       mark.parentNode.replaceChild(textNode, mark);
     }
+    // Cleanup-gap fix: old code never stripped the row-tint classes, so they
+    // could leak between navigations. Strip both IOC and YARA row tints here
+    // (IOC is also cleared by _clearIocCsvHighlight; double-strip is safe).
+    pc.querySelectorAll('tr.csv-yara-row-highlight, tr.csv-ioc-row-highlight').forEach(tr => {
+      tr.classList.remove('csv-yara-row-highlight', 'csv-ioc-row-highlight');
+    });
     // Normalize detail value cells
     const detailVals = pc.querySelectorAll('.csv-detail-val');
     for (const cell of detailVals) {
@@ -2582,66 +2597,6 @@ Object.assign(App.prototype, {
     }
     if (!focusRow) return;
 
-    const dataIdx = focusRow.dataIndex;
-
-    // Helper: escape HTML entities.
-    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-    // Helper: highlight all matches inside a given detail pane.
-    // Returns the <mark> element corresponding to focusIdx (or null).
-    const highlightPane = (detailPane, rowMatches) => {
-      let focusMarkEl = null;
-      const detailVals = detailPane.querySelectorAll('.csv-detail-val');
-      for (const valEl of detailVals) {
-        // For each cell, find every match string that occurs in it and wrap
-        // them in <mark>. Multiple matches per cell are supported; overlaps
-        // are resolved by taking earliest position wins.
-        const cellText = valEl.textContent;
-        if (!cellText) continue;
-
-        // Find all (cellStart, cellEnd, matchIdx) hits within this cell.
-        const hits = [];
-        for (const rm of rowMatches) {
-          const matchStr = sourceText.substring(rm.offset, rm.offset + rm.length);
-          if (!matchStr) continue;
-          let idx = cellText.indexOf(matchStr);
-          if (idx === -1) {
-            idx = cellText.toLowerCase().indexOf(matchStr.toLowerCase());
-          }
-          if (idx !== -1) {
-            hits.push({ start: idx, end: idx + matchStr.length, matchIdx: rm._matchIdx });
-          }
-        }
-        if (!hits.length) continue;
-
-        hits.sort((a, b) => a.start - b.start);
-        // Drop overlaps.
-        const keep = [];
-        let cursor = -1;
-        for (const h of hits) {
-          if (h.start >= cursor) { keep.push(h); cursor = h.end; }
-        }
-
-        // Build innerHTML in one pass.
-        let out = '';
-        let pos = 0;
-        for (const h of keep) {
-          if (h.start > pos) out += esc(cellText.substring(pos, h.start));
-          const matchedText = cellText.substring(h.start, h.end);
-          out += `<mark class="csv-yara-highlight csv-yara-highlight-flash" data-yara-match="${h.matchIdx}">${esc(matchedText)}</mark>`;
-          pos = h.end;
-        }
-        if (pos < cellText.length) out += esc(cellText.substring(pos));
-        valEl.innerHTML = out;
-
-        // Locate focus mark if present.
-        if (!focusMarkEl) {
-          focusMarkEl = valEl.querySelector(`mark.csv-yara-highlight[data-yara-match="${focusIdx}"]`);
-        }
-      }
-      return focusMarkEl;
-    };
-
     // Group matches by which CSV row they belong to (by offset range).
     // Attach original matchIdx so we can locate the focus mark.
     const matchesByRowIdx = new Map(); // dataIndex -> [{offset, length, _matchIdx}, ...]
@@ -2658,17 +2613,81 @@ Object.assign(App.prototype, {
       }
     }
 
-    // Scroll the focus row into view & expand it (virtual scroll).
-    if (filters.scrollToRow) {
-      filters.scrollToRow(dataIdx, false);
+    // Preferred path: renderer owns the highlight lifecycle. createRowElements
+    // reapplies .csv-yara-row-highlight + <mark> wrapping on every re-render
+    // (scrollend, height remeasure, resize, filter, scroll) until the 5s
+    // deadline expires. We just seed the state and drive the scroll.
+    if (filters.setYaraHighlight && filters.scrollToRow) {
+      this._yaraHighlightActiveView = csvView;
+      filters.setYaraHighlight(matchesByRowIdx, focusRow.dataIndex, focusIdx, sourceText, 5000);
+      filters.scrollToRow(focusRow.dataIndex, false).then(() => {
+        if (!filters.scrollToYaraFocus) return;
+        if (forceScroll) { filters.scrollToYaraFocus(); return; }
+        // Otherwise only scroll the focus mark into view if no other mark
+        // is currently in the viewport — avoids jarring re-scroll when the
+        // user is cycling between visible matches.
+        const vh = window.innerHeight || document.documentElement.clientHeight;
+        const vw = window.innerWidth || document.documentElement.clientWidth;
+        const allMarks = csvView.querySelectorAll('mark.csv-yara-highlight');
+        const anyInView = Array.from(allMarks).some(m => {
+          const rc = m.getBoundingClientRect();
+          return rc.bottom > 0 && rc.top < vh && rc.right > 0 && rc.left < vw && rc.width > 0 && rc.height > 0;
+        });
+        if (!anyInView) filters.scrollToYaraFocus();
+      });
+
+      this._yaraHighlightTimer = setTimeout(() => {
+        if (ref) ref._currentMatchIndex = undefined;
+        this._yaraHighlightActiveView = null;
+        this._yaraHighlightTimer = null;
+      }, 5000);
+      return;
     }
 
-    // Wait for virtual scroll to render, then apply highlights.
+    // ─── Legacy fallback (stale renderer build) ─────────────────────────
+    // Preserved verbatim as a safety net. Can be removed once all bundled
+    // code ships the new API.
+    const dataIdx = focusRow.dataIndex;
+    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const highlightPane = (detailPane, rowMatches) => {
+      let focusMarkEl = null;
+      const detailVals = detailPane.querySelectorAll('.csv-detail-val');
+      for (const valEl of detailVals) {
+        const cellText = valEl.textContent;
+        if (!cellText) continue;
+        const hits = [];
+        for (const rm of rowMatches) {
+          const matchStr = sourceText.substring(rm.offset, rm.offset + rm.length);
+          if (!matchStr) continue;
+          let idx = cellText.indexOf(matchStr);
+          if (idx === -1) idx = cellText.toLowerCase().indexOf(matchStr.toLowerCase());
+          if (idx !== -1) hits.push({ start: idx, end: idx + matchStr.length, matchIdx: rm._matchIdx });
+        }
+        if (!hits.length) continue;
+        hits.sort((a, b) => a.start - b.start);
+        const keep = [];
+        let cursor = -1;
+        for (const h of hits) { if (h.start >= cursor) { keep.push(h); cursor = h.end; } }
+        let out = '';
+        let pos = 0;
+        for (const h of keep) {
+          if (h.start > pos) out += esc(cellText.substring(pos, h.start));
+          const matchedText = cellText.substring(h.start, h.end);
+          out += `<mark class="csv-yara-highlight csv-yara-highlight-flash" data-yara-match="${h.matchIdx}">${esc(matchedText)}</mark>`;
+          pos = h.end;
+        }
+        if (pos < cellText.length) out += esc(cellText.substring(pos));
+        valEl.innerHTML = out;
+        if (!focusMarkEl) {
+          focusMarkEl = valEl.querySelector(`mark.csv-yara-highlight[data-yara-match="${focusIdx}"]`);
+        }
+      }
+      return focusMarkEl;
+    };
+    if (filters.scrollToRow) filters.scrollToRow(dataIdx, false);
     setTimeout(() => {
       const tbody = csvView.querySelector('tbody');
       if (!tbody) return;
-
-      // Highlight every currently-rendered detail pane whose row has matches.
       let focusMarkEl = null;
       for (const [rowDataIdx, rowMatches] of matchesByRowIdx) {
         const tr = tbody.querySelector(`tr[data-idx="${rowDataIdx}"]`);
@@ -2681,8 +2700,6 @@ Object.assign(App.prototype, {
         const fm = highlightPane(detailPane, rowMatches);
         if (fm && !focusMarkEl) focusMarkEl = fm;
       }
-
-      // Decide whether to scroll the focus mark into view.
       let shouldScroll = forceScroll;
       if (!forceScroll && focusMarkEl) {
         const vh = window.innerHeight || document.documentElement.clientHeight;
@@ -2697,14 +2714,12 @@ Object.assign(App.prototype, {
       if (shouldScroll && focusMarkEl) {
         focusMarkEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
-
-      // Schedule the 5-second auto-clear timer.
       this._yaraHighlightTimer = setTimeout(() => {
         this._clearYaraHighlight();
         if (ref) ref._currentMatchIndex = undefined;
         this._yaraHighlightTimer = null;
       }, 5000);
-    }, 400); // Wait for virtual scroll to complete
+    }, 400);
   },
 
 
@@ -2824,24 +2839,37 @@ Object.assign(App.prototype, {
 
   // ── IOC subtle-highlight inside CSV expanded row ────────────────────────
   //
-  // Complements _highlightYaraMatchesInCsv but for simple IOC navigation:
-  // scroll the matching row into view, expand it, and wrap every occurrence
-  // of `searchTerm` inside each .csv-detail-val cell in a subtle yellow
-  // <mark>. Auto-clears after 5 seconds.
+  // Complements _highlightYaraMatchesInCsv. The renderer owns the highlight
+  // lifecycle — we just tell it which row + term and schedule the
+  // ref._currentMatchIndex reset. The renderer's createRowElements re-applies
+  // the .csv-ioc-row-highlight class and wraps <mark> tags on every re-render
+  // (scrollend, height remeasure, resize, etc.) until the deadline expires,
+  // which is what makes the highlight stable through the post-scroll DOM
+  // churn that previously wiped it.
   _highlightIocInCsvRow(csvView, searchTerm, dataIdx, ref) {
     this._clearIocCsvHighlight();
     const filters = csvView && csvView._csvFilters;
-    if (!filters || !filters.scrollToRow || !searchTerm) return;
-    filters.scrollToRow(dataIdx, false);
+    if (!filters || !searchTerm) return;
+
+    // Preferred path: renderer-owned highlight.
+    if (filters.scrollToRowWithIocHighlight) {
+      this._iocCsvHighlightActiveView = csvView;
+      filters.scrollToRowWithIocHighlight(dataIdx, searchTerm, 5000);
+      this._iocCsvHighlightTimer = setTimeout(() => {
+        if (ref) ref._currentMatchIndex = undefined;
+        this._iocCsvHighlightActiveView = null;
+        this._iocCsvHighlightTimer = null;
+      }, 5000);
+      return;
+    }
+
+    // Legacy fallback (only hit if a stale renderer build is mixed with a
+    // newer sidebar). Preserved verbatim for safety — can be removed in a
+    // future release once all bundled code ships the new API.
+    if (filters.scrollToRow) filters.scrollToRow(dataIdx, false);
 
     const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const termLower = searchTerm.toLowerCase();
-
-    // csv-renderer's scrollToRow() schedules its OWN 400ms setTimeout that
-    // renders the virtual row + creates the detail <tr>. If we used a single
-    // matching setTimeout here we'd race with it (broken first click on a
-    // collapsed CSV, works on second click when row is already in DOM).
-    // Instead, poll for the detail row up to ~1.5s.
     const deadline = performance.now() + 1500;
     const tryHighlight = () => {
       const tbody = csvView.querySelector('tbody');
@@ -2857,7 +2885,6 @@ Object.assign(App.prototype, {
         return;
       }
       this._iocCsvHighlightPoll = null;
-
       tr.classList.add('csv-ioc-row-highlight');
       const valEls = detailTr.querySelectorAll('.csv-detail-val');
       let firstMark = null;
@@ -2873,29 +2900,35 @@ Object.assign(App.prototype, {
         if (!firstMark) firstMark = valEl.querySelector('mark.csv-ioc-highlight');
       }
       if (firstMark) firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
       this._iocCsvHighlightTimer = setTimeout(() => {
         this._clearIocCsvHighlight();
         if (ref) ref._currentMatchIndex = undefined;
         this._iocCsvHighlightTimer = null;
       }, 5000);
     };
-    // csv-renderer.js::scrollToRow() runs its OWN internal setTimeout(400)
-    // that tears down and rebuilds the entire visible tbody (resets
-    // state.renderedRange and calls renderVisibleRows()). If we wrap a
-    // <mark> before that rebuild happens it gets wiped — the user sees the
-    // row highlight but no cell-level mark (and it only appears on the 2nd
-    // click, when the row is already expanded and the rebuild is a no-op).
-    // Wait 450 ms so our wrap runs AFTER the rebuild finishes; the poll
-    // below then handles any slower renders (up to 1.5 s).
     this._iocCsvHighlightPoll = setTimeout(tryHighlight, 450);
   },
 
   _clearIocCsvHighlight() {
+    if (this._iocCsvHighlightPoll) {
+      clearTimeout(this._iocCsvHighlightPoll);
+      this._iocCsvHighlightPoll = null;
+    }
     if (this._iocCsvHighlightTimer) {
       clearTimeout(this._iocCsvHighlightTimer);
       this._iocCsvHighlightTimer = null;
     }
+
+    // Renderer-owned path: ask the active CSV view to clear its state.
+    const activeView = this._iocCsvHighlightActiveView;
+    if (activeView && activeView._csvFilters && activeView._csvFilters.clearIocHighlight) {
+      activeView._csvFilters.clearIocHighlight();
+    }
+    this._iocCsvHighlightActiveView = null;
+
+    // Legacy DOM sweep — still needed to cover stale renderer builds and
+    // any residue from prior pages. Renderer-owned path also naturally
+    // tears down on re-render, so double-removal here is safe.
     document.querySelectorAll('mark.csv-ioc-highlight').forEach(m => {
       const parent = m.parentNode;
       if (!parent) return;

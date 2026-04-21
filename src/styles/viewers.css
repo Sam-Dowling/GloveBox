@@ -511,7 +511,12 @@ body.dark .csv-filter-status {
   color: var(--text-muted);
 }
 
-.csv-row-highlight {
+/* Animate cells, not the <tr>. Table rows don't paint their own background
+ * reliably across all browsers (cells often sit on top), and animating the
+ * cells guarantees the flash is visible regardless of per-cell styling.
+ * This also replaces the previous JS-inline cell styles in scrollToRow(),
+ * so there's exactly one animation source — no more dual-layer stutter. */
+.csv-row-highlight td {
   animation: csv-row-flash 2s ease-out;
 }
 
@@ -527,7 +532,7 @@ body.dark .csv-filter-status {
   }
 }
 
-body.dark .csv-row-highlight {
+body.dark .csv-row-highlight td {
   animation: csv-row-flash-dark 2s ease-out;
 }
 
@@ -614,6 +619,21 @@ body.dark .csv-row-selected .csv-expand-icon {
 
 body.dark .csv-detail-row td {
   background: var(--row-hover) !important;
+}
+
+/* Sticky wrapper pins the detail pane to the left edge of the scroll
+   viewport. Its width and max-width are set inline from JS (from
+   scr.clientWidth) at creation time and on every re-render, decoupling
+   the pane from the table's max-content width. Long values then
+   word-wrap to the visible viewport (up to the sidebar) rather than
+   stretching the full table width. CSS variable fallbacks were
+   intentionally removed because `100%` resolves against the td's
+   content-box width (== table width for wide CSVs) and silently broke
+   wrapping when JS timing left the variable unset. */
+.csv-detail-sticky {
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
 }
 
 .csv-detail-pane {
