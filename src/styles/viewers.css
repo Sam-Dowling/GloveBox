@@ -4063,7 +4063,18 @@ body.dark .sqlite-table-header {
   flex-direction: column;
   width: 100%;
   min-height: 0;
+  /* Fill the remaining vertical space inside #page-container. Without
+     this, `.sqlite-view` collapses to intrinsic content height (info bar
+     + tab bar only) because `#page-container` stretches cross-axis only,
+     which in turn starves `.sqlite-grid-host`'s `flex: 1` — the
+     GridViewer then paints into a 0px slot and no tables appear. The
+     `.csv-view` rule can't pull its weight here because it lives on the
+     inner active-tab GridViewer, not on this outer wrapper (that split
+     is required so the sidebar's `pc.querySelector('.csv-view')` always
+     resolves to the visible tab). */
+  flex: 1;
 }
+
 
 .sqlite-grid-host {
   flex: 1;
