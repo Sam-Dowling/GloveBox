@@ -1148,7 +1148,12 @@ class MachoRenderer {
         mo = this._parse(bytes, 0);
       }
 
+      // Stash parsed structure for _renderSection() auto-open lookups via
+      // BinaryTriage.shouldAutoOpen() — mirrors pe/elf renderers.
+      this._parsed = mo;
+
       parsedStrings = mo.strings;
+
 
       // ── Banner ─────────────────────────────────────────────────────
       const banner = document.createElement('div');
@@ -1168,6 +1173,26 @@ class MachoRenderer {
       if (fatInfo) {
         wrap.appendChild(this._renderSection('🏗 Universal Binary', this._renderFatInfo(fatInfo)));
       }
+
+      // ── Tier-A Triage Band ─────────────────────────────────────────
+      // Verdict one-liner + coarse 0-100 risk, coloured anomaly-ribbon
+      // chips, and a tactic-grouped MITRE ATT&CK strip. The analyst
+      // reads this band first; everything below (Binary Pivot, Header,
+      // Segments, Load Commands, Dylibs, Symbols, Code Signing,
+      // Entitlements, Strings …) is the drill-down for the chips
+      // pointed at here. `_findings` was stashed by analyzeForSecurity
+      // immediately before render() on the shared _loadFile path.
+      try {
+        if (typeof BinaryTriage !== 'undefined') {
+          const triage = BinaryTriage.render({
+            parsed: mo,
+            findings: this._findings || {},
+            format: 'Mach-O',
+            fileSize: bytes.length,
+          });
+          if (triage) wrap.appendChild(triage);
+        }
+      } catch (_) { /* triage band is best-effort */ }
 
       // ── Binary Pivot (shared triage card) ─────────────────────────
       // Identical layout to the PE / ELF cards — SHA-256 / SHA-1 / MD5
@@ -1285,6 +1310,36 @@ class MachoRenderer {
           } catch (_) { /* best-effort */ }
 
           const formatDetail = [mo.magicStr, mo.cputypeStr].filter(Boolean).join(' · ');
+
+          // Identity pivots — Team ID, Bundle ID, SDK/min-OS are the
+          // stable cross-sample pivots an analyst uses to fingerprint
+          // a Mach-O:
+          //   • teamId   — CodeDirectory blob (mo.codeSignatureInfo)
+          //   • bundleId — embedded Info.plist (stashed into findings.
+          //                metadata['Bundle ID'] by analyzeForSecurity)
+          //   • sdkMinOS — LC_BUILD_VERSION / legacy LC_VERSION_MIN_*
+          const teamId = (mo.codeSignatureInfo && mo.codeSignatureInfo.teamId) || null;
+          const bundleId = (this._findings
+            && this._findings.metadata
+            && this._findings.metadata['Bundle ID']) || null;
+          let sdkMinOS = null;
+          if (mo.buildVersion) {
+            const bv = mo.buildVersion;
+            sdkMinOS = `${bv.platform} min ${bv.minos} · SDK ${bv.sdk}`;
+          } else if (mo.minVersion) {
+            const mv = mo.minVersion;
+            sdkMinOS = `${mv.platform} min ${mv.version} · SDK ${mv.sdk}`;
+          }
+
+          // Loupe does not walk the CMS root-of-trust, so downgrade the
+          // "signed" badge to the tri-state "signer present" rendering.
+          // analyzeForSecurity set signer.present=true when a Team ID or
+          // cert chain was embedded; verified:false makes the UI honest
+          // about what was and wasn't checked.
+          const signerVerified = signer && signer.present
+            ? Object.assign({}, signer, { verified: false })
+            : signer;
+
           const card = BinarySummary.renderCard({
             bytes,
             fileSize: bytes.length,
@@ -1293,7 +1348,7 @@ class MachoRenderer {
             importHash,
             richHash: null,
             symHash: symHashVal,
-            signer,
+            signer: signerVerified,
             compileTimestamp: null,
             entryPoint: epDisplay ? {
               displayStr: epDisplay,
@@ -1302,22 +1357,36 @@ class MachoRenderer {
             } : null,
             overlay: overlayInfo,
             packer: packerInfo,
+            teamId,
+            bundleId,
+            sdkMinOS,
           });
           wrap.appendChild(card);
         }
       } catch (_) { /* summary card is best-effort */ }
 
+      // ── Tier-C reference cards (collapsed by default — auto-open on anomaly) ─
+      // Everything below is the drill-down for the Tier-A verdict band
+      // and anomaly ribbon. `_renderSection(..., {cardId})` routes the
+      // open/closed decision through BinaryTriage.shouldAutoOpen() so
+      // benign samples surface a clean triage surface while genuinely
+      // anomalous cards (W+X segments, unusual RPATHs, suspect
+      // signatures, high-entropy sections, …) are already open when the
+      // analyst scrolls down.
+
       // ── Mach-O Header ─────────────────────────────────────────────
-      wrap.appendChild(this._renderSection('📋 Mach-O Header', this._renderHeaders(mo)));
+      wrap.appendChild(this._renderSection('📋 Mach-O Header', this._renderHeaders(mo), 0, { cardId: 'header' }));
 
       // ── Security Features ─────────────────────────────────────────
-      wrap.appendChild(this._renderSection('🛡 Security Features', this._renderSecurity(mo)));
+      wrap.appendChild(this._renderSection('🛡 Security Features', this._renderSecurity(mo), 0, { cardId: 'security' }));
 
       // ── Segments & Sections ───────────────────────────────────────
       if (mo.segments.length > 0) {
         wrap.appendChild(this._renderSection(
           '📦 Segments & Sections (' + mo.segments.length + ' segments, ' + mo.sections.length + ' sections)',
-          this._renderSegments(mo)
+          this._renderSegments(mo),
+          0,
+          { cardId: 'segments' }
         ));
       }
 
@@ -1325,7 +1394,9 @@ class MachoRenderer {
       if (mo.loadCommands.length > 0) {
         wrap.appendChild(this._renderSection(
           '⚙ Load Commands (' + mo.loadCommands.length + ')',
-          this._renderLoadCommands(mo)
+          this._renderLoadCommands(mo),
+          0,
+          { cardId: 'load-commands' }
         ));
       }
 
@@ -1333,7 +1404,9 @@ class MachoRenderer {
       if (mo.dylibs.length > 0) {
         wrap.appendChild(this._renderSection(
           '📚 Dynamic Libraries (' + mo.dylibs.length + ')',
-          this._renderDylibs(mo)
+          this._renderDylibs(mo),
+          0,
+          { cardId: 'dylibs' }
         ));
       }
 
@@ -1345,7 +1418,8 @@ class MachoRenderer {
         wrap.appendChild(this._renderSection(
           '📥 Imported Symbols (' + imports.length + ')',
           this._renderSymbols(imports, true),
-          imports.length
+          imports.length,
+          { cardId: 'symbols' }
         ));
       }
 
@@ -1353,14 +1427,16 @@ class MachoRenderer {
         wrap.appendChild(this._renderSection(
           '📤 Exported Symbols (' + exports.length + ')',
           this._renderSymbols(exports, false),
-          exports.length
+          exports.length,
+          { cardId: 'symbols' }
         ));
       }
 
       // ── Code Signature ────────────────────────────────────────────
       if (mo.codeSignatureInfo) {
-        wrap.appendChild(this._renderSection('🔐 Code Signature', this._renderCodeSignature(mo)));
+        wrap.appendChild(this._renderSection('🔐 Code Signature', this._renderCodeSignature(mo), 0, { cardId: 'codesig' }));
       }
+
 
       // ── Overlay (appended payload past end-of-image) ──────────────
       // Thin: bytes past max(seg.fileoff + seg.filesize) are the
@@ -1524,17 +1600,35 @@ class MachoRenderer {
   //  Section renderers (DOM builders)
   // ═══════════════════════════════════════════════════════════════════════
 
-  _renderSection(title, contentEl, rowCount) {
+  _renderSection(title, contentEl, rowCount, opts) {
     const sec = document.createElement('details');
     sec.className = 'macho-section';
     const collapse = rowCount && rowCount > 50;
-    sec.open = !collapse;
+    const cardId = opts && opts.cardId;
+    let open;
+    if (cardId) {
+      let auto = false;
+      try {
+        if (typeof BinaryTriage !== 'undefined') {
+          auto = BinaryTriage.shouldAutoOpen({
+            parsed: this._parsed,
+            findings: this._findings || {},
+            format: 'Mach-O',
+          }, cardId);
+        }
+      } catch (_) { /* best-effort */ }
+      open = auto && !collapse;
+    } else {
+      open = !collapse;
+    }
+    sec.open = !!open;
     const sum = document.createElement('summary');
     sum.innerHTML = this._esc(title) + (collapse ? ` <span class="bin-collapse-note">${rowCount} rows — click to expand</span>` : '');
     sec.appendChild(sum);
     sec.appendChild(contentEl);
     return sec;
   }
+
 
   _renderFatInfo(fat) {
     const rows = fat.arches.map((a, i) => [
@@ -1895,7 +1989,18 @@ class MachoRenderer {
     const div = document.createElement('div');
     div.className = 'macho-strings-container';
 
+    // Categorised-strings triage card (mutexes/pipes/registry are Windows-only
+    // and will quietly produce no hits on Mach-O; PDB/user-path/Rust-panic
+    // categories remain useful for cross-compiled binaries).
+    try {
+      if (typeof BinaryStrings !== 'undefined' && BinaryStrings.renderCategorisedStringsTable) {
+        const cats = BinaryStrings.renderCategorisedStringsTable(mo.strings || []);
+        if (cats) div.appendChild(cats);
+      }
+    } catch (_) { /* non-fatal */ }
+
     // Save/Copy pill group for strings
+
     const pillBar = document.createElement('div');
     pillBar.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px;';
     const pillGroup = document.createElement('div');
@@ -2662,6 +2767,11 @@ class MachoRenderer {
       findings.autoExec = ['Mach-O parsing partially failed: ' + e.message];
     }
 
+    // Stash the completed findings on the instance so render() — which
+    // runs immediately after analyzeForSecurity on the shared _loadFile
+    // path — can feed them into the Tier-A Triage Band without a second
+    // pass over the buffer. Paralleled in pe-renderer.js / elf-renderer.js.
+    this._findings = findings;
     return findings;
   }
 }

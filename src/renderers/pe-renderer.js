@@ -1826,6 +1826,10 @@ class PeRenderer {
 
     try {
       const pe = this._parse(bytes);
+      // Stash for _renderSection → BinaryTriage.shouldAutoOpen() so Tier-C
+      // cards default closed on clean samples and auto-open on anomalous
+      // ones. Mirrored in elf-renderer.js / macho-renderer.js.
+      this._parsed = pe;
       // Stash the source filename on the parsed object so the resource
       // drill-down table in `_renderResources()` can mint synthetic child
       // filenames like `<parent>.res.<type>.<name>.<ext>` instead of the
@@ -1929,6 +1933,25 @@ class PeRenderer {
       }
 
 
+      // ── Tier-A Triage Band ─────────────────────────────────────────
+      // Verdict one-liner + coarse 0-100 risk, coloured anomaly-ribbon
+      // chips, and a tactic-grouped MITRE ATT&CK strip. The analyst
+      // reads this band first; everything below (Binary Pivot, Headers,
+      // Sections, Imports, Strings …) is the drill-down for the chips
+      // pointed at here. `_findings` was stashed by analyzeForSecurity
+      // immediately before render() on the shared _loadFile path.
+      try {
+        if (typeof BinaryTriage !== 'undefined') {
+          const triage = BinaryTriage.render({
+            parsed: pe,
+            findings: this._findings || {},
+            format: 'PE',
+            fileSize: bytes.length,
+          });
+          if (triage) wrap.appendChild(triage);
+        }
+      } catch (_) { /* triage band is best-effort */ }
+
       // ── Binary Pivot (shared triage card) ──────────────────────────
       // Above-the-fold summary that mirrors the ELF / Mach-O cards:
       // file-hash trio, imphash + RichHash, Authenticode signer,
@@ -1976,6 +1999,12 @@ class PeRenderer {
           if (packSec) {
             packerInfo = { label: packSec.packerMatch, source: 'section ' + (packSec.name || '(unnamed)') };
           }
+          // .NET CLR runtime (populated by _parseClrHeader for managed
+          // assemblies). Surfaces as a dedicated row on the Binary
+          // Pivot card so "this is a .NET assembly, here's the CLR
+          // flavour" is visible alongside the hashes and signer rather
+          // than buried in the .NET Header drill-down card.
+          const clrRuntime = (pe.dotnet && (pe.dotnet.runtimeVersionString || pe.dotnet.runtimeVersion)) || null;
           const card = BinarySummary.renderCard({
             bytes,
             fileSize: bytes.length,
@@ -1996,19 +2025,26 @@ class PeRenderer {
             },
             overlay: overlayInfo,
             packer: packerInfo,
+            clrRuntime,
           });
           wrap.appendChild(card);
         }
       } catch (_) { /* summary card is best-effort */ }
 
       // ── File Headers ───────────────────────────────────────────────
-      wrap.appendChild(this._renderSection('📋 PE Headers', this._renderHeaders(pe)));
+      // Tier-C from here down — each card opts into triage auto-open via
+      // `cardId`. Clean samples render with every card closed (triage-
+      // first: read the verdict band + anomaly ribbon, drill only when
+      // interested); anomalous samples auto-open the specific cards the
+      // ribbon chips point at. Card-id keys are defined in
+      // binary-anomalies.js::_detectPe().
+      wrap.appendChild(this._renderSection('📋 PE Headers', this._renderHeaders(pe), 0, { cardId: 'headers' }));
 
       // ── Security Features ──────────────────────────────────────────
-      wrap.appendChild(this._renderSection('🛡 Security Features', this._renderSecurity(pe)));
+      wrap.appendChild(this._renderSection('🛡 Security Features', this._renderSecurity(pe), 0, { cardId: 'security' }));
 
       // ── Section Table ──────────────────────────────────────────────
-      wrap.appendChild(this._renderSection('📦 Sections (' + pe.sections.length + ')', this._renderSections(pe)));
+      wrap.appendChild(this._renderSection('📦 Sections (' + pe.sections.length + ')', this._renderSections(pe), 0, { cardId: 'sections' }));
 
       // ── Imports ────────────────────────────────────────────────────
       if (pe.imports.length > 0) {
@@ -2016,7 +2052,8 @@ class PeRenderer {
         wrap.appendChild(this._renderSection(
           '📥 Imports (' + pe.imports.length + ' DLLs, ' + totalFuncs + ' functions)',
           this._renderImports(pe),
-          totalFuncs
+          totalFuncs,
+          { cardId: 'imports' }
         ));
       }
 
@@ -2025,18 +2062,19 @@ class PeRenderer {
         wrap.appendChild(this._renderSection(
           '📤 Exports (' + pe.exports.names.length + ')',
           this._renderExports(pe),
-          pe.exports.names.length
+          pe.exports.names.length,
+          { cardId: 'exports' }
         ));
       }
 
       // ── Resources ──────────────────────────────────────────────────
       if (pe.resources.length > 0) {
-        wrap.appendChild(this._renderSection('🗂 Resources (' + pe.resources.length + ' types)', this._renderResources(pe)));
+        wrap.appendChild(this._renderSection('🗂 Resources (' + pe.resources.length + ' types)', this._renderResources(pe), 0, { cardId: 'resources' }));
       }
 
       // ── Rich Header ────────────────────────────────────────────────
       if (pe.richHeader && pe.richHeader.entries.length > 0) {
-        wrap.appendChild(this._renderSection('🔑 Rich Header (' + pe.richHeader.entries.length + ' entries)', this._renderRichHeader(pe)));
+        wrap.appendChild(this._renderSection('🔑 Rich Header (' + pe.richHeader.entries.length + ' entries)', this._renderRichHeader(pe), 0, { cardId: 'rich' }));
       }
 
       // ── TLS Callbacks (pre-entry-point hooks) ──────────────────────
@@ -2048,7 +2086,9 @@ class PeRenderer {
       if (pe.tls && pe.tls.callbacks && pe.tls.callbacks.length > 0) {
         wrap.appendChild(this._renderSection(
           '⏱ TLS Callbacks (' + pe.tls.callbacks.length + ')',
-          this._renderTlsCallbacks(pe)
+          this._renderTlsCallbacks(pe),
+          0,
+          { cardId: 'tls' }
         ));
       }
 
@@ -2060,7 +2100,9 @@ class PeRenderer {
       if (pe.dotnet) {
         wrap.appendChild(this._renderSection(
           '🔷 .NET CLR Header',
-          this._renderDotnet(pe)
+          this._renderDotnet(pe),
+          0,
+          { cardId: 'dotnet' }
         ));
       }
 
@@ -2068,12 +2110,14 @@ class PeRenderer {
       if (pe.certificates && pe.certificates.length > 0) {
         wrap.appendChild(this._renderSection(
           '📜 Authenticode Certificates (' + pe.certificates.length + ')',
-          this._renderCertificates(pe.certificates)
+          this._renderCertificates(pe.certificates),
+          0,
+          { cardId: 'certificates' }
         ));
       }
 
       // ── Data Directories ───────────────────────────────────────────
-      wrap.appendChild(this._renderSection('📂 Data Directories', this._renderDataDirs(pe)));
+      wrap.appendChild(this._renderSection('📂 Data Directories', this._renderDataDirs(pe), 0, { cardId: 'data-dirs' }));
 
       // ── Overlay (appended payload past end-of-image) ───────────────
       // Bytes past `max(section.rawDataOffset + section.rawDataSize)` are
@@ -2096,7 +2140,7 @@ class PeRenderer {
             subtitle: 'past end-of-image',
             authenticodeRange: certRange,
           });
-          wrap.appendChild(this._renderSection('📎 Overlay', el));
+          wrap.appendChild(this._renderSection('📎 Overlay', el, 0, { cardId: 'overlay' }));
         }
       } catch (_) { /* overlay drill-down is best-effort */ }
 
@@ -2105,7 +2149,9 @@ class PeRenderer {
       if (totalStrings > 0) {
         wrap.appendChild(this._renderSection(
           '🔤 Strings (' + totalStrings + ')',
-          this._renderStrings(pe)
+          this._renderStrings(pe),
+          0,
+          { cardId: 'strings' }
         ));
       }
 
@@ -2220,12 +2266,36 @@ class PeRenderer {
     return end;
   }
 
-  _renderSection(title, contentEl, rowCount) {
-
+  // Render a collapsible Tier-C reference card. `opts.cardId` opts the
+  // card into the triage auto-open system: clean samples start closed
+  // (triage-first), anomalous samples auto-open the flagged cards.
+  // `rowCount > 50` is still a size-based collapse hint that beats the
+  // auto-open default on huge tables where size matters more than
+  // anomalies (the chip itself already flags them).
+  _renderSection(title, contentEl, rowCount, opts) {
     const sec = document.createElement('details');
     sec.className = 'pe-section';
     const collapse = rowCount && rowCount > 50;
-    sec.open = !collapse;
+    const cardId = opts && opts.cardId;
+    let open;
+    if (cardId) {
+      // Triage mode: default closed, auto-open if anomalous.
+      let auto = false;
+      try {
+        if (typeof BinaryTriage !== 'undefined') {
+          auto = BinaryTriage.shouldAutoOpen({
+            parsed: this._parsed,
+            findings: this._findings || {},
+            format: 'PE',
+          }, cardId);
+        }
+      } catch (_) { /* best-effort */ }
+      open = auto && !collapse;
+    } else {
+      // Legacy call sites (no cardId) keep the original rowCount behaviour.
+      open = !collapse;
+    }
+    sec.open = !!open;
     const sum = document.createElement('summary');
     sum.innerHTML = this._esc(title) + (collapse ? ` <span class="bin-collapse-note">${rowCount} rows — click to expand</span>` : '');
     sec.appendChild(sum);
@@ -2803,8 +2873,20 @@ class PeRenderer {
 
     // Save/Copy pill group for strings
     const allStrings = [...pe.strings.ascii, ...pe.strings.unicode];
+
+    // Categorised strings preview — mutex / pipe / PDB / user-path /
+    // registry / Rust-panic triage card. No-op when no forensically
+    // interesting categories match the corpus.
+    try {
+      if (typeof BinaryStrings !== 'undefined' && BinaryStrings.renderCategorisedStringsTable) {
+        const catCard = BinaryStrings.renderCategorisedStringsTable(allStrings);
+        if (catCard) div.appendChild(catCard);
+      }
+    } catch (_) { /* best-effort */ }
+
     const pillBar = document.createElement('div');
     pillBar.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px;';
+
     const pillGroup = document.createElement('div');
     pillGroup.className = 'btn-pill-group';
     const saveBtn = document.createElement('button');
@@ -3706,6 +3788,10 @@ class PeRenderer {
       findings.autoExec = ['PE parsing partially failed: ' + e.message];
     }
 
+    // Stash for render(): the shared _loadFile path calls analyzeForSecurity()
+    // on this same instance before render(), so render() can reach the
+    // completed findings for the Tier-A triage band without a second pass.
+    this._findings = findings;
     return findings;
   }
 }

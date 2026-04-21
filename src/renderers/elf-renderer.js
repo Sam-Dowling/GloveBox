@@ -1023,6 +1023,10 @@ class ElfRenderer {
     try {
       const elf = this._parse(bytes);
       parsedStrings = elf.strings;
+      // Stash for _renderSection → BinaryTriage.shouldAutoOpen() so Tier-C
+      // cards default closed on clean samples and auto-open on anomalous
+      // ones. Paralleled in pe-renderer.js / macho-renderer.js.
+      this._parsed = elf;
 
       // ── Banner ─────────────────────────────────────────────────────
       const banner = document.createElement('div');
@@ -1068,6 +1072,26 @@ class ElfRenderer {
           }
         }
       }
+
+      // ── Tier-A Triage Band ─────────────────────────────────────────
+      // Verdict one-liner + coarse 0-100 risk, coloured anomaly-ribbon
+      // chips, and a tactic-grouped MITRE ATT&CK strip. The analyst
+      // reads this band first; everything below (Binary Pivot, Header,
+      // Security Features, Segments, Sections, Symbols, Strings …) is
+      // the drill-down for the chips pointed at here. `_findings` was
+      // stashed by analyzeForSecurity immediately before render() on
+      // the shared _loadFile path.
+      try {
+        if (typeof BinaryTriage !== 'undefined') {
+          const triage = BinaryTriage.render({
+            parsed: elf,
+            findings: this._findings || {},
+            format: 'ELF',
+            fileSize: bytes.length,
+          });
+          if (triage) wrap.appendChild(triage);
+        }
+      } catch (_) { /* triage band is best-effort */ }
 
       // ── Binary Pivot (shared triage card) ───────────────────────
       // Identical layout to the PE / Mach-O cards — SHA-256 / SHA-1 /
@@ -1158,6 +1182,20 @@ class ElfRenderer {
           } catch (_) { /* best-effort */ }
 
           const formatDetail = [elf.ident && elf.ident.classStr, elf.machineStr].filter(Boolean).join(' · ');
+
+          // Build ID pivot — GNU build-ids are a stable cross-sample
+          // pivot (same compiler output = same id). Extracted during
+          // note parsing above where typeStr === 'GNU_BUILD_ID' and
+          // note.desc begins 'Build ID: <hex>'.
+          let buildId = null;
+          try {
+            const buildNote = (elf.notes || []).find(n => n && n.typeStr === 'GNU_BUILD_ID');
+            if (buildNote && typeof buildNote.desc === 'string') {
+              const m = buildNote.desc.match(/Build ID:\s*([0-9a-fA-F]+)/);
+              if (m) buildId = m[1];
+            }
+          } catch (_) { /* best-effort */ }
+
           const card = BinarySummary.renderCard({
             bytes,
             fileSize: bytes.length,
@@ -1166,7 +1204,10 @@ class ElfRenderer {
             importHash,
             richHash: null,
             symHash: null,
-            signer: { present: false, label: '— (ELF has no structural signer)' },
+            // ELF has no structural signer. Mark verified:false
+            // explicitly so the tri-state badge renders as "unsigned"
+            // rather than the ambiguous "signer present".
+            signer: { present: false, verified: false, label: '— (ELF has no structural signer)' },
             compileTimestamp: null,
             entryPoint: {
               displayStr: this._hex(elf.entry || 0, elf.ident && elf.ident.classStr === 'ELF64' ? 16 : 8),
@@ -1175,43 +1216,47 @@ class ElfRenderer {
             },
             overlay: overlayInfo,
             packer: packerInfo,
+            buildId,
           });
           wrap.appendChild(card);
         }
       } catch (_) { /* summary card is best-effort */ }
 
-      // ── ELF Header ──────────────────────────────────────────────
-      wrap.appendChild(this._renderSection('📋 ELF Header', this._renderHeaders(elf)));
+      // ── Tier-C reference cards ─────────────────────────────────
+      // Each card opts into triage auto-open via `cardId`. Clean
+      // samples render with every card closed (triage-first); anomalous
+      // samples auto-open only the flagged cards. Card-id keys are
+      // defined in binary-anomalies.js::_detectElf().
+      wrap.appendChild(this._renderSection('📋 ELF Header', this._renderHeaders(elf), 0, { cardId: 'header' }));
+      wrap.appendChild(this._renderSection('🛡 Security Features', this._renderSecurity(elf), 0, { cardId: 'security' }));
 
-
-      // ── Security Features ───────────────────────────────────────
-      wrap.appendChild(this._renderSection('🛡 Security Features', this._renderSecurity(elf)));
-
-      // ── Program Headers (Segments) ──────────────────────────────
       if (elf.segments.length > 0) {
         wrap.appendChild(this._renderSection(
           '📦 Segments (' + elf.segments.length + ')',
-          this._renderSegments(elf)
+          this._renderSegments(elf),
+          0,
+          { cardId: 'segments' }
         ));
       }
 
-      // ── Section Headers ─────────────────────────────────────────
       if (elf.sections.length > 0) {
         wrap.appendChild(this._renderSection(
           '📑 Sections (' + elf.sections.length + ')',
-          this._renderSections(elf)
+          this._renderSections(elf),
+          0,
+          { cardId: 'sections' }
         ));
       }
 
-      // ── Dynamic Libraries ───────────────────────────────────────
       if (elf.neededLibs.length > 0 || elf.soname || elf.dynamic.length > 0) {
         wrap.appendChild(this._renderSection(
           '📚 Dynamic Linking' + (elf.neededLibs.length > 0 ? ' (' + elf.neededLibs.length + ' libraries)' : ''),
-          this._renderDynamic(elf)
+          this._renderDynamic(elf),
+          0,
+          { cardId: 'dynamic' }
         ));
       }
 
-      // ── Symbols ─────────────────────────────────────────────────
       const importSyms = elf.dynsyms.filter(s => s.name && s.shndx === 0 && (s.type === 2 || s.bind === 1 || s.bind === 2));
       const exportSyms = elf.dynsyms.filter(s => s.name && s.shndx !== 0 && (s.bind === 1 || s.bind === 2));
 
@@ -1219,7 +1264,8 @@ class ElfRenderer {
         wrap.appendChild(this._renderSection(
           '📥 Imported Symbols (' + importSyms.length + ')',
           this._renderSymbols(importSyms, true),
-          importSyms.length
+          importSyms.length,
+          { cardId: 'symbols' }
         ));
       }
 
@@ -1227,22 +1273,21 @@ class ElfRenderer {
         wrap.appendChild(this._renderSection(
           '📤 Exported Symbols (' + exportSyms.length + ')',
           this._renderSymbols(exportSyms, false),
-          exportSyms.length
+          exportSyms.length,
+          { cardId: 'symbols' }
         ));
       }
 
-      // ── Notes ───────────────────────────────────────────────────
       if (elf.notes.length > 0) {
         wrap.appendChild(this._renderSection(
           '📝 Notes (' + elf.notes.length + ')',
-          this._renderNotes(elf)
+          this._renderNotes(elf),
+          0,
+          { cardId: 'notes' }
         ));
       }
 
       // ── Overlay (appended payload past end-of-image) ───────────────
-      // Bytes past `max(sh.offset + sh.size)` across non-SHT_NOBITS
-      // sections are the overlay. Stripped binaries without section
-      // headers fall back to program-header extent.
       try {
         const oStart = this._computeOverlayStart(elf);
         if (oStart > 0 && oStart < bytes.length && typeof BinaryOverlay !== 'undefined') {
@@ -1253,16 +1298,16 @@ class ElfRenderer {
             baseName: (fileName || 'binary').replace(/\.[^.]+$/, ''),
             subtitle: 'past end-of-image',
           });
-          wrap.appendChild(this._renderSection('📎 Overlay', el));
+          wrap.appendChild(this._renderSection('📎 Overlay', el, 0, { cardId: 'overlay' }));
         }
       } catch (_) { /* overlay drill-down is best-effort */ }
-
-      // ── Strings ─────────────────────────────────────────────────
 
       if (elf.strings.length > 0) {
         wrap.appendChild(this._renderSection(
           '🔤 Strings (' + elf.strings.length + ')',
-          this._renderStrings(elf)
+          this._renderStrings(elf),
+          0,
+          { cardId: 'strings' }
         ));
       }
 
@@ -1401,12 +1446,34 @@ class ElfRenderer {
     return end;
   }
 
-  _renderSection(title, contentEl, rowCount) {
-
+  // Render a collapsible Tier-C reference card. `opts.cardId` opts the
+  // card into the triage auto-open system (see binary-triage.js). Clean
+  // ELF samples render with every card closed; anomalous samples (RWX
+  // section, executable stack, DT_RPATH / DT_RUNPATH, overlay present …)
+  // auto-open the flagged cards. Mirrored in pe-renderer.js / macho-
+  // renderer.js. Card-id keys are defined in binary-anomalies.js::_detectElf().
+  _renderSection(title, contentEl, rowCount, opts) {
     const sec = document.createElement('details');
     sec.className = 'elf-section';
     const collapse = rowCount && rowCount > 50;
-    sec.open = !collapse;
+    const cardId = opts && opts.cardId;
+    let open;
+    if (cardId) {
+      let auto = false;
+      try {
+        if (typeof BinaryTriage !== 'undefined') {
+          auto = BinaryTriage.shouldAutoOpen({
+            parsed: this._parsed,
+            findings: this._findings || {},
+            format: 'ELF',
+          }, cardId);
+        }
+      } catch (_) { /* best-effort */ }
+      open = auto && !collapse;
+    } else {
+      open = !collapse;
+    }
+    sec.open = !!open;
     const sum = document.createElement('summary');
     sum.innerHTML = this._esc(title) + (collapse ? ` <span class="bin-collapse-note">${rowCount} rows — click to expand</span>` : '');
     sec.appendChild(sum);
@@ -1689,8 +1756,20 @@ class ElfRenderer {
     const div = document.createElement('div');
     div.className = 'elf-strings-container';
 
+    // Categorised strings preview — PDB / user-path / Rust-panic paths
+    // are the only categories that realistically hit on ELF corpora
+    // (the Windows-specific mutex / pipe / registry regexes never match),
+    // but they're exactly the attribution pivots an ELF triage wants.
+    try {
+      if (typeof BinaryStrings !== 'undefined' && BinaryStrings.renderCategorisedStringsTable) {
+        const catCard = BinaryStrings.renderCategorisedStringsTable(elf.strings || []);
+        if (catCard) div.appendChild(catCard);
+      }
+    } catch (_) { /* best-effort */ }
+
     // Save/Copy pill group for strings
     const pillBar = document.createElement('div');
+
     pillBar.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:8px;';
     const pillGroup = document.createElement('div');
     pillGroup.className = 'btn-pill-group';
@@ -2328,6 +2407,11 @@ class ElfRenderer {
       findings.autoExec = ['ELF parsing partially failed: ' + e.message];
     }
 
+    // Stash the completed findings on the instance so render() — which
+    // runs immediately after analyzeForSecurity on the shared _loadFile
+    // path — can feed them into the Tier-A Triage Band without a second
+    // pass over the buffer. Paralleled in pe-renderer.js / macho-renderer.js.
+    this._findings = findings;
     return findings;
   }
 }
