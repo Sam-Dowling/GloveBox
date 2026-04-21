@@ -340,6 +340,11 @@ The [`examples/`](examples/) directory contains sample files for every supported
 - [`pe/signed-example.dll`](examples/pe/signed-example.dll) — Authenticode-signed DLL
 - [`elf/example`](examples/elf/example) — Linux ELF binary with symbols, segments, and security checks
 - [`macos-system/example.dylib`](examples/macos-system/example.dylib) — macOS Mach-O binary with load commands and code signature
+- **Overlay drill-down samples** — PE / ELF / Mach-O binaries with bytes appended past the declared end-of-image to exercise the Phase-3 overlay detector:
+  - [`pe/overlay-pe-in-pe.exe`](examples/pe/overlay-pe-in-pe.exe) — `example.exe` with a second copy of itself appended as the overlay; click the Overlay card to drill into the embedded PE
+  - [`pe/overlay-post-authenticode.exe`](examples/pe/overlay-post-authenticode.exe) — `signed-example.exe` with random bytes appended *past* the Authenticode blob. The signature itself is exempted; the trailing tail flags as **critical (T1553.002)** — the classic post-sign tamper pattern
+  - [`elf/overlay-zip-elf`](examples/elf/overlay-zip-elf) — ELF64 with a valid ZIP appended; the Overlay card recognises the `PK` magic and drill-down opens the ZIP renderer
+  - [`macos-system/overlay-random.dylib`](examples/macos-system/overlay-random.dylib) — thin Mach-O with 64 KiB of random bytes appended; no magic match + entropy ≈ 8.0 + size > 10 % of file flags as **high (T1027.002 — Obfuscated Files or Information: Software Packing)**
 
 ### macOS scripts ([`examples/macos-scripts/`](examples/macos-scripts/))
 
