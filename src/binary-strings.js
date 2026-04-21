@@ -53,6 +53,7 @@ const BinaryStrings = (() => {
     pdb:       20,
     userPath:  30,
     registry:  30,
+    rustPanic: 20,
   };
 
   // ── Patterns ────────────────────────────────────────────────────────
@@ -103,6 +104,26 @@ const BinaryStrings = (() => {
   // is usable as-is.
   const REGISTRY_RX = /\b(?:HKLM|HKCU|HKCR|HKU|HKCC|HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER|HKEY_CLASSES_ROOT|HKEY_USERS|HKEY_CURRENT_CONFIG)\\(?:[A-Za-z0-9 _.\-]+\\){1,12}[A-Za-z0-9 _.\-]{1,80}/g;
 
+  // Rust panic sources — strong attribution + toolchain signal.
+  //
+  // When a Rust binary is compiled without `strip = "symbols"` (the
+  // default for `cargo build`), the `panicked at '...', src/foo.rs:42:5`
+  // literals survive into `.rdata` / `__rodata` and leak:
+  //   • the exact `.rs` source path the panic!() macro was expanded in
+  //   • often the build-host absolute prefix on nightly toolchains
+  //   • the library / crate name via the `/rustc/<hash>/library/…`
+  //     pattern (the Rust compiler's own stdlib)
+  //
+  // The regex matches both the classic Rust ≤ 1.72 shape:
+  //   `panicked at 'assertion failed', src/lib.rs:42:9`
+  // and the modern Rust ≥ 1.73 shape (no quoted message, different order):
+  //   `panicked at src/lib.rs:42:9:\nassertion failed`
+  //
+  // Capture group 1 is the `.rs` source path — that's what we surface as
+  // the IOC; the full match is kept for the `note` field so the analyst
+  // can see the surrounding panic context at a glance.
+  const RUST_PANIC_RX = /panicked at (?:'[^'\n]{0,200}', )?((?:\/|[A-Za-z]:\\)?[^\s"'<>|?*\r\n\x00]{1,200}\.rs):\d+:\d+/g;
+
   // ── Helpers ─────────────────────────────────────────────────────────
   function _normLines(strings) {
     if (Array.isArray(strings)) return strings.join('\n');
@@ -145,6 +166,7 @@ const BinaryStrings = (() => {
         ..._collect(corpus, USER_NIX_RX, { requireMixed: true, group: 1 }),
       ],
       registryPaths: _collect(corpus, REGISTRY_RX, { requireMixed: true }),
+      rustPanics:    _collect(corpus, RUST_PANIC_RX, { requireMixed: true, group: 1 }),
     };
   }
 
@@ -168,6 +190,7 @@ const BinaryStrings = (() => {
       pdbPaths: cats.pdbPaths.length,
       userPaths: cats.userPaths.length,
       registryPaths: cats.registryPaths.length,
+      rustPanics: cats.rustPanics.length,
     };
     if (typeof pushIOC !== 'function') return counts;
 
@@ -196,6 +219,10 @@ const BinaryStrings = (() => {
     pushCapped(cats.pdbPaths,      CAPS.pdb,      _F, 'PDB path (debug-info — build-host attribution leak)',              'info',   'PDB paths');
     pushCapped(cats.userPaths,     CAPS.userPath, _F, 'User-home / build-tree path (attribution leak)',                   'info',   'Build-host paths');
     pushCapped(cats.registryPaths, CAPS.registry, _R, 'Registry key reference (persistence / config, T1547.001)',         'medium', 'Registry keys');
+    // Rust panic-source paths are attribution gold — they leak the
+    // build-host source tree and often the crate name. Emit as FILE_PATH
+    // info-tier so they're pivotable in the sidebar without bumping risk.
+    pushCapped(cats.rustPanics,    CAPS.rustPanic, _F, 'Rust panic source path (toolchain attribution leak)',              'info',   'Rust panic paths');
 
     return counts;
   }

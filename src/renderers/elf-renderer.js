@@ -2029,8 +2029,9 @@ class ElfRenderer {
       try {
         if (typeof BinaryStrings !== 'undefined' && BinaryStrings.emit) {
           const strCounts = BinaryStrings.emit(findings, allStrings);
-          if (strCounts.pdbPaths)  findings.metadata['PDB Paths (str)']  = String(strCounts.pdbPaths);
-          if (strCounts.userPaths) findings.metadata['Build-host Paths'] = String(strCounts.userPaths);
+          if (strCounts.pdbPaths)   findings.metadata['PDB Paths (str)']   = String(strCounts.pdbPaths);
+          if (strCounts.userPaths)  findings.metadata['Build-host Paths']  = String(strCounts.userPaths);
+          if (strCounts.rustPanics) findings.metadata['Rust Panic Paths']  = String(strCounts.rustPanics);
         }
       } catch (_) { /* classification is best-effort */ }
 

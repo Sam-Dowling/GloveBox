@@ -588,6 +588,12 @@ class PeRenderer {
     // / early-execution vector — most benign binaries have none.
     pe.tls = this._parseTlsCallbacks(bytes, pe.dataDirectories, pe.sections, is64, pe.optional.imageBase);
 
+    // ── .NET / CLR (IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR = 14) ─────
+    // If present, the PE is a managed (.NET) assembly. The CLR header
+    // points at the metadata root which exposes the runtime version
+    // string ("v4.0.30319" etc.) and the IL-only / strong-name flags.
+    pe.dotnet = this._parseClrHeader(bytes, pe.dataDirectories, pe.sections);
+
     // ── Entry-point sanity ─────────────────────────────────────────
     // Classify which section the EP lives in and flag the well-known
     // bad cases: EP outside any section (orphaned loader), or EP in a
@@ -1430,6 +1436,113 @@ class PeRenderer {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  //  .NET CLR Header parser (IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR = 14)
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  // IMAGE_COR20_HEADER layout (72 bytes):
+  //   u32 cb                 · header size (always 72)
+  //   u16 MajorRuntimeVersion / u16 MinorRuntimeVersion
+  //   u32 MetaData.RVA       / u32 MetaData.Size     · CLR metadata root
+  //   u32 Flags              · COMIMAGE_FLAGS_* bitfield
+  //   u32 EntryPointToken / RVA
+  //   u32 Resources.RVA      / u32 Resources.Size
+  //   u32 StrongName.RVA     / u32 StrongName.Size   · strong-name signature
+  //   u32 CodeManagerTable   (2×u32) · VTableFixups (2×u32) ·
+  //   u32 ExportAddressTableJumps (2×u32) · u32 ManagedNativeHeader (2×u32)
+  //
+  // Metadata root (at MetaData.RVA):
+  //   u32 "BSJB"  u16 major  u16 minor  u32 reserved
+  //   u32 versionLen          · NUL-padded to 4
+  //   char[versionLen] version  e.g. "v4.0.30319"
+  //
+  // The runtime version + Il-only / strong-name flags are the analyst-
+  // useful pivots; we surface them on `pe.dotnet` and the render card.
+  _parseClrHeader(bytes, dataDirs, sections) {
+    if (!dataDirs || !dataDirs[14] || dataDirs[14].rva === 0 || dataDirs[14].size === 0) return null;
+    try {
+      const clrOff = this._rvaToOffset(dataDirs[14].rva, sections);
+      if (clrOff + 72 > bytes.length) return null;
+
+      const cb               = this._u32(bytes, clrOff + 0);
+      const majorRuntimeVer  = this._u16(bytes, clrOff + 4);
+      const minorRuntimeVer  = this._u16(bytes, clrOff + 6);
+      const metadataRva      = this._u32(bytes, clrOff + 8);
+      const metadataSize     = this._u32(bytes, clrOff + 12);
+      const flags            = this._u32(bytes, clrOff + 16);
+      const entryPointToken  = this._u32(bytes, clrOff + 20);
+      const resourcesRva     = this._u32(bytes, clrOff + 24);
+      const resourcesSize    = this._u32(bytes, clrOff + 28);
+      const strongNameRva    = this._u32(bytes, clrOff + 32);
+      const strongNameSize   = this._u32(bytes, clrOff + 36);
+
+      // Sanity check: cb should be 72 on any real CLR header
+      if (cb !== 72 && cb !== 0x48) {
+        // Be permissive — some tooling writes slightly different sizes.
+        // Only reject obviously bogus values.
+        if (cb < 48 || cb > 256) return null;
+      }
+
+      const isILOnly         = !!(flags & 0x00000001);
+      const requires32Bit    = !!(flags & 0x00000002);
+      const isILLibrary      = !!(flags & 0x00000004);
+      const hasStrongName    = !!(flags & 0x00000008) || (strongNameRva > 0 && strongNameSize > 0);
+      const hasNativeEp      = !!(flags & 0x00000010);
+      const trackDebugData   = !!(flags & 0x00010000);
+      const prefer32Bit      = !!(flags & 0x00020000);
+
+      const result = {
+        cb,
+        runtimeVersion: `${majorRuntimeVer}.${minorRuntimeVer}`,
+        flags,
+        isILOnly,
+        requires32Bit,
+        isILLibrary,
+        hasStrongName,
+        hasNativeCode: hasNativeEp || !isILOnly,
+        hasNativeEntryPoint: hasNativeEp,
+        trackDebugData,
+        prefer32Bit,
+        entryPointToken,
+        metadataRva,
+        metadataSize,
+        resourcesRva,
+        resourcesSize,
+        strongNameRva,
+        strongNameSize,
+        runtimeVersionString: null,
+        metadataMajor: null,
+        metadataMinor: null,
+      };
+
+      // ── Metadata root — runtime version string (e.g. "v4.0.30319") ──
+      if (metadataRva > 0 && metadataSize > 16) {
+        const mdOff = this._rvaToOffset(metadataRva, sections);
+        if (mdOff + 16 <= bytes.length) {
+          const sig = this._u32(bytes, mdOff);
+          if (sig === 0x424A5342) { // "BSJB"
+            result.metadataMajor = this._u16(bytes, mdOff + 4);
+            result.metadataMinor = this._u16(bytes, mdOff + 6);
+            const verLen = this._u32(bytes, mdOff + 12);
+            if (verLen > 0 && verLen <= 256 && mdOff + 16 + verLen <= bytes.length) {
+              let s = '';
+              for (let i = 0; i < verLen; i++) {
+                const c = bytes[mdOff + 16 + i];
+                if (c === 0) break;
+                if (c >= 0x20 && c < 0x7F) s += String.fromCharCode(c);
+              }
+              if (s) result.runtimeVersionString = s;
+            }
+          }
+        }
+      }
+
+      return result;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   //  Entry-point sanity
   // ═══════════════════════════════════════════════════════════════════════
   //
@@ -1834,6 +1947,18 @@ class PeRenderer {
         wrap.appendChild(this._renderSection(
           '⏱ TLS Callbacks (' + pe.tls.callbacks.length + ')',
           this._renderTlsCallbacks(pe)
+        ));
+      }
+
+      // ── .NET CLR Header (managed assemblies) ───────────────────────
+      // Present when IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR (index 14) is
+      // populated; _parseClrHeader() surfaces the runtime version and
+      // the IL-only / strong-name flags — the three pivots an analyst
+      // cares about when triaging a managed sample.
+      if (pe.dotnet) {
+        wrap.appendChild(this._renderSection(
+          '🔷 .NET CLR Header',
+          this._renderDotnet(pe)
         ));
       }
 
@@ -2470,6 +2595,55 @@ class PeRenderer {
     return div;
   }
 
+  // ═══════════════════════════════════════════════════════════════════════
+  //  .NET CLR Header renderer
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  // Displays the three pivots an analyst cares about when triaging a
+  // managed assembly: the CLR runtime version string (from the BSJB
+  // metadata root), the IL-only / native-code flags, and the strong-
+  // name signing status. Everything else (metadata RVA / size / token /
+  // resources RVA) is shown as secondary rows so the pivot block stays
+  // compact.
+
+  _renderDotnet(pe) {
+    const d = pe.dotnet;
+    const div = document.createElement('div');
+    const info = document.createElement('div');
+    info.className = 'pe-rich-info';
+    const bits = [];
+    if (d.isILOnly) bits.push('IL-only'); else bits.push('Mixed / Native');
+    if (d.hasStrongName) bits.push('Strong-name signed');
+    if (d.prefer32Bit) bits.push('Prefer 32-bit');
+    if (d.isILLibrary) bits.push('IL Library');
+    info.textContent = `Managed .NET assembly — ${d.runtimeVersionString || ('runtime ' + d.runtimeVersion)} · ${bits.join(' · ')}`;
+    div.appendChild(info);
+
+    const rows = [
+      ['Runtime Version (CLR)', d.runtimeVersionString || '(not parsed)'],
+      ['Runtime Major / Minor', d.runtimeVersion],
+      ['Metadata Version', d.metadataMajor != null ? (d.metadataMajor + '.' + d.metadataMinor) : '—'],
+      ['Flags', this._hex(d.flags, 8)],
+      ['IL Only', d.isILOnly ? '✅ Yes' : '❌ No'],
+      ['Native Code', d.hasNativeCode ? '⚠ Yes (mixed-mode)' : 'No'],
+      ['Native Entry Point', d.hasNativeEntryPoint ? '⚠ Yes' : 'No'],
+      ['Strong-Name Signed', d.hasStrongName ? '✅ Yes' : '❌ No'],
+      ['Prefer 32-bit', d.prefer32Bit ? 'Yes' : 'No'],
+      ['Requires 32-bit', d.requires32Bit ? 'Yes' : 'No'],
+      ['Track Debug Data', d.trackDebugData ? 'Yes' : 'No'],
+      ['Entry Point Token', this._hex(d.entryPointToken, 8)],
+      ['Metadata Root RVA / Size', this._hex(d.metadataRva, 8) + '  ·  ' + d.metadataSize.toLocaleString() + ' B'],
+      ['Resources RVA / Size', d.resourcesRva
+        ? (this._hex(d.resourcesRva, 8) + '  ·  ' + d.resourcesSize.toLocaleString() + ' B')
+        : '—'],
+      ['Strong-Name Sig RVA / Size', d.strongNameRva
+        ? (this._hex(d.strongNameRva, 8) + '  ·  ' + d.strongNameSize.toLocaleString() + ' B')
+        : '—'],
+    ];
+    div.appendChild(this._buildTable(['Field', 'Value'], rows, true));
+    return div;
+  }
+
   _renderCertificates(certs) {
     const div = document.createElement('div');
     for (let i = 0; i < certs.length; i++) {
@@ -2876,6 +3050,50 @@ class PeRenderer {
         findings.metadata['RichHash'] = pe.richHeader.richHash;
       }
 
+      // ── .NET / CLR managed-assembly metadata ───────────────────────
+      // Populated by `_parseClrHeader()` during `_parse()`. Surfaced as
+      // metadata rows (runtime version, IL-only / strong-name flags) and
+      // as an IOC.PATTERN so analysts can pivot on "managed sample"
+      // clusters. Managed .NET code is T1059.005 — a first-class
+      // execution vector distinct from native code.
+      if (pe.dotnet) {
+        findings.metadata['Format'] = '.NET Assembly';
+        findings.metadata['CLR Runtime'] = pe.dotnet.runtimeVersionString || pe.dotnet.runtimeVersion;
+        if (pe.dotnet.isILOnly)      findings.metadata['IL Only']            = 'Yes';
+        if (pe.dotnet.hasNativeCode) findings.metadata['Mixed-Mode / Native'] = 'Yes';
+        if (pe.dotnet.hasStrongName) findings.metadata['Strong-Name Signed'] = 'Yes';
+        if (pe.dotnet.prefer32Bit)   findings.metadata['Prefer 32-bit']      = 'Yes';
+        const flagBits = [];
+        if (pe.dotnet.isILOnly) flagBits.push('IL-only');
+        if (pe.dotnet.hasNativeCode) flagBits.push('mixed-mode native');
+        if (pe.dotnet.hasStrongName) flagBits.push('strong-name signed');
+        pushIOC(findings, {
+          type: IOC.PATTERN,
+          value: '.NET Managed Assembly [T1059.005]',
+          severity: 'medium',
+          note: `Managed .NET binary — CLR runtime ${pe.dotnet.runtimeVersionString || pe.dotnet.runtimeVersion}${flagBits.length ? ' (' + flagBits.join(', ') + ')' : ''}.`,
+          _noDomainSibling: true,
+        });
+        issues.push(`.NET managed assembly — CLR runtime ${pe.dotnet.runtimeVersionString || pe.dotnet.runtimeVersion} (T1059.005)`);
+        riskScore += 1;
+        if (pe.dotnet.hasStrongName) {
+          pushIOC(findings, {
+            type: IOC.PATTERN,
+            value: 'Strong-name signed .NET assembly',
+            severity: 'info',
+            note: `Strong-name signature blob at RVA ${this._hex(pe.dotnet.strongNameRva, 8)} (${pe.dotnet.strongNameSize.toLocaleString()} B). Strong-name is an integrity check, not a trust anchor.`,
+            _noDomainSibling: true,
+          });
+        }
+        if (pe.dotnet.hasNativeCode && !pe.dotnet.isILOnly) {
+          // Mixed-mode assemblies (C++/CLI etc.) execute native code
+          // alongside IL — doubles the attack surface because both paths
+          // run inside the same process.
+          issues.push('.NET mixed-mode assembly — embeds native (non-IL) code paths alongside managed IL');
+          riskScore += 0.5;
+        }
+      }
+
 
       // ── Security feature checks ────────────────────────────────────
       if (!pe.security.aslr) { issues.push('ASLR disabled — vulnerable to memory exploitation'); riskScore += 1; }
@@ -3007,6 +3225,7 @@ class PeRenderer {
           if (strCounts.pdbPaths)      findings.metadata['PDB Paths (str)']  = String(strCounts.pdbPaths);
           if (strCounts.userPaths)     findings.metadata['Build-host Paths'] = String(strCounts.userPaths);
           if (strCounts.registryPaths) findings.metadata['Registry Keys']    = String(strCounts.registryPaths);
+          if (strCounts.rustPanics)    findings.metadata['Rust Panic Paths'] = String(strCounts.rustPanics);
         }
       } catch (_) { /* classification is best-effort */ }
 

@@ -393,6 +393,43 @@ subtly misbehave.
   Windows-specific categories (mutex / pipe / registry) are trivially
   empty on ELF / Mach-O — those renderers therefore only mirror the
   `pdbPaths` / `userPaths` counts into metadata.
+- **Rust panic paths (`src/binary-strings.js`)** join the categorised
+  string pass to mine build-host attribution leaks from Rust binaries.
+  `CAPS.rustPanic = 20` bounds the per-file emit; `RUST_PANIC_RX` matches
+  both the classic `panicked at '…', src/file.rs:nnn:mm` shape and the
+  Rust ≥ 1.73 inverted form `panicked at src/file.rs:nnn:mm: '…'`. Each
+  hit is pushed through `pushIOC()` as `IOC.FILE_PATH` info-tier with
+  `_noDomainSibling: true` (a `src/foo/bar.rs` leak is never a
+  registrable domain), and the count is mirrored onto
+  `findings.metadata['Rust Panic Paths']` from each of the three binary
+  renderers. Panic strings survive `strip` because they live in
+  `.rodata` / `__TEXT,__cstring` — making them a durable attribution
+  tell when PDB paths have been stripped.
+- **.NET CLR header parsing (`PeRenderer._parseClrHeader`)** surfaces
+  managed-assembly metadata directly from the PE. The parser reads
+  `IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR` (directory index 14) → the 72-
+  byte CLR header at its RVA → the `COMIMAGE_FLAGS_*` bitfield (`0x01`
+  IL-only, `0x02` requires 32-bit, `0x04` IL-library, `0x08` strong-name
+  signed, `0x10` native-entrypoint, `0x10000` track-debug-data,
+  `0x20000` prefer-32-bit) → the `MetaData` RVA/size, which is then
+  resolved through the section table to locate the BSJB metadata root
+  magic `0x424A5342` and the trailing NUL-terminated runtime-version
+  string (e.g. `v4.0.30319`). Results are attached as `pe.dotnet =
+  {cb, runtimeVersion, runtimeVersionString, flags, isILOnly,
+  requires32Bit, isILLibrary, hasStrongName, hasNativeCode,
+  hasNativeEntryPoint, trackDebugData, prefer32Bit, entryPointToken,
+  metadataRva, metadataSize, resourcesRva, resourcesSize,
+  strongNameRva, strongNameSize, metadataMajor, metadataMinor}` and
+  rendered as the 🔷 .NET CLR Header card between TLS Callbacks and
+  Authenticode Certificates via `_renderDotnet(pe)`.
+  `analyzeForSecurity()` mirrors the salient bits onto
+  `findings.metadata` (`'Format'`, `'CLR Runtime'`, `'IL Only'`,
+  `'Mixed-Mode / Native'`, `'Strong-Name Signed'`, `'Prefer 32-bit'`)
+  and pushes `IOC.PATTERN` medium `.NET Managed Assembly [T1059.005]`
+  (with an optional info-tier strong-name-signed sibling row). Risk
+  bumps: managed assembly `+1`; mixed-mode / native-hosted CLR `+0.5`
+  on top because managed + native in one image is a common unmanaged-
+  shellcode host.
 - **`NpmRenderer` accepts three input shapes** — gzip tarball (`.tgz`),
   a bare `package.json` manifest, or a `package-lock.json` /
   `npm-shrinkwrap.json` lockfile — routed by dedicated sniff helpers in
