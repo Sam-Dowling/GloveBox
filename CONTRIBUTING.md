@@ -270,6 +270,29 @@ subtly misbehave.
   auto-emitted IOC in an object nobody is rendering. `PdfRenderer` is
   the model: it already awaits `pdfjs` page rendering and calls the
   sync `decodeRGBA()` on pixels it already owns.
+- **Binary overlay detection is shared across PE / ELF / Mach-O** via
+  `src/binary-overlay.js` (`BinaryOverlay.compute()` + `renderCard()`).
+  Overlay start is computed per-format: PE uses
+  `max(section.PointerToRawData + section.SizeOfRawData)`; ELF uses
+  `max(sh.sh_offset + sh.sh_size)` across non-`SHT_NOBITS` section
+  headers with a `max(ph_offset + ph_filesz)` program-header fallback
+  for stripped binaries; Mach-O uses `max(segment.fileoff + segment.filesize)`
+  (plus a post-code-signature bound). Fat/Universal walks every slice
+  and also checks for bytes past the Fat container's tail. The card
+  dispatches an `open-inner-file` `CustomEvent` whose `detail` is a
+  synthetic `File` — `app-load.js::pe()` / `elf()` / `macho()` each call
+  `this._wireInnerFileListener(docEl, file.name)` so the overlay routes
+  through the standard nav-stack drill-down path. **Authenticode
+  exemption (PE only):** the overlay card passes
+  `authenticodeRange: [certDD.rva, certDD.rva + certDD.size]` so the
+  signature blob itself is excluded from the overlay's "unusual" flag.
+  Bytes appended *past* the signature blob are the classic post-sign
+  tamper and escalate to `critical` (T1553.002). SHA-256 is computed
+  asynchronously via `crypto.subtle.digest` (CSP-safe) and is written
+  back onto `findings.metadata['Overlay SHA-256']` after
+  `analyzeForSecurity` has returned — it appears on the next sidebar
+  refresh. Entropy is capped at a 2 MiB sample to avoid freezing on
+  multi-GiB installers.
 - **Shared binary-analysis modules (`src/hashes.js`, `src/capabilities.js`)**
   are loaded before the renderers and are the canonical path for
   cross-format pivots. `hashes.js` exposes `md5()`,

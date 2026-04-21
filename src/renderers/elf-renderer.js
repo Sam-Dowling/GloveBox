@@ -1128,7 +1128,26 @@ class ElfRenderer {
         ));
       }
 
+      // ── Overlay (appended payload past end-of-image) ───────────────
+      // Bytes past `max(sh.offset + sh.size)` across non-SHT_NOBITS
+      // sections are the overlay. Stripped binaries without section
+      // headers fall back to program-header extent.
+      try {
+        const oStart = this._computeOverlayStart(elf);
+        if (oStart > 0 && oStart < bytes.length && typeof BinaryOverlay !== 'undefined') {
+          const { el } = BinaryOverlay.renderCard({
+            bytes,
+            overlayStart: oStart,
+            fileSize: bytes.length,
+            baseName: (fileName || 'binary').replace(/\.[^.]+$/, ''),
+            subtitle: 'past end-of-image',
+          });
+          wrap.appendChild(this._renderSection('📎 Overlay', el));
+        }
+      } catch (_) { /* overlay drill-down is best-effort */ }
+
       // ── Strings ─────────────────────────────────────────────────
+
       if (elf.strings.length > 0) {
         wrap.appendChild(this._renderSection(
           '🔤 Strings (' + elf.strings.length + ')',
@@ -1232,7 +1251,47 @@ class ElfRenderer {
   //  Section renderers (DOM builders)
   // ═══════════════════════════════════════════════════════════════════════
 
+  /**
+   * ELF overlay start = max(sh.offset + sh.size) across all sections whose
+   * type ≠ SHT_NOBITS (8). SHT_NOBITS sections don't consume file bytes
+   * (.bss, .tbss) so they must be excluded. For stripped binaries whose
+   * section headers have been removed or zeroed, fall back to the program-
+   * header extent: max(ph.offset + ph.filesz) across all loadable segments.
+   * Returns 0 when neither probe yields a positive extent.
+   *
+   * Shared by render() (for the overlay drill-down card) and
+   * analyzeForSecurity() (for risk escalation + SHA-256 metadata).
+   */
+  _computeOverlayStart(elf) {
+    if (!elf) return 0;
+    let end = 0;
+    if (Array.isArray(elf.sections)) {
+      for (const s of elf.sections) {
+        if (!s) continue;
+        if (s.type === 8) continue;           // SHT_NOBITS — no file bytes
+        if (!s.size || !(s.offset >= 0)) continue;
+        const e = (s.offset + s.size);
+        if (e > end) end = e;
+      }
+    }
+    if (end === 0 && Array.isArray(elf.segments)) {
+      for (const p of elf.segments) {
+        if (!p || !p.filesz) continue;
+        const e = (p.offset + p.filesz);
+        if (e > end) end = e;
+      }
+    }
+    // Also bound against section-header-table end: the SHT itself can live
+    // past the last section, and anything past it is still overlay.
+    if (elf.shoff && elf.shnum && elf.shentsize) {
+      const shtEnd = elf.shoff + elf.shnum * elf.shentsize;
+      if (shtEnd > end) end = shtEnd;
+    }
+    return end;
+  }
+
   _renderSection(title, contentEl, rowCount) {
+
     const sec = document.createElement('details');
     sec.className = 'elf-section';
     const collapse = rowCount && rowCount > 50;
@@ -2017,6 +2076,51 @@ class ElfRenderer {
           });
         }
       }
+      // ── Overlay detection (appended payload past end-of-image) ─────
+      // ELF overlay = bytes past max(sh.offset + sh.size) across non-
+      // SHT_NOBITS sections (or max program-header extent for stripped
+      // binaries). A large high-entropy overlay with no recognised
+      // container magic is a classic stacked-dropper / packed-payload
+      // shape. No Authenticode equivalent to special-case on ELF.
+      try {
+        const oStart = this._computeOverlayStart(elf);
+        if (oStart > 0 && oStart < bytes.length && typeof BinaryOverlay !== 'undefined') {
+          const overlayBytes = bytes.subarray(oStart, bytes.length);
+          const overlaySize = overlayBytes.length;
+          const overlayPct = (overlaySize / Math.max(1, bytes.length)) * 100;
+          const overlayEntropy = BinaryOverlay.shannonEntropy(overlayBytes);
+          const overlayMagic = BinaryOverlay.sniffMagic(overlayBytes.subarray(0, 32));
+
+          findings.metadata['Overlay Size'] = overlaySize.toLocaleString() + ' bytes';
+          findings.metadata['Overlay Entropy'] = overlayEntropy.toFixed(3);
+          if (overlayMagic) findings.metadata['Overlay Magic'] = overlayMagic.label;
+
+          const large = overlayPct > 10;
+          const highEntropy = overlayEntropy > 7.2;
+          const unrecognised = !overlayMagic;
+          if (large && highEntropy && unrecognised) {
+            issues.push(`Large high-entropy overlay (${overlaySize.toLocaleString()} B, ${overlayPct.toFixed(1)}% of file, entropy ${overlayEntropy.toFixed(2)}) with no recognised container magic — likely packed / encrypted payload`);
+            riskScore += 2;
+            pushIOC(findings, {
+              type: IOC.PATTERN,
+              value: `High-entropy overlay [T1027.002]`,
+              severity: 'high',
+              note: `Appended payload: ${overlaySize.toLocaleString()} B (${overlayPct.toFixed(1)}%), entropy ${overlayEntropy.toFixed(2)}, no recognised magic`,
+              _noDomainSibling: true,
+            });
+          } else if (overlayMagic) {
+            findings.metadata['Overlay Type'] = `Appended ${overlayMagic.label}`;
+          }
+
+          // SHA-256 lands on metadata once the async digest settles; the
+          // sidebar will pick it up on the next refresh. The render-side
+          // card also populates its own row via the same promise.
+          BinaryOverlay.sha256Hex(overlayBytes).then(hex => {
+            if (hex) findings.metadata['Overlay SHA-256'] = hex;
+          });
+        }
+      } catch (_) { /* overlay analysis is best-effort */ }
+
       // Classic-pivot fields: interpreter leaks the target libc flavour,
       // SONAME is the canonical lib identifier, Go Module Path leaks the
       // build-host VCS URL. Attribution fluff stays metadata-only per the
@@ -2026,7 +2130,9 @@ class ElfRenderer {
         'SONAME':             IOC.FILE_PATH,
         'Go Module Path':     IOC.PATTERN,
         'Import Hash (MD5)':  IOC.HASH,
+        'Overlay SHA-256':    IOC.HASH,
       });
+
 
       // ── Capability tagging (capa-lite) ─────────────────────────────
       // Turn the wall of "X suspicious symbols" into named MITRE-tagged

@@ -1561,6 +1561,31 @@ class PeRenderer {
       // ── Data Directories ───────────────────────────────────────────
       wrap.appendChild(this._renderSection('📂 Data Directories', this._renderDataDirs(pe)));
 
+      // ── Overlay (appended payload past end-of-image) ───────────────
+      // Bytes past `max(section.rawDataOffset + section.rawDataSize)` are
+      // the overlay. If the Certificate Table (IMAGE_DIRECTORY_ENTRY_SECURITY)
+      // sits exactly there, it's a normal Authenticode-signed PE — we
+      // annotate that case but flag it neutrally. Anything past the cert
+      // table is a post-sign tail, the classic "sign-then-staple" tamper.
+      try {
+        const oStart = this._computeOverlayStart(pe);
+        if (oStart > 0 && oStart < bytes.length && typeof BinaryOverlay !== 'undefined') {
+          const certDD = pe.dataDirectories[4];
+          const certRange = (certDD && certDD.rva > 0 && certDD.size > 0)
+            ? [certDD.rva, certDD.rva + certDD.size]
+            : null;
+          const { el } = BinaryOverlay.renderCard({
+            bytes,
+            overlayStart: oStart,
+            fileSize: bytes.length,
+            baseName: (fileName || 'binary').replace(/\.[^.]+$/, ''),
+            subtitle: 'past end-of-image',
+            authenticodeRange: certRange,
+          });
+          wrap.appendChild(this._renderSection('📎 Overlay', el));
+        }
+      } catch (_) { /* overlay drill-down is best-effort */ }
+
       // ── Strings ────────────────────────────────────────────────────
       const totalStrings = pe.strings.ascii.length + pe.strings.unicode.length;
       if (totalStrings > 0) {
@@ -1659,7 +1684,30 @@ class PeRenderer {
   //  Section renderers (DOM builders)
   // ═══════════════════════════════════════════════════════════════════════
 
+  /**
+   * PE overlay start = max(rawDataOffset + rawDataSize) across sections
+   * whose rawDataSize > 0. Sections with rawDataSize === 0 (BSS-style,
+   * uninitialised data) do not consume file bytes and must not contribute
+   * to the end-of-image pointer. Returns 0 when the PE has no sections
+   * (should never happen for a well-formed image, but keeps the caller
+   * branch-free).
+   *
+   * Shared by render() (for the overlay drill-down card) and
+   * analyzeForSecurity() (for risk escalation + SHA-256 metadata).
+   */
+  _computeOverlayStart(pe) {
+    if (!pe || !Array.isArray(pe.sections) || pe.sections.length === 0) return 0;
+    let end = 0;
+    for (const s of pe.sections) {
+      if (!s || !s.rawDataSize) continue;
+      const e = (s.rawDataOffset >>> 0) + (s.rawDataSize >>> 0);
+      if (e > end) end = e;
+    }
+    return end;
+  }
+
   _renderSection(title, contentEl, rowCount) {
+
     const sec = document.createElement('details');
     sec.className = 'pe-section';
     const collapse = rowCount && rowCount > 50;
@@ -2512,6 +2560,89 @@ class PeRenderer {
         // note the type so the sidebar reader doesn't over-index on that.
       }
 
+      // ── Overlay detection (appended payload past end-of-image) ─────
+      // PE overlay = bytes past max(section.rawDataOffset + rawDataSize).
+      // Three possible shapes:
+      //   1. Overlay exactly matches dataDirectories[4] (Authenticode) →
+      //      normal signed binary, don't flag.
+      //   2. Bytes past the cert table → classic "sign-then-staple" tamper.
+      //      Critical finding.
+      //   3. No cert, but a large high-entropy trailer with unrecognised
+      //      magic → stacked dropper / encrypted blob. High finding.
+      // The renderer's overlay card also surfaces this; here we just
+      // drive the risk score and expose the overlay SHA-256 as a
+      // clickable IOC pivot.
+      try {
+        const oStart = this._computeOverlayStart(pe);
+        if (oStart > 0 && oStart < bytes.length && typeof BinaryOverlay !== 'undefined') {
+          const overlayBytes = bytes.subarray(oStart, bytes.length);
+          const overlaySize = overlayBytes.length;
+          const overlayPct = (overlaySize / Math.max(1, bytes.length)) * 100;
+          const overlayEntropy = BinaryOverlay.shannonEntropy(overlayBytes);
+          const overlayMagic = BinaryOverlay.sniffMagic(overlayBytes.subarray(0, 32));
+
+          const certDD = pe.dataDirectories[4];
+          const certStart = (certDD && certDD.rva > 0 && certDD.size > 0) ? certDD.rva : 0;
+          const certEnd = certStart ? (certStart + certDD.size) : 0;
+          const overlayIsJustAuthenticode = certStart > 0 && oStart === certStart && bytes.length === certEnd;
+          const overlayHasPostSignTail = certStart > 0 && bytes.length > certEnd && oStart <= certEnd;
+
+          findings.metadata['Overlay Size'] = overlaySize.toLocaleString() + ' bytes';
+          findings.metadata['Overlay Entropy'] = overlayEntropy.toFixed(3);
+          if (overlayMagic) findings.metadata['Overlay Magic'] = overlayMagic.label;
+          if (overlayIsJustAuthenticode) {
+            findings.metadata['Overlay Type'] = 'Authenticode signature (PKCS#7)';
+          } else if (overlayHasPostSignTail) {
+            findings.metadata['Overlay Type'] = 'Post-signature tail (bytes appended after Authenticode blob)';
+            issues.push(`Post-signature overlay — ${overlaySize.toLocaleString()} bytes appended *after* the Authenticode blob. Classic sign-then-staple tamper; the signature no longer covers these bytes.`);
+            riskScore += 4;
+            pushIOC(findings, {
+              type: IOC.PATTERN,
+              value: `Post-signature overlay tail [T1553.002]`,
+              severity: 'high',
+              note: `Bytes appended past the Authenticode signature (${overlaySize.toLocaleString()} B, entropy ${overlayEntropy.toFixed(2)})`,
+              _noDomainSibling: true,
+            });
+          } else if (!certStart) {
+            // No cert at all — judge the overlay on its own merits.
+            const large = overlayPct > 10;
+            const highEntropy = overlayEntropy > 7.2;
+            const unrecognised = !overlayMagic;
+            if (large && highEntropy && unrecognised) {
+              issues.push(`Large high-entropy overlay (${overlaySize.toLocaleString()} B, ${overlayPct.toFixed(1)}% of file, entropy ${overlayEntropy.toFixed(2)}) with no recognised container magic — likely packed / encrypted payload`);
+              riskScore += 2;
+              pushIOC(findings, {
+                type: IOC.PATTERN,
+                value: `High-entropy overlay [T1027.002]`,
+                severity: 'high',
+                note: `Appended payload: ${overlaySize.toLocaleString()} B (${overlayPct.toFixed(1)}%), entropy ${overlayEntropy.toFixed(2)}, no recognised magic`,
+                _noDomainSibling: true,
+              });
+            } else if (overlayMagic) {
+              findings.metadata['Overlay Type'] = `Appended ${overlayMagic.label}`;
+            }
+          }
+
+          // SHA-256 is async (crypto.subtle). We can't await here without
+          // making analyzeForSecurity async; instead compute it directly
+          // using a cheap synchronous pathway — BinaryOverlay.sha256Hex
+          // returns a Promise that resolves before most renderers finish
+          // their DOM work, but findings already landed in the sidebar.
+          // Accept that the hash row appears on a subsequent refresh; it's
+          // still a useful pivot. (The render-side card populates its own
+          // SHA-256 DOM row via promise resolution.)
+          //
+          // We skip Authenticode-exact overlays — the cert blob's SHA-256
+          // is already the "signature hash" which the Certificates section
+          // shows separately.
+          if (!overlayIsJustAuthenticode) {
+            BinaryOverlay.sha256Hex(overlayBytes).then(hex => {
+              if (hex) findings.metadata['Overlay SHA-256'] = hex;
+            });
+          }
+        }
+      } catch (_) { /* overlay analysis is best-effort */ }
+
       // ── Mirror classic-pivot metadata into IOC table ────────────────
       // PE binaries carry a set of metadata fields that are actionable
       // pivots (imphash clusters similar samples; PDB paths leak build
@@ -2528,7 +2659,9 @@ class PeRenderer {
         'Internal Name':     IOC.FILE_PATH,
         'Export DLL Name':   IOC.FILE_PATH,
         'Go Module Path':    IOC.PATTERN,
+        'Overlay SHA-256':   IOC.HASH,
       });
+
 
       // ── Capability tagging (capa-lite) ─────────────────────────────
       // Turn the wall of "X suspicious APIs" into named MITRE-tagged

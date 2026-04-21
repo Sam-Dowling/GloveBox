@@ -166,6 +166,10 @@ JS_FILES = [
     # to turn a wall of suspicious APIs into named behaviours with MITRE
     # ATT&CK IDs. Must load BEFORE the native-binary renderers.
     'src/capabilities.js',
+    # binary-overlay.js — shared overlay detection + clickable drill-down
+    # used by PE / ELF / Mach-O renderers. Exposes BinaryOverlay on window.
+    # Must load BEFORE the native-binary renderers.
+    'src/binary-overlay.js',
     'src/vba-utils.js',
     'src/yara-engine.js',
 

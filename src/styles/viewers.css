@@ -9152,3 +9152,82 @@ body.dark .npm-view .npm-dep-group {
 body.dark .npm-view .clickonce-warn code {
   color: #fbbf24;
 }
+
+/* ══════════════════════════════════════════════════════
+   BINARY OVERLAY CARD  (PE / ELF / Mach-O)
+   Shared by src/binary-overlay.js renderCard(). Lives
+   inside the Overlay <details> section of each native
+   binary renderer; the card has a header with chips,
+   a small detail grid (offset range, magic, SHA-256),
+   and a "Analyse overlay as a fresh file →" button
+   that dispatches open-inner-file up to the App shell.
+   ══════════════════════════════════════════════════════ */
+.binary-overlay-card {
+  margin: 6px 12px 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 0, 0, .1);
+  border-left: 3px solid var(--risk-med, #e67e22);
+  border-radius: 6px;
+  background: rgba(230, 162, 60, .06);
+  font-size: 13px;
+}
+
+body.dark .binary-overlay-card {
+  border-color: var(--hairline, rgba(255, 255, 255, .08));
+  border-left-color: var(--risk-med, #f2b040);
+  background: rgba(230, 162, 60, .07);
+  color: var(--text, #e8e8ea);
+}
+
+.binary-overlay-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.binary-overlay-head strong {
+  margin-right: 4px;
+}
+
+.binary-overlay-detail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  margin-top: 4px;
+  font-size: 12px;
+  color: #555;
+}
+
+body.dark .binary-overlay-detail {
+  color: var(--text-muted, #aaa);
+}
+
+.binary-overlay-detail code {
+  font-family: 'Consolas', 'Courier New', monospace;
+  background: rgba(0, 0, 0, .05);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11.5px;
+}
+
+body.dark .binary-overlay-detail code {
+  background: var(--hairline-soft, rgba(255, 255, 255, .05));
+}
+
+.binary-overlay-sha {
+  width: 100%;
+  word-break: break-all;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 11.5px;
+}
+
+.binary-overlay-actions {
+  margin-top: 8px;
+}
+
+.binary-overlay-actions .tb-btn {
+  font-size: 12px;
+}
+

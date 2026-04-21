@@ -731,17 +731,28 @@ Object.assign(App.prototype, {
       // sidebar / Summary / YARA pass all flag the XLL class correctly.
       const r = new PeRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
-      return { docEl: r.render(buffer, file.name) };
+      const docEl = r.render(buffer, file.name);
+      // Overlay card may emit `open-inner-file` when the user clicks the
+      // "Analyse overlay" button — wire the listener so the synthetic File
+      // round-trips through `_loadFile` and gets pushed onto the nav stack.
+      this._wireInnerFileListener(docEl, file.name);
+      return { docEl };
     },
     elf(file, buffer) {
       const r = new ElfRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
-      return { docEl: r.render(buffer, file.name) };
+      const docEl = r.render(buffer, file.name);
+      // Overlay card drill-down — see pe() above.
+      this._wireInnerFileListener(docEl, file.name);
+      return { docEl };
     },
     macho(file, buffer) {
       const r = new MachoRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
-      return { docEl: r.render(buffer, file.name) };
+      const docEl = r.render(buffer, file.name);
+      // Overlay / Fat-container-tail drill-down — see pe() above.
+      this._wireInnerFileListener(docEl, file.name);
+      return { docEl };
     },
 
     // ── Images ──────────────────────────────────────────────────────────

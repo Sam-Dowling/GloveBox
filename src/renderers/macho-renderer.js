@@ -1224,6 +1224,68 @@ class MachoRenderer {
         wrap.appendChild(this._renderSection('🔐 Code Signature', this._renderCodeSignature(mo)));
       }
 
+      // ── Overlay (appended payload past end-of-image) ──────────────
+      // Thin: bytes past max(seg.fileoff + seg.filesize) are the
+      // overlay. Fat: compute per-slice — the parsed slice's overlay
+      // sits between its payload end and its declared (offset+size);
+      // Fat-container trailing bytes past the last slice end are a
+      // separate overlay on the outer wrapper. No Authenticode
+      // equivalent on Mach-O (code signature is an inline load
+      // command, handled separately by _parseCodeSignature).
+      try {
+        if (typeof BinaryOverlay !== 'undefined') {
+          const baseName = (fileName || 'binary').replace(/\.[^.]+$/, '');
+
+          if (fatInfo) {
+            // Slice that we deeply parsed
+            const preferred = fatInfo.arches.find(a =>
+              a.cputype === 0x01000007 || a.cputype === 0x0100000C
+            ) || fatInfo.arches[0];
+            const sliceEnd = preferred.offset + preferred.size;
+            const sliceOverlayStart = this._computeOverlayStart(mo);
+            if (sliceOverlayStart > 0 && sliceOverlayStart < sliceEnd && sliceEnd <= bytes.length) {
+              const { el } = BinaryOverlay.renderCard({
+                bytes,
+                overlayStart: sliceOverlayStart,
+                fileSize: sliceEnd,
+                baseName,
+                subtitle: `past slice end — ${preferred.cputypeStr}`,
+              });
+              wrap.appendChild(this._renderSection('📎 Overlay (slice)', el));
+            }
+
+            // Fat-container tail: bytes past the last slice's end
+            let lastSliceEnd = 0;
+            for (const a of fatInfo.arches) {
+              const e = a.offset + a.size;
+              if (e > lastSliceEnd) lastSliceEnd = e;
+            }
+            if (lastSliceEnd > 0 && lastSliceEnd < bytes.length) {
+              const { el } = BinaryOverlay.renderCard({
+                bytes,
+                overlayStart: lastSliceEnd,
+                fileSize: bytes.length,
+                baseName,
+                subtitle: 'past last slice (Fat container tail)',
+              });
+              wrap.appendChild(this._renderSection('📎 Overlay (Fat tail)', el));
+            }
+          } else {
+            const oStart = this._computeOverlayStart(mo);
+            if (oStart > 0 && oStart < bytes.length) {
+              const { el } = BinaryOverlay.renderCard({
+                bytes,
+                overlayStart: oStart,
+                fileSize: bytes.length,
+                baseName,
+                subtitle: 'past end-of-image',
+              });
+              wrap.appendChild(this._renderSection('📎 Overlay', el));
+            }
+          }
+        }
+      } catch (_) { /* overlay drill-down is best-effort */ }
+
       // ── Strings ───────────────────────────────────────────────────
       if (mo.strings.length > 0) {
         wrap.appendChild(this._renderSection(
@@ -1876,6 +1938,39 @@ class MachoRenderer {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  //  Overlay start — max(seg.fileoff + seg.filesize) across LC_SEGMENT[_64]
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Compute the first byte offset past the declared end-of-image for a
+   * parsed Mach-O. For thin binaries this is `max(seg.fileoff +
+   * seg.filesize)` across all LC_SEGMENT / LC_SEGMENT_64 load commands.
+   * Also bounds against the code-signature tail (LC_CODE_SIGNATURE's
+   * dataoff + datasize) — on macOS the code signature is an inline
+   * load command, not an overlay, but it sits past the segment payload
+   * and anything after it is genuinely trailing bytes.
+   *
+   * Returns 0 when the binary has no segments (object files, dSYMs).
+   * Callers bound this against the slice's declared size (Fat) or
+   * `bytes.length` (thin).
+   */
+  _computeOverlayStart(mo) {
+    if (!mo || !Array.isArray(mo.segments)) return 0;
+    let end = 0;
+    for (const seg of mo.segments) {
+      if (!seg || !seg.filesize) continue;
+      const e = (seg.fileoff + seg.filesize);
+      if (e > end) end = e;
+    }
+    // Code signature sits past segment data on signed binaries.
+    if (mo.codeSignature && mo.codeSignature.datasize) {
+      const e = mo.codeSignature.dataoff + mo.codeSignature.datasize;
+      if (e > end) end = e;
+    }
+    return end;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   //  Table builder
   // ═══════════════════════════════════════════════════════════════════════
 
@@ -2230,6 +2325,95 @@ class MachoRenderer {
         }
       }
 
+      // ── Overlay detection (appended payload past end-of-image) ─────
+      // Thin: max(seg.fileoff + seg.filesize), also bounded by
+      // LC_CODE_SIGNATURE extent. Fat: we analyse the parsed slice's
+      // overlay (between its payload and its declared (offset,size))
+      // and separately the Fat container's trailing bytes past the
+      // last slice. No Authenticode exemption: the Mach-O code
+      // signature sits at LC_CODE_SIGNATURE's declared range and is
+      // already absorbed by _computeOverlayStart.
+      try {
+        if (typeof BinaryOverlay !== 'undefined') {
+          let overlayStart = this._computeOverlayStart(mo);
+          let overlayEnd = bytes.length;
+          let overlayContext = 'past end-of-image';
+
+          if (fat) {
+            const preferred = fat.arches.find(a =>
+              a.cputype === 0x01000007 || a.cputype === 0x0100000C
+            ) || fat.arches[0];
+            const sliceEnd = preferred.offset + preferred.size;
+            overlayEnd = Math.min(sliceEnd, bytes.length);
+            overlayContext = `past slice end (${preferred.cputypeStr})`;
+
+            // Fat-container tail — bytes past the last slice end. If
+            // present, this is the interesting overlay (outer wrapper
+            // tampering); escalate separately so the risk calibrates.
+            let lastSliceEnd = 0;
+            for (const a of fat.arches) {
+              const e = a.offset + a.size;
+              if (e > lastSliceEnd) lastSliceEnd = e;
+            }
+            if (lastSliceEnd > 0 && lastSliceEnd < bytes.length) {
+              const tailBytes = bytes.subarray(lastSliceEnd, bytes.length);
+              const tailSize = tailBytes.length;
+              const tailPct = (tailSize / Math.max(1, bytes.length)) * 100;
+              const tailEntropy = BinaryOverlay.shannonEntropy(tailBytes);
+              const tailMagic = BinaryOverlay.sniffMagic(tailBytes.subarray(0, 32));
+              findings.metadata['Fat Tail Size'] = tailSize.toLocaleString() + ' bytes';
+              findings.metadata['Fat Tail Entropy'] = tailEntropy.toFixed(3);
+              if (tailMagic) findings.metadata['Fat Tail Magic'] = tailMagic.label;
+              issues.push(`Fat/Universal container has ${tailSize.toLocaleString()} B trailing bytes past the last slice — atypical for a normal Fat binary`);
+              riskScore += 1.5;
+              pushIOC(findings, {
+                type: IOC.PATTERN,
+                value: `Fat container trailing bytes [T1027]`,
+                severity: 'high',
+                note: `${tailSize.toLocaleString()} B past last slice (${tailPct.toFixed(1)}% of file), entropy ${tailEntropy.toFixed(2)}${tailMagic ? `, magic ${tailMagic.label}` : ''}`,
+                _noDomainSibling: true,
+              });
+              BinaryOverlay.sha256Hex(tailBytes).then(hex => {
+                if (hex) findings.metadata['Fat Tail SHA-256'] = hex;
+              });
+            }
+          }
+
+          if (overlayStart > 0 && overlayStart < overlayEnd) {
+            const overlayBytes = bytes.subarray(overlayStart, overlayEnd);
+            const overlaySize = overlayBytes.length;
+            const overlayPct = (overlaySize / Math.max(1, overlayEnd)) * 100;
+            const overlayEntropy = BinaryOverlay.shannonEntropy(overlayBytes);
+            const overlayMagic = BinaryOverlay.sniffMagic(overlayBytes.subarray(0, 32));
+
+            findings.metadata['Overlay Size'] = overlaySize.toLocaleString() + ' bytes';
+            findings.metadata['Overlay Entropy'] = overlayEntropy.toFixed(3);
+            if (overlayMagic) findings.metadata['Overlay Magic'] = overlayMagic.label;
+
+            const large = overlayPct > 10;
+            const highEntropy = overlayEntropy > 7.2;
+            const unrecognised = !overlayMagic;
+            if (large && highEntropy && unrecognised) {
+              issues.push(`Large high-entropy overlay (${overlaySize.toLocaleString()} B, ${overlayPct.toFixed(1)}% ${overlayContext}, entropy ${overlayEntropy.toFixed(2)}) with no recognised container magic — likely packed / encrypted payload`);
+              riskScore += 2;
+              pushIOC(findings, {
+                type: IOC.PATTERN,
+                value: `High-entropy overlay [T1027.002]`,
+                severity: 'high',
+                note: `Appended payload: ${overlaySize.toLocaleString()} B (${overlayPct.toFixed(1)}%) ${overlayContext}, entropy ${overlayEntropy.toFixed(2)}, no recognised magic`,
+                _noDomainSibling: true,
+              });
+            } else if (overlayMagic) {
+              findings.metadata['Overlay Type'] = `Appended ${overlayMagic.label}`;
+            }
+
+            BinaryOverlay.sha256Hex(overlayBytes).then(hex => {
+              if (hex) findings.metadata['Overlay SHA-256'] = hex;
+            });
+          }
+        }
+      } catch (_) { /* overlay analysis is best-effort */ }
+
       // ── Mirror classic-pivot metadata into IOC table ───────────────
       // Option-B pivots: UUID/Bundle ID/Source Version are all stable
       // cross-sample pivots. Bundle Name/Bundle Version stay metadata-
@@ -2242,6 +2426,8 @@ class MachoRenderer {
         'Library ID':        IOC.FILE_PATH,
         'Source Version':    IOC.PATTERN,
         'SymHash':           IOC.HASH,
+        'Overlay SHA-256':   IOC.HASH,
+        'Fat Tail SHA-256':  IOC.HASH,
       });
 
       // ── Capability tagging (capa-lite) ─────────────────────────────
