@@ -167,7 +167,22 @@ Object.assign(App.prototype, {
       // instead of hex dump output that would break IOC extraction)
       const analysisText = docEl._rawText || docEl.textContent;
       const rendererIOCs = this.findings.interestingStrings || [];
-      this.findings.interestingStrings = [...rendererIOCs, ...this._extractInterestingStrings(analysisText, this.findings)];
+      const extracted = this._extractInterestingStrings(analysisText, this.findings);
+      this.findings.interestingStrings = [...rendererIOCs, ...extracted];
+      // Stash per-type truncation info (attached as side-channel props on
+      // the returned array in _extractInterestingStrings — array spread
+      // below copies only indexed elements, so these props are lost from
+      // the flattened findings.interestingStrings list) so the sidebar
+      // can render a "Showing N of M <type>" note when extraction was
+      // capped. Only attach when something was actually dropped — keeps
+      // the property absent (not an empty map) in the common case for
+      // easy truthy checks.
+      if (extracted._droppedByType && extracted._droppedByType.size > 0) {
+        this.findings._iocTruncation = {
+          droppedByType: extracted._droppedByType,
+          totalSeenByType: extracted._totalSeenByType,
+        };
+      }
 
       // ── Encoded content detection ─────────────────────────────────────
       try {
@@ -1275,10 +1290,11 @@ Object.assign(App.prototype, {
     const nav = document.getElementById('breadcrumbs');
     if (!nav) return;
 
-    // No file loaded → hide
+    // No file loaded → hide breadcrumbs + restore base tab title
     if (!this._fileMeta || !this._fileMeta.name) {
       nav.classList.add('hidden');
       nav.innerHTML = '';
+      document.title = 'Loupe';
       return;
     }
 
@@ -1289,6 +1305,14 @@ Object.assign(App.prototype, {
       return { name, depth: i, current: false };
     });
     crumbs.push({ name: this._fileMeta.name, depth: stack.length, current: true });
+
+    // Reflect loaded file (and any archive drill-down path) in the tab
+    // title. Centralised here because _renderBreadcrumbs is invoked on
+    // every state change that alters the displayed file — fresh loads,
+    // metadata-enrichment re-renders, archive drill-down, and
+    // breadcrumb back-navigation via _navJumpTo — so one hook covers
+    // all cases without duplicating state in _loadFile / _clearFile.
+    document.title = 'Loupe — ' + crumbs.map(c => c.name).join(' › ');
 
     nav.classList.remove('hidden');
     nav.innerHTML = '';
@@ -1425,15 +1449,36 @@ Object.assign(App.prototype, {
 
 
   // ── Interesting string extraction ────────────────────────────────────────
+  //
+  // Per-type IOC quota: instead of a single global cap applied at return
+  // time (which favoured whichever IOC class was extracted first — URLs —
+  // and silently dropped everything that came after in large files like
+  // a 1000-row CSV with both a URL and an email column), we cap each
+  // `IOC.*` type independently. `_droppedByType` is exposed on the return
+  // value so the sidebar can surface a "Showing N of M <type>" note.
   _extractInterestingStrings(text, findings) {
     const seen = new Set([...(findings.externalRefs || []), ...(findings.interestingStrings || [])].map(r => r.url));
     const results = [];
+    const PER_TYPE_CAP = 200;
+    const typeCounts = new Map();       // type -> accepted count
+    const droppedByType = new Map();    // type -> dropped count (accepted would-have-been)
+    const totalSeenByType = new Map();  // type -> total seen (accepted + dropped)
 
-    // Enhanced add function that tracks source location for click-to-highlight
+    // Enhanced add function that tracks source location for click-to-highlight.
+    // Returns true if the entry was accepted, false if deduped or quota-dropped.
     const add = (type, val, sev, note, sourceInfo) => {
       val = (val || '').trim().replace(/[.,;:!?)\]>]+$/, '');
-      if (!val || val.length < 4 || val.length > 400 || seen.has(val)) return;
+      if (!val || val.length < 4 || val.length > 400 || seen.has(val)) return false;
       seen.add(val);
+      // Per-type quota check. We still count the drop so the sidebar can
+      // tell the user extraction was truncated for this type.
+      const accepted = typeCounts.get(type) || 0;
+      totalSeenByType.set(type, (totalSeenByType.get(type) || 0) + 1);
+      if (accepted >= PER_TYPE_CAP) {
+        droppedByType.set(type, (droppedByType.get(type) || 0) + 1);
+        return false;
+      }
+      typeCounts.set(type, accepted + 1);
       const entry = { type, url: val, severity: sev };
       if (note) entry.note = note;
       // Source location info for click-to-highlight functionality
@@ -1444,6 +1489,7 @@ Object.assign(App.prototype, {
         if (sourceInfo.highlightText) entry._highlightText = sourceInfo.highlightText;
       }
       results.push(entry);
+      return true;
     };
 
     // Helper to process a URL — checks for SafeLink wrappers and adds both
@@ -1648,13 +1694,21 @@ Object.assign(App.prototype, {
               });
             }
           } else {
-            seen.add(v);
-            results.push({ type: IOC.URL, url: v, severity: 'high' });
+            // Route through add() so this branch is subject to the same
+            // per-type quota and dedup logic as every other URL push.
+            // (seen.has(v) was already checked above; add() re-checks and
+            // is idempotent.)
+            add(IOC.URL, v, 'high');
           }
         }
       }
     }
-    return results.slice(0, 300);
+    // Return results plus the drop map so the caller can stash truncation
+    // info on `findings` for sidebar surfacing. Shape kept backward-ish:
+    // callers that still spread the return value get an array-like result.
+    results._droppedByType = droppedByType;
+    results._totalSeenByType = totalSeenByType;
+    return results;
   },
 
 });

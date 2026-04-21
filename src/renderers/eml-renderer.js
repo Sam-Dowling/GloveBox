@@ -234,6 +234,57 @@ class EmlRenderer {
         const key = clean.toLowerCase();
         if (seenUrls.has(key)) return;
         seenUrls.add(key);
+        // ── SafeLink / URLDefense unwrap ──
+        // Proofpoint URLDefense and Microsoft SafeLinks wrap the real
+        // destination inside a vendor-controlled URL. Surface BOTH: the
+        // wrapper (info) so analysts see the email provider, and the
+        // decoded inner URL (high) — that's the URL the victim would
+        // actually reach if they clicked. Each extracted child IOC's
+        // `_highlightText` points to the wrapper so the sidebar
+        // navigator still flashes the visible wrapper text in the body.
+        let unwrapped = null;
+        if (typeof EncodedContentDetector !== 'undefined') {
+          try { unwrapped = EncodedContentDetector.unwrapSafeLink(clean); }
+          catch (_) { unwrapped = null; }
+        }
+        if (unwrapped) {
+          const wrapperRef = {
+            type: IOC.URL,
+            url: clean,
+            severity: 'info',
+            note: note ? `${unwrapped.provider} wrapper (${note})` : `${unwrapped.provider} wrapper`,
+          };
+          if (raw) wrapperRef._highlightText = raw;
+          f.externalRefs.push(wrapperRef);
+
+          // Push the decoded inner URL at high severity. An unwrapped
+          // SafeLink has bypassed the vendor's click-time check by the
+          // time an analyst is reading the message, so it warrants a
+          // closer look than a bare in-body URL.
+          const innerClean = (unwrapped.originalUrl || '').replace(/[.,;:!?)\]>'"]+$/, '');
+          const innerKey = innerClean.toLowerCase();
+          if (innerClean && !seenUrls.has(innerKey)) {
+            seenUrls.add(innerKey);
+            const innerRef = {
+              type: IOC.URL,
+              url: innerClean,
+              severity: 'high',
+              note: note ? `Extracted from ${unwrapped.provider} (${note})` : `Extracted from ${unwrapped.provider}`,
+              _highlightText: raw || clean,
+            };
+            f.externalRefs.push(innerRef);
+          }
+
+          // Microsoft SafeLinks embeds the recipient email in the `data`
+          // parameter — surface it as an EMAIL IOC for pivot.
+          if (unwrapped.emails && unwrapped.emails.length) {
+            for (const em of unwrapped.emails) {
+              pushEmail(em, `Extracted from ${unwrapped.provider}`, 'medium', raw || clean);
+            }
+          }
+          return;
+        }
+
         const ref = { type: IOC.URL, url: clean, severity: severity || 'medium', note };
         if (raw) ref._highlightText = raw;
         f.externalRefs.push(ref);

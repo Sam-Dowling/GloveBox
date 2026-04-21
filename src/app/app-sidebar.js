@@ -266,7 +266,14 @@ Object.assign(App.prototype, {
       for (const [k, v] of metaVals) {
         const tr = document.createElement('tr');
         const td1 = document.createElement('td'); td1.textContent = labels[k] || k;
-        const td2 = document.createElement('td'); td2.textContent = v;
+        const td2 = document.createElement('td');
+        // Route non-scalar values (e.g. EML attachments array-of-objects,
+        // PDF pdfJavaScripts) through the shared formatter so they render
+        // legibly instead of collapsing to "[object Object]" via default
+        // string coercion.
+        td2.textContent = (v !== null && typeof v === 'object')
+          ? this._formatMetadataValue(v, 0)
+          : String(v);
         tr.appendChild(td1); tr.appendChild(td2); mt.appendChild(tr);
       }
       body.appendChild(mt);
@@ -1371,6 +1378,31 @@ Object.assign(App.prototype, {
     const body = document.createElement('div');
     body.className = 'sb-details-body';
 
+    // ── IOC extraction truncation note ──────────────────────────────────
+    // `_extractInterestingStrings` (app-load.js) enforces a per-type quota
+    // (PER_TYPE_CAP). When any type was capped, it stashes a drop map on
+    // `findings._iocTruncation` so the user sees "Showing N of M Email"
+    // rather than silently losing IOCs — the original symptom that made
+    // a 1000-row CSV of emails produce zero Email IOCs because 1000 URLs
+    // filled the old global 300-entry cap first. Rendered IOCs-section
+    // only, and only for IOC types (Detections use a separate pipeline
+    // that doesn't go through the quota).
+    const _iocTruncation = this.findings && this.findings._iocTruncation;
+    if (sectionTitle === 'IOCs' && _iocTruncation && _iocTruncation.droppedByType && _iocTruncation.droppedByType.size > 0) {
+      const note = document.createElement('div');
+      note.className = 'ioc-truncation-note';
+      note.style.cssText = 'color:#856404;background:#fff3cd;border:1px solid #ffeeba;padding:6px 8px;margin:8px 0;font-size:11px;border-radius:3px;line-height:1.4;';
+      const parts = [];
+      for (const [type, dropped] of _iocTruncation.droppedByType.entries()) {
+        const total = _iocTruncation.totalSeenByType.get(type) || 0;
+        const shown = total - dropped;
+        parts.push(`${shown.toLocaleString()} of ${total.toLocaleString()} ${type}`);
+      }
+      note.textContent = '⚠ IOC extraction truncated — showing ' + parts.join('; ') + '. Per-type cap reached.';
+      note.title = 'Large files may contain more IOCs of a given type than Loupe retains in the sidebar. The per-type cap keeps the UI responsive and ensures every IOC class has representation. Use YARA rules or exports to scan the full raw source.';
+      body.appendChild(note);
+    }
+
     if (!refs.length) {
       const p = document.createElement('p');
       p.style.cssText = 'color:#888;text-align:center;margin-top:12px;font-size:12px;';
@@ -1907,6 +1939,14 @@ Object.assign(App.prototype, {
       }
     };
 
+    // ── Initial filter pass ──────────────────────────────────────────────
+    // Applies the persisted `hideNicelisted` state to the freshly-rendered
+    // table. Without this, reloading the page with "Hide" active would
+    // leave the button labelled "Show" (correctly reflecting state) but
+    // the nicelisted rows would still be visible because `applyFilters`
+    // had never run.
+    applyFilters();
+
     // ── Event listeners ──────────────────────────────────────────────────
     srch.addEventListener('input', applyFilters);
 
@@ -2015,16 +2055,26 @@ Object.assign(App.prototype, {
       const searchVal = ref.url || '';
       if (searchVal) {
         // For hashes like "SHA256:ABCDEF...", just search the hash value part
-        let searchTerm = searchVal;
+        let highlightTerm = searchVal;
         const hashMatch = searchVal.match(/^(?:SHA256|SHA1|MD5|IMPHASH):(.+)$/i);
-        if (hashMatch) searchTerm = hashMatch[1];
+        if (hashMatch) highlightTerm = hashMatch[1];
         // For DOMAIN\User usernames, search just the username part (domain and
         // username are stored as separate fields in EVTX event data)
-        if (ref.type === IOC.USERNAME && searchTerm.includes('\\')) {
-          searchTerm = searchTerm.split('\\').pop();
+        if (ref.type === IOC.USERNAME && highlightTerm.includes('\\')) {
+          highlightTerm = highlightTerm.split('\\').pop();
         }
-        // For very long values, truncate to avoid overly specific search
-        if (searchTerm.length > 80) searchTerm = searchTerm.substring(0, 80);
+
+        // Two terms: `highlightTerm` is the FULL value used for the detail-
+        // pane <mark> wrapping — never truncated, otherwise long URLs /
+        // tokens only get partially highlighted (the mark would end at
+        // char 80, visually indistinguishable from "only the first wrapped
+        // line is highlighted"). `searchTerm` is the 80-cap used ONLY for
+        // the EVTX filter input, where an over-specific filter string can
+        // miss rows whose joined text has subtle whitespace/escaping
+        // differences vs. the IOC value.
+        const searchTerm = highlightTerm.length > 80
+          ? highlightTerm.substring(0, 80)
+          : highlightTerm;
 
         filters.eidInput.value = '';
         filters.searchInput.value = searchTerm;
@@ -2040,8 +2090,11 @@ Object.assign(App.prototype, {
           filterBar.classList.add('evtx-filter-flash');
           setTimeout(() => filterBar.classList.remove('evtx-filter-flash'), 1000);
         }
-        // Subtle highlight of matched text inside expanded detail panes
-        this._highlightIocInEvtxRows(evtxView, searchTerm, ref);
+        // Subtle highlight of matched text inside expanded detail panes.
+        // Pass the full `highlightTerm` — _highlightIocInEvtxRows does an
+        // indexOf and returns silently if not found verbatim, which is
+        // correct fallback behaviour for the rare mismatch case.
+        this._highlightIocInEvtxRows(evtxView, highlightTerm, ref);
         return;
       }
     }
@@ -2053,11 +2106,22 @@ Object.assign(App.prototype, {
       const searchVal = ref.url || '';
       if (searchVal && filters.dataRows && filters.dataRows.length > 0) {
         // For hashes like "SHA256:ABCDEF...", just search the hash value part
-        let searchTerm = searchVal;
+        let highlightTerm = searchVal;
         const hashMatch = searchVal.match(/^(?:SHA256|SHA1|MD5|IMPHASH):(.+)$/i);
-        if (hashMatch) searchTerm = hashMatch[1];
-        // Truncate very long values
-        if (searchTerm.length > 80) searchTerm = searchTerm.substring(0, 80);
+        if (hashMatch) highlightTerm = hashMatch[1];
+
+        // Two terms: `highlightTerm` is the FULL (hash-prefix-stripped) value
+        // and is what gets wrapped in <mark> inside the detail pane — never
+        // truncated, otherwise long URLs / tokens only get partially
+        // highlighted (the visible mark ends at char 80, which usually falls
+        // at/near a wrap boundary and gave the false impression that
+        // word-wrapped lines weren't being highlighted at all).
+        // `searchTerm` is the 80-char-capped version used ONLY for row-find;
+        // the cap guards against overly specific matches when the joined row
+        // text has subtle whitespace/escaping differences vs. the IOC value.
+        const searchTerm = highlightTerm.length > 80
+          ? highlightTerm.substring(0, 80)
+          : highlightTerm;
 
         // Find matching row and use virtual scrolling API
         const term = searchTerm.toLowerCase();
@@ -2065,7 +2129,7 @@ Object.assign(App.prototype, {
           if (r.searchText && r.searchText.includes(term)) {
             // Use the new scrollToRow method for virtual scrolling
             if (filters.scrollToRow) {
-              this._highlightIocInCsvRow(csvView, searchTerm, r.dataIndex, ref);
+              this._highlightIocInCsvRow(csvView, highlightTerm, r.dataIndex, ref);
             } else {
               // Fallback for non-virtual scrolling (shouldn't happen)
               filters.expandRow(r);
@@ -2080,7 +2144,12 @@ Object.assign(App.prototype, {
           for (const r of filters.dataRows) {
             if (r.searchText && r.searchText.includes(shortTerm)) {
               if (filters.scrollToRow) {
-                this._highlightIocInCsvRow(csvView, shortTerm, r.dataIndex, ref);
+                // Still pass the full `highlightTerm` — _wrapIocMarkInPane's
+                // indexOf will simply return -1 if the full value isn't in
+                // the cell verbatim, leaving the yellow row tint to signal
+                // the match. Better than partially-highlighting with a
+                // 20-char prefix.
+                this._highlightIocInCsvRow(csvView, highlightTerm, r.dataIndex, ref);
               } else {
                 filters.expandRow(r);
               }
@@ -2485,15 +2554,10 @@ Object.assign(App.prototype, {
   // ── Clear YARA + IOC inline highlights ──────────────────────────────────
   //
   // Single clear-all for both YARA (blue) and IOC (yellow) match highlights.
-  // Cancels any pending auto-clear timer (both legacy `_yaraHighlightTimer`
-  // used by the CSV path and the newer unified `_matchHighlightTimer`).
+  // Cancels any pending auto-clear timer (unified `_matchHighlightTimer`).
   _clearMatchHighlight() {
-    // Cancel any pending auto-clear timers so they don't fire later and
+    // Cancel any pending auto-clear timer so it doesn't fire later and
     // reset an unrelated ref's _currentMatchIndex.
-    if (this._yaraHighlightTimer) {
-      clearTimeout(this._yaraHighlightTimer);
-      this._yaraHighlightTimer = null;
-    }
     if (this._matchHighlightTimer) {
       clearTimeout(this._matchHighlightTimer);
       this._matchHighlightTimer = null;
@@ -2521,12 +2585,27 @@ Object.assign(App.prototype, {
       cell.normalize();
     }
 
-    // Also clear CSV detail pane highlights
+    // Renderer-owned CSV YARA highlight — ask the active view to clear its
+    // state; its re-render will naturally drop marks and the row-tint class.
+    const activeYaraView = this._yaraHighlightActiveView;
+    if (activeYaraView && activeYaraView._csvFilters && activeYaraView._csvFilters.clearYaraHighlight) {
+      activeYaraView._csvFilters.clearYaraHighlight();
+    }
+    this._yaraHighlightActiveView = null;
+
+    // Also clear CSV detail pane highlights (legacy DOM sweep — covers stale
+    // renderer builds and any residue from other views).
     const csvMarks = pc.querySelectorAll('mark.csv-yara-highlight');
     for (const mark of csvMarks) {
       const textNode = document.createTextNode(mark.textContent);
       mark.parentNode.replaceChild(textNode, mark);
     }
+    // Cleanup-gap fix: old code never stripped the row-tint classes, so they
+    // could leak between navigations. Strip both IOC and YARA row tints here
+    // (IOC is also cleared by _clearIocCsvHighlight; double-strip is safe).
+    pc.querySelectorAll('tr.csv-yara-row-highlight, tr.csv-ioc-row-highlight').forEach(tr => {
+      tr.classList.remove('csv-yara-row-highlight', 'csv-ioc-row-highlight');
+    });
     // Normalize detail value cells
     const detailVals = pc.querySelectorAll('.csv-detail-val');
     for (const cell of detailVals) {
@@ -2567,66 +2646,6 @@ Object.assign(App.prototype, {
     }
     if (!focusRow) return;
 
-    const dataIdx = focusRow.dataIndex;
-
-    // Helper: escape HTML entities.
-    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-    // Helper: highlight all matches inside a given detail pane.
-    // Returns the <mark> element corresponding to focusIdx (or null).
-    const highlightPane = (detailPane, rowMatches) => {
-      let focusMarkEl = null;
-      const detailVals = detailPane.querySelectorAll('.csv-detail-val');
-      for (const valEl of detailVals) {
-        // For each cell, find every match string that occurs in it and wrap
-        // them in <mark>. Multiple matches per cell are supported; overlaps
-        // are resolved by taking earliest position wins.
-        const cellText = valEl.textContent;
-        if (!cellText) continue;
-
-        // Find all (cellStart, cellEnd, matchIdx) hits within this cell.
-        const hits = [];
-        for (const rm of rowMatches) {
-          const matchStr = sourceText.substring(rm.offset, rm.offset + rm.length);
-          if (!matchStr) continue;
-          let idx = cellText.indexOf(matchStr);
-          if (idx === -1) {
-            idx = cellText.toLowerCase().indexOf(matchStr.toLowerCase());
-          }
-          if (idx !== -1) {
-            hits.push({ start: idx, end: idx + matchStr.length, matchIdx: rm._matchIdx });
-          }
-        }
-        if (!hits.length) continue;
-
-        hits.sort((a, b) => a.start - b.start);
-        // Drop overlaps.
-        const keep = [];
-        let cursor = -1;
-        for (const h of hits) {
-          if (h.start >= cursor) { keep.push(h); cursor = h.end; }
-        }
-
-        // Build innerHTML in one pass.
-        let out = '';
-        let pos = 0;
-        for (const h of keep) {
-          if (h.start > pos) out += esc(cellText.substring(pos, h.start));
-          const matchedText = cellText.substring(h.start, h.end);
-          out += `<mark class="csv-yara-highlight csv-yara-highlight-flash" data-yara-match="${h.matchIdx}">${esc(matchedText)}</mark>`;
-          pos = h.end;
-        }
-        if (pos < cellText.length) out += esc(cellText.substring(pos));
-        valEl.innerHTML = out;
-
-        // Locate focus mark if present.
-        if (!focusMarkEl) {
-          focusMarkEl = valEl.querySelector(`mark.csv-yara-highlight[data-yara-match="${focusIdx}"]`);
-        }
-      }
-      return focusMarkEl;
-    };
-
     // Group matches by which CSV row they belong to (by offset range).
     // Attach original matchIdx so we can locate the focus mark.
     const matchesByRowIdx = new Map(); // dataIndex -> [{offset, length, _matchIdx}, ...]
@@ -2643,33 +2662,30 @@ Object.assign(App.prototype, {
       }
     }
 
-    // Scroll the focus row into view & expand it (virtual scroll).
-    if (filters.scrollToRow) {
-      filters.scrollToRow(dataIdx, false);
-    }
-
-    // Wait for virtual scroll to render, then apply highlights.
-    setTimeout(() => {
-      const tbody = csvView.querySelector('tbody');
-      if (!tbody) return;
-
-      // Highlight every currently-rendered detail pane whose row has matches.
-      let focusMarkEl = null;
-      for (const [rowDataIdx, rowMatches] of matchesByRowIdx) {
-        const tr = tbody.querySelector(`tr[data-idx="${rowDataIdx}"]`);
-        if (!tr) continue;
-        tr.classList.add('csv-yara-row-highlight');
-        const detailTr = tr.nextElementSibling;
-        if (!detailTr || !detailTr.classList.contains('csv-detail-row')) continue;
-        const detailPane = detailTr.querySelector('.csv-detail-pane');
-        if (!detailPane) continue;
-        const fm = highlightPane(detailPane, rowMatches);
-        if (fm && !focusMarkEl) focusMarkEl = fm;
-      }
-
-      // Decide whether to scroll the focus mark into view.
-      let shouldScroll = forceScroll;
-      if (!forceScroll && focusMarkEl) {
+    // Preferred path: renderer owns the highlight lifecycle. createRowElements
+    // reapplies .csv-yara-row-highlight + <mark> wrapping on every re-render
+    // (scrollend, height remeasure, resize, filter, scroll) until the 5s
+    // deadline expires. We just seed the state and drive the scroll.
+    //
+    // The previous implementation ran a parallel setTimeout here to reset
+    // `ref._currentMatchIndex` and tracking fields — but a second timer
+    // can desync from the renderer's timer (rapid-click supersession left
+    // the sidebar timer outstanding, and when it fired it nulled
+    // `_yaraHighlightActiveView` while a later highlight was still live).
+    // Delegate to the renderer's `onExpire` callback instead so there is
+    // exactly one timer per logical highlight lifetime.
+    if (filters.setYaraHighlight && filters.scrollToRow) {
+      this._yaraHighlightActiveView = csvView;
+      filters.setYaraHighlight(matchesByRowIdx, focusRow.dataIndex, focusIdx, sourceText, 5000, () => {
+        if (ref) ref._currentMatchIndex = undefined;
+        this._yaraHighlightActiveView = null;
+      });
+      filters.scrollToRow(focusRow.dataIndex, false).then(() => {
+        if (!filters.scrollToYaraFocus) return;
+        if (forceScroll) { filters.scrollToYaraFocus(); return; }
+        // Otherwise only scroll the focus mark into view if no other mark
+        // is currently in the viewport — avoids jarring re-scroll when the
+        // user is cycling between visible matches.
         const vh = window.innerHeight || document.documentElement.clientHeight;
         const vw = window.innerWidth || document.documentElement.clientWidth;
         const allMarks = csvView.querySelectorAll('mark.csv-yara-highlight');
@@ -2677,19 +2693,14 @@ Object.assign(App.prototype, {
           const rc = m.getBoundingClientRect();
           return rc.bottom > 0 && rc.top < vh && rc.right > 0 && rc.left < vw && rc.width > 0 && rc.height > 0;
         });
-        shouldScroll = !anyInView;
-      }
-      if (shouldScroll && focusMarkEl) {
-        focusMarkEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-
-      // Schedule the 5-second auto-clear timer.
-      this._yaraHighlightTimer = setTimeout(() => {
-        this._clearYaraHighlight();
-        if (ref) ref._currentMatchIndex = undefined;
-        this._yaraHighlightTimer = null;
-      }, 5000);
-    }, 400); // Wait for virtual scroll to complete
+        if (!anyInView) filters.scrollToYaraFocus();
+      });
+    }
+    // The renderer-owned API (setYaraHighlight + scrollToRow) is part of
+    // the core _csvFilters contract — every bundled build ships both — so
+    // there is no conditional fallback. If the guard above fails, the
+    // archive is corrupt or the view was disposed mid-call; either way
+    // silently dropping the highlight is the right outcome.
   },
 
 
@@ -2809,78 +2820,48 @@ Object.assign(App.prototype, {
 
   // ── IOC subtle-highlight inside CSV expanded row ────────────────────────
   //
-  // Complements _highlightYaraMatchesInCsv but for simple IOC navigation:
-  // scroll the matching row into view, expand it, and wrap every occurrence
-  // of `searchTerm` inside each .csv-detail-val cell in a subtle yellow
-  // <mark>. Auto-clears after 5 seconds.
+  // Complements _highlightYaraMatchesInCsv. The renderer owns the highlight
+  // lifecycle — we just tell it which row + term and schedule the
+  // ref._currentMatchIndex reset. The renderer's createRowElements re-applies
+  // the .csv-ioc-row-highlight class and wraps <mark> tags on every re-render
+  // (scrollend, height remeasure, resize, etc.) until the deadline expires,
+  // which is what makes the highlight stable through the post-scroll DOM
+  // churn that previously wiped it.
   _highlightIocInCsvRow(csvView, searchTerm, dataIdx, ref) {
     this._clearIocCsvHighlight();
     const filters = csvView && csvView._csvFilters;
-    if (!filters || !filters.scrollToRow || !searchTerm) return;
-    filters.scrollToRow(dataIdx, false);
+    if (!filters || !searchTerm) return;
 
-    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const termLower = searchTerm.toLowerCase();
-
-    // csv-renderer's scrollToRow() schedules its OWN 400ms setTimeout that
-    // renders the virtual row + creates the detail <tr>. If we used a single
-    // matching setTimeout here we'd race with it (broken first click on a
-    // collapsed CSV, works on second click when row is already in DOM).
-    // Instead, poll for the detail row up to ~1.5s.
-    const deadline = performance.now() + 1500;
-    const tryHighlight = () => {
-      const tbody = csvView.querySelector('tbody');
-      const tr = tbody && tbody.querySelector(`tr[data-idx="${dataIdx}"]`);
-      const detailTr = tr && tr.nextElementSibling;
-      const detailReady = detailTr && detailTr.classList.contains('csv-detail-row');
-      if (!detailReady) {
-        if (performance.now() < deadline) {
-          this._iocCsvHighlightPoll = setTimeout(tryHighlight, 60);
-        } else {
-          this._iocCsvHighlightPoll = null;
-        }
-        return;
-      }
-      this._iocCsvHighlightPoll = null;
-
-      tr.classList.add('csv-ioc-row-highlight');
-      const valEls = detailTr.querySelectorAll('.csv-detail-val');
-      let firstMark = null;
-      for (const valEl of valEls) {
-        const text = valEl.textContent;
-        if (!text) continue;
-        const idx = text.toLowerCase().indexOf(termLower);
-        if (idx === -1) continue;
-        const before = esc(text.slice(0, idx));
-        const matched = esc(text.slice(idx, idx + searchTerm.length));
-        const after = esc(text.slice(idx + searchTerm.length));
-        valEl.innerHTML = `${before}<mark class="csv-ioc-highlight csv-ioc-highlight-flash">${matched}</mark>${after}`;
-        if (!firstMark) firstMark = valEl.querySelector('mark.csv-ioc-highlight');
-      }
-      if (firstMark) firstMark.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-      this._iocCsvHighlightTimer = setTimeout(() => {
-        this._clearIocCsvHighlight();
+    // Renderer-owned highlight. The renderer's `onExpire` callback is
+    // invoked when (and only when) its own timer fires and this
+    // highlight hasn't been superseded — rapid clicks replace the
+    // renderer's timer and the old timer's `onExpire` never runs.
+    //
+    // `scrollToRowWithIocHighlight` is part of the core _csvFilters
+    // contract — every bundled build ships it — so there is no
+    // conditional fallback. If the guard below fails, the view was
+    // disposed mid-call; silently dropping the highlight is correct.
+    if (filters.scrollToRowWithIocHighlight) {
+      this._iocCsvHighlightActiveView = csvView;
+      filters.scrollToRowWithIocHighlight(dataIdx, searchTerm, 5000, () => {
         if (ref) ref._currentMatchIndex = undefined;
-        this._iocCsvHighlightTimer = null;
-      }, 5000);
-    };
-    // csv-renderer.js::scrollToRow() runs its OWN internal setTimeout(400)
-    // that tears down and rebuilds the entire visible tbody (resets
-    // state.renderedRange and calls renderVisibleRows()). If we wrap a
-    // <mark> before that rebuild happens it gets wiped — the user sees the
-    // row highlight but no cell-level mark (and it only appears on the 2nd
-    // click, when the row is already expanded and the rebuild is a no-op).
-    // Wait 450 ms so our wrap runs AFTER the rebuild finishes; the poll
-    // below then handles any slower renders (up to 1.5 s).
-    this._iocCsvHighlightPoll = setTimeout(tryHighlight, 450);
+        this._iocCsvHighlightActiveView = null;
+      });
+    }
   },
 
   _clearIocCsvHighlight() {
-    if (this._iocCsvHighlightTimer) {
-      clearTimeout(this._iocCsvHighlightTimer);
-      this._iocCsvHighlightTimer = null;
+    // Renderer-owned path: ask the active CSV view to clear its state.
+    const activeView = this._iocCsvHighlightActiveView;
+    if (activeView && activeView._csvFilters && activeView._csvFilters.clearIocHighlight) {
+      activeView._csvFilters.clearIocHighlight();
     }
+    this._iocCsvHighlightActiveView = null;
+
+    // Defensive DOM sweep — covers residue from prior pages where a CSV
+    // view got detached before its renderer's clearIocHighlight could
+    // fire. The renderer-owned path also tears down on re-render, so
+    // double-removal here is safe.
     document.querySelectorAll('mark.csv-ioc-highlight').forEach(m => {
       const parent = m.parentNode;
       if (!parent) return;

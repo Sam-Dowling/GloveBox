@@ -442,6 +442,17 @@ Every IOC the renderer emits — whether onto `findings.externalRefs` or `findin
    react: `_rawText` present for plaintext renderers, `_showSourcePane()`
    for toggle-driven ones (HTML/SVG/URL), or a custom click handler that
    scrolls the relevant row/card into view and flashes a highlight class.
+7. **Generic text extraction is capped per-type, not globally.**
+   `_extractInterestingStrings` in `src/app/app-load.js` walks `_rawText`
+   (or `textContent`) after renderer-specific IOCs are seeded, and
+   enforces a `PER_TYPE_CAP` (currently 200) on each `IOC.*` type. This
+   replaced an older global 300-entry cap that silently dropped all but
+   the first IOC class in high-volume files (e.g. a 1000-row CSV with
+   both a URL and an Email column lost every Email to 1000 URLs). Drops
+   are surfaced via `findings._iocTruncation` → sidebar warning banner.
+   Renderer-seeded IOCs (`findings.interestingStrings` populated by
+   `analyzeForSecurity`) are **not** subject to this cap — renderers are
+   responsible for their own truncation (see item 4).
 
 ---
 

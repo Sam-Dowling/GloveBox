@@ -3546,6 +3546,12 @@ mark.csv-yara-highlight {
   padding: 0;
   border: 0;
   border-radius: 0;
+  /* Ensure the highlight background (and pulse box-shadow) repeats on every
+     line-box when the matched value wraps — long URLs / tokens in CSV detail
+     cells use `overflow-wrap: anywhere`, and without this only the first
+     wrapped fragment would be painted. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 mark.csv-yara-highlight-flash {
@@ -3615,6 +3621,12 @@ mark.csv-ioc-highlight {
   padding: 0;
   border: 0;
   border-radius: 0;
+  /* Ensure the highlight background (and pulse box-shadow) repeats on every
+     line-box when the matched value wraps — long URLs / tokens in CSV detail
+     cells use `overflow-wrap: anywhere`, and without this only the first
+     wrapped fragment would be painted. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 
 mark.csv-ioc-highlight-flash {

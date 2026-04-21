@@ -511,7 +511,12 @@ body.dark .csv-filter-status {
   color: var(--text-muted);
 }
 
-.csv-row-highlight {
+/* Animate cells, not the <tr>. Table rows don't paint their own background
+ * reliably across all browsers (cells often sit on top), and animating the
+ * cells guarantees the flash is visible regardless of per-cell styling.
+ * This also replaces the previous JS-inline cell styles in scrollToRow(),
+ * so there's exactly one animation source — no more dual-layer stutter. */
+.csv-row-highlight td {
   animation: csv-row-flash 2s ease-out;
 }
 
@@ -527,7 +532,7 @@ body.dark .csv-filter-status {
   }
 }
 
-body.dark .csv-row-highlight {
+body.dark .csv-row-highlight td {
   animation: csv-row-flash-dark 2s ease-out;
 }
 
@@ -616,6 +621,21 @@ body.dark .csv-detail-row td {
   background: var(--row-hover) !important;
 }
 
+/* Sticky wrapper pins the detail pane to the left edge of the scroll
+   viewport. Its width and max-width are set inline from JS (from
+   scr.clientWidth) at creation time and on every re-render, decoupling
+   the pane from the table's max-content width. Long values then
+   word-wrap to the visible viewport (up to the sidebar) rather than
+   stretching the full table width. CSS variable fallbacks were
+   intentionally removed because `100%` resolves against the td's
+   content-box width (== table width for wide CSVs) and silently broke
+   wrapping when JS timing left the variable unset. */
+.csv-detail-sticky {
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
+}
+
 .csv-detail-pane {
   padding: 12px 20px 14px;
   font-size: 12px;
@@ -664,7 +684,10 @@ body.dark .csv-detail-key {
 
 .csv-detail-val {
   color: #333;
-  word-break: break-all;
+  /* wrap long values (URLs, tokens, base64 blobs) cleanly */
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: pre-wrap;
   padding: 2px 0;
 }
 
@@ -856,11 +879,21 @@ body.dark .msg-subject {
   color: var(--text);
 }
 
+/* Email body canvas — pinned to a white background + dark text in every
+   theme. Loupe is a forensic viewer; email HTML is authored for a white
+   canvas, so inheriting the dark theme's colours produces unreadable
+   dark-on-dark output for any message that sets its own `color:#000`
+   (or relies on the browser default). Keeping the body canvas light in
+   every theme preserves author intent and guarantees contrast. The
+   surrounding `.eml-view` / `.msg-view` chrome still adapts to the
+   active theme — only the body itself is forced light. */
 .msg-body-frame {
   margin: 0 14px 14px;
   padding: 16px;
   border: 1px solid #e8e8e8;
   border-radius: 8px;
+  background: #ffffff;
+  color: #1a1a1a;
   font-size: 13px;
   line-height: 1.6;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -869,8 +902,43 @@ body.dark .msg-subject {
 }
 
 body.dark .msg-body-frame {
-  border-color: var(--hairline-soft);
-  color: var(--text);
+  /* Keep the body canvas light even in dark themes — see note above. */
+  background: #ffffff;
+  color: #1a1a1a;
+  border-color: #e8e8e8;
+}
+
+/* MSG HTML body container (mirrors .msg-body-frame, without pre-wrap). */
+.msg-body-html {
+  margin: 0 14px 14px;
+  padding: 16px;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1a1a1a;
+  font-size: 13px;
+  line-height: 1.6;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  word-break: break-word;
+}
+
+body.dark .msg-body-html {
+  background: #ffffff;
+  color: #1a1a1a;
+  border-color: #e8e8e8;
+}
+
+/* Inert-link colour inside the forced-white body canvas — the default
+   `body.dark .eml-link-inert { color:#8ab4f8 }` override is low-contrast
+   on white, so pin the classic hyperlink blue in this context. */
+.msg-body-frame .eml-link-inert,
+.msg-body-html .eml-link-inert {
+  color: #0563C1;
+}
+
+body.dark .msg-body-frame .eml-link-inert,
+body.dark .msg-body-html .eml-link-inert {
+  color: #0563C1;
 }
 
 .msg-attach-list {
@@ -3890,7 +3958,10 @@ body.dark .evtx-detail-key {
 
 .evtx-detail-val {
   color: #333;
-  word-break: break-all;
+  /* wrap long values (URLs, tokens, base64 blobs) cleanly */
+  overflow-wrap: anywhere;
+  word-break: normal;
+  white-space: pre-wrap;
   padding: 2px 0;
 }
 
@@ -3945,7 +4016,8 @@ body.dark .evtx-detail-sysinfo {
   font-family: 'Fira Code', 'Consolas', monospace;
   font-size: 11.5px;
   white-space: pre-wrap;
-  word-break: break-all;
+  overflow-wrap: anywhere;
+  word-break: normal;
   color: #333;
 }
 
