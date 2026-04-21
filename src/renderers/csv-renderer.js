@@ -721,6 +721,26 @@ class CsvRenderer {
         };
       }
 
+      // Fast path: when the target is (effectively) already the current
+      // scroll position, `scr.scrollTo({ behavior: 'smooth' })` does NOT
+      // fire a `scrollend` event in Chrome or Firefox — the polyfill
+      // then waits the full 1000 ms safety cap before resolving, which
+      // manifests as a 1 s UI stall when clicking an IOC pointing at
+      // the currently-visible row. Detect that case and skip the whole
+      // scroll/wait dance. `isProgrammaticScroll` is still toggled around
+      // the re-render as a safety belt in case renderVisibleRows' DOM
+      // mutations incidentally fire scroll events.
+      const startTop = scr.scrollTop;
+      if (Math.abs(scrollTarget - startTop) < 1) {
+        state.renderedRange = { start: -1, end: -1 };
+        renderVisibleRows();
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          isProgrammaticScroll = false;
+          resolve();
+        }));
+        return;
+      }
+
       // Scroll with smooth animation
       scr.scrollTo({
         top: scrollTarget,
