@@ -582,7 +582,20 @@ class PeRenderer {
     // ── Import hash (Imphash) ───────────────────────────────────────
     pe.imphash = this._computeImphash(pe.imports);
 
+    // ── TLS callbacks (IMAGE_DIRECTORY_ENTRY_TLS = 9) ──────────────
+    // AddressOfCallBacks is a NULL-terminated array of VAs that the
+    // loader invokes *before* the main entry point. Classic anti-debug
+    // / early-execution vector — most benign binaries have none.
+    pe.tls = this._parseTlsCallbacks(bytes, pe.dataDirectories, pe.sections, is64, pe.optional.imageBase);
+
+    // ── Entry-point sanity ─────────────────────────────────────────
+    // Classify which section the EP lives in and flag the well-known
+    // bad cases: EP outside any section (orphaned loader), or EP in a
+    // W+X section (self-modifying unpacker).
+    pe.entryPointInfo = this._analyzeEntryPoint(pe);
+
     // ── Authenticode Certificates (from Certificate Table data dir) ─
+
     pe.certificates = [];
     try {
       const certDD = pe.dataDirectories[4];
@@ -1216,10 +1229,129 @@ class PeRenderer {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  //  TLS callback parser (IMAGE_DIRECTORY_ENTRY_TLS = 9)
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  // IMAGE_TLS_DIRECTORY layout:
+  //   StartAddressOfRawData · EndAddressOfRawData · AddressOfIndex ·
+  //   AddressOfCallBacks · SizeOfZeroFill · Characteristics
+  //   (first four fields are 4 B on PE32, 8 B on PE32+)
+  //
+  // AddressOfCallBacks is a VA pointing at a NULL-terminated array of VAs.
+  // Each callback VA is invoked by the Windows loader *before* the main
+  // entry point, once per DLL_PROCESS_ATTACH / DETACH / THREAD_{ATTACH,
+  // DETACH} event. Benign C/C++ runtimes typically register 0 callbacks;
+  // malware uses them as an anti-debug / early-exec hook because most
+  // debuggers break *at* the EP, missing TLS execution entirely.
+
+  _parseTlsCallbacks(bytes, dataDirs, sections, is64, imageBase) {
+    if (!dataDirs || !dataDirs[9] || dataDirs[9].rva === 0 || dataDirs[9].size === 0) return null;
+    const result = { callbacks: [], rawOffset: 0, callbackArrayRva: 0 };
+    try {
+      const tlsOff = this._rvaToOffset(dataDirs[9].rva, sections);
+      result.rawOffset = tlsOff;
+      const ptrSize = is64 ? 8 : 4;
+      // AddressOfCallBacks is the 4th pointer field in IMAGE_TLS_DIRECTORY
+      const aocOff = tlsOff + ptrSize * 3;
+      if (aocOff + ptrSize > bytes.length) return result;
+
+      const aocVa = is64 ? this._u64(bytes, aocOff) : this._u32(bytes, aocOff);
+      if (!aocVa) return result;
+
+      // Convert VA → RVA → file offset. ImageBase is a Number (safe up to
+      // 2^53) so plain subtraction works even for the 64-bit path.
+      const aocRva = aocVa - imageBase;
+      if (aocRva < 0 || aocRva > 0xFFFFFFFF) return result;
+      result.callbackArrayRva = aocRva >>> 0;
+
+      let cursor = this._rvaToOffset(aocRva >>> 0, sections);
+      const MAX_CALLBACKS = 32;
+      for (let i = 0; i < MAX_CALLBACKS; i++) {
+        if (cursor + ptrSize > bytes.length) break;
+        const cbVa = is64 ? this._u64(bytes, cursor) : this._u32(bytes, cursor);
+        if (!cbVa) break;
+        const cbRva = cbVa - imageBase;
+        const cbFileOff = (cbRva >= 0 && cbRva <= 0xFFFFFFFF)
+          ? this._rvaToOffset(cbRva >>> 0, sections)
+          : null;
+        // Locate the containing section for the callback (if any) so the
+        // renderer can flag a callback that lives in a W+X section.
+        let cbSection = null;
+        if (cbRva >= 0 && cbRva <= 0xFFFFFFFF) {
+          const r = cbRva >>> 0;
+          for (const s of sections) {
+            if (r >= s.virtualAddress && r < s.virtualAddress + s.virtualSize) {
+              cbSection = s.name;
+              break;
+            }
+          }
+        }
+        result.callbacks.push({ va: cbVa, rva: cbRva >>> 0, fileOffset: cbFileOff, section: cbSection });
+        cursor += ptrSize;
+      }
+    } catch (_) { /* TLS parsing is best-effort */ }
+    return result;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Entry-point sanity
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  // Benign PEs almost always land their EP inside the `.text` section (or a
+  // linker-specific equivalent like `CODE` / `.init`). Two well-known
+  // malware patterns violate that:
+  //
+  //   • Orphan EP — the RVA does not fall inside *any* section. Frequently
+  //     seen in manually-built loaders that unpack into fresh pages.
+  //   • W+X EP — the EP lives in a section marked both writable and
+  //     executable. Classic unpacker / self-modifying stub.
+  //
+  // A DLL with EntryPoint == 0 is legitimate (optional DllMain); we skip
+  // the checks in that case so well-formed import-only libraries don't
+  // spuriously flag.
+
+  _analyzeEntryPoint(pe) {
+    const info = {
+      rva: pe.optional.entryPoint >>> 0,
+      section: null,
+      inText: false,
+      notInText: false,
+      inWX: false,
+      orphaned: false,
+      skipped: false,
+    };
+    if (info.rva === 0) {
+      // Legitimate for DLLs / drivers without DllMain
+      info.skipped = true;
+      return info;
+    }
+    for (const s of pe.sections) {
+      if (info.rva >= s.virtualAddress && info.rva < s.virtualAddress + Math.max(s.virtualSize, s.rawDataSize)) {
+        info.section = s;
+        break;
+      }
+    }
+    if (!info.section) {
+      info.orphaned = true;
+      return info;
+    }
+    const name = info.section.name || '';
+    // Accept the common linker variants; we don't want to flag legitimate
+    // Delphi / older toolchain output as "anomalous" just because the
+    // code section isn't literally named `.text`.
+    const TEXT_LIKE = new Set(['.text', 'CODE', '.code', 'text', '.itext', 'INIT', '.init']);
+    info.inText = TEXT_LIKE.has(name);
+    info.notInText = !info.inText;
+    info.inWX = !!(info.section.isWritable && info.section.isExecutable);
+    return info;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   //  Version Info parser (OriginalFilename, ProductName, etc.)
   // ═══════════════════════════════════════════════════════════════════════
 
   _parseVersionInfo(bytes, dataDirs, sections) {
+
     if (!dataDirs[2] || dataDirs[2].rva === 0) return null;
     try {
       const resBase = this._rvaToOffset(dataDirs[2].rva, sections);
@@ -1550,6 +1682,19 @@ class PeRenderer {
         wrap.appendChild(this._renderSection('🔑 Rich Header (' + pe.richHeader.entries.length + ' entries)', this._renderRichHeader(pe)));
       }
 
+      // ── TLS Callbacks (pre-entry-point hooks) ──────────────────────
+      // IMAGE_DIRECTORY_ENTRY_TLS → AddressOfCallBacks; see
+      // _parseTlsCallbacks(). A benign PE typically has zero; any count
+      // ≥ 1 warrants a look (classic anti-debug / anti-sandbox vector,
+      // MITRE T1546.009). Card only renders when at least one callback
+      // was parsed so we don't pollute the viewer for the common case.
+      if (pe.tls && pe.tls.callbacks && pe.tls.callbacks.length > 0) {
+        wrap.appendChild(this._renderSection(
+          '⏱ TLS Callbacks (' + pe.tls.callbacks.length + ')',
+          this._renderTlsCallbacks(pe)
+        ));
+      }
+
       // ── Authenticode Certificates ──────────────────────────────────
       if (pe.certificates && pe.certificates.length > 0) {
         wrap.appendChild(this._renderSection(
@@ -1720,11 +1865,32 @@ class PeRenderer {
   }
 
   _renderHeaders(pe) {
+    // Entry-point anomaly annotation. `pe.entryPointInfo` is populated by
+    // `_analyzeEntryPoint()` during `_parse()`. We surface the containing
+    // section name always, and append a red badge for orphaned / W+X EPs
+    // or an amber badge for EPs in a non-`.text`-like section.
+    const ep = pe.entryPointInfo || {};
+    let epCell = this._esc(this._hex(pe.optional.entryPoint, 8));
+    if (!ep.skipped) {
+      if (ep.orphaned) {
+        epCell += ` <span class="pe-ep-badge pe-ep-bad" style="background:var(--risk-high);color:#fff;padding:1px 6px;border-radius:3px;margin-left:8px;font-size:0.85em">⚠ orphaned (outside any section)</span>`;
+      } else if (ep.section) {
+        const secName = this._esc(ep.section.name || '(unnamed)');
+        if (ep.inWX) {
+          epCell += ` <span class="pe-ep-badge pe-ep-bad" style="background:var(--risk-high);color:#fff;padding:1px 6px;border-radius:3px;margin-left:8px;font-size:0.85em">⚠ in W+X section ${secName}</span>`;
+        } else if (ep.notInText) {
+          epCell += ` <span class="pe-ep-badge pe-ep-warn" style="background:var(--risk-med);color:#000;padding:1px 6px;border-radius:3px;margin-left:8px;font-size:0.85em">⚠ in ${secName} (not a code section)</span>`;
+        } else {
+          epCell += ` <span class="pe-ep-badge" style="color:var(--text-muted);margin-left:8px;font-size:0.85em">in ${secName}</span>`;
+        }
+      }
+    }
+
     const rows = [
       ['Type', pe.coff.isDLL ? 'Dynamic Link Library (DLL)' : pe.coff.isSystem ? 'System Driver' : 'Executable'],
       ['Architecture', pe.optional.magicStr],
       ['Machine', pe.coff.machineStr],
-      ['Entry Point', this._hex(pe.optional.entryPoint, 8)],
+      ['Entry Point', epCell],
       ['Image Base', this._hex(pe.optional.imageBase, pe.is64 ? 16 : 8)],
       ['Linker Version', pe.optional.linkerStr],
       ['Timestamp', pe.coff.timestampStr],
@@ -1736,7 +1902,7 @@ class PeRenderer {
       ['COFF Flags', pe.coff.characteristicsFlags.join(', ') || 'None'],
       ['DLL Characteristics', pe.optional.dllCharFlags.join(', ') || 'None'],
     ];
-    return this._buildTable(['Field', 'Value'], rows);
+    return this._buildTable(['Field', 'Value'], rows, true);
   }
 
   _renderSecurity(pe) {
@@ -1985,6 +2151,68 @@ class PeRenderer {
       e.count.toString(),
     ]);
     div.appendChild(this._buildTable(['Comp ID', 'Build ID', 'Count'], rows));
+    return div;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  TLS Callbacks renderer
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  // Renders the callback VA array as a clickable table. Each row expands
+  // to a hex dump of the callback's first 64 bytes — enough to eyeball a
+  // `ret` / `int3` stub vs. a real unpacker prologue without jumping out
+  // to a disassembler.
+
+  _renderTlsCallbacks(pe) {
+    const div = document.createElement('div');
+    const info = document.createElement('div');
+    info.className = 'pe-rich-info';
+    const n = pe.tls.callbacks.length;
+    info.textContent = `${n} callback${n === 1 ? '' : 's'} registered — invoked by the loader before EntryPoint (array @ RVA ${this._hex(pe.tls.callbackArrayRva, 8)})`;
+    div.appendChild(info);
+
+    const rows = pe.tls.callbacks.map((cb, i) => {
+      const wxFlag = cb.section && pe.sections.find(s => s.name === cb.section && s.isWritable && s.isExecutable);
+      const secLabel = cb.section
+        ? (wxFlag ? `${cb.section} ⚠ W+X` : cb.section)
+        : '— (outside any section)';
+      return [
+        String(i + 1),
+        this._hex(cb.va, pe.is64 ? 16 : 8),
+        this._hex(cb.rva >>> 0, 8),
+        cb.fileOffset != null ? this._hex(cb.fileOffset, 8) : '—',
+        secLabel,
+      ];
+    });
+
+    const table = this._buildTable(['#', 'VA', 'RVA', 'File Offset', 'Section'], rows);
+    // Make rows clickable → inline hex dump of the first 64 B at each callback
+    const tbody = table.querySelector('tbody');
+    if (tbody) {
+      const trs = Array.from(tbody.querySelectorAll('tr'));
+      trs.forEach((tr, i) => {
+        const cb = pe.tls.callbacks[i];
+        if (!cb || cb.fileOffset == null) return;
+        tr.classList.add('bin-clickable');
+        tr.addEventListener('click', () => {
+          const next = tr.nextElementSibling;
+          if (next && next.classList.contains('bin-hexdump-row')) {
+            next.remove();
+            tr.classList.remove('bin-expanded');
+          } else {
+            const hexRow = document.createElement('tr');
+            hexRow.className = 'bin-hexdump-row';
+            const td = document.createElement('td');
+            td.colSpan = 5;
+            td.appendChild(this._renderHexDump(cb.fileOffset, 64));
+            hexRow.appendChild(td);
+            tr.after(hexRow);
+            tr.classList.add('bin-expanded');
+          }
+        });
+      });
+    }
+    div.appendChild(table);
     return div;
   }
 
@@ -2662,6 +2890,78 @@ class PeRenderer {
         'Overlay SHA-256':   IOC.HASH,
       });
 
+
+      // ── Entry-point sanity flags ───────────────────────────────────
+      // `pe.entryPointInfo` was populated in _parse(). Two well-known
+      // anomalies warrant a high-severity flag; both map to T1027.*.
+      //   • orphan   — EP outside any section (hand-rolled loader stub).
+      //   • W+X      — EP in a section that is simultaneously writable
+      //                and executable (self-modifying unpacker).
+      // A third, softer case (EP in a non-`.text`-like section) is
+      // metadata-only — surfaced via the header badge but not pushed as
+      // an IOC because a few legitimate linkers do this (e.g. `.init`
+      // crt startup on old GCC builds).
+      try {
+        const epi = pe.entryPointInfo;
+        if (epi && !epi.skipped) {
+          if (epi.orphaned) {
+            issues.push('Orphan entry point — EP RVA does not fall inside any section (T1027)');
+            riskScore += 3;
+            pushIOC(findings, {
+              type: IOC.PATTERN,
+              value: 'Orphan entry point [T1027]',
+              severity: 'high',
+              note: `Entry point ${this._hex(epi.rva, 8)} lies outside every defined section — typical of hand-rolled loader stubs.`,
+              _noDomainSibling: true,
+            });
+          } else if (epi.inWX) {
+            issues.push(`Entry point in W+X section "${epi.section.name}" — self-modifying unpacker pattern (T1027.002)`);
+            riskScore += 2.5;
+            pushIOC(findings, {
+              type: IOC.PATTERN,
+              value: 'Entry point in W+X section [T1027.002]',
+              severity: 'high',
+              note: `Entry point ${this._hex(epi.rva, 8)} lives in section "${epi.section.name}" which is marked both writable and executable.`,
+              _noDomainSibling: true,
+            });
+          }
+        }
+      } catch (_) { /* entry-point analysis is best-effort */ }
+
+      // ── TLS callbacks ──────────────────────────────────────────────
+      // One or more registered callbacks = anti-debug / early-exec hook
+      // (loader invokes them *before* EP). Medium by default; escalated
+      // to high when an anti-debug / sandbox-evasion capability is also
+      // present (classic evasion chain). MITRE T1546.009.
+      try {
+        if (pe.tls && pe.tls.callbacks && pe.tls.callbacks.length > 0) {
+          const n = pe.tls.callbacks.length;
+          findings.metadata['TLS Callbacks'] = String(n);
+          const hasAntiDebugImport = suspiciousImports.some(s =>
+            /debug|sandbox|evasion/i.test(s.info));
+          // Also check for a TLS callback that lives in a W+X section —
+          // strong indicator of a self-modifying unpacker hidden behind the
+          // TLS hook.
+          const cbInWX = pe.tls.callbacks.some(cb => {
+            if (!cb.section) return false;
+            const sec = pe.sections.find(s => s.name === cb.section);
+            return sec && sec.isWritable && sec.isExecutable;
+          });
+          const severity = (hasAntiDebugImport || cbInWX) ? 'high' : 'medium';
+          const detail = cbInWX
+            ? ' — at least one callback lives in a W+X section'
+            : (hasAntiDebugImport ? ' — paired with anti-debug / sandbox-evasion imports' : '');
+          issues.push(`${n} TLS callback${n === 1 ? '' : 's'} registered — executed before EntryPoint (T1546.009)${detail}`);
+          riskScore += (severity === 'high') ? 2.5 : 1.5;
+          pushIOC(findings, {
+            type: IOC.PATTERN,
+            value: `TLS callbacks registered (${n}) [T1546.009]`,
+            severity,
+            note: `AddressOfCallBacks array @ RVA ${this._hex(pe.tls.callbackArrayRva, 8)} — ${n} callback${n === 1 ? '' : 's'} invoked by the Windows loader before the main entry point.${detail}`,
+            _noDomainSibling: true,
+          });
+        }
+      } catch (_) { /* TLS risk analysis is best-effort */ }
 
       // ── Capability tagging (capa-lite) ─────────────────────────────
       // Turn the wall of "X suspicious APIs" into named MITRE-tagged

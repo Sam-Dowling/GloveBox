@@ -310,6 +310,32 @@ subtly misbehave.
   registrable domain). Mirror the hash results via `mirrorMetadataIOCs`
   with `{RichHash: IOC.HASH, 'Import Hash (MD5)': IOC.HASH, SymHash: IOC.HASH}`
   so they reach the sidebar as clickable pivots.
+- **PE TLS callbacks + entry-point sanity** are parsed during
+  `PeRenderer._parse()` and attached to the parsed PE object as two
+  independent shapes. `pe.tls = { callbacks: [{va, rva, fileOffset, section}],
+  rawOffset, callbackArrayRva }` is produced by `_parseTlsCallbacks()`, which
+  walks `IMAGE_DIRECTORY_ENTRY_TLS` (index 9) → `IMAGE_TLS_DIRECTORY` →
+  the NULL-terminated `AddressOfCallBacks` VA array (hard-capped at 32
+  entries to avoid pathological inputs). `pe.entryPointInfo = { rva,
+  section, inText, notInText, inWX, orphaned, skipped }` is produced by
+  `_analyzeEntryPoint()`, which classifies `AddressOfEntryPoint` against
+  the section table — `TEXT_LIKE = new Set(['.text','CODE','.code','text','.itext','INIT','.init'])`
+  is the canonical list of section names considered normal code hosts. The
+  `render()` path adds a TLS Callbacks card immediately after the Rich
+  Header section (each callback is a clickable row that expands into a
+  64-byte hex-dump preview via `_renderHexDump(cb.fileOffset, 64)`) and
+  annotates the Entry Point row in the header table with badges for
+  orphaned / non-`.text` / W+X placement. `analyzeForSecurity()` folds
+  these into the risk score **before** capability tagging so entry-point
+  anomalies rank above generic capability hits: orphan EP → `IOC.PATTERN`
+  high `+3` (T1027); EP landing in a W+X section → `IOC.PATTERN` high
+  `+2.5` (T1027.002); TLS callbacks present → `IOC.PATTERN` medium `+1.5`
+  (T1546.009), escalated to high `+2.5` when a callback itself resides in
+  a W+X section **or** any anti-debug capability was detected in the same
+  binary. The callback count is mirrored onto `findings.metadata['TLS Callbacks']`
+  for the sidebar. The reference sample is `examples/pe/tls-callback.exe`
+  — a 1 536-byte PE32 with a single ret-only TLS callback at
+  `.text + 0x20`.
 - **`NpmRenderer` accepts three input shapes** — gzip tarball (`.tgz`),
   a bare `package.json` manifest, or a `package-lock.json` /
   `npm-shrinkwrap.json` lockfile — routed by dedicated sniff helpers in
