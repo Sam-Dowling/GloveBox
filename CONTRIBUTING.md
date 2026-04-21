@@ -147,9 +147,16 @@ subtly misbehave.
   `_copyAnalysisXxx` markdown builders (extracted from `app-ui.js` to keep
   that file below ~2 K lines) and must load **after** `app-ui.js` (it
   consumes `_formatMetadataValue` / `_sCaps` defined there).
-  `app-settings.js` must load **after** both because it reuses the `THEMES`
-  array from `app-ui.js` and overrides the unbudgeted `_copyAnalysis` call
-  path with the configured Summary-budget step. Renderers load before
+  `app-sidebar-focus.js` holds the click-to-focus / highlighting engine
+  (`_navigateToFinding`, `_findIOCMatches`, `_highlightMatchesInline`, the
+  TreeWalker fallback, plus the Binary Metadata + MITRE sections that hang
+  off the same navigation plumbing) — extracted from `app-sidebar.js` for
+  the same reason and must load **after** it so the rendering half's click
+  handlers find the focus engine on `App.prototype`.
+  `app-settings.js` must load **after** both `app-ui.js` and
+  `app-copy-analysis.js` because it reuses the `THEMES` array from
+  `app-ui.js` and overrides the unbudgeted `_copyAnalysis` call path with
+  the configured Summary-budget step. Renderers load before
   `renderer-registry.js`, which loads before `app-core.js`.
 
 ### CSP & runtime safety

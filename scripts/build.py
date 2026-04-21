@@ -303,6 +303,17 @@ JS_FILES = [
 
     'src/app/app-load.js',
     'src/app/app-sidebar.js',
+    # app-sidebar-focus.js holds the click-to-focus / highlighting engine:
+    # _navigateToFinding, _findIOCMatches, _highlightMatchesInline, the
+    # TreeWalker fallback, the 5 s idle clear, plus the Binary Metadata +
+    # MITRE ATT&CK sections (their rows hang off the same navigation
+    # plumbing). Split out of app-sidebar.js to keep the rendering half
+    # below ~2 K lines. Must load AFTER app-sidebar.js because
+    # _renderFindingsTableSection attaches click handlers that call into
+    # _navigateToFinding defined here — but only by name (via `this`), so
+    # the order is load-time, not lookup-time, and the Object.assign merge
+    # simply lands both halves onto App.prototype.
+    'src/app/app-sidebar-focus.js',
     'src/app/app-yara.js',
     'src/app/app-ui.js',
     # app-copy-analysis.js holds the 28 per-format _copyAnalysisXxx markdown
