@@ -223,38 +223,13 @@ Object.assign(App.prototype, {
       }
     }
 
-    // Check if we have a SQLite view — scroll to matching row
-    const sqliteView = pc && pc.querySelector('.sqlite-view');
-    if (sqliteView && sqliteView._sqliteRows) {
-      const rows = sqliteView._sqliteRows;
-      const searchVal = (ref.url || '').toLowerCase();
-      if (searchVal) {
-        // Try full match first, then progressively shorter prefixes
-        const attempts = [searchVal];
-        if (searchVal.length > 40) attempts.push(searchVal.substring(0, 40));
-        if (searchVal.length > 20) attempts.push(searchVal.substring(0, 20));
-
-        for (const term of attempts) {
-          for (const r of rows) {
-            if (r.tr.style.display === 'none') continue;
-            if (r.searchText.includes(term)) {
-              // Scroll the row into view within the scroll container
-              const scrContainer = sqliteView._sqliteScrollContainer;
-              if (scrContainer) {
-                const rowTop = r.tr.offsetTop - scrContainer.offsetTop;
-                scrContainer.scrollTo({ top: rowTop - 60, behavior: 'smooth' });
-              } else {
-                r.tr.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              }
-              // Flash highlight the row
-              r.tr.classList.add('sqlite-row-flash');
-              setTimeout(() => r.tr.classList.remove('sqlite-row-flash'), 1500);
-              return;
-            }
-          }
-        }
-      }
-    }
+    // ── SQLite view ────────────────────────────────────────────────────────
+    // Wave-B: the SQLite renderer now embeds a GridViewer whose root is
+    // tagged `.csv-view`, so the CSV branch above handles navigation. The
+    // old `_sqliteRows` / `_sqliteScrollContainer` DOM-table shim is gone.
+    // If the CSV branch fell through (no match in the active tab), there
+    // is nothing more we can do here — cross-tab IOC search is a Wave D
+    // (Data Explorer) feature.
 
     // ── IOC highlighting with click-cycle semantics ─────────────────────────
     //

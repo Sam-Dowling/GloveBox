@@ -479,10 +479,24 @@ class SqliteRenderer {
   }
 
   // ── View builder ────────────────────────────────────────────────────────
+  //
+  // Wave-B rewrite: every tabular surface is now a GridViewer. The old
+  // DOM-table + linear `rowEls[{tr, searchText}]` structure is gone. For
+  // back-compat with the sidebar IOC click-to-focus engine
+  // (src/app/app-sidebar-focus.js), the active GridViewer's root is tagged
+  // `csv-view` so the existing `_csvFilters.scrollToRow(...)` branch handles
+  // navigation; no sqlite-specific sidebar path is needed.
+  //
+  // Multi-table generic view: tabs swap the active GridViewer in a single
+  // host slot. Only the active tab's root carries `.csv-view`, so
+  // `pc.querySelector('.csv-view')` in the sidebar deterministically
+  // resolves to the currently-visible table. Cross-tab IOC navigation is a
+  // known limitation — the analyst switches tabs manually. Wave D's Data
+  // Explorer will address cross-table search.
 
   _buildView(db, fileName) {
     const wrap = document.createElement('div');
-    wrap.className = 'sqlite-view csv-view';
+    wrap.className = 'sqlite-view';
 
     // Info bar
     const info = document.createElement('div');
@@ -494,143 +508,89 @@ class SqliteRenderer {
     wrap.appendChild(info);
 
     if (db.historyRows) {
-      // Browser history view
       this._buildHistoryTable(wrap, db, fileName);
     } else {
-      // Generic table browser
       this._buildGenericView(wrap, db, fileName);
     }
 
     return wrap;
   }
 
+  // ── Single-table (browser history) via GridViewer ───────────────────────
   _buildHistoryTable(wrap, db, fileName) {
-    const rows = db.historyRows;
     const cols = db.historyColumns;
+    const rawRows = db.historyRows;
 
-    // Summary
-    const summary = document.createElement('div');
-    summary.className = 'csv-info';
-    summary.textContent = `${rows.length.toLocaleString()} history entries`;
-    wrap.appendChild(summary);
+    // Cap at 20 000 entries for the virtual grid. CSV export gets the full set.
+    const LIMIT = 20000;
+    const limit = Math.min(rawRows.length, LIMIT);
 
-    // Filter bar
-    const filterBar = document.createElement('div');
-    filterBar.className = 'sqlite-filter-bar';
-
-    const searchLabel = document.createElement('span');
-    searchLabel.className = 'evtx-filter-label';
-    searchLabel.textContent = 'Search:';
-    filterBar.appendChild(searchLabel);
-
-    const searchInput = document.createElement('input');
-    searchInput.type = 'text';
-    searchInput.placeholder = 'Filter rows…';
-    filterBar.appendChild(searchInput);
-
-    const filterCount = document.createElement('span');
-    filterCount.className = 'evtx-filter-count';
-    filterCount.textContent = `Showing ${Math.min(rows.length, 20000).toLocaleString()} of ${rows.length.toLocaleString()}`;
-    filterBar.appendChild(filterCount);
-
-    wrap.appendChild(filterBar);
-
-    // CSV bar
-    const bar = this._buildCsvBar(cols, rows, fileName);
-    wrap.appendChild(bar);
-
-    // Table
-    const scr = document.createElement('div');
-    scr.className = 'csv-scroll';
-    scr.style.cssText = 'overflow:auto;max-height:calc(100vh - 200px)';
-
-    const tbl = document.createElement('table');
-    tbl.className = 'xlsx-table csv-table sqlite-table';
-
-    const thead = document.createElement('thead');
-    const htr = document.createElement('tr');
-    const th0 = document.createElement('th'); th0.className = 'xlsx-col-header csv-header'; th0.textContent = '#'; htr.appendChild(th0);
-    for (const c of cols) {
-      const th = document.createElement('th'); th.className = 'xlsx-col-header csv-header'; th.textContent = c; htr.appendChild(th);
-    }
-    thead.appendChild(htr);
-    tbl.appendChild(thead);
-
-    const tbody = document.createElement('tbody');
-    const limit = Math.min(rows.length, 20000);
-    const rowEls = [];
+    const rows = new Array(limit);
+    const rowSearchText = new Array(limit);
     for (let i = 0; i < limit; i++) {
-      const row = rows[i];
-      const tr = document.createElement('tr');
-      const rh = document.createElement('td'); rh.className = 'xlsx-row-header'; rh.textContent = i + 1; tr.appendChild(rh);
-      const cellTexts = [];
-      for (let j = 0; j < row.length; j++) {
-        const td = document.createElement('td'); td.className = 'xlsx-cell';
-        const val = row[j] == null ? '' : String(row[j]);
-        // Truncate very long URLs
-        if (val.length > 150) {
-          td.textContent = val.substring(0, 150) + '…';
-          td.title = val;
-        } else {
-          td.textContent = val;
-        }
-        // Right-align numbers
-        if (j === 2 && val && !isNaN(parseFloat(val))) td.style.textAlign = 'right';
-        tr.appendChild(td);
-        cellTexts.push(val.toLowerCase());
+      const src = rawRows[i];
+      const row = new Array(cols.length);
+      const parts = [];
+      for (let j = 0; j < cols.length; j++) {
+        const v = src[j] == null ? '' : String(src[j]);
+        row[j] = v;
+        if (v) parts.push(v);
       }
-      tbody.appendChild(tr);
-      rowEls.push({ tr, searchText: cellTexts.join(' ') });
-    }
-    tbl.appendChild(tbody);
-    scr.appendChild(tbl);
-    wrap.appendChild(scr);
-
-    if (rows.length > limit) {
-      const note = document.createElement('div');
-      note.className = 'csv-info';
-      note.textContent = `⚠ Showing first ${limit.toLocaleString()} of ${rows.length.toLocaleString()} entries`;
-      wrap.appendChild(note);
+      rows[i] = row;
+      rowSearchText[i] = parts.join(' ').toLowerCase();
     }
 
-    // Filter logic
-    const applyFilters = () => {
-      const term = searchInput.value.toLowerCase().trim();
-      let shown = 0;
-      for (const r of rowEls) {
-        const match = !term || r.searchText.includes(term);
-        r.tr.style.display = match ? '' : 'none';
-        if (match) shown++;
-      }
-      filterCount.textContent = `Showing ${shown.toLocaleString()} of ${rowEls.length.toLocaleString()}`;
-    };
-
-    let filterTimeout;
-    searchInput.addEventListener('input', () => {
-      clearTimeout(filterTimeout);
-      filterTimeout = setTimeout(applyFilters, 150);
-    });
-
-    // Expose filter controls and row data for sidebar IOC navigation
-    wrap._sqliteFilters = {
-      searchInput,
-      applyFilters,
-      scrollContainer: scr,
-      filterBar,
-    };
-    wrap._sqliteRows = rowEls;
-    wrap._sqliteScrollContainer = scr;
-
-    // Provide clean tab/newline-delimited text for IOC extraction.
-    // Without this, DOM textContent merges adjacent cells (URL + Title +
-    // Visit Count + Date) into one blob and the URL regex over-matches.
+    // Provide clean tab/newline-delimited text for IOC extraction. Without
+    // this, DOM textContent merges adjacent cells (URL + Title + Visit Count
+    // + Date) into one blob and the URL regex over-matches.
     const rawLines = [cols.join('\t')];
-    for (const row of rows) {
+    for (const row of rawRows) {
       rawLines.push(row.map(v => v == null ? '' : String(v)).join('\t'));
     }
-    wrap._rawText = rawLines.join('\n');
+    const rawText = rawLines.join('\n');
+
+    const truncNote = rawRows.length > limit
+      ? `⚠ Showing first ${limit.toLocaleString()} of ${rawRows.length.toLocaleString()} entries`
+      : '';
+
+    const brand = db.browserType
+      ? db.browserType.charAt(0).toUpperCase() + db.browserType.slice(1)
+      : 'Browser';
+    const infoText = `${brand} history · ${limit.toLocaleString()} of ${rawRows.length.toLocaleString()} entries`;
+
+    const csvBar = this._buildCsvBar(cols, rawRows, fileName);
+
+    // Right-align the numeric "Visit Count" column (index 2 in the
+    // display columns array).
+    const visitCountIdx = cols.findIndex(c => /visit count/i.test(c));
+
+    // Wave-E: Opt the browser-history grid into the timeline strip by
+    // naming the "Last Visit" / "Visit(ed) Date" / "Timestamp" column as
+    // the grid's temporal axis. Falls back to GridViewer's auto-sniff
+    // (which also passes for this column) when no match is found.
+    const lastVisitIdx = cols.findIndex(c => /last visit|visit(ed)? ?date|timestamp/i.test(c));
+
+    const viewer = new GridViewer({
+      columns: cols,
+      rows,
+      rowSearchText,
+      rawText,
+      className: 'sqlite-grid csv-view',
+      infoText,
+      truncationNote: truncNote,
+      extraToolbarEls: [csvBar],
+      timeColumn: lastVisitIdx >= 0 ? lastVisitIdx : undefined,
+      cellClass: (_dataIdx, colIdx) => (colIdx === visitCountIdx ? 'grid-cell-num' : null),
+      rowTitle: (dataIdx) => `Entry ${(dataIdx + 1).toLocaleString()}`
+    });
+
+
+    wrap.appendChild(viewer.root());
+    wrap._rawText = rawText;
+    wrap._sqliteViewer = viewer;
   }
 
+  // ── Multi-table generic view via GridViewer (lazy per-tab) ──────────────
   _buildGenericView(wrap, db, fileName) {
     const tableNames = Object.keys(db.allTableData);
     if (!tableNames.length) {
@@ -639,7 +599,6 @@ class SqliteRenderer {
       empty.textContent = 'No readable tables found.';
       wrap.appendChild(empty);
 
-      // Show schema listing
       if (db.tables.length) {
         const schemaInfo = document.createElement('div');
         schemaInfo.className = 'csv-info';
@@ -649,192 +608,131 @@ class SqliteRenderer {
       return;
     }
 
-    // Filter bar (shared across all tabs)
-    const filterBar = document.createElement('div');
-    filterBar.className = 'sqlite-filter-bar';
-
-    const searchLabel = document.createElement('span');
-    searchLabel.className = 'evtx-filter-label';
-    searchLabel.textContent = 'Search:';
-    filterBar.appendChild(searchLabel);
-
-    const searchInput = document.createElement('input');
-    searchInput.type = 'text';
-    searchInput.placeholder = 'Filter rows…';
-    filterBar.appendChild(searchInput);
-
-    const filterCount = document.createElement('span');
-    filterCount.className = 'evtx-filter-count';
-    filterBar.appendChild(filterCount);
-
-    wrap.appendChild(filterBar);
-
-    // Tab buttons for each table
+    // Tab bar: one tab per table. Clicking a tab lazy-constructs its
+    // GridViewer and swaps it into the host slot.
     const tabBar = document.createElement('div');
     tabBar.className = 'sqlite-tab-bar';
-    const containers = [];
-    const allTabRows = []; // array of arrays of { tr, searchText }
-    let activeTabIdx = -1; // -1 = "All" tab
+    wrap.appendChild(tabBar);
 
-    // "All" tab button (first, active by default)
-    const allTab = document.createElement('button');
-    allTab.className = 'tb-btn sqlite-tab sqlite-tab-active';
-    allTab.textContent = 'All';
-    allTab.addEventListener('click', () => {
-      tabBar.querySelectorAll('.sqlite-tab').forEach(t => t.classList.remove('sqlite-tab-active'));
-      allTab.classList.add('sqlite-tab-active');
-      containers.forEach(c => c.style.display = '');
-      activeTabIdx = -1;
-      updateFilterCount();
-    });
-    tabBar.appendChild(allTab);
+    const host = document.createElement('div');
+    host.className = 'sqlite-grid-host';
+    wrap.appendChild(host);
 
-    for (let ti = 0; ti < tableNames.length; ti++) {
-      const tName = tableNames[ti];
+    const viewers = Object.create(null);
+    const tabs    = Object.create(null);
+    const self    = this;
+    let activeName = null;
+
+    const activate = (tName) => {
+      if (activeName === tName) return;
+      activeName = tName;
+      for (const n in tabs) {
+        tabs[n].classList.toggle('sqlite-tab-active', n === tName);
+      }
+      if (!viewers[tName]) {
+        viewers[tName] = self._buildTableViewer(db.allTableData[tName], tName, fileName);
+      }
+      host.replaceChildren(viewers[tName].root());
+      // Only the active viewer's root carries `csv-view` so the sidebar's
+      // `pc.querySelector('.csv-view')` reliably resolves to the visible
+      // grid and never races with a hidden tab's DOM.
+      for (const n in viewers) {
+        viewers[n].root().classList.toggle('csv-view', n === tName);
+      }
+      wrap._sqliteViewer = viewers[tName];
+    };
+
+    for (const tName of tableNames) {
       const tData = db.allTableData[tName];
-
       const tab = document.createElement('button');
       tab.className = 'tb-btn sqlite-tab';
-      tab.textContent = `${tName} (${tData.rows.length})`;
-      tab.addEventListener('click', () => {
-        tabBar.querySelectorAll('.sqlite-tab').forEach(t => t.classList.remove('sqlite-tab-active'));
-        tab.classList.add('sqlite-tab-active');
-        containers.forEach((c, i) => c.style.display = i === ti ? '' : 'none');
-        activeTabIdx = ti;
-        updateFilterCount();
-      });
+      tab.dataset.tname = tName;
+      tab.textContent = `${tName} (${tData.rows.length.toLocaleString()})`;
+      tab.addEventListener('click', () => activate(tName));
       tabBar.appendChild(tab);
-
-      const container = document.createElement('div');
-
-      // Table name header
-      const tableHeader = document.createElement('div');
-      tableHeader.className = 'sqlite-table-header';
-      tableHeader.textContent = tName;
-      container.appendChild(tableHeader);
-
-      // CSV bar for this table
-      const cols = tData.columns.length ? tData.columns : tData.rows.length ? Array.from({ length: tData.rows[0].length }, (_, i) => `col_${i}`) : [];
-      const bar = this._buildCsvBar(cols, tData.rows, fileName, tName);
-      container.appendChild(bar);
-
-      // Table
-      const scr = document.createElement('div');
-      scr.className = 'csv-scroll';
-      scr.style.cssText = 'overflow:auto;max-height:calc(100vh - 220px)';
-
-      const tbl = document.createElement('table');
-      tbl.className = 'xlsx-table csv-table sqlite-table';
-
-      if (cols.length) {
-        const thead = document.createElement('thead');
-        const htr = document.createElement('tr');
-        const th0 = document.createElement('th'); th0.className = 'xlsx-col-header csv-header'; th0.textContent = '#'; htr.appendChild(th0);
-        for (const c of cols) {
-          const th = document.createElement('th'); th.className = 'xlsx-col-header csv-header'; th.textContent = c; htr.appendChild(th);
-        }
-        thead.appendChild(htr);
-        tbl.appendChild(thead);
-      }
-
-      const tbody = document.createElement('tbody');
-      const limit = Math.min(tData.rows.length, 10000);
-      const tabRowEls = [];
-      for (let i = 0; i < limit; i++) {
-        const row = tData.rows[i];
-        const tr = document.createElement('tr');
-        const rh = document.createElement('td'); rh.className = 'xlsx-row-header'; rh.textContent = i + 1; tr.appendChild(rh);
-        const cellTexts = [];
-        for (const val of row) {
-          const td = document.createElement('td'); td.className = 'xlsx-cell';
-          const s = val == null ? 'NULL' : String(val);
-          if (s.length > 200) { td.textContent = s.substring(0, 200) + '…'; td.title = s; }
-          else td.textContent = s;
-          if (val === null) td.style.color = 'var(--text-dim)';
-          tr.appendChild(td);
-          cellTexts.push(s.toLowerCase());
-        }
-        tbody.appendChild(tr);
-        tabRowEls.push({ tr, searchText: cellTexts.join(' ') });
-      }
-      tbl.appendChild(tbody);
-      scr.appendChild(tbl);
-      container.appendChild(scr);
-
-      if (tData.rows.length > limit) {
-        const note = document.createElement('div');
-        note.className = 'csv-info';
-        note.textContent = `⚠ Showing first ${limit.toLocaleString()} of ${tData.rows.length.toLocaleString()} rows`;
-        container.appendChild(note);
-      }
-
-      containers.push(container);
-      allTabRows.push(tabRowEls);
+      tabs[tName] = tab;
     }
 
-    // Update filter count for active tab (or all tabs if activeTabIdx === -1)
-    const updateFilterCount = () => {
-      if (activeTabIdx === -1) {
-        // "All" tab: sum across all tables
-        let totalShown = 0, totalRows = 0;
-        for (const tabRows of allTabRows) {
-          totalRows += tabRows.length;
-          totalShown += tabRows.filter(r => r.tr.style.display !== 'none').length;
-        }
-        filterCount.textContent = `Showing ${totalShown.toLocaleString()} of ${totalRows.toLocaleString()}`;
-      } else {
-        const tabRows = allTabRows[activeTabIdx] || [];
-        const shown = tabRows.filter(r => r.tr.style.display !== 'none').length;
-        filterCount.textContent = `Showing ${shown.toLocaleString()} of ${tabRows.length.toLocaleString()}`;
-      }
-    };
-
-    // Initial count (all tables visible)
-    const totalRows = allTabRows.reduce((sum, rows) => sum + rows.length, 0);
-    filterCount.textContent = `Showing ${totalRows.toLocaleString()} of ${totalRows.toLocaleString()}`;
-
-    // Filter logic — filters all tabs so switching tabs preserves the filter
-    const applyFilters = () => {
-      const term = searchInput.value.toLowerCase().trim();
-      for (const tabRows of allTabRows) {
-        for (const r of tabRows) {
-          const match = !term || r.searchText.includes(term);
-          r.tr.style.display = match ? '' : 'none';
-        }
-      }
-      updateFilterCount();
-    };
-
-    let filterTimeout;
-    searchInput.addEventListener('input', () => {
-      clearTimeout(filterTimeout);
-      filterTimeout = setTimeout(applyFilters, 150);
-    });
-
-    wrap.appendChild(tabBar);
-    for (const c of containers) wrap.appendChild(c);
-
-    // Expose filter controls and row data for sidebar IOC navigation
-    wrap._sqliteFilters = {
-      searchInput,
-      applyFilters,
-      scrollContainer: containers[0] || wrap,
-      filterBar,
-    };
-    wrap._sqliteRows = allTabRows.flat();
-    wrap._sqliteScrollContainer = containers[0] || wrap;
-
-    // Provide clean tab/newline-delimited text for IOC extraction (generic tables).
+    // Concatenated raw text across every table (IOC extraction operates on
+    // the whole database; sidebar IOC navigation into a specific row
+    // still requires the matching tab to be the active one).
     const rawLines = [];
     for (const tName of tableNames) {
       const tData = db.allTableData[tName];
-      const cols = tData.columns.length ? tData.columns : tData.rows.length ? Array.from({ length: tData.rows[0].length }, (_, i) => `col_${i}`) : [];
+      const cols = tData.columns.length
+        ? tData.columns
+        : tData.rows.length
+          ? Array.from({ length: tData.rows[0].length }, (_, i) => `col_${i}`)
+          : [];
+      rawLines.push(`-- Table: ${tName}`);
       rawLines.push(cols.join('\t'));
       for (const row of tData.rows) {
         rawLines.push(row.map(v => v == null ? '' : String(v)).join('\t'));
       }
     }
     wrap._rawText = rawLines.join('\n');
+
+    // Activate the first table by default.
+    activate(tableNames[0]);
+  }
+
+  // ── Build a GridViewer for one table (used by both history and generic
+  //    paths' lazy-construct step). ─────────────────────────────────────────
+  _buildTableViewer(tData, tName, fileName) {
+    const columns = tData.columns.length
+      ? tData.columns
+      : tData.rows.length
+        ? Array.from({ length: tData.rows[0].length }, (_, i) => `col_${i}`)
+        : [];
+
+    // Upper cap inherited from the old renderer to bound DOM cost on
+    // pathological tables.
+    const LIMIT = 10000;
+    const total = tData.rows.length;
+    const limit = Math.min(total, LIMIT);
+
+    const rows = new Array(limit);
+    const rowSearchText = new Array(limit);
+    for (let i = 0; i < limit; i++) {
+      const src = tData.rows[i];
+      const row = new Array(columns.length);
+      const parts = [];
+      for (let j = 0; j < columns.length; j++) {
+        const v = src[j];
+        const s = v == null ? 'NULL' : String(v);
+        row[j] = s;
+        if (s && s !== 'NULL') parts.push(s);
+      }
+      rows[i] = row;
+      rowSearchText[i] = parts.join(' ').toLowerCase();
+    }
+
+    const truncNote = total > limit
+      ? `⚠ Showing first ${limit.toLocaleString()} of ${total.toLocaleString()} rows`
+      : '';
+
+    const infoText = `${tName} · ${limit.toLocaleString()} rows × ${columns.length} cols`;
+    const csvBar = this._buildCsvBar(columns, tData.rows, fileName, tName);
+
+    return new GridViewer({
+      columns,
+      rows,
+      rowSearchText,
+      rawText: '',
+      // Construct WITHOUT `csv-view` — the active-tab activator adds it
+      // on show and strips it on hide so only one `.csv-view` ever exists
+      // in the DOM at a time.
+      className: 'sqlite-grid',
+      infoText,
+      truncationNote: truncNote,
+      extraToolbarEls: [csvBar],
+      rowTitle: (dataIdx) => `${tName} · Row ${(dataIdx + 1).toLocaleString()}`,
+      cellClass: (dataIdx, colIdx, rawCell) => {
+        if (rawCell === 'NULL') return 'grid-cell-null';
+        const s = String(rawCell == null ? '' : rawCell);
+        return s && !isNaN(parseFloat(s)) && /^-?\d/.test(s.trim()) ? 'grid-cell-num' : null;
+      }
+    });
   }
 
   // ── CSV export helpers ──────────────────────────────────────────────────

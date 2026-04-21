@@ -507,6 +507,21 @@ Object.assign(App.prototype, {
       return { docEl: r.render(text, file.name) };
     },
 
+    // ── JSON / NDJSON — tabular viewer via GridViewer ───────────────────
+    //
+    // Decoded via `File.text()` so UTF-8 / BOM handling matches CSV. The
+    // registry's `json` entry only routes array-shaped JSON / NDJSON here
+    // (`extDisambiguator` → `_sniffJsonArrayOrNdjson`); object-root and
+    // scalar-root JSON fall through to PlainTextRenderer. The renderer's
+    // own `_fallback()` also re-routes pathological inputs to the plain-
+    // text view, so every JSON file remains viewable.
+    async json(file) {
+      const text = await file.text();
+      const r = new JsonRenderer();
+      this.findings = r.analyzeForSecurity(text);
+      return { docEl: r.render(text, file.name) };
+    },
+
     // ── Forensic / structured-binary formats ────────────────────────────
     evtx(file, buffer) {
       const r = new EvtxRenderer();

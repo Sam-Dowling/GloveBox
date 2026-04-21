@@ -1731,51 +1731,34 @@ class EvtxRenderer {
     }
   }
 
-  // ── View builder ────────────────────────────────────────────────────────
+  // ── View builder (Wave-B: built on top of GridViewer) ───────────────────
+  //
+  // Previously this was ~740 lines of bespoke dynamic-height virtual-scroll
+  // machinery duplicated from csv-renderer. The whole stack is now shared
+  // with CSV / XLSX / SQLite / JSON via `GridViewer` (see
+  // src/renderers/grid-viewer.js). Everything below is purely "how EVTX
+  // wants its toolbar, cells, and drawer body to look" — the scroll,
+  // filter, highlight, drawer, and IOC/YARA plumbing is inherited.
+  //
+  // The existing sidebar click-to-focus engine in
+  // `src/app/app-sidebar-focus.js` reads `wrap._evtxFilters = { searchInput,
+  // eidInput, levelSelect, applyFilters, scrollContainer, scrollToRow,
+  // state, expandAll, collapseAll, forceRender }`. We rebuild that surface
+  // on top of the GridViewer below so that integration keeps working
+  // verbatim. `state.filteredIndices` and `state.expandedRows` are the two
+  // fields the sidebar reads; both are honoured.
 
   _buildView(events, fileName) {
-    // ═══════════════════════════════════════════════════════════════════════
-    // CONFIGURATION
-    // ═══════════════════════════════════════════════════════════════════════
-    const ROW_HEIGHT = 32;               // Base row height in pixels
-    const DEFAULT_DETAIL_HEIGHT = 200;   // Fallback detail pane height before measurement
-    const BUFFER_ROWS = 20;              // Extra rows to render above/below viewport
     const MAX_EVENTS = 50000;            // Maximum events to process
-
-    const wrap = document.createElement('div');
-    wrap.className = 'evtx-view csv-view';
 
     // Limit events
     const totalEvents = events.length;
     const limitedEvents = events.slice(0, MAX_EVENTS);
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // VIRTUAL SCROLL STATE
-    // ═══════════════════════════════════════════════════════════════════════
-    const state = {
-      expandedRows: new Set(),           // Set of expanded event indices
-      detailPaneCache: new Map(),        // eventIdx -> detail pane DOM element
-      detailHeightCache: new Map(),      // eventIdx -> measured height in pixels
-      filteredIndices: null,             // null = no filter, array = indices of matching events
-      renderedRange: { start: -1, end: -1 }
-    };
-
-    // Pre-compute search text for all events (for fast filtering)
-    const eventSearchText = limitedEvents.map(ev =>
-      [ev.eventId, ev.level, ev.provider, ev.channel, ev.computer, ev.timestamp, ev.eventData]
-        .join(' ').toLowerCase()
-    );
-
-    // ── Summary stats bar ──────────────────────────────────────────────
+    // ── Summary stats bar ─────────────────────────────────────────────
     const stats = document.createElement('div');
     stats.className = 'evtx-stats';
 
-    // Event count + time range
-    let summaryText = `${events.length.toLocaleString()} events`;
-    if (events.length) {
-      const first = events[0].timestamp, last = events[events.length - 1].timestamp;
-      if (first && last) summaryText += ` · ${first} → ${last}`;
-    }
     const countSpan = document.createElement('span');
     countSpan.className = 'evtx-stat-item';
     countSpan.innerHTML = `<span class="evtx-stat-count">${events.length.toLocaleString()}</span> events`;
@@ -1797,11 +1780,9 @@ class EvtxRenderer {
 
     // Level counts
     const levelCounts = {};
-    const eidCounts = {};
     for (const ev of events) {
       const lv = ev.level || 'Unknown';
       levelCounts[lv] = (levelCounts[lv] || 0) + 1;
-      if (ev.eventId) eidCounts[ev.eventId] = (eidCounts[ev.eventId] || 0) + 1;
     }
     const levelOrder = ['Critical', 'Error', 'Warning', 'Information', 'Verbose', 'LogAlways'];
     for (const lv of levelOrder) {
@@ -1819,13 +1800,11 @@ class EvtxRenderer {
       item.appendChild(ct);
       stats.appendChild(item);
     }
-    wrap.appendChild(stats);
 
     // ── CSV action bar ─────────────────────────────────────────────────
-    const bar = this._buildCsvBar(events, fileName);
-    wrap.appendChild(bar);
+    const csvBar = this._buildCsvBar(events, fileName);
 
-    // ── Filter bar ─────────────────────────────────────────────────────
+    // ── Filter bar (custom — three inputs, not just a single search box) ─
     const filterBar = document.createElement('div');
     filterBar.className = 'evtx-filter-bar';
 
@@ -1863,524 +1842,128 @@ class EvtxRenderer {
     }
     filterBar.appendChild(levelSelect);
 
-    // Clear filters button
     const clearBtn = document.createElement('button');
     clearBtn.className = 'tb-btn csv-export-btn evtx-clear-btn';
     clearBtn.textContent = '🗑 Clear';
     clearBtn.title = 'Clear all filters';
     filterBar.appendChild(clearBtn);
 
-    // Expand All / Collapse All toggle button
-    const expandToggle = document.createElement('button');
-    expandToggle.className = 'tb-btn csv-export-btn evtx-expand-toggle';
-    expandToggle.textContent = '↕️ Expand All';
-    expandToggle.title = 'Expand all visible event rows';
-    filterBar.appendChild(expandToggle);
-
     const filterCount = document.createElement('span');
     filterCount.className = 'evtx-filter-count';
     filterCount.textContent = `Showing ${limitedEvents.length.toLocaleString()} of ${limitedEvents.length.toLocaleString()}`;
     filterBar.appendChild(filterCount);
 
-    wrap.appendChild(filterBar);
+    // ── Pre-compute search text for fast filtering ─────────────────────
+    const eventSearchText = limitedEvents.map(ev =>
+      [ev.eventId, ev.level, ev.provider, ev.channel, ev.computer, ev.timestamp, ev.eventData]
+        .join(' ').toLowerCase()
+    );
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // TABLE STRUCTURE
-    // ═══════════════════════════════════════════════════════════════════════
-    const scr = document.createElement('div');
-    scr.className = 'csv-scroll';
-    scr.style.cssText = 'overflow:auto;max-height:calc(100vh - 260px)';
-
-    const tbl = document.createElement('table');
-    tbl.className = 'xlsx-table csv-table evtx-table';
-
-    // Header
-    const thead = document.createElement('thead');
-    const htr = document.createElement('tr');
-    const cols = [
-      { label: '#', cls: 'evtx-col-row' },
-      { label: 'Timestamp', cls: 'evtx-col-ts' },
-      { label: 'Event ID', cls: 'evtx-col-eid' },
-      { label: 'Level', cls: 'evtx-col-level' },
-      { label: 'Provider', cls: 'evtx-col-provider' },
-      { label: 'Channel', cls: 'evtx-col-channel' },
-      { label: 'Computer', cls: 'evtx-col-computer' },
-      { label: 'Event Data', cls: 'evtx-col-data' },
-    ];
-    for (const c of cols) {
-      const th = document.createElement('th');
-      th.className = 'xlsx-col-header csv-header ' + c.cls;
-      th.textContent = c.label;
-      htr.appendChild(th);
-    }
-    thead.appendChild(htr);
-    tbl.appendChild(thead);
-
-    // Body (virtual rows will be rendered here)
-    const tbody = document.createElement('tbody');
-    tbl.appendChild(tbody);
-
-    scr.appendChild(tbl);
-    wrap.appendChild(scr);
-
-    // Truncation warning (if needed)
-    if (totalEvents > MAX_EVENTS) {
-      const note = document.createElement('div');
-      note.className = 'csv-info';
-      note.textContent = `⚠ Showing first ${MAX_EVENTS.toLocaleString()} of ${totalEvents.toLocaleString()} events`;
-      wrap.appendChild(note);
+    // ── Build the GridViewer — inherits virtual scroll, drawer, IOC/YARA
+    //    highlighting, filter → same primitive as CSV/XLSX/SQLite. ───────
+    const columns = ['Timestamp', 'Event ID', 'Level', 'Provider', 'Channel', 'Computer', 'Event Data'];
+    const rows = new Array(limitedEvents.length);
+    for (let i = 0; i < limitedEvents.length; i++) {
+      const ev = limitedEvents[i];
+      rows[i] = [
+        ev.timestamp ? ev.timestamp.replace('T', ' ').replace('Z', '') : '',
+        ev.eventId || '',
+        ev.level || '',
+        ev.provider || '',
+        ev.channel || '',
+        ev.computer || '',
+        ev.eventData || ''
+      ];
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // HELPER: Get visible row count
-    // ═══════════════════════════════════════════════════════════════════════
-    const getVisibleRowCount = () => {
-      return state.filteredIndices ? state.filteredIndices.length : limitedEvents.length;
-    };
+    const self = this;
+    const truncNote = totalEvents > MAX_EVENTS
+      ? `⚠ Showing first ${MAX_EVENTS.toLocaleString()} of ${totalEvents.toLocaleString()} events`
+      : '';
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // HELPER: Get data index for virtual index
-    // ═══════════════════════════════════════════════════════════════════════
-    const getDataIndex = (virtualIdx) => {
-      return state.filteredIndices ? state.filteredIndices[virtualIdx] : virtualIdx;
-    };
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // HELPER: Get virtual index for data index
-    // ═══════════════════════════════════════════════════════════════════════
-    const getVirtualIndex = (dataIdx) => {
-      if (!state.filteredIndices) return dataIdx;
-      return state.filteredIndices.indexOf(dataIdx);
-    };
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // DYNAMIC HEIGHT HELPERS
-    // ═══════════════════════════════════════════════════════════════════════
-    
-    // Get measured or estimated detail height for an expanded row
-    const getDetailHeight = (dataIdx) => {
-      return state.detailHeightCache.has(dataIdx)
-        ? state.detailHeightCache.get(dataIdx)
-        : DEFAULT_DETAIL_HEIGHT;
-    };
-
-    // Get total height for a row (base + detail if expanded)
-    const getRowHeight = (dataIdx) => {
-      return state.expandedRows.has(dataIdx)
-        ? ROW_HEIGHT + getDetailHeight(dataIdx)
-        : ROW_HEIGHT;
-    };
-
-    // Calculate cumulative height up to (not including) virtualIdx
-    const calculateHeightUpTo = (virtualIdx) => {
-      let height = virtualIdx * ROW_HEIGHT;
-      
-      for (const expandedDataIdx of state.expandedRows) {
-        const expandedVirtualIdx = getVirtualIndex(expandedDataIdx);
-        if (expandedVirtualIdx >= 0 && expandedVirtualIdx < virtualIdx) {
-          height += getDetailHeight(expandedDataIdx);
+    // Timestamp lives in column 0 (see the `columns` array above). Passing
+    // `timeColumn: 0` opts this grid into the Wave-E timeline strip and
+    // skips the auto-sniff heuristic. `onFilterRecompute` tells the grid
+    // to re-run EVTX's external filter (search / EID / Level) whenever the
+    // user moves the timeline window — see `applyFilters` below, which
+    // intersects `viewer._timeWindow` via `viewer._dataIdxInTimeWindow()`.
+    const viewer = new GridViewer({
+      columns,
+      rows,
+      rowSearchText: eventSearchText,
+      rawText: '',
+      className: 'evtx-view csv-view',
+      infoText: '',   // our stats bar replaces it
+      truncationNote: truncNote,
+      hideFilterBar: true,
+      extraToolbarEls: [stats, csvBar, filterBar],
+      timeColumn: 0,
+      onFilterRecompute: () => applyFilters(),
+      // Mark notable Event IDs with a coloured dot (EVTX-specific styling).
+      cellClass: (dataIdx, colIdx /* , rawCell */) => {
+        if (colIdx === 1 /* Event ID */ && self._isNotableEventId(limitedEvents[dataIdx].eventId)) {
+          return 'evtx-eid-notable';
         }
+        return null;
+      },
+      rowTitle: (dataIdx) => {
+        const ev = limitedEvents[dataIdx];
+        return `Event ${ev.eventId || '—'} · Record ${ev.recordId || '—'}`;
+      },
+      detailBuilder: (dataIdx /* , row, cols */) => {
+        const container = document.createElement('div');
+        self._buildDetailPane(container, limitedEvents[dataIdx]);
+        // `_buildDetailPane` appends a `.evtx-detail-pane` into the
+        // container; return the container itself so GridViewer can wrap /
+        // IOC-decorate it.
+        return container;
       }
-      
-      return height;
-    };
-
-    // Get total scrollable height
-    const getTotalHeight = () => {
-      const rowCount = getVisibleRowCount();
-      let height = rowCount * ROW_HEIGHT;
-      
-      for (const expandedDataIdx of state.expandedRows) {
-        const expandedVirtualIdx = getVirtualIndex(expandedDataIdx);
-        if (expandedVirtualIdx >= 0 && expandedVirtualIdx < rowCount) {
-          height += getDetailHeight(expandedDataIdx);
-        }
-      }
-      
-      return height;
-    };
-
-    // Find virtual row index at a given scroll position
-    const findRowAtScrollPosition = (scrollTop) => {
-      let accumulatedHeight = 0;
-      const rowCount = getVisibleRowCount();
-      
-      for (let virtualIdx = 0; virtualIdx < rowCount; virtualIdx++) {
-        const dataIdx = getDataIndex(virtualIdx);
-        const rowHeight = getRowHeight(dataIdx);
-        
-        if (accumulatedHeight + rowHeight > scrollTop) {
-          return virtualIdx;
-        }
-        accumulatedHeight += rowHeight;
-      }
-      
-      return Math.max(0, rowCount - 1);
-    };
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // CREATE ROW ELEMENTS
-    // ═══════════════════════════════════════════════════════════════════════
-    const createRowElements = (dataIdx, virtualIdx) => {
-      const ev = limitedEvents[dataIdx];
-      const tr = document.createElement('tr');
-      tr.dataset.idx = dataIdx;
-      tr.dataset.vidx = virtualIdx;
-
-      const isExpanded = state.expandedRows.has(dataIdx);
-
-      // # column with expand icon
-      const tdRow = document.createElement('td');
-      tdRow.className = 'xlsx-row-header';
-      tdRow.innerHTML = `<span class="evtx-expand-icon">${isExpanded ? '▼' : '▶'}</span> ${dataIdx + 1}`;
-      tr.appendChild(tdRow);
-
-      // Timestamp (formatted shorter)
-      const tdTs = document.createElement('td');
-      tdTs.className = 'xlsx-cell';
-      tdTs.textContent = ev.timestamp ? ev.timestamp.replace('T', ' ').replace('Z', '') : '';
-      tr.appendChild(tdTs);
-
-      // Event ID with notable indicator
-      const tdEid = document.createElement('td');
-      tdEid.className = 'xlsx-cell';
-      if (this._isNotableEventId(ev.eventId)) {
-        tdEid.className += ' evtx-eid-notable';
-      }
-      tdEid.textContent = ev.eventId;
-      tr.appendChild(tdEid);
-
-      // Level badge
-      const tdLevel = document.createElement('td');
-      tdLevel.className = 'xlsx-cell';
-      tdLevel.appendChild(this._createLevelBadge(ev.level));
-      tr.appendChild(tdLevel);
-
-      // Provider
-      const tdProv = document.createElement('td');
-      tdProv.className = 'xlsx-cell';
-      tdProv.textContent = ev.provider;
-      tdProv.title = ev.provider;
-      tr.appendChild(tdProv);
-
-      // Channel
-      const tdChan = document.createElement('td');
-      tdChan.className = 'xlsx-cell';
-      tdChan.textContent = ev.channel;
-      tdChan.title = ev.channel;
-      tr.appendChild(tdChan);
-
-      // Computer
-      const tdComp = document.createElement('td');
-      tdComp.className = 'xlsx-cell';
-      tdComp.textContent = ev.computer;
-      tr.appendChild(tdComp);
-
-      // Event Data preview
-      const tdData = document.createElement('td');
-      tdData.className = 'xlsx-cell evtx-data-cell';
-      const preview = ev.eventData ? ev.eventData.substring(0, 120) : '';
-      tdData.textContent = preview + (ev.eventData && ev.eventData.length > 120 ? '…' : '');
-      tdData.title = 'Click to expand';
-      tr.appendChild(tdData);
-
-      // Mark as selected if expanded
-      if (isExpanded) {
-        tr.classList.add('evtx-row-selected');
-      }
-
-      // Detail row
-      const detailTr = document.createElement('tr');
-      detailTr.className = 'evtx-detail-row';
-      detailTr.dataset.idx = dataIdx;  // For height measurement
-      detailTr.style.display = isExpanded ? '' : 'none';
-      const detailTd = document.createElement('td');
-      detailTd.colSpan = cols.length;
-
-      // Use cached detail pane or build new one if expanded
-      if (isExpanded) {
-        if (!state.detailPaneCache.has(dataIdx)) {
-          const pane = document.createElement('div');
-          this._buildDetailPane(pane, ev);
-          state.detailPaneCache.set(dataIdx, pane.innerHTML);
-        }
-        detailTd.innerHTML = state.detailPaneCache.get(dataIdx);
-      }
-      detailTr.appendChild(detailTd);
-
-      // Click handler
-      tr.addEventListener('click', () => {
-        if (state.expandedRows.has(dataIdx)) {
-          // Collapse this row
-          state.expandedRows.delete(dataIdx);
-          tr.classList.remove('evtx-row-selected');
-          const icon = tr.querySelector('.evtx-expand-icon');
-          if (icon) icon.textContent = '▶';
-          detailTr.style.display = 'none';
-          
-          // Force re-render to update spacer heights
-          state.renderedRange = { start: -1, end: -1 };
-          renderVisibleRows();
-          updateExpandToggleButton();
-        } else {
-          // Collapse any other expanded row first (only one expanded at a time)
-          state.expandedRows.clear();
-          
-          // Expand this row
-          state.expandedRows.add(dataIdx);
-          tr.classList.add('evtx-row-selected');
-          const icon = tr.querySelector('.evtx-expand-icon');
-          if (icon) icon.textContent = '▼';
-
-          // Build detail pane if not cached
-          if (!state.detailPaneCache.has(dataIdx)) {
-            const pane = document.createElement('div');
-            this._buildDetailPane(pane, ev);
-            state.detailPaneCache.set(dataIdx, pane.innerHTML);
-          }
-          detailTd.innerHTML = state.detailPaneCache.get(dataIdx);
-          detailTr.style.display = '';
-
-          // Scroll to the left to show the detail pane
-          scr.scrollLeft = 0;
-          
-          // Force re-render to update DOM structure
-          state.renderedRange = { start: -1, end: -1 };
-          renderVisibleRows();
-          updateExpandToggleButton();
-        }
-      });
-
-      return { tr, detailTr, detailTd, dataIdx };
-    };
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // CREATE SPACER ROW (for virtual scrolling)
-    // ═══════════════════════════════════════════════════════════════════════
-    const createSpacerRow = (height) => {
-      const tr = document.createElement('tr');
-      tr.className = 'evtx-spacer-row';
-      tr.setAttribute('aria-hidden', 'true');
-      const td = document.createElement('td');
-      td.colSpan = cols.length;
-      td.style.cssText = `height:${height}px;padding:0;border:none;background:transparent;`;
-      tr.appendChild(td);
-      return tr;
-    };
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // RENDER VISIBLE ROWS (Virtual Scrolling Core)
-    // ═══════════════════════════════════════════════════════════════════════
-    const renderVisibleRows = () => {
-      const scrollTop = scr.scrollTop;
-      const viewportHeight = scr.clientHeight || 600;
-
-      const rowCount = getVisibleRowCount();
-      if (rowCount === 0) {
-        tbody.replaceChildren();
-        state.renderedRange = { start: 0, end: 0 };
-        return;
-      }
-
-      // Find visible range using dynamic height calculations
-      const firstVisibleRow = findRowAtScrollPosition(scrollTop);
-      const startIdx = Math.max(0, firstVisibleRow - BUFFER_ROWS);
-      
-      const lastVisibleRow = findRowAtScrollPosition(scrollTop + viewportHeight);
-      const endIdx = Math.min(rowCount, lastVisibleRow + BUFFER_ROWS + 1);
-
-      // Fast path: if range hasn't changed, nothing to do
-      if (startIdx === state.renderedRange.start && endIdx === state.renderedRange.end) {
-        return;
-      }
-
-      // Auto-collapse rows that are FAR outside the visible range (use 2x buffer)
-      // This prevents premature collapse when scrolling small amounts
-      const collapseBuffer = BUFFER_ROWS * 2;
-      for (const expandedDataIdx of state.expandedRows) {
-        const expandedVirtualIdx = getVirtualIndex(expandedDataIdx);
-        if (expandedVirtualIdx < startIdx - collapseBuffer || 
-            expandedVirtualIdx >= endIdx + collapseBuffer) {
-          state.expandedRows.delete(expandedDataIdx);
-        }
-      }
-
-      // Clear tbody and build new content
-      const fragment = document.createDocumentFragment();
-
-      // Top spacer with dynamic height
-      const topSpacerHeight = calculateHeightUpTo(startIdx);
-      if (topSpacerHeight > 0) {
-        fragment.appendChild(createSpacerRow(topSpacerHeight));
-      }
-
-      // Render visible rows
-      for (let virtualIdx = startIdx; virtualIdx < endIdx; virtualIdx++) {
-        const dataIdx = getDataIndex(virtualIdx);
-        if (dataIdx === undefined || dataIdx >= limitedEvents.length) continue;
-
-        const { tr, detailTr } = createRowElements(dataIdx, virtualIdx);
-        fragment.appendChild(tr);
-        fragment.appendChild(detailTr);
-      }
-
-      // Bottom spacer with dynamic height
-      const totalHeight = getTotalHeight();
-      const heightUpToEnd = calculateHeightUpTo(endIdx);
-      const bottomSpacerHeight = Math.max(0, totalHeight - heightUpToEnd);
-      if (bottomSpacerHeight > 0) {
-        fragment.appendChild(createSpacerRow(bottomSpacerHeight));
-      }
-
-      tbody.replaceChildren(fragment);
-      state.renderedRange = { start: startIdx, end: endIdx };
-
-      // Measure heights of expanded rows after render
-      requestAnimationFrame(() => {
-        let heightChanged = false;
-        for (const expandedDataIdx of state.expandedRows) {
-          if (!state.detailHeightCache.has(expandedDataIdx)) {
-            const detailTr = tbody.querySelector(`tr.evtx-detail-row[data-idx="${expandedDataIdx}"]`);
-            if (detailTr && detailTr.offsetHeight > 0) {
-              state.detailHeightCache.set(expandedDataIdx, detailTr.offsetHeight);
-              heightChanged = true;
-            }
-          }
-        }
-        // Re-render if heights changed to fix spacers
-        if (heightChanged) {
-          state.renderedRange = { start: -1, end: -1 };
-          renderVisibleRows();
-        }
-      });
-    };
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // SCROLL HANDLER (throttled with requestAnimationFrame)
-    // ═══════════════════════════════════════════════════════════════════════
-    let scrollRAF = null;
-    let isProgrammaticScroll = false;  // Flag to disable scroll handler during programmatic scroll
-
-    scr.addEventListener('scroll', () => {
-      if (scrollRAF || isProgrammaticScroll) return;
-      scrollRAF = requestAnimationFrame(() => {
-        renderVisibleRows();
-        scrollRAF = null;
-      });
     });
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // FILTER LOGIC
-    // ═══════════════════════════════════════════════════════════════════════
+    const wrap = viewer.root();
+    // GridViewer sets its own `grid-main` scroll container; the sidebar
+    // reads `wrap._evtxFilters.scrollContainer` for scroll-into-view calls.
+    const scr = viewer._scr;
+
+    // ── Wire the three EVTX-specific filter inputs onto the shared
+    //    GridViewer filtered-index store. Sidebar + `_evtxFilters`
+    //    back-compat surface both drive off `viewer.state.filteredIndices`.
+    // Wave-E: EVTX owns the filter pipeline, so the timeline window must
+    // be intersected here — GridViewer's own `_applyFilter()` is bypassed
+    // when `onFilterRecompute` is supplied. When neither the inputs nor
+    // the timeline window are active, keep `filteredIndices = null` so
+    // the grid's "no filter" fast path can skip the per-row check.
     const applyFilters = () => {
-      const searchTerm = searchInput.value.toLowerCase().trim();
-      const eidFilter = eidInput.value.trim();
-      const levelFilter = levelSelect.value;
-
-      // Auto-collapse all expanded rows when filter changes
-      state.expandedRows.clear();
-
-      if (!searchTerm && !eidFilter && !levelFilter) {
-        state.filteredIndices = null;
+      const s = searchInput.value.toLowerCase().trim();
+      const e = eidInput.value.trim();
+      const l = levelSelect.value;
+      const tw = viewer._timeWindow;
+      if (!s && !e && !l && !tw) {
+        viewer.state.filteredIndices = null;
       } else {
-        state.filteredIndices = [];
+        const out = [];
         for (let i = 0; i < limitedEvents.length; i++) {
           const ev = limitedEvents[i];
-          let match = true;
-          if (levelFilter && ev.level !== levelFilter) match = false;
-          if (eidFilter && String(ev.eventId) !== eidFilter) match = false;
-          if (searchTerm && match) {
-            if (!eventSearchText[i].includes(searchTerm)) match = false;
-          }
-          if (match) state.filteredIndices.push(i);
+          if (l && ev.level !== l) continue;
+          if (e && String(ev.eventId) !== e) continue;
+          if (s && !eventSearchText[i].includes(s)) continue;
+          if (tw && !viewer._dataIdxInTimeWindow(i)) continue;
+          out.push(i);
         }
+        viewer.state.filteredIndices = out;
       }
-
-      // Reset scroll position and re-render
       scr.scrollTop = 0;
-      state.renderedRange = { start: -1, end: -1 };
-      renderVisibleRows();
-
-      // Update filter count
-      const shown = state.filteredIndices ? state.filteredIndices.length : limitedEvents.length;
-      filterCount.textContent = `Showing ${shown.toLocaleString()} of ${limitedEvents.length.toLocaleString()}`;
+      viewer._forceFullRender();
+      const shown = viewer.state.filteredIndices
+        ? viewer.state.filteredIndices.length
+        : limitedEvents.length;
+      const twSuffix = viewer._timeWindow ? ' · timeline window' : '';
+      filterCount.textContent =
+        `Showing ${shown.toLocaleString()} of ${limitedEvents.length.toLocaleString()}${twSuffix}`;
     };
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // SCROLL TO ROW (for IOC navigation)
-    // ═══════════════════════════════════════════════════════════════════════
-    const scrollToRow = (dataIdx, highlight = true) => {
-      // Check if row is filtered out
-      let virtualIdx = getVirtualIndex(dataIdx);
 
-      if (virtualIdx === -1 && state.filteredIndices) {
-        // Row is filtered out - clear filter first
-        searchInput.value = '';
-        eidInput.value = '';
-        levelSelect.value = '';
-        state.filteredIndices = null;
-        filterCount.textContent = `Showing ${limitedEvents.length.toLocaleString()} of ${limitedEvents.length.toLocaleString()}`;
-        virtualIdx = dataIdx;
-      }
-
-      // Collapse all rows first, then expand only the target
-      state.expandedRows.clear();
-      state.expandedRows.add(dataIdx);
-
-      // Calculate scroll position to center the row (using dynamic heights)
-      const viewportHeight = scr.clientHeight || 600;
-      const targetTop = calculateHeightUpTo(virtualIdx);
-      const scrollTarget = Math.max(0, targetTop - viewportHeight / 2);
-
-      // Disable scroll handler during programmatic scroll
-      isProgrammaticScroll = true;
-
-      // Scroll with smooth animation
-      scr.scrollTo({
-        top: scrollTarget,
-        left: 0,
-        behavior: 'smooth'
-      });
-
-      // Wait for scroll animation to complete, then re-render and highlight
-      setTimeout(() => {
-        // Re-enable scroll handler
-        isProgrammaticScroll = false;
-        
-        // Force re-render at final position
-        state.renderedRange = { start: -1, end: -1 };
-        renderVisibleRows();
-
-        // Find and highlight the row
-        if (highlight) {
-          const tr = tbody.querySelector(`tr[data-idx="${dataIdx}"]`);
-          if (tr) {
-            tr.classList.add('evtx-row-highlight');
-            const cells = tr.querySelectorAll('td');
-            cells.forEach(cell => {
-              cell.style.transition = 'background 0.3s ease-out';
-              cell.style.background = 'rgba(34, 211, 238, 0.4)';
-            });
-            setTimeout(() => {
-              tr.classList.remove('evtx-row-highlight');
-              cells.forEach(cell => {
-                cell.style.background = '';
-              });
-            }, 2000);
-            setTimeout(() => {
-              cells.forEach(cell => {
-                cell.style.transition = '';
-              });
-            }, 2500);
-          }
-        }
-      }, 400);
-    };
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // EVENT LISTENERS
-    // ═══════════════════════════════════════════════════════════════════════
-    let filterTimeout;
+    let filterTimeout = null;
     const debouncedFilter = () => {
       clearTimeout(filterTimeout);
       filterTimeout = setTimeout(applyFilters, 150);
@@ -2388,62 +1971,16 @@ class EvtxRenderer {
     searchInput.addEventListener('input', debouncedFilter);
     eidInput.addEventListener('input', debouncedFilter);
     levelSelect.addEventListener('change', applyFilters);
-
-    // Clear filters button handler
     clearBtn.addEventListener('click', () => {
       searchInput.value = '';
       eidInput.value = '';
       levelSelect.value = '';
-      state.expandedRows.clear();
       applyFilters();
-      updateExpandToggleButton();
     });
 
     // ═══════════════════════════════════════════════════════════════════════
-    // EXPAND ALL / COLLAPSE ALL TOGGLE
-    // ═══════════════════════════════════════════════════════════════════════
-    const updateExpandToggleButton = () => {
-      if (state.expandedRows.size > 0) {
-        expandToggle.textContent = '↕️ Collapse All';
-        expandToggle.title = 'Collapse all expanded event rows';
-      } else {
-        expandToggle.textContent = '↕️ Expand All';
-        expandToggle.title = 'Expand all visible event rows';
-      }
-    };
-
-    const expandAllVisible = () => {
-      state.expandedRows.clear();
-      const rowCount = getVisibleRowCount();
-      for (let virtualIdx = 0; virtualIdx < rowCount; virtualIdx++) {
-        const dataIdx = getDataIndex(virtualIdx);
-        if (dataIdx !== undefined) {
-          state.expandedRows.add(dataIdx);
-        }
-      }
-      state.renderedRange = { start: -1, end: -1 };
-      renderVisibleRows();
-      updateExpandToggleButton();
-    };
-
-    const collapseAllVisible = () => {
-      state.expandedRows.clear();
-      state.renderedRange = { start: -1, end: -1 };
-      renderVisibleRows();
-      updateExpandToggleButton();
-    };
-
-    // Expand toggle button click handler
-    expandToggle.addEventListener('click', () => {
-      if (state.expandedRows.size > 0) {
-        collapseAllVisible();
-      } else {
-        expandAllVisible();
-      }
-    });
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // EXPOSE API FOR EXTERNAL ACCESS (IOC navigation)
+    // EXPOSE API FOR EXTERNAL ACCESS (IOC navigation from sidebar)
+    // `src/app/app-sidebar-focus.js` reads `wrap._evtxFilters`.
     // ═══════════════════════════════════════════════════════════════════════
     wrap._evtxFilters = {
       searchInput,
@@ -2451,23 +1988,30 @@ class EvtxRenderer {
       levelSelect,
       applyFilters,
       scrollContainer: scr,
-      scrollToRow,
-      state,
-      getVisibleRowCount,
-      getDataIndex,
-      getVirtualIndex,
-      expandAll: expandAllVisible,
-      collapseAll: collapseAllVisible,
-      forceRender: () => {
-        state.renderedRange = { start: -1, end: -1 };
-        renderVisibleRows();
-      }
+      scrollToRow: (dataIdx, flash = true) => viewer._scrollToRow(+dataIdx, flash),
+      state: viewer.state,
+      getVisibleRowCount: () => viewer._visibleCount(),
+      getDataIndex: (v) => viewer._dataIdxOf(v),
+      getVirtualIndex: (d) => viewer._virtualIdxOf(d),
+      // Drawer-based detail: "expand all" in the old inline-expansion model
+      // mapped onto "open the drawer on the first filtered row" so the
+      // sidebar's IOC highlighter has a `.evtx-detail-pane` to walk.
+      expandAll: () => {
+        if (viewer._visibleCount() === 0) return;
+        const firstData = viewer._dataIdxOf(0);
+        viewer._openDrawer(+firstData);
+      },
+      collapseAll: () => {
+        if (viewer.state.drawer.open) viewer._closeDrawer();
+      },
+      forceRender: () => viewer._forceFullRender(),
+      // IOC / YARA bridges re-use the GridViewer highlight state machine.
+      scrollToRowWithIocHighlight: (dataIdx, term, clearMs = 5000, onExpire = null) => {
+        viewer._setHighlight({ mode: 'ioc', dataIdx: +dataIdx, term, clearMs, onExpire });
+        return viewer._scrollToRow(+dataIdx, false);
+      },
+      clearIocHighlight: () => viewer._clearHighlight(false)
     };
-
-    // ═══════════════════════════════════════════════════════════════════════
-    // INITIAL RENDER
-    // ═══════════════════════════════════════════════════════════════════════
-    renderVisibleRows();
 
     return wrap;
   }

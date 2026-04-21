@@ -269,7 +269,14 @@ JS_FILES = [
     'src/renderers/reg-renderer.js',
     'src/renderers/inf-renderer.js',
     'src/renderers/msi-renderer.js',
+    # grid-viewer.js — bulletproof shared virtual-scroll grid (fixed-height
+    # rows, absolute-positioned rows, right-side resizable drawer, unified
+    # highlight state machine, chunked cooperative parse, mandatory
+    # destroy()). Must load BEFORE every renderer that consumes it
+    # (csv-renderer.js today; evtx / xlsx / sqlite / json in Wave B).
+    'src/renderers/grid-viewer.js',
     'src/renderers/csv-renderer.js',
+    'src/renderers/json-renderer.js',
     'src/renderers/evtx-renderer.js',
     'src/renderers/sqlite-renderer.js',
     'src/renderers/doc-renderer.js',
@@ -339,7 +346,7 @@ ACCEPT_EXTS = [
     '.dmg','.pkg','.mpkg',
     '.url','.webloc','.website','.iqy','.slk','.wsf','.wsc','.wsh','.reg','.inf','.sct','.msi',
     '.html','.htm','.mht','.mhtml','.xhtml','.xml','.vbs','.vbe','.js','.jse','.ps1','.bat','.cmd',
-    '.ics','.vcf','.txt','.log','.json','.ini','.cfg','.yml','.yaml',
+    '.ics','.vcf','.txt','.log','.json','.ndjson','.jsonl','.ini','.cfg','.yml','.yaml',
     '.jpg','.jpeg','.png','.gif','.bmp','.webp','.ico','.tif','.tiff','.avif','.svg',
     '.evtx','.sqlite','.db','.exe','.dll','.sys','.scr','.cpl','.ocx','.drv','.com','.xll',
     '.elf','.so','.o','.dylib','.bundle',

@@ -728,6 +728,30 @@ class RendererRegistry {
       description: 'CSV / TSV Tabular Data',
     },
 
+    // ── JSON (array-shaped) + NDJSON — tabular viewer on top of GridViewer.
+    //    Must run AFTER `npm` so package.json / package-lock.json still
+    //    route to NpmRenderer (npm's extDisambiguator insists on the npm
+    //    shape, so non-npm JSON falls through to us).
+    //
+    //    `extDisambiguator`: claim `.json` only if the bytes parse and the
+    //    root is an array (or the blob looks like NDJSON). Object-root and
+    //    scalar-root JSON fall through to PlainTextRenderer which still
+    //    renders them with JSON syntax highlighting. The extDisambiguator
+    //    is deliberately liberal for `.ndjson` / `.jsonl` — those extensions
+    //    are unambiguous on their own.
+    {
+      id: 'json',
+      className: 'JsonRenderer',
+      exts: ['json', 'ndjson', 'jsonl'],
+      extDisambiguator: (ctx) => {
+        if (ctx.ext === 'ndjson' || ctx.ext === 'jsonl') return true;
+        return RendererRegistry._sniffJsonArrayOrNdjson(ctx);
+      },
+      // No magic / textSniff — we only claim via extension. Extensionless
+      // JSON still falls through to PlainTextRenderer (which highlights it).
+      description: 'JSON / NDJSON Tabular Data',
+    },
+
     // ── Catch-all — always last. `detect()` falls through to here for any
     //    file that no earlier entry claimed.
     {
@@ -1033,6 +1057,61 @@ class RendererRegistry {
       'peerDependencies', 'optionalDependencies', 'bundledDependencies',
       'main', 'bin', 'exports', 'module', 'browser', 'engines'];
     for (const k of shapeKeys) if (k in obj) return true;
+    return false;
+  }
+
+  /**
+   * JSON-array / NDJSON sniff — decides whether JsonRenderer should claim
+   * a `.json` file. True if:
+   *   • the bytes parse as JSON and the root is an Array, OR
+   *   • the head of the blob looks like NDJSON (every non-empty line is a
+   *     standalone JSON value starting with `{` or `[`).
+   * Anything else (object-root / scalar-root / unparseable) falls through
+   * to PlainTextRenderer which still syntax-highlights it.
+   *
+   * Parse cost-cap: we refuse to parse anything over 32 MiB during
+   * detection — a pathological 100 MB JSON blob would spike memory just
+   * to decide how to route it. Over-cap files fall through to plaintext.
+   */
+  static _sniffJsonArrayOrNdjson(ctx) {
+    const b = ctx.bytes;
+    if (b.length < 2) return false;
+    if (b.length > 32 * 1024 * 1024) return false;
+
+    // Skip BOM + leading whitespace to find the first meaningful byte.
+    let i = 0;
+    if (b[0] === 0xEF && b[1] === 0xBB && b[2] === 0xBF) i = 3;
+    while (i < b.length && (b[i] === 0x20 || b[i] === 0x09 || b[i] === 0x0A || b[i] === 0x0D)) i++;
+    if (i >= b.length) return false;
+    const first = b[i];
+
+    // Array root — `[` is the cheap, definitive signal. Parse just to
+    // confirm the JSON is well-formed.
+    if (first === 0x5B /* '[' */) {
+      try {
+        const text = new TextDecoder('utf-8', { fatal: false }).decode(b);
+        const v = JSON.parse(text);
+        return Array.isArray(v);
+      } catch (_) { return false; }
+    }
+
+    // Object root — only claim if the blob looks like NDJSON (every
+    // non-empty head line is a standalone JSON value on its own line).
+    if (first === 0x7B /* '{' */) {
+      const headLen = Math.min(16384, b.length);
+      let head = '';
+      try { head = new TextDecoder('utf-8', { fatal: false }).decode(b.subarray(0, headLen)); }
+      catch (_) { return false; }
+      const lines = head.split('\n').map(l => l.trim()).filter(Boolean);
+      if (lines.length < 2) return false;
+      const checkN = Math.min(8, lines.length);
+      for (let k = 0; k < checkN; k++) {
+        const c = lines[k][0];
+        if (c !== '{' && c !== '[') return false;
+        try { JSON.parse(lines[k]); } catch (_) { return false; }
+      }
+      return true;
+    }
     return false;
   }
 

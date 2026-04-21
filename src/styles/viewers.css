@@ -726,8 +726,469 @@ body.dark .csv-detail-val:empty::after {
 
 
 /* ══════════════════════════════════════════════════════
+   GRID VIEWER (shared virtual-scroll grid — Wave A)
+
+   Powers the CSV renderer today; EVTX / XLSX / SQLite / JSON in Wave B.
+   See src/renderers/grid-viewer.js for the architectural invariants
+   (fixed row height, absolute-positioned rows, right-side drawer,
+   single highlight state machine).
+
+   All `.grid-*` classes are GridViewer-owned. The renderer also sets
+   `className: 'csv-view'` on the root so the existing `.csv-view`
+   layout chrome (shadow, border, flex column) + the sidebar selectors
+   (`#page-container:has(.csv-view)`, `activeYaraView._csvFilters`, …)
+   continue to work without change.
+   ══════════════════════════════════════════════════════ */
+
+/* Grid template + minimum width are driven by CSS custom properties
+   set per-instance from _applyColumnTemplate().
+   Base layout: vertical flex column so the info bar / filter bar / main
+   flex-row stack correctly. Callers that also put `.csv-view` on the
+   root (default) get stretching via that class's `flex: 1; min-height: 0;`.
+   Callers that don't (e.g. inactive SQLite tabs that swap csv-view on
+   activation) still have a correct internal layout thanks to this base. */
+.grid-view {
+  --grid-template: 64px 1fr;
+  --grid-min-width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+
+/* Info bar reuses .csv-info styling for visual parity with the old
+   renderer; the `.grid-info` class just lets Wave-B renderers that
+   don't also carry `.csv-view` inherit the same look. */
+.grid-info {
+  padding: 8px 16px;
+  font-size: 12px;
+  color: #666;
+  background: #f8f8f8;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+body.dark .grid-info {
+  background: var(--row-hover);
+  border-color: var(--hairline-soft);
+  color: var(--text-muted);
+}
+
+/* Streaming-parse progress bar. Hidden by default; shown only while
+   GridViewer.state.parseComplete === false. */
+.grid-progress {
+  position: relative;
+  height: 18px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text-muted, #666);
+  background: #f4f4f4;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.grid-progress.hidden { display: none; }
+
+body.dark .grid-progress {
+  background: var(--row-hover);
+  border-color: var(--hairline-soft);
+}
+
+.grid-progress-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 0%;
+  background: var(--accent, #6366f1);
+  transition: width .15s linear;
+}
+
+.grid-progress-label {
+  margin-left: auto;
+}
+
+/* Filter bar — same layout as .csv-filter-bar. */
+.grid-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f4f4f4;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+body.dark .grid-filter-bar {
+  background: var(--row-hover);
+  border-color: var(--hairline-soft);
+}
+
+.grid-filter-input {
+  flex: 1;
+  max-width: 300px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: inherit;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  background: white;
+}
+
+body.dark .grid-filter-input {
+  background: var(--hairline-soft);
+  border-color: var(--hairline);
+  color: var(--text);
+}
+
+.grid-filter-input:focus {
+  outline: none;
+  border-color: var(--accent, #6366f1);
+  box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / .15);
+}
+
+.grid-filter-status {
+  font-size: 11px;
+  color: #666;
+  margin-left: auto;
+}
+
+body.dark .grid-filter-status {
+  color: var(--text-muted);
+}
+
+/* ── Main flex row: scroll area + resizable right drawer ───────────── */
+.grid-main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.grid-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  outline: none;
+  contain: strict;   /* isolate absolute-positioned rows from the document */
+}
+
+/* Sticky header sits inside .grid-scroll so horizontal scrolling keeps
+   columns aligned to body rows. Uses CSS Grid so the column template
+   is shared with .grid-row via --grid-template. */
+.grid-header {
+  display: grid;
+  grid-template-columns: var(--grid-template);
+  min-width: var(--grid-min-width);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f0f0f0;
+  border-bottom: 1px solid #ccc;
+  height: 32px;   /* GridViewer.HEADER_H */
+  font-size: 12px;
+  font-family: 'Fira Code', 'Consolas', 'Courier New', monospace;
+  font-weight: 700;
+}
+
+body.dark .grid-header {
+  background: var(--hairline-soft);
+  border-bottom-color: var(--hairline);
+  color: var(--text-muted);
+}
+
+.grid-header-cell {
+  padding: 6px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-right: 1px solid #d5d5d5;
+  user-select: none;
+}
+
+body.dark .grid-header-cell {
+  border-right-color: var(--hairline);
+}
+
+.grid-header-cell.grid-row-num {
+  text-align: right;
+  color: #888;
+  background: #ececec;
+}
+
+body.dark .grid-header-cell.grid-row-num {
+  background: var(--row-hover);
+  color: var(--text-faint);
+}
+
+/* ── Body sizer — establishes total scrollable height.
+   Its height is set inline from _render() (= visibleCount * ROW_HEIGHT).
+   Absolute-positioned `.grid-row` children live inside it. */
+.grid-body-sizer {
+  position: relative;
+  min-width: var(--grid-min-width);
+  /* No padding/margin — any offset shifts the virtual scroll math. */
+}
+
+/* ── A single row (body).
+   - Absolute position; `top` is set inline from the renderer.
+   - Grid columns mirror the header via --grid-template.
+   - Height matches GridViewer.ROW_HEIGHT (28 px). */
+.grid-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  display: grid;
+  grid-template-columns: var(--grid-template);
+  min-width: var(--grid-min-width);
+  height: 28px;
+  font-size: 12px;
+  font-family: 'Fira Code', 'Consolas', 'Courier New', monospace;
+  cursor: pointer;
+  border-bottom: 1px solid #eee;
+  background: white;
+  transition: background .08s linear;
+  will-change: transform;
+}
+
+body.dark .grid-row {
+  background: var(--panel-bg);
+  border-bottom-color: var(--hairline);
+  color: var(--text);
+}
+
+.grid-row:nth-child(even) { background: #fafafa; }
+body.dark .grid-row:nth-child(even) { background: var(--row-hover); }
+
+.grid-row:hover {
+  background: rgb(var(--accent-rgb) / .08) !important;
+}
+body.dark .grid-row:hover {
+  background: rgb(var(--accent-rgb) / .12) !important;
+}
+
+.grid-row.grid-row-selected,
+.grid-row.csv-row-selected {
+  background: rgb(var(--accent-rgb) / .14) !important;
+  box-shadow: inset 3px 0 0 var(--accent, #6366f1);
+}
+
+/* Flash (scroll-to), IOC-nav (sidebar click), YARA-nav (rule click).
+   Classes are mutually-exclusive — only one can be present at a time
+   (GridViewer.state.highlight guarantees this). Keyframes paint the
+   row itself; no child-cell animation, no dual-layer stutter. */
+@keyframes grid-row-flash {
+  0%, 30% { background: rgb(var(--accent-rgb) / .45) !important; }
+  100%    { background: transparent; }
+}
+@keyframes grid-row-ioc-flash {
+  0%, 30% { background: rgb(255 200 0 / .45) !important; }
+  100%    { background: transparent; }
+}
+@keyframes grid-row-yara-flash {
+  0%, 30% { background: rgb(239 68 68 / .35) !important; }
+  100%    { background: transparent; }
+}
+
+.grid-row.csv-row-highlight      { animation: grid-row-flash 2s ease-out; }
+.grid-row.csv-ioc-row-highlight  { animation: grid-row-ioc-flash 5s ease-out; }
+.grid-row.csv-yara-row-highlight { animation: grid-row-yara-flash 5s ease-out; }
+
+.grid-cell {
+  padding: 4px 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-right: 1px solid #f0f0f0;
+  display: flex;
+  align-items: center;
+}
+
+body.dark .grid-cell {
+  border-right-color: var(--hairline);
+}
+
+.grid-cell.grid-cell-num {
+  justify-content: flex-end;
+  color: #0a7;
+}
+body.dark .grid-cell.grid-cell-num { color: #6ee7a7; }
+
+.grid-cell.grid-row-num {
+  background: #f7f7f7;
+  color: #999;
+  justify-content: flex-end;
+  font-variant-numeric: tabular-nums;
+}
+
+body.dark .grid-cell.grid-row-num {
+  background: var(--row-hover);
+  color: var(--text-faint);
+}
+
+/* ── Right-hand drawer + drag handle ───────────────────────────────── */
+.grid-drawer-handle {
+  width: 6px;
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid #e0e0e0;
+  position: relative;
+  z-index: 3;
+}
+
+.grid-drawer-handle:hover,
+body.grid-resizing .grid-drawer-handle {
+  background: rgb(var(--accent-rgb) / .25);
+}
+
+body.dark .grid-drawer-handle {
+  border-left-color: var(--hairline);
+}
+
+body.grid-resizing {
+  cursor: col-resize !important;
+  user-select: none;
+}
+
+.grid-drawer {
+  flex: 0 0 420px;   /* default; overridden inline from GridViewer */
+  min-width: 280px;
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  background: #fbfbfc;
+  border-left: 1px solid #e0e0e0;
+  min-height: 0;
+}
+
+body.dark .grid-drawer {
+  background: var(--panel-bg);
+  border-left-color: var(--hairline);
+}
+
+.grid-drawer-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  background: #f0f0f0;
+  border-bottom: 1px solid #e0e0e0;
+  font-size: 12px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+
+body.dark .grid-drawer-topbar {
+  background: var(--hairline-soft);
+  border-bottom-color: var(--hairline);
+  color: var(--text-muted);
+}
+
+.grid-drawer-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grid-drawer-close {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  font-size: 14px;
+  line-height: 1;
+  color: #666;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.grid-drawer-close:hover {
+  background: rgb(var(--accent-rgb) / .15);
+  color: var(--accent, #6366f1);
+}
+
+body.dark .grid-drawer-close { color: var(--text-muted); }
+
+.grid-drawer-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+}
+
+.grid-detail-pane {
+  /* .csv-detail-pane already styles padding/grid; grid-detail-pane exists
+     so future Wave-B renderers that don't co-brand as `.csv-view` still
+     inherit the same layout even if they opt out of the CSV alias. */
+}
+
+.grid-detail-empty {
+  padding: 16px 20px;
+  color: var(--text-muted, #888);
+  font-style: italic;
+  margin: 0;
+}
+
+.grid-empty {
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+
+.grid-trunc {
+  padding: 6px 16px;
+  font-size: 11px;
+  color: #a60;
+  background: #fff7e0;
+  border-top: 1px solid #f0d890;
+}
+
+body.dark .grid-trunc {
+  color: #fbbf24;
+  background: rgba(251, 191, 36, .08);
+  border-top-color: rgba(251, 191, 36, .2);
+}
+
+/* ── IOC + YARA inline <mark> decorations inside the drawer.
+   These class names are stable back-compat aliases for the sidebar
+   click-to-focus engine (app-sidebar-focus.js). */
+.csv-ioc-highlight {
+  background: rgb(255 200 0 / .45);
+  color: inherit;
+  padding: 0 2px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgb(255 200 0 / .6);
+}
+.csv-ioc-highlight-flash { animation: grid-mark-ioc-flash 2.5s ease-out; }
+@keyframes grid-mark-ioc-flash {
+  0%, 20% { box-shadow: 0 0 0 2px rgb(255 200 0 / .9); }
+  100%    { box-shadow: 0 0 0 1px rgb(255 200 0 / .6); }
+}
+
+.csv-yara-highlight {
+  background: rgb(239 68 68 / .35);
+  color: inherit;
+  padding: 0 2px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgb(239 68 68 / .6);
+}
+.csv-yara-highlight-flash { animation: grid-mark-yara-flash 2.5s ease-out; }
+@keyframes grid-mark-yara-flash {
+  0%, 20% { box-shadow: 0 0 0 2px rgb(239 68 68 / .9); }
+  100%    { box-shadow: 0 0 0 1px rgb(239 68 68 / .6); }
+}
+
+
+/* ══════════════════════════════════════════════════════
    PPTX VIEW
    ══════════════════════════════════════════════════════ */
+
 .pptx-view {
   width: 100%;
   max-width: 800px;
@@ -3587,6 +4048,291 @@ body.dark .sqlite-table-header {
   background: var(--row-hover);
   border-color: var(--hairline-soft);
 }
+
+/* ══════════════════════════════════════════════════════
+   SQLite (Wave-B) — GridViewer host layout
+   ══════════════════════════════════════════════════════
+   Wave-B routes every SQLite table through the shared GridViewer. The
+   outer `.sqlite-view` is a vertical stack (info bar → tab bar → grid
+   host). The active GridViewer's root carries both `.sqlite-grid` and
+   `.csv-view` so existing sidebar + theme rules keyed on `.csv-view`
+   continue to apply; the `.sqlite-grid-host` slot is just a flex child
+   that grows to fill the remaining height. */
+.sqlite-view {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 0;
+}
+
+.sqlite-grid-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.sqlite-grid-host > .grid-view {
+  flex: 1;
+  min-height: 0;
+}
+
+/* NULL cells — dim them to distinguish from empty strings. */
+.grid-cell.grid-cell-null {
+  color: var(--text-dim, #999);
+  font-style: italic;
+}
+
+/* ───────────────────────────────────────────────────────────────────────────
+   Wave-C — clickable column headers, dropdown menu, top-values popover,
+   malformed-row ribbon, JSON tree in drawer, red row state.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Clickable header cells — show a hover affordance + chevron */
+.grid-header-cell.grid-header-clickable {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.grid-header-cell.grid-header-clickable:hover {
+  background: rgb(var(--accent-rgb) / .08);
+}
+body.dark .grid-header-cell.grid-header-clickable:hover {
+  background: rgb(var(--accent-rgb) / .18);
+}
+.grid-header-cell.grid-header-sorted {
+  background: rgb(var(--accent-rgb) / .14);
+}
+.grid-header-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.grid-header-sort {
+  font-size: 10px;
+  color: rgb(var(--accent-rgb));
+  flex-shrink: 0;
+}
+.grid-header-chev {
+  margin-left: 2px;
+  font-size: 10px;
+  opacity: .45;
+  flex-shrink: 0;
+}
+.grid-header-cell.grid-header-clickable:hover .grid-header-chev { opacity: 1; }
+/* Row-number header is clickable too (to clear sort). */
+.grid-header-cell.grid-row-num { cursor: pointer; }
+
+/* ── Popover (shared: header menu + top-values) ───────────────────────── */
+.grid-popover {
+  position: fixed;
+  z-index: 10000;
+  min-width: 200px;
+  max-width: 420px;
+  max-height: 60vh;
+  overflow: auto;
+  background: var(--panel-bg, #fff);
+  border: 1px solid var(--hairline, #d0d0d0);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text-color, #222);
+}
+body.dark .grid-popover {
+  background: var(--panel-bg);
+  border-color: var(--hairline);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+  color: var(--text-color);
+}
+.grid-popover-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 14px;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.grid-popover-item:hover {
+  background: rgb(var(--accent-rgb) / .14);
+}
+.grid-popover-item.grid-popover-danger { color: #c62828; }
+body.dark .grid-popover-item.grid-popover-danger { color: #f08c8c; }
+.grid-popover-sep {
+  height: 1px;
+  background: var(--hairline, #e0e0e0);
+  margin: 4px 0;
+}
+body.dark .grid-popover-sep { background: var(--hairline); }
+
+/* ── Top-values popover (mini bar chart) ──────────────────────────────── */
+.grid-top-values { min-width: 320px; }
+.grid-top-values-header {
+  padding: 6px 14px;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .3px;
+  color: var(--text-muted, #777);
+  border-bottom: 1px solid var(--hairline, #e0e0e0);
+}
+body.dark .grid-top-values-header {
+  color: var(--text-muted);
+  border-bottom-color: var(--hairline);
+}
+.grid-top-values-list {
+  display: flex;
+  flex-direction: column;
+}
+.grid-top-values-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.grid-top-values-row:hover { background: rgb(var(--accent-rgb) / .10); }
+.grid-top-values-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgb(var(--accent-rgb) / .14);
+  z-index: 0;
+}
+.grid-top-values-label,
+.grid-top-values-count {
+  position: relative;
+  z-index: 1;
+}
+.grid-top-values-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono-font, monospace);
+  font-size: 11.5px;
+}
+.grid-top-values-count {
+  color: var(--text-muted, #777);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.grid-top-values-footer,
+.grid-top-values-empty {
+  padding: 6px 14px;
+  border-top: 1px solid var(--hairline, #e0e0e0);
+  font-size: 11px;
+  color: var(--text-muted, #777);
+}
+body.dark .grid-top-values-footer,
+body.dark .grid-top-values-empty {
+  border-top-color: var(--hairline);
+  color: var(--text-muted);
+}
+
+/* ── Malformed-row ribbon chip + red-edge row highlight ───────────────── */
+.grid-malformed-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: rgba(255, 170, 0, .18);
+  color: #b7681a;
+  font-size: 11px;
+}
+body.dark .grid-malformed-chip {
+  background: rgba(255, 170, 0, .16);
+  color: #f8b765;
+}
+.grid-malformed-chip .tb-btn {
+  padding: 2px 6px;
+  font-size: 10.5px;
+}
+.grid-malformed-chip .tb-btn.active {
+  background: rgb(var(--accent-rgb) / .22);
+  border-color: rgb(var(--accent-rgb) / .6);
+}
+.grid-row.grid-row-malformed .grid-cell:first-child,
+.grid-row.grid-row-malformed .grid-cell.grid-row-num {
+  box-shadow: inset 3px 0 0 #e53935;
+}
+body.dark .grid-row.grid-row-malformed .grid-cell:first-child,
+body.dark .grid-row.grid-row-malformed .grid-cell.grid-row-num {
+  box-shadow: inset 3px 0 0 #ef5350;
+}
+
+/* ── JSON tree (drawer body) ─────────────────────────────────────────── */
+.json-tree {
+  font-family: var(--mono-font, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 8px 12px;
+}
+.json-tree-node { }
+.json-tree-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  cursor: default;
+}
+.json-tree-node > .json-tree-head:hover {
+  background: rgb(var(--accent-rgb) / .06);
+  border-radius: 3px;
+}
+.json-tree-toggle {
+  display: inline-block;
+  width: 12px;
+  color: var(--text-muted, #888);
+  user-select: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.json-tree-toggle-leaf {
+  cursor: default;
+  opacity: .35;
+}
+.json-tree-key {
+  color: #7b1fa2;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+body.dark .json-tree-key { color: #d091e8; }
+.json-tree-summary {
+  color: var(--text-muted, #777);
+  font-style: italic;
+}
+.json-tree-val-str   { color: #2e7d32; word-break: break-all; }
+.json-tree-val-num   { color: #1565c0; }
+.json-tree-val-bool  { color: #ad1457; font-weight: 600; }
+.json-tree-val-null  { color: var(--text-muted, #777); font-style: italic; }
+.json-tree-val-other { color: inherit; }
+body.dark .json-tree-val-str  { color: #8be28b; }
+body.dark .json-tree-val-num  { color: #6fa8ff; }
+body.dark .json-tree-val-bool { color: #ff8fbf; }
+.json-tree-body { margin-top: 1px; }
+.json-tree-more {
+  padding: 2px 0 2px 18px;
+  color: var(--text-muted, #999);
+  font-style: italic;
+  font-size: 11.5px;
+}
+
 
 /* ══════════════════════════════════════════════════════
    EVTX Viewer — SOC Analyst Layout
@@ -9969,3 +10715,149 @@ body.dark .bin-triage-tech-medium .bin-triage-tech-id {
   background: rgba(227, 159, 28, .22);
   border-color: rgba(227, 159, 28, .45);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Wave-E — Timeline strip
+   ────────────────────────────────────────────────────────────────────────────
+   Density histogram shown above the filter bar for any GridViewer with a
+   sniffed (or caller-supplied) timestamp column. The track is a single
+   flex row holding: left date label · bucket strip · clear button · right
+   date label. Buckets are absolutely-positioned <span>s inside
+   .grid-timeline-buckets; the selection rectangle is
+   .grid-timeline-window painted on top of the track.
+
+   Theme: reuses `--accent-rgb` / `--bg-secondary` / `--hairline-soft`
+   tokens so the strip picks up every theme overlay without its own
+   recolouring.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.grid-timeline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 46px;
+  padding: 4px 12px;
+  background: #f4f4f4;
+  border-bottom: 1px solid #e0e0e0;
+  user-select: none;
+  flex: 0 0 auto;
+}
+
+.grid-timeline.hidden { display: none; }
+
+body.dark .grid-timeline {
+  background: var(--row-hover);
+  border-color: var(--hairline-soft);
+}
+
+.grid-timeline-label {
+  font-size: 10.5px;
+  font-family: 'Consolas', 'Menlo', monospace;
+  color: #777;
+  min-width: 74px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.dark .grid-timeline-label {
+  color: var(--text-muted);
+}
+
+.grid-timeline-label-right { text-align: right; }
+
+/* Main bucket track — the drag / click target. */
+.grid-timeline-track {
+  position: relative;
+  flex: 1;
+  height: 36px;
+  min-width: 0;
+  cursor: crosshair;
+  background: rgba(0, 0, 0, .02);
+  border: 1px solid #e0e0e0;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+body.dark .grid-timeline-track {
+  background: rgba(255, 255, 255, .03);
+  border-color: var(--hairline-soft);
+}
+
+/* Absolutely-positioned bar container so bars can be laid out as
+   percentages of track width without reflow on resize. */
+.grid-timeline-buckets {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.grid-timeline-bar {
+  position: absolute;
+  bottom: 0;
+  background: rgb(var(--accent-rgb, 99 102 241) / .55);
+  min-height: 1px;
+  pointer-events: none;
+}
+
+.grid-timeline-track:hover .grid-timeline-bar {
+  background: rgb(var(--accent-rgb, 99 102 241) / .7);
+}
+
+/* Active selection rectangle. */
+.grid-timeline-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgb(var(--accent-rgb, 99 102 241) / .18);
+  border-left: 1px solid rgb(var(--accent-rgb, 99 102 241) / .9);
+  border-right: 1px solid rgb(var(--accent-rgb, 99 102 241) / .9);
+  pointer-events: none;
+}
+
+.grid-timeline-window.hidden { display: none; }
+
+/* Tooltip shown while hovering / dragging. */
+.grid-timeline-tooltip {
+  position: absolute;
+  top: -26px;
+  padding: 2px 6px;
+  background: var(--bg-secondary, #fff);
+  border: 1px solid var(--hairline-soft, #e0e0e0);
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: 'Consolas', 'Menlo', monospace;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 10;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .12);
+}
+
+.grid-timeline-tooltip.hidden { display: none; }
+
+body.dark .grid-timeline-tooltip {
+  background: var(--bg-secondary);
+  border-color: var(--hairline-soft);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .4);
+}
+
+/* Clear-window button — only visible while a window is active. */
+.grid-timeline-clear {
+  font-size: 11px;
+  padding: 2px 8px;
+  line-height: 1.4;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.grid-timeline-clear.hidden { display: none; }
+
+/* While dragging, force the ew-resize cursor globally and suppress the
+   usual text-selection affordance — otherwise a drag that leaves the
+   track highlights unrelated DOM. */
+body.grid-timeline-dragging,
+body.grid-timeline-dragging * {
+  cursor: ew-resize !important;
+  user-select: none !important;
+}
+
