@@ -534,6 +534,87 @@ subtly misbehave.
   summary-card failure never aborts the normal render path; every call
   site also guards on `typeof BinarySummary !== 'undefined'` so the
   renderer keeps working defensively if the helper is stripped.
+- **Triage-first binary module family** (`src/mitre.js`,
+  `src/binary-verdict.js`, `src/binary-anomalies.js`,
+  `src/binary-triage.js`) layers a triage-first UI on top of the Pivot
+  card described above. All four are pure-presentation modules — none
+  mutate `findings`; every call site guards on `typeof X !== 'undefined'`
+  so stripping any one module degrades gracefully.
+  - **`src/mitre.js`** — `window.MITRE = { lookup, primaryTactic, urlFor,
+    tacticMeta, rollupByTactic, TECHNIQUES, TACTICS }`. Canonical registry
+    of every technique ID referenced by the binary pipeline, keyed by
+    `Tnnnn[.nnn]` with `{name, tactic, parent?}`. `rollupByTactic(items)`
+    groups `[{id, evidence?, severity?}]` by primary tactic, dedupes
+    within each tactic keeping the highest-severity evidence, and sorts
+    techniques by severity then id and tactics by ATT&CK kill-chain
+    order. This is the single source of truth for every "MITRE ATT&CK
+    Coverage" surface (sidebar section, main-pane chips, Copy-Analysis
+    block).
+  - **`src/binary-verdict.js`** — `BinaryVerdict.summarize({parsed,
+    findings, format, fileSize})` → `{headline, risk 0-100, tier:
+    'clean|low|medium|high|critical', badges:[{label,kind:'ok|warn|bad|
+    info'}], signer, capabilityCounts}`. Produces the single human
+    sentence + risk score the Tier-A band draws. Risk is seeded from
+    `findings.riskScore` and incremented by each present anomaly
+    (unsigned +6, packer +10, orphan EP +12, W+X EP +10, TLS callbacks
+    +4/ea, overlay presence, dangerous entitlements +10, exec-stack +6,
+    capability bucket totals up to +40); `_tierFromRisk` then maps the
+    clamped 0-100 score to the five-tier bucket. Format-specific signal
+    extraction lives in `_peSignals` / `_elfSignals` / `_machoSignals`
+    so the top-level `summarize()` is a small format-switch.
+  - **`src/binary-anomalies.js`** — `BinaryAnomalies.detect({parsed,
+    findings, format})` → `{ribbon:[{label, severity, anchor, mitre?}],
+    shouldAutoOpen: Map<cardId, bool>, isAnomalous: (cardId)=>bool}`.
+    Feeds both the anomaly-ribbon chips below the verdict band and the
+    "should this Tier-C reference card auto-expand?" predicate each
+    renderer consults. Card ids are short kebab-case strings agreed with
+    the renderer (`PE: headers, sections, imports, exports, resources,
+    rich, tls, dotnet, certificates, data-dirs, overlay, strings`;
+    `ELF: header, segments, sections, dynamic, symbols, notes, overlay,
+    strings`; `Mach-O: header, segments, load-commands, dylibs, symbols,
+    codesig, entitlements, overlay, strings`). Ribbon is sorted
+    `critical > high > medium > low > info` with alphabetical tiebreak.
+  - **`src/binary-triage.js`** — `BinaryTriage.render({parsed, findings,
+    format, fileSize, anchorFor?}) → HTMLElement`. Composes the Tier-A
+    band (verdict line + tier chip + risk score + MITRE tactic rollup
+    counts) and the anomaly ribbon into a single `<div>` the PE / ELF /
+    Mach-O renderers prepend to `wrap`. CSS lives in
+    `src/styles/viewers.css` under the `.bin-triage-*` namespace layered
+    on top of `.bin-summary-*`.
+  - **Load order (`scripts/build.py` → `JS_FILES`):** `mitre.js` →
+    `binary-verdict.js` → `binary-anomalies.js` → `binary-triage.js` →
+    `binary-summary.js` → the three native renderers. Triage reads
+    MITRE / verdict / anomalies, renderers read all five, so each file
+    must be fully loaded before any consumer.
+  - **`BinarySummary` extensions:** the pivot card now also surfaces
+    `teamId`, `bundleId`, `buildId`, `clrRuntime`, and `sdkMinOS`, plus
+    a tri-state `signer.verified ∈ {true, false, null}` — `null` means
+    "parser extracted a signer DN but Loupe cannot verify the chain
+    offline", rendered as a `?` badge to distinguish it from the
+    false / unsigned state.
+  - **`src/binary-strings.js`** gains
+    `renderCategorisedStringsTable(strings)` — a shared viewer helper
+    every native-binary renderer calls for the categorised strings Tier-C
+    card (mutexes / pipes / PDB paths / home paths / registry keys /
+    Rust panics). CSS lives under `.bin-strings-cats`.
+  - **`App` stash — `this._binaryParsed` + `this._binaryFormat`.** The
+    Copy-Analysis ("⚡ Summarize") path and the sidebar's Binary Metadata
+    + MITRE sections need the same `{parsed, format}` pair the main-pane
+    triage band was drawn from, but neither has a pointer to the
+    renderer. `app-load.js`'s pe / elf / macho dispatchers therefore
+    stash `this._binaryParsed = r._parsed || null; this._binaryFormat =
+    'pe' | 'elf' | 'macho';` after the renderer returns, and
+    `_clearFile()` clears both back to `null` on file close so the next
+    load — which may be any format — never sees stale parsed headers.
+    Consumers guard with `if (this._binaryFormat && typeof BinaryVerdict
+    !== 'undefined')` before calling into the module family.
+  - **Renderer contract addition — `_parsed` / `_findings` stash on the
+    result object.** `PeRenderer.render` / `ElfRenderer.render` /
+    `MachoRenderer.render` now attach the fully-parsed structure to
+    `result._parsed` (PE header tree, ELF struct, Mach-O struct) and the
+    finalised findings to `result._findings` so the `app-load.js`
+    dispatcher can stash both. New native-binary renderers in this
+    family should follow the same two-field convention.
 - **`NpmRenderer` accepts three input shapes** — gzip tarball (`.tgz`),
   a bare `package.json` manifest, or a `package-lock.json` /
   `npm-shrinkwrap.json` lockfile — routed by dedicated sniff helpers in
