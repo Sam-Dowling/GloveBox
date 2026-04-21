@@ -13,11 +13,50 @@ model is deliberately narrow:
 
 | Property | Guarantee |
 |----------|-----------|
-| **No network access** | A strict `Content-Security-Policy` (`default-src 'none'`) blocks all outbound requests — fetch, XHR, WebSocket, `<img src="https://…">`, `<script src>`, etc. No telemetry, no analytics, no CDN loads. |
+| **No network access** | A strict `Content-Security-Policy` (see [§ Full Content-Security-Policy](#full-content-security-policy)) blocks all outbound requests — fetch, XHR, WebSocket, `<img src="https://…">`, `<script src>`, etc. No telemetry, no analytics, no CDN loads. |
 | **No server component** | The tool runs entirely inside a single HTML file opened with `file://` or a static host. There is no backend, no API, no database. |
 | **No code evaluation** | `eval()`, `new Function()`, and inline event handlers from untrusted content are never used. |
 | **Sandboxed previews** | HTML and SVG previews render inside `<iframe sandbox="allow-same-origin" srcdoc="…">` with an inner CSP of `default-src 'none'`. `allow-same-origin` is kept only so the inner CSP meta tag governs the frame's own origin; every other sandbox permission is revoked by omission. |
-| **Parser safety limits** | Centralised `PARSER_LIMITS` cap nesting depth (32), decompressed size (50 MB), per-entry compression ratio (100×), archive entry count (10 000), and wall-clock parser runtime (60 s). Every format parser inherits the timeout via `ParserWatchdog.run()`. |
+| **Parser safety limits** | Centralised `PARSER_LIMITS` cap nesting depth (32), decompressed size (50 MB), per-entry compression ratio (100×), archive entry count (10 000), and wall-clock parser runtime (60 s). The 60 s runtime cap is a **whole-pipeline** wall-clock budget: `app-load.js` wraps the entire analyse-and-render pass in a single `ParserWatchdog.run()`, so it bounds total work across every parser invoked for a given file. Individual renderers do not have per-subsystem sub-budgets — a synchronous parser stuck in a tight loop will consume the whole budget without being interrupted mid-loop. |
+
+### Full Content-Security-Policy
+
+The HTML bundle ships a single CSP `<meta http-equiv>` tag emitted by
+`scripts/build.py` (search for `Content-Security-Policy` — currently one
+line under the `<head>` template). That meta tag is the authoritative
+source; this section documents every directive it carries so that
+contributors can see the full invariant at a glance.
+
+```
+default-src 'none';
+style-src 'unsafe-inline';
+script-src 'unsafe-inline';
+img-src data: blob:;
+frame-src blob:;
+worker-src blob:;
+form-action 'none';
+base-uri 'none';
+frame-ancestors 'none';
+object-src 'none';
+```
+
+| Directive | Value | Purpose |
+|---|---|---|
+| `default-src` | `'none'` | Deny every fetch class by default — network, fonts, media, manifests, workers, connect — so anything not explicitly re-enabled below is blocked. |
+| `style-src` | `'unsafe-inline'` | Permit the single inline `<style>` block the build emits. No `url(http://…)` can load because `default-src 'none'` still denies network fetches for stylesheet resources. |
+| `script-src` | `'unsafe-inline'` | Permit the bundled inline JavaScript (the whole app concatenated into one `<script>` block, plus the FOUC-prevention theme bootstrap in `<head>`). Still denies `src=` loads thanks to `default-src 'none'`. |
+| `img-src` | `data: blob:` | Allow `data:` URIs (inline SVG/PNG icons, canvas exports) and `blob:` URIs (previews generated from uploaded files). No `http(s):` sources. |
+| `frame-src` | `blob:` | Permit the HTML / SVG sandboxed-preview iframes, which are sourced from `blob:` URLs created at runtime. No remote frames. |
+| `worker-src` | `blob:` | Permit workers spawned from `blob:` URLs (vendored libraries such as `pdf.js` use this). No remote workers. |
+| `form-action` | `'none'` | Block any `<form action>` submission, including same-origin, to prevent untrusted content from exfiltrating via form POST. |
+| `base-uri` | `'none'` | Block any `<base href>` injection, so untrusted HTML cannot re-root relative URLs in the host document. |
+| `frame-ancestors` | `'none'` | Forbid the bundle from being embedded in any external frame (click-jacking defence). |
+| `object-src` | `'none'` | Block `<object>` / `<embed>` / `<applet>` — these are legacy plugin hosts with their own security histories. |
+
+Any change to any directive is a **security-relevant default** under
+[CONTRIBUTING.md](CONTRIBUTING.md) § "Change a security-relevant default":
+the change must update both `scripts/build.py` and the table above in a
+single commit.
 
 ### What Loupe does **not** protect against
 
