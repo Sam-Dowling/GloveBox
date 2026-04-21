@@ -1,4 +1,5 @@
 DateTime,Artifact,EventID,Message,User,Source
+2024-05-20T09:50:01Z,EventLog,4624,Successful Login,bob,192.168.1.11
 2024-05-20T10:00:01Z,EventLog,4624,Successful Login,admin,192.168.1.10
 2024-05-20T10:05:22Z,Sysmon,1,Process Created: powershell.exe,admin,192.168.1.10
 2024-05-20T10:06:00Z,EventLog,4688,Suspicious Command Executed,admin,192.168.1.10
