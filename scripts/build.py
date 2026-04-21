@@ -170,6 +170,12 @@ JS_FILES = [
     # used by PE / ELF / Mach-O renderers. Exposes BinaryOverlay on window.
     # Must load BEFORE the native-binary renderers.
     'src/binary-overlay.js',
+    # binary-strings.js — categorised string classification (mutex, named
+    # pipe, PDB path, user-home/build-tree path, registry key) + Rust
+    # panic-source mining. Consumed by PE / ELF / Mach-O renderers. Must
+    # load BEFORE the native-binary renderers and AFTER constants.js so
+    # it can reach pushIOC / IOC.* at emit-time.
+    'src/binary-strings.js',
     'src/vba-utils.js',
     'src/yara-engine.js',
 

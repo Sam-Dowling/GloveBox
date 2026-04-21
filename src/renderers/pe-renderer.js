@@ -2990,6 +2990,26 @@ class PeRenderer {
         });
       }
 
+      // ── Categorised strings (mutex / pipe / PDB / registry / paths) ─
+      // `allStrings` above also drives the URL/UNC pass; the same corpus
+      // is handed to BinaryStrings.emit which dedups + caps + pushes each
+      // category onto findings.interestingStrings as the right IOC.* type.
+      // A mutex / named pipe / registry key is forensic gold on Windows
+      // (mutex names cluster sibling samples; PDB paths leak build
+      // usernames); surfacing them as first-class IOCs rather than
+      // leaving them buried in the Strings pane pays for itself on the
+      // very first triage pass.
+      try {
+        if (typeof BinaryStrings !== 'undefined' && BinaryStrings.emit) {
+          const strCounts = BinaryStrings.emit(findings, allStrings);
+          if (strCounts.mutexes)       findings.metadata['Mutex Names']      = String(strCounts.mutexes);
+          if (strCounts.namedPipes)    findings.metadata['Named Pipes']      = String(strCounts.namedPipes);
+          if (strCounts.pdbPaths)      findings.metadata['PDB Paths (str)']  = String(strCounts.pdbPaths);
+          if (strCounts.userPaths)     findings.metadata['Build-host Paths'] = String(strCounts.userPaths);
+          if (strCounts.registryPaths) findings.metadata['Registry Keys']    = String(strCounts.registryPaths);
+        }
+      } catch (_) { /* classification is best-effort */ }
+
 
       // ── Format-family heuristics (XLL / AutoHotkey / Installer / Go) ─
       //   Each populates narrow `findings.metadata` rows so the Summary /

@@ -365,6 +365,34 @@ subtly misbehave.
   sidebar. Reference sample: `examples/pe/rcdata-dropper.exe` — a
   3 072-byte PE32 whose single `RT_RCDATA` leaf (type 10, name 1,
   lang 1033) contains a 1 536-byte minimal PE32.
+- **Categorised binary strings (`src/binary-strings.js`)** is the shared
+  helper that pulls mutex names, Windows named pipes, PDB paths,
+  user-home / build-tree paths, and registry keys out of the PE / ELF /
+  Mach-O string corpus and pushes each category as its own `IOC.*` row.
+  `BinaryStrings.classify(strings)` returns
+  `{mutexes, namedPipes, pdbPaths, userPaths, registryPaths}` as
+  de-duplicated arrays; `BinaryStrings.emit(findings, strings)` calls
+  `classify()` then pushes every hit through `pushIOC()` with the right
+  type — `IOC.PATTERN` (medium) for mutexes / named pipes,
+  `IOC.FILE_PATH` (info) for PDB paths and build-host paths,
+  `IOC.REGISTRY_KEY` (medium) for registry keys — honouring
+  per-category caps (`CAPS = {mutex:30, pipe:30, pdb:20, userPath:30,
+  registry:30}`) and emitting an `IOC.INFO` truncation marker when the
+  cap trims the list. All rows carry `_noDomainSibling: true` because
+  none of these IOC shapes imply a registrable domain. Each renderer's
+  `analyzeForSecurity()` calls `BinaryStrings.emit` inside a
+  `try / catch` after the URL / UNC extraction block (same `allStrings`
+  corpus) and mirrors the returned counts onto
+  `findings.metadata['Mutex Names']` / `['Named Pipes']` /
+  `['PDB Paths (str)']` / `['Build-host Paths']` / `['Registry Keys']`
+  for the sidebar summary. Regexes are tight and length-bounded
+  (2..120 chars for mutex / pipe identifiers; drive-letter or
+  absolute-POSIX anchoring for path captures) because the string dumps
+  carry a lot of printable garbage (CLR resource-table fragments,
+  version-info UTF-16 blobs) that a loose regex would flag. The
+  Windows-specific categories (mutex / pipe / registry) are trivially
+  empty on ELF / Mach-O — those renderers therefore only mirror the
+  `pdbPaths` / `userPaths` counts into metadata.
 - **`NpmRenderer` accepts three input shapes** — gzip tarball (`.tgz`),
   a bare `package.json` manifest, or a `package-lock.json` /
   `npm-shrinkwrap.json` lockfile — routed by dedicated sniff helpers in

@@ -2019,6 +2019,21 @@ class ElfRenderer {
         });
       }
 
+      // ── Categorised strings (PDB paths, build-host paths, …) ──────
+      // Mutex / named-pipe / registry patterns are Windows-specific and
+      // will be no-ops on ELF, but PDB-path and POSIX user-home path
+      // extraction still fire on ELF: cross-compiled stealers often
+      // embed stray build-host paths and forgotten PDBs from their
+      // Windows/Linux dual-target toolchain. Emit with the same
+      // IOC.* types so the sidebar groups them with the PE/Mach-O hits.
+      try {
+        if (typeof BinaryStrings !== 'undefined' && BinaryStrings.emit) {
+          const strCounts = BinaryStrings.emit(findings, allStrings);
+          if (strCounts.pdbPaths)  findings.metadata['PDB Paths (str)']  = String(strCounts.pdbPaths);
+          if (strCounts.userPaths) findings.metadata['Build-host Paths'] = String(strCounts.userPaths);
+        }
+      } catch (_) { /* classification is best-effort */ }
+
       // ── Go binary metadata ─────────────────────────────────────────
       // Surface the Go-specific fields on findings.metadata so the Summary
       // (_copyAnalysisELF in app-ui.js) can display them alongside the

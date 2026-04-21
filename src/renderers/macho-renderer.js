@@ -2295,6 +2295,21 @@ class MachoRenderer {
         });
       }
 
+      // ── Categorised strings (PDB paths, build-host paths, …) ──────
+      // Mutex / named-pipe / registry patterns are Windows-only and will
+      // be no-ops on Mach-O, but PDB-path and POSIX user-home path
+      // extraction still fire: cross-compiled or dual-target tooling
+      // frequently leaks `/Users/<builder>/…` and `.pdb`-style debug
+      // paths even in ARM64 Mach-O output. Emit with the same IOC.*
+      // types so the sidebar groups them with PE / ELF hits.
+      try {
+        if (typeof BinaryStrings !== 'undefined' && BinaryStrings.emit) {
+          const strCounts = BinaryStrings.emit(findings, allStrings);
+          if (strCounts.pdbPaths)  findings.metadata['PDB Paths (str)']  = String(strCounts.pdbPaths);
+          if (strCounts.userPaths) findings.metadata['Build-host Paths'] = String(strCounts.userPaths);
+        }
+      } catch (_) { /* classification is best-effort */ }
+
       // ── Mirror dylibs + RPATHs as individual IOCs ──────────────────
       // `mirrorMetadataIOCs` can't see these because the metadata row only
       // stores a count ("Dynamic Libraries" = "5"); emit directly instead.
