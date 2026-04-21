@@ -2030,16 +2030,26 @@ Object.assign(App.prototype, {
       const searchVal = ref.url || '';
       if (searchVal) {
         // For hashes like "SHA256:ABCDEF...", just search the hash value part
-        let searchTerm = searchVal;
+        let highlightTerm = searchVal;
         const hashMatch = searchVal.match(/^(?:SHA256|SHA1|MD5|IMPHASH):(.+)$/i);
-        if (hashMatch) searchTerm = hashMatch[1];
+        if (hashMatch) highlightTerm = hashMatch[1];
         // For DOMAIN\User usernames, search just the username part (domain and
         // username are stored as separate fields in EVTX event data)
-        if (ref.type === IOC.USERNAME && searchTerm.includes('\\')) {
-          searchTerm = searchTerm.split('\\').pop();
+        if (ref.type === IOC.USERNAME && highlightTerm.includes('\\')) {
+          highlightTerm = highlightTerm.split('\\').pop();
         }
-        // For very long values, truncate to avoid overly specific search
-        if (searchTerm.length > 80) searchTerm = searchTerm.substring(0, 80);
+
+        // Two terms: `highlightTerm` is the FULL value used for the detail-
+        // pane <mark> wrapping — never truncated, otherwise long URLs /
+        // tokens only get partially highlighted (the mark would end at
+        // char 80, visually indistinguishable from "only the first wrapped
+        // line is highlighted"). `searchTerm` is the 80-cap used ONLY for
+        // the EVTX filter input, where an over-specific filter string can
+        // miss rows whose joined text has subtle whitespace/escaping
+        // differences vs. the IOC value.
+        const searchTerm = highlightTerm.length > 80
+          ? highlightTerm.substring(0, 80)
+          : highlightTerm;
 
         filters.eidInput.value = '';
         filters.searchInput.value = searchTerm;
@@ -2055,8 +2065,11 @@ Object.assign(App.prototype, {
           filterBar.classList.add('evtx-filter-flash');
           setTimeout(() => filterBar.classList.remove('evtx-filter-flash'), 1000);
         }
-        // Subtle highlight of matched text inside expanded detail panes
-        this._highlightIocInEvtxRows(evtxView, searchTerm, ref);
+        // Subtle highlight of matched text inside expanded detail panes.
+        // Pass the full `highlightTerm` — _highlightIocInEvtxRows does an
+        // indexOf and returns silently if not found verbatim, which is
+        // correct fallback behaviour for the rare mismatch case.
+        this._highlightIocInEvtxRows(evtxView, highlightTerm, ref);
         return;
       }
     }
@@ -2068,11 +2081,22 @@ Object.assign(App.prototype, {
       const searchVal = ref.url || '';
       if (searchVal && filters.dataRows && filters.dataRows.length > 0) {
         // For hashes like "SHA256:ABCDEF...", just search the hash value part
-        let searchTerm = searchVal;
+        let highlightTerm = searchVal;
         const hashMatch = searchVal.match(/^(?:SHA256|SHA1|MD5|IMPHASH):(.+)$/i);
-        if (hashMatch) searchTerm = hashMatch[1];
-        // Truncate very long values
-        if (searchTerm.length > 80) searchTerm = searchTerm.substring(0, 80);
+        if (hashMatch) highlightTerm = hashMatch[1];
+
+        // Two terms: `highlightTerm` is the FULL (hash-prefix-stripped) value
+        // and is what gets wrapped in <mark> inside the detail pane — never
+        // truncated, otherwise long URLs / tokens only get partially
+        // highlighted (the visible mark ends at char 80, which usually falls
+        // at/near a wrap boundary and gave the false impression that
+        // word-wrapped lines weren't being highlighted at all).
+        // `searchTerm` is the 80-char-capped version used ONLY for row-find;
+        // the cap guards against overly specific matches when the joined row
+        // text has subtle whitespace/escaping differences vs. the IOC value.
+        const searchTerm = highlightTerm.length > 80
+          ? highlightTerm.substring(0, 80)
+          : highlightTerm;
 
         // Find matching row and use virtual scrolling API
         const term = searchTerm.toLowerCase();
@@ -2080,7 +2104,7 @@ Object.assign(App.prototype, {
           if (r.searchText && r.searchText.includes(term)) {
             // Use the new scrollToRow method for virtual scrolling
             if (filters.scrollToRow) {
-              this._highlightIocInCsvRow(csvView, searchTerm, r.dataIndex, ref);
+              this._highlightIocInCsvRow(csvView, highlightTerm, r.dataIndex, ref);
             } else {
               // Fallback for non-virtual scrolling (shouldn't happen)
               filters.expandRow(r);
@@ -2095,7 +2119,12 @@ Object.assign(App.prototype, {
           for (const r of filters.dataRows) {
             if (r.searchText && r.searchText.includes(shortTerm)) {
               if (filters.scrollToRow) {
-                this._highlightIocInCsvRow(csvView, shortTerm, r.dataIndex, ref);
+                // Still pass the full `highlightTerm` — _wrapIocMarkInPane's
+                // indexOf will simply return -1 if the full value isn't in
+                // the cell verbatim, leaving the yellow row tint to signal
+                // the match. Better than partially-highlighting with a
+                // 20-char prefix.
+                this._highlightIocInCsvRow(csvView, highlightTerm, r.dataIndex, ref);
               } else {
                 filters.expandRow(r);
               }
