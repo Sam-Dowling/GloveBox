@@ -336,6 +336,35 @@ subtly misbehave.
   for the sidebar. The reference sample is `examples/pe/tls-callback.exe`
   — a 1 536-byte PE32 with a single ret-only TLS callback at
   `.text + 0x20`.
+- **PE resource drill-down** is implemented in `PeRenderer._parseResources()`,
+  which performs a full three-level walk (type → name → language) of the
+  resource directory and attaches a flat `.leaves` array to the returned
+  type-summary. Each leaf carries `{typeId, typeName, typeIsNamed, nameId,
+  nameStr, langId, rva, size, fileOffset}` plus a pre-computed
+  `BinaryOverlay.sniffMagic()` hit (`{label, extHint}`) against the first
+  bytes of the leaf payload. Walk caps: 64 distinct types, 256 leaves in
+  aggregate, 50 MB per leaf — anything beyond is dropped to bound the
+  parser budget. `_renderResources()` emits a second table (below the
+  existing type summary) where every non-inert leaf with a recognised
+  magic, a named slot, or a known payload-carrying id (RCDATA / HTML /
+  MANIFEST) becomes clickable and dispatches an `open-inner-file`
+  `CustomEvent` with a synthetic `File` named
+  `<parent>.res.<type>.<name>[.lang].<ext>`, which the listener wired
+  by `_wireInnerFileListener()` in `app-load.js` re-dispatches through
+  `RendererRegistry`. `analyzeForSecurity()` walks the leaves after the
+  capability-tagging block and pushes `IOC.PATTERN` rows: embedded
+  PE / ELF / Mach-O / SO / DYLIB magic → high `+2.5` (T1027.009);
+  embedded archives (ZIP / 7z / RAR / gzip / CAB / TAR / XZ / BZ2) in
+  stashing slots (RCDATA / HTML / MANIFEST / named) → medium `+1.5`
+  (T1027.009); no-magic blobs > 64 KB with Shannon entropy > 7.2 in
+  the same slots → medium `+1` (T1027.002). Inert resource types
+  (icons, cursors, fonts, string / message tables, menus, dialogs,
+  accelerators, version info — ids 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12,
+  14, 16) are skipped entirely. The payload-candidate count is mirrored
+  onto `findings.metadata['Embedded Resource Payloads']` for the
+  sidebar. Reference sample: `examples/pe/rcdata-dropper.exe` — a
+  3 072-byte PE32 whose single `RT_RCDATA` leaf (type 10, name 1,
+  lang 1033) contains a 1 536-byte minimal PE32.
 - **`NpmRenderer` accepts three input shapes** — gzip tarball (`.tgz`),
   a bare `package.json` manifest, or a `package-lock.json` /
   `npm-shrinkwrap.json` lockfile — routed by dedicated sniff helpers in

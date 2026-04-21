@@ -1086,61 +1086,197 @@ class PeRenderer {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  //  Resource Directory parser (top-level enumeration)
+  //  Resource Directory parser (three-level walk → leaves)
   // ═══════════════════════════════════════════════════════════════════════
+  //
+  // PE resources live in a three-level tree:
+  //   Level 0 (root)    → entries keyed by *type*    (RCDATA / ICON / …)
+  //   Level 1           → entries keyed by *name*    (integer ID or UTF-16)
+  //   Level 2           → entries keyed by *language*
+  //   Leaf              → IMAGE_RESOURCE_DATA_ENTRY  (RVA, Size, CodePage)
+  //
+  // Historically we only walked level 0 and returned a one-row-per-type
+  // summary. That's enough for the "what kinds of resources does this PE
+  // embed?" sidebar, but the interesting case — an attacker stashing a
+  // secondary PE / script / archive inside an RCDATA leaf — needed a full
+  // descent. This parser now returns *both* shapes:
+  //
+  //   pe.resources       — type-level summary (unchanged external shape)
+  //   pe.resourceLeaves  — flat list of leaves with file offsets + a
+  //                        first-bytes magic sniff, suitable for the
+  //                        click-to-drilldown table in render() and the
+  //                        embedded-payload risk pass in analyzeForSecurity().
 
   _parseResources(bytes, dataDirs, sections) {
-    if (!dataDirs[2] || dataDirs[2].rva === 0 || dataDirs[2].size === 0) return [];
+    // Compatibility shim: old call-sites read the returned array directly
+    // as the type-level summary. We now attach .leaves to the returned
+    // array so both consumers work without a signature change.
+    const summary = [];
+    summary.leaves = [];
+
+    if (!dataDirs[2] || dataDirs[2].rva === 0 || dataDirs[2].size === 0) return summary;
 
     const resOff = this._rvaToOffset(dataDirs[2].rva, sections);
-    if (resOff + 16 > bytes.length) return [];
+    if (resOff + 16 > bytes.length) return summary;
 
-    const resources = [];
+    // Defensive caps — even a hostile resource table shouldn't blow the
+    // parser budget. 64 types × 256 leaves aligns with parser-watchdog's
+    // spirit of bounded, best-effort work.
+    const MAX_TYPES = 64;
+    const MAX_LEAVES = 256;
+    const MAX_LEAF_SIZE = 50 * 1024 * 1024; // 50 MB
+
+    // Read a UTF-16LE string stored as `{u16 length; u16 chars[length]}`
+    // at an offset relative to the resource-table base. Used for named
+    // types / named resources at any level.
+    const readResStr = (relOff) => {
+      const off = resOff + (relOff & 0x7FFFFFFF);
+      if (off + 2 > bytes.length) return null;
+      const n = this._u16(bytes, off);
+      let s = '';
+      for (let c = 0; c < n && off + 2 + c * 2 + 1 < bytes.length && s.length < 256; c++) {
+        const ch = this._u16(bytes, off + 2 + c * 2);
+        if (ch >= 0x20 && ch < 0xFFFE) s += String.fromCharCode(ch);
+      }
+      return s || null;
+    };
+
+    // Best-effort magic sniff via BinaryOverlay (shared helper). Returns
+    // {label, extHint} or null. Guarded because BinaryOverlay loads as a
+    // separate <script> element and may (theoretically) race at first
+    // analysis tick.
+    const sniff = (leafOff, leafSize) => {
+      if (typeof BinaryOverlay === 'undefined' || !BinaryOverlay.sniffMagic) return null;
+      if (leafOff < 0 || leafSize <= 0) return null;
+      const head = bytes.subarray(leafOff, Math.min(leafOff + 32, bytes.length));
+      return BinaryOverlay.sniffMagic(head);
+    };
+
     try {
-      const numNamed = this._u16(bytes, resOff + 12);
-      const numId = this._u16(bytes, resOff + 14);
-      const total = numNamed + numId;
+      // ── Level 0: types ────────────────────────────────────────────
+      const l0Named = this._u16(bytes, resOff + 12);
+      const l0Id = this._u16(bytes, resOff + 14);
+      const l0Total = Math.min(l0Named + l0Id, MAX_TYPES);
 
-      for (let i = 0; i < total && i < 64; i++) {
-        const entryOff = resOff + 16 + i * 8;
-        if (entryOff + 8 > bytes.length) break;
+      for (let ti = 0; ti < l0Total; ti++) {
+        const typeEntryOff = resOff + 16 + ti * 8;
+        if (typeEntryOff + 8 > bytes.length) break;
+        const typeIdRaw = this._u32(bytes, typeEntryOff);
+        const typeDataOrDir = this._u32(bytes, typeEntryOff + 4);
+        const typeIsDir = !!(typeDataOrDir & 0x80000000);
 
-        const id = this._u32(bytes, entryOff);
-        const dataOrDir = this._u32(bytes, entryOff + 4);
-        const isDir = !!(dataOrDir & 0x80000000);
-
+        let typeId;
         let typeName;
-        if (id & 0x80000000) {
-          // Named resource — read name string
-          const nameOff = resOff + (id & 0x7FFFFFFF);
-          if (nameOff + 2 < bytes.length) {
-            const nameLen = this._u16(bytes, nameOff);
-            typeName = '';
-            for (let c = 0; c < nameLen && nameOff + 2 + c * 2 + 1 < bytes.length; c++) {
-              typeName += String.fromCharCode(this._u16(bytes, nameOff + 2 + c * 2));
-            }
-          } else {
-            typeName = 'Named(' + (id & 0x7FFFFFFF) + ')';
-          }
+        let typeIsNamed;
+        if (typeIdRaw & 0x80000000) {
+          typeIsNamed = true;
+          typeId = typeIdRaw & 0x7FFFFFFF;
+          typeName = readResStr(typeId) || ('Named(' + typeId + ')');
         } else {
-          typeName = PeRenderer.RES_TYPE[id] || 'Type ' + id;
+          typeIsNamed = false;
+          typeId = typeIdRaw & 0x7FFFFFFF;
+          typeName = PeRenderer.RES_TYPE[typeId] || 'Type ' + typeId;
         }
 
-        // Count sub-entries if this is a directory
-        let count = 0;
-        if (isDir) {
-          const subDirOff = resOff + (dataOrDir & 0x7FFFFFFF);
-          if (subDirOff + 16 <= bytes.length) {
-            count = this._u16(bytes, subDirOff + 12) + this._u16(bytes, subDirOff + 14);
+        let leafCount = 0;
+
+        if (typeIsDir) {
+          // ── Level 1: names ────────────────────────────────────────
+          const l1Off = resOff + (typeDataOrDir & 0x7FFFFFFF);
+          if (l1Off + 16 <= bytes.length) {
+            const l1Named2 = this._u16(bytes, l1Off + 12);
+            const l1Id2 = this._u16(bytes, l1Off + 14);
+            const l1Total = Math.min(l1Named2 + l1Id2, 256);
+            for (let ni = 0; ni < l1Total && summary.leaves.length < MAX_LEAVES; ni++) {
+              const nameEntryOff = l1Off + 16 + ni * 8;
+              if (nameEntryOff + 8 > bytes.length) break;
+              const nameIdRaw = this._u32(bytes, nameEntryOff);
+              const nameDataOrDir = this._u32(bytes, nameEntryOff + 4);
+
+              let nameId = null;
+              let nameStr = null;
+              if (nameIdRaw & 0x80000000) {
+                nameStr = readResStr(nameIdRaw & 0x7FFFFFFF);
+              } else {
+                nameId = nameIdRaw & 0x7FFFFFFF;
+              }
+
+              if (!(nameDataOrDir & 0x80000000)) {
+                // Level-1 entry points straight at a leaf (no language level)
+                leafCount++;
+                this._collectResLeaf(bytes, resOff, sections, {
+                  typeId, typeName, typeIsNamed,
+                  nameId, nameStr,
+                  langId: null,
+                  leafRelOff: nameDataOrDir & 0x7FFFFFFF,
+                  MAX_LEAF_SIZE,
+                  sniff,
+                  out: summary.leaves,
+                });
+                continue;
+              }
+
+              // ── Level 2: languages ──────────────────────────────
+              const l2Off = resOff + (nameDataOrDir & 0x7FFFFFFF);
+              if (l2Off + 16 > bytes.length) continue;
+              const l2Named = this._u16(bytes, l2Off + 12);
+              const l2Id = this._u16(bytes, l2Off + 14);
+              const l2Total = Math.min(l2Named + l2Id, 16);
+              for (let li = 0; li < l2Total && summary.leaves.length < MAX_LEAVES; li++) {
+                const langEntryOff = l2Off + 16 + li * 8;
+                if (langEntryOff + 8 > bytes.length) break;
+                const langIdRaw = this._u32(bytes, langEntryOff);
+                const langDataOrDir = this._u32(bytes, langEntryOff + 4);
+                if (langDataOrDir & 0x80000000) continue; // shouldn't happen at L2
+                leafCount++;
+                this._collectResLeaf(bytes, resOff, sections, {
+                  typeId, typeName, typeIsNamed,
+                  nameId, nameStr,
+                  langId: langIdRaw & 0x7FFFFFFF,
+                  leafRelOff: langDataOrDir & 0x7FFFFFFF,
+                  MAX_LEAF_SIZE,
+                  sniff,
+                  out: summary.leaves,
+                });
+              }
+            }
           }
         }
 
-        resources.push({ id: id & 0x7FFFFFFF, typeName, isDir, count });
+        summary.push({ id: typeId, typeName, isDir: typeIsDir, count: leafCount });
+        if (summary.leaves.length >= MAX_LEAVES) break;
       }
     } catch (e) { /* resource parsing is best-effort */ }
 
-    return resources;
+    return summary;
   }
+
+  // ── Resolve a single resource leaf ──────────────────────────────────────
+  // A resource leaf is an IMAGE_RESOURCE_DATA_ENTRY at `resBase + relOff`:
+  //   u32 OffsetToData   (RVA, *not* a relative offset — PE spec quirk)
+  //   u32 Size
+  //   u32 CodePage
+  //   u32 Reserved
+  _collectResLeaf(bytes, resOff, sections, opts) {
+    const { typeId, typeName, typeIsNamed, nameId, nameStr, langId,
+            leafRelOff, MAX_LEAF_SIZE, sniff, out } = opts;
+    const deOff = resOff + leafRelOff;
+    if (deOff + 16 > bytes.length) return;
+    const rva = this._u32(bytes, deOff);
+    const size = this._u32(bytes, deOff + 4);
+    if (!size || size > MAX_LEAF_SIZE) return;
+    const fileOffset = this._rvaToOffset(rva, sections);
+    if (fileOffset < 0 || fileOffset + size > bytes.length) return;
+    const magic = sniff(fileOffset, size);
+    out.push({
+      typeId, typeName, typeIsNamed,
+      nameId, nameStr,
+      langId,
+      rva, size, fileOffset,
+      magic,
+    });
+  }
+
 
   // ═══════════════════════════════════════════════════════════════════════
   //  String extraction (ASCII + Unicode)
@@ -1547,6 +1683,12 @@ class PeRenderer {
 
     try {
       const pe = this._parse(bytes);
+      // Stash the source filename on the parsed object so the resource
+      // drill-down table in `_renderResources()` can mint synthetic child
+      // filenames like `<parent>.res.<type>.<name>.<ext>` instead of the
+      // anonymous 'binary' fallback. Harmless on the analyzeForSecurity
+      // path (which re-parses into its own scoped `pe`).
+      pe._fileName = fileName || '';
       this._lastStrings = [...pe.strings.ascii, ...pe.strings.unicode];
       // Stashed so the `_rawText` post-processing block below can pull
       // pe.versionInfo values out of the IOC-extractor corpus without
@@ -2128,14 +2270,126 @@ class PeRenderer {
     return div;
   }
 
+  // ── Resources renderer (with click-to-drilldown on payload leaves) ──────
+  //
+  // Two-table layout:
+  //   1. Type summary (original shape — Type / ID / Contents)
+  //   2. Leaf detail (Type · Name · Lang · Size · Magic), rows clickable
+  //      when the leaf looks like it could be a self-contained file that
+  //      another Loupe renderer could handle — PE / ELF / Mach-O / ZIP /
+  //      RAR / 7z / gzip / CAB / MSI-OLE / PDF / XML / shebang script,
+  //      plus any RCDATA / HTML / MANIFEST / named resource (common
+  //      stashing slots for secondary payloads).
+  //
+  // Clicking a payload-candidate row builds a synthetic File whose name
+  // encodes the resource coordinates (type, name-or-ID, lang) and an
+  // extension hint from the magic sniff, then dispatches `open-inner-file`
+  // on the card root. _wireInnerFileListener on the PE docEl (attached in
+  // app-load.js::pe()) catches that event, pushes a nav-stack entry and
+  // re-enters _loadFile() — identical drill-down semantics to the ZIP /
+  // MSI / EML family of renderers.
   _renderResources(pe) {
-    const rows = pe.resources.map(r => [
+    const wrap = document.createElement('div');
+    const leaves = (pe.resources && pe.resources.leaves) || [];
+
+    // ── Type summary (unchanged external shape) ─────────────────────────
+    const summaryRows = pe.resources.map(r => [
       r.typeName,
       r.id.toString(),
-      r.count > 0 ? r.count + ' entries' : 'leaf',
+      r.count > 0 ? r.count + ' leaves' : 'leaf',
     ]);
-    return this._buildTable(['Type', 'ID', 'Contents'], rows);
+    wrap.appendChild(this._buildTable(['Type', 'ID', 'Contents'], summaryRows));
+
+    if (leaves.length === 0) return wrap;
+
+    // ── Leaf detail table (drill-down) ──────────────────────────────────
+    const header = document.createElement('div');
+    header.className = 'pe-rich-info';
+    header.textContent = `${leaves.length} leaf resource${leaves.length === 1 ? '' : 's'} parsed — click a payload row to analyse it as a fresh file`;
+    wrap.appendChild(header);
+
+    const rows = leaves.map(L => {
+      const nameLabel = L.nameStr
+        ? L.nameStr
+        : (L.nameId != null ? '#' + L.nameId : '—');
+      const langLabel = L.langId != null ? this._hex(L.langId, 4) : '—';
+      const sizeLabel = L.size.toLocaleString() + ' B';
+      const magicLabel = L.magic
+        ? `<span class="doc-meta-tag">${this._esc(L.magic.label)}</span>`
+        : '—';
+      return [L.typeName, nameLabel, langLabel, sizeLabel, magicLabel];
+    });
+    const table = this._buildTable(
+      ['Type', 'Name', 'Lang', 'Size', 'Magic / Hint'],
+      rows,
+      true
+    );
+
+    // Classes of leaves that are meaningless to redispatch — they have
+    // no standalone file header any of our renderers understand, so
+    // routing them would just land in the hex-dump fallback and pollute
+    // the nav stack.
+    //
+    //   1 cursor · 2 bitmap · 3 icon · 4 menu · 5 dialog · 6 string-table
+    //   7 font-dir · 8 font · 9 accelerator · 12 group-cursor ·
+    //   14 group-icon · 16 version-info · 11 message-table
+    const INERT_TYPE_IDS = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 14, 16]);
+
+    const tbody = table.querySelector('tbody');
+    if (tbody) {
+      const trs = Array.from(tbody.querySelectorAll('tr'));
+      trs.forEach((tr, i) => {
+        const L = leaves[i];
+        if (!L) return;
+        const isInertTypeById = !L.typeIsNamed && INERT_TYPE_IDS.has(L.typeId);
+        const hasMagic = !!(L.magic && L.magic.extHint);
+        // Payload candidate:
+        //   – magic sniff produced a recognised container / format hint, OR
+        //   – named resource type (custom type — attacker stashing slot), OR
+        //   – RCDATA (10) / HTML (23) / MANIFEST (24) even without magic
+        //     (common home for scripts / manifests / blobs).
+        const isPayloadCandidate = !isInertTypeById && (
+          hasMagic ||
+          L.typeIsNamed ||
+          L.typeId === 10 || L.typeId === 23 || L.typeId === 24
+        );
+        if (!isPayloadCandidate) return;
+
+        tr.classList.add('bin-clickable');
+        tr.title = 'Click to analyse this resource as a fresh file';
+        tr.addEventListener('click', () => {
+          const bytes = this._bytes;
+          if (!bytes || L.fileOffset < 0 || L.fileOffset + L.size > bytes.length) return;
+          const payload = bytes.subarray(L.fileOffset, L.fileOffset + L.size);
+
+          // Pick an extension hint: magic sniff wins, then sensible
+          // defaults per type, then plain .bin.
+          let ext;
+          if (hasMagic) ext = L.magic.extHint;
+          else if (L.typeId === 23) ext = '.html';
+          else if (L.typeId === 24) ext = '.xml';
+          else ext = '.bin';
+
+          // Compose a filename that's useful in the nav breadcrumb:
+          //   <parent-base>.res.<type>.<name-or-id>[.lang].<ext>
+          const parentBase = (pe._fileName || 'binary').replace(/\.[^.]+$/, '');
+          const typeSlug = String(L.typeName || L.typeId).replace(/[^\w\-]+/g, '_');
+          const nameSlug = L.nameStr
+            ? String(L.nameStr).replace(/[^\w\-]+/g, '_').slice(0, 40)
+            : (L.nameId != null ? String(L.nameId) : 'leaf');
+          const langSlug = L.langId != null ? ('.lang' + L.langId) : '';
+          const fname = `${parentBase}.res.${typeSlug}.${nameSlug}${langSlug}${ext}`
+            .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
+
+          const f = new File([payload], fname, { type: 'application/octet-stream' });
+          tr.dispatchEvent(new CustomEvent('open-inner-file', { bubbles: true, detail: f }));
+        });
+      });
+    }
+    wrap.appendChild(table);
+    return wrap;
   }
+
 
   _renderRichHeader(pe) {
     const div = document.createElement('div');
@@ -2994,6 +3248,88 @@ class PeRenderer {
           riskScore += sevWeight[c.severity] || 0;
         }
       } catch (_) { /* capability detection is best-effort */ }
+
+      // ── Embedded resource payloads ─────────────────────────────────
+      // Walk the resource leaves collected in _parseResources() and flag
+      // any that carry a recognisable *file* magic — secondary PE / ELF /
+      // Mach-O executables, archives (ZIP / 7z / RAR / gzip / CAB), or
+      // large high-entropy blobs parked in RCDATA / HTML / MANIFEST /
+      // custom-named types. Classic stashing slot for droppers (MITRE
+      // T1027.009 — Embedded Payloads). Inert types (icons / cursors /
+      // fonts / string tables / version info / message tables / menus /
+      // dialogs / accelerators) are skipped so we don't flag ordinary
+      // app icons. The renderer already makes these rows clickable; this
+      // pass just drives the risk score and the sidebar IOC pivots.
+      try {
+        const leaves = (pe.resources && pe.resources.leaves) || [];
+        if (leaves.length) {
+          const INERT = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 14, 16]);
+          const EXEC_HINTS = new Set(['.exe', '.dll', '.sys', '.elf', '.so', '.dylib', '.macho']);
+          const ARCHIVE_HINTS = new Set(['.zip', '.7z', '.rar', '.gz', '.cab', '.tar', '.xz', '.bz2']);
+          let embeddedCount = 0;
+          for (const L of leaves) {
+            if (!L || (!L.typeIsNamed && INERT.has(L.typeId))) continue;
+            const magic = L.magic;
+            const ext = (magic && magic.extHint) ? magic.extHint.toLowerCase() : null;
+            const inStashingSlot = L.typeIsNamed || L.typeId === 10 || L.typeId === 23 || L.typeId === 24;
+
+            if (ext && EXEC_HINTS.has(ext)) {
+              // Embedded secondary executable — the classic dropper pattern.
+              embeddedCount++;
+              const where = L.typeIsNamed
+                ? `named type "${L.typeName}"`
+                : `RT_${L.typeName}`;
+              issues.push(`Embedded executable in ${where} (${magic.label}, ${L.size.toLocaleString()} B) — T1027.009 Embedded Payloads`);
+              riskScore += 2.5;
+              pushIOC(findings, {
+                type: IOC.PATTERN,
+                value: `Embedded ${magic.label} payload [T1027.009]`,
+                severity: 'high',
+                note: `${magic.label} stashed in ${where} at file offset ${this._hex(L.fileOffset, 8)} (${L.size.toLocaleString()} B). Click the resource row to analyse it as a fresh file.`,
+                _noDomainSibling: true,
+              });
+            } else if (ext && ARCHIVE_HINTS.has(ext) && inStashingSlot) {
+              // Archive in a stashing slot — not a smoking gun (some
+              // legitimate installers ship help archives in RCDATA) but
+              // worth medium attention.
+              embeddedCount++;
+              issues.push(`Embedded ${magic.label} archive in RT_${L.typeName} (${L.size.toLocaleString()} B) — T1027.009`);
+              riskScore += 1.5;
+              pushIOC(findings, {
+                type: IOC.PATTERN,
+                value: `Embedded ${magic.label} archive [T1027.009]`,
+                severity: 'medium',
+                note: `${magic.label} archive embedded in ${L.typeIsNamed ? `named type "${L.typeName}"` : `RT_${L.typeName}`} (${L.size.toLocaleString()} B).`,
+                _noDomainSibling: true,
+              });
+            } else if (!magic && inStashingSlot && L.size > 64 * 1024) {
+              // Large unrecognised blob in a stashing slot — candidate
+              // for a packed / encrypted payload. Entropy-gate to keep
+              // this from firing on normal localisation / HTML content.
+              try {
+                const slice = bytes.subarray(L.fileOffset, L.fileOffset + Math.min(L.size, 256 * 1024));
+                const ent = (typeof BinaryOverlay !== 'undefined' && BinaryOverlay.shannonEntropy)
+                  ? BinaryOverlay.shannonEntropy(slice) : 0;
+                if (ent > 7.2) {
+                  embeddedCount++;
+                  issues.push(`High-entropy blob in ${L.typeIsNamed ? `named type "${L.typeName}"` : `RT_${L.typeName}`} (${L.size.toLocaleString()} B, entropy ${ent.toFixed(2)}) — possible packed payload (T1027.002)`);
+                  riskScore += 1;
+                  pushIOC(findings, {
+                    type: IOC.PATTERN,
+                    value: `High-entropy resource blob [T1027.002]`,
+                    severity: 'medium',
+                    note: `${L.size.toLocaleString()} B at file offset ${this._hex(L.fileOffset, 8)} (entropy ${ent.toFixed(2)}) with no recognised magic — candidate packed / encrypted payload.`,
+                    _noDomainSibling: true,
+                  });
+                }
+              } catch (_) { /* per-leaf entropy is best-effort */ }
+            }
+          }
+          if (embeddedCount > 0) {
+            findings.metadata['Embedded Resource Payloads'] = String(embeddedCount);
+          }
+        }
+      } catch (_) { /* resource-payload analysis is best-effort */ }
 
       // ── Risk assessment ────────────────────────────────────────────
       findings.autoExec = issues;
