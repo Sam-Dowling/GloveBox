@@ -305,6 +305,13 @@ JS_FILES = [
     'src/app/app-sidebar.js',
     'src/app/app-yara.js',
     'src/app/app-ui.js',
+    # app-copy-analysis.js holds the 28 per-format _copyAnalysisXxx markdown
+    # builders plus the _copyAnalysisFormatSpecific dispatcher they're called
+    # from. Split out of app-ui.js to keep that file below ~2K lines. Must
+    # load AFTER app-ui.js (which defines _formatMetadataValue + _sCaps that
+    # these builders consume) and BEFORE app-settings.js (which overrides
+    # _copyAnalysis itself with the Summary-budget variant).
+    'src/app/app-copy-analysis.js',
     # app-settings.js attaches unified Settings/Help dialog methods onto
     # App.prototype. Must load AFTER app-ui.js because the Settings tab's
     # theme picker references the THEMES registry + _setTheme defined there.

@@ -143,11 +143,14 @@ subtly misbehave.
   `python scripts/generate_codemap.py` after code changes.
 - **The `JS_FILES` order in `scripts/build.py` is load-bearing.** The
   `Object.assign(App.prototype, …)` pattern means later files override
-  earlier ones' methods. `app-settings.js` must load **after** `app-ui.js`
-  because it reuses the `THEMES` array defined there and overrides the
-  unbudgeted `_copyAnalysis` call path with the configured Summary-budget
-  step. Renderers load before `renderer-registry.js`, which loads before
-  `app-core.js`.
+  earlier ones' methods. `app-copy-analysis.js` holds the 28 per-format
+  `_copyAnalysisXxx` markdown builders (extracted from `app-ui.js` to keep
+  that file below ~2 K lines) and must load **after** `app-ui.js` (it
+  consumes `_formatMetadataValue` / `_sCaps` defined there).
+  `app-settings.js` must load **after** both because it reuses the `THEMES`
+  array from `app-ui.js` and overrides the unbudgeted `_copyAnalysis` call
+  path with the configured Summary-budget step. Renderers load before
+  `renderer-registry.js`, which loads before `app-core.js`.
 
 ### CSP & runtime safety
 
