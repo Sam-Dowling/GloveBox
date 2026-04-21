@@ -1069,6 +1069,117 @@ class ElfRenderer {
         }
       }
 
+      // ── Binary Pivot (shared triage card) ───────────────────────
+      // Identical layout to the PE / Mach-O cards — SHA-256 / SHA-1 /
+      // MD5 over the whole file, telfhash-style import hash, "unsigned"
+      // signer row (ELF has no structural signer; code signing is an
+      // external tooling convention), entry-point RVA, overlay
+      // presence, and a strings-driven packer guess. ELF has no
+      // compile timestamp in its structural header so that slot is
+      // omitted entirely.
+      try {
+        if (typeof BinarySummary !== 'undefined') {
+          // Compute the telfhash-style import hash from the sorted,
+          // deduplicated dynamic-symbol imports (shndx === 0). Mirrors
+          // the computation in analyzeForSecurity() so the card row is
+          // consistent with the sidebar pivot.
+          let importHash = null;
+          try {
+            const importNames = [...new Set(
+              (elf.dynsyms || [])
+                .filter(s => s && s.name && s.shndx === 0)
+                .map(s => String(s.name).toLowerCase())
+            )].sort();
+            if (importNames.length && typeof computeImportHashFromList === 'function') {
+              importHash = computeImportHashFromList(importNames) || null;
+            }
+          } catch (_) { /* best-effort */ }
+
+          // Entry-point section — ELF doesn't carry an `entryPointInfo`
+          // like PE; compute a minimal section lookup here so the card
+          // row matches the header table. Orphan-EP / W+X anomalies are
+          // not currently surfaced as a separate ELF helper so only
+          // section placement is shown.
+          let epSection = null;
+          try {
+            if (elf.entry && elf.sections && elf.sections.length) {
+              for (const s of elf.sections) {
+                if (!s) continue;
+                const sz = s.sh_size || 0;
+                const addr = s.sh_addr || 0;
+                if (sz && addr && elf.entry >= addr && elf.entry < addr + sz) {
+                  epSection = s.name || null;
+                  break;
+                }
+              }
+            }
+          } catch (_) { /* best-effort */ }
+
+          // Overlay presence + first-bytes magic.
+          let overlayInfo = { present: false };
+          try {
+            const oStart = this._computeOverlayStart(elf);
+            if (oStart > 0 && oStart < bytes.length) {
+              const size = bytes.length - oStart;
+              let label = null;
+              if (typeof BinaryOverlay !== 'undefined' && BinaryOverlay.sniffMagic) {
+                const head = bytes.subarray(oStart, Math.min(bytes.length, oStart + 32));
+                const m = BinaryOverlay.sniffMagic(head);
+                if (m && m.label) label = m.label;
+              }
+              overlayInfo = { present: true, size, label };
+            }
+          } catch (_) { /* best-effort */ }
+
+          // Packer — ELF doesn't carry a canonical section-name table
+          // like PE's PACKER_SECTIONS; use a tiny inline lookup for the
+          // best-known ELF packers that can be spotted by either an
+          // unusual section name or a strings-level marker.
+          let packerInfo = null;
+          try {
+            const ELF_PACKER_SECTIONS = {
+              'UPX0': 'UPX', 'UPX1': 'UPX', 'UPX!': 'UPX',
+            };
+            const hit = (elf.sections || []).find(s => s && ELF_PACKER_SECTIONS[s.name]);
+            if (hit) {
+              packerInfo = { label: ELF_PACKER_SECTIONS[hit.name], source: 'section ' + hit.name };
+            } else {
+              // Strings-level fallback — UPX stubs embed the literal
+              // "UPX!" tag near the start of the packed image.
+              const strs = elf.strings || [];
+              for (let i = 0; i < strs.length && i < 200; i++) {
+                const s = strs[i];
+                if (typeof s === 'string' && s.includes('UPX!')) {
+                  packerInfo = { label: 'UPX', source: 'strings UPX!' };
+                  break;
+                }
+              }
+            }
+          } catch (_) { /* best-effort */ }
+
+          const formatDetail = [elf.ident && elf.ident.classStr, elf.machineStr].filter(Boolean).join(' · ');
+          const card = BinarySummary.renderCard({
+            bytes,
+            fileSize: bytes.length,
+            format: 'ELF',
+            formatDetail,
+            importHash,
+            richHash: null,
+            symHash: null,
+            signer: { present: false, label: '— (ELF has no structural signer)' },
+            compileTimestamp: null,
+            entryPoint: {
+              displayStr: this._hex(elf.entry || 0, elf.ident && elf.ident.classStr === 'ELF64' ? 16 : 8),
+              section: epSection,
+              anomaly: null,
+            },
+            overlay: overlayInfo,
+            packer: packerInfo,
+          });
+          wrap.appendChild(card);
+        }
+      } catch (_) { /* summary card is best-effort */ }
+
       // ── ELF Header ──────────────────────────────────────────────
       wrap.appendChild(this._renderSection('📋 ELF Header', this._renderHeaders(elf)));
 

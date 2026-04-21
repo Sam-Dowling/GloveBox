@@ -183,6 +183,13 @@ JS_FILES = [
     # Must load BEFORE the native-binary renderers and AFTER constants.js
     # (pushIOC / IOC.*).
     'src/binary-exports.js',
+    # binary-summary.js — shared "binary pivot" triage card (file hash
+    # trio, import hash / RichHash / SymHash, signer, compile timestamp
+    # with "faked?" flag, entry-point + anomaly, overlay Y/N, packer
+    # verdict). Consumed by PE / ELF / Mach-O renderers via
+    # `BinarySummary.renderCard({...})`. Must load AFTER hashes.js (needs
+    # `md5`) and BEFORE the native-binary renderers.
+    'src/binary-summary.js',
     'src/vba-utils.js',
     'src/yara-engine.js',
 

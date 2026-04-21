@@ -1929,6 +1929,78 @@ class PeRenderer {
       }
 
 
+      // ── Binary Pivot (shared triage card) ──────────────────────────
+      // Above-the-fold summary that mirrors the ELF / Mach-O cards:
+      // file-hash trio, imphash + RichHash, Authenticode signer,
+      // compile timestamp with a "faked?" flag, entry-point anomaly,
+      // overlay presence, and the top section-name packer match.
+      // Pulls from data already computed by `_parse()` — adds no extra
+      // passes over the buffer. Placed above PE Headers so the analyst
+      // sees the pivots before any large tables.
+      try {
+        if (typeof BinarySummary !== 'undefined') {
+          // Signer — first Authenticode leaf cert CN / DN if present.
+          let signer = { present: false, label: 'unsigned' };
+          if (pe.certificates && pe.certificates.length > 0) {
+            const c = pe.certificates[0];
+            const label = (c.subject && c.subject.CN) || c.subjectStr || 'signed';
+            signer = { present: true, label };
+          }
+          // Entry-point anomaly — mirror the header badge logic.
+          let epAnomaly = null;
+          const epi = pe.entryPointInfo || {};
+          if (!epi.skipped) {
+            if (epi.orphaned) epAnomaly = 'orphaned (outside any section)';
+            else if (epi.inWX) epAnomaly = 'W+X section';
+            else if (epi.notInText) epAnomaly = 'non-.text section';
+          }
+          // Overlay — recompute the start offset; we don't keep the
+          // result on `pe` to avoid bloating the parsed object.
+          let overlayInfo = { present: false };
+          try {
+            const oStart = this._computeOverlayStart(pe);
+            if (oStart > 0 && oStart < bytes.length) {
+              const size = bytes.length - oStart;
+              let label = null;
+              if (typeof BinaryOverlay !== 'undefined' && BinaryOverlay.sniffMagic) {
+                const head = bytes.subarray(oStart, Math.min(bytes.length, oStart + 32));
+                const m = BinaryOverlay.sniffMagic(head);
+                if (m && m.label) label = m.label;
+              }
+              overlayInfo = { present: true, size, label };
+            }
+          } catch (_) { /* best-effort */ }
+          // Packer — first section with a PACKER_SECTIONS hit wins.
+          let packerInfo = null;
+          const packSec = pe.sections.find(s => s && s.packerMatch);
+          if (packSec) {
+            packerInfo = { label: packSec.packerMatch, source: 'section ' + (packSec.name || '(unnamed)') };
+          }
+          const card = BinarySummary.renderCard({
+            bytes,
+            fileSize: bytes.length,
+            format: 'PE',
+            formatDetail: pe.optional.magicStr + ' · ' + pe.coff.machineStr,
+            importHash: pe.imphash || null,
+            richHash: (pe.richHeader && pe.richHeader.richHash) || null,
+            symHash: null,
+            signer,
+            compileTimestamp: {
+              epoch: pe.coff.timestamp,
+              displayStr: pe.coff.timestampStr,
+            },
+            entryPoint: {
+              displayStr: this._hex(pe.optional.entryPoint, 8),
+              section: (epi.section && epi.section.name) || null,
+              anomaly: epAnomaly,
+            },
+            overlay: overlayInfo,
+            packer: packerInfo,
+          });
+          wrap.appendChild(card);
+        }
+      } catch (_) { /* summary card is best-effort */ }
+
       // ── File Headers ───────────────────────────────────────────────
       wrap.appendChild(this._renderSection('📋 PE Headers', this._renderHeaders(pe)));
 

@@ -9231,3 +9231,146 @@ body.dark .binary-overlay-detail code {
   font-size: 12px;
 }
 
+/* ══════════════════════════════════════════════════════
+   Binary Pivot summary card — rendered above-the-fold by
+   PE / ELF / Mach-O renderers via BinarySummary.renderCard().
+   Single uniform layout across all three formats so the
+   analyst always sees the same key/value grid of triage
+   pivots (hashes, signer, compile timestamp, entry point,
+   overlay, packer).
+   ══════════════════════════════════════════════════════ */
+.bin-summary-card {
+  margin: 0 0 12px;
+  border: 1px solid rgba(0, 0, 0, .12);
+  border-left: 3px solid var(--accent, #3498db);
+  border-radius: 6px;
+  background: rgba(52, 152, 219, .04);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+body.dark .bin-summary-card {
+  border-color: var(--hairline, rgba(255, 255, 255, .08));
+  background: rgba(52, 152, 219, .06);
+  color: var(--text, #e8e8ea);
+}
+
+.bin-summary-header {
+  padding: 8px 12px;
+  font-weight: 700;
+  font-size: 13px;
+  background: rgba(0, 0, 0, .04);
+  border-bottom: 1px solid rgba(0, 0, 0, .08);
+}
+
+body.dark .bin-summary-header {
+  background: rgba(255, 255, 255, .04);
+  border-bottom-color: var(--hairline, rgba(255, 255, 255, .08));
+}
+
+.bin-summary-body {
+  padding: 6px 12px 8px;
+}
+
+.bin-summary-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 3px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, .04);
+}
+
+.bin-summary-row:last-child {
+  border-bottom: none;
+}
+
+body.dark .bin-summary-row {
+  border-bottom-color: rgba(255, 255, 255, .04);
+}
+
+.bin-summary-label {
+  flex: 0 0 120px;
+  font-weight: 600;
+  color: #555;
+  font-size: 12px;
+}
+
+body.dark .bin-summary-label {
+  color: var(--text-muted, #aaa);
+}
+
+.bin-summary-value {
+  flex: 1;
+  word-break: break-word;
+  font-size: 12.5px;
+}
+
+.bin-summary-value code {
+  font-family: 'Consolas', 'Courier New', monospace;
+  background: rgba(0, 0, 0, .05);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11.5px;
+}
+
+body.dark .bin-summary-value code {
+  background: var(--hairline-soft, rgba(255, 255, 255, .05));
+}
+
+.bin-summary-hash {
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 11.5px;
+  word-break: break-all;
+  color: #444;
+}
+
+body.dark .bin-summary-hash {
+  color: var(--text, #ddd);
+}
+
+.bin-summary-muted {
+  color: #888;
+  font-style: italic;
+}
+
+body.dark .bin-summary-muted {
+  color: var(--text-muted, #888);
+}
+
+.bin-summary-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  margin-left: 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  vertical-align: baseline;
+  background: rgba(0, 0, 0, .06);
+  color: #555;
+}
+
+body.dark .bin-summary-badge {
+  background: rgba(255, 255, 255, .08);
+  color: var(--text, #ddd);
+}
+
+.bin-summary-badge-ok {
+  background: rgba(39, 174, 96, .15);
+  color: #1e7e44;
+}
+
+body.dark .bin-summary-badge-ok {
+  background: rgba(39, 174, 96, .22);
+  color: #5ee291;
+}
+
+.bin-summary-badge-warn {
+  background: rgba(231, 76, 60, .14);
+  color: #b02a18;
+}
+
+body.dark .bin-summary-badge-warn {
+  background: rgba(231, 76, 60, .22);
+  color: #f28272;
+}
+

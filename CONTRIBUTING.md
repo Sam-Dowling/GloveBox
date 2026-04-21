@@ -478,6 +478,62 @@ subtly misbehave.
     forwarded-export or ordinal concept; only the side-loading filename
     check contributes. `exportNames` is sourced from dynsyms with
     `shndx !== 0` and `STB_GLOBAL` / `STB_WEAK` binding.
+- **Binary Pivot triage card (`src/binary-summary.js`)** is the shared
+  above-the-fold summary card each native-binary renderer appends
+  *before* its big header / section / import tables so the analyst sees
+  the pivot fields first. `BinarySummary.renderCard({bytes, fileSize,
+  format, formatDetail, importHash, richHash, symHash, signer,
+  compileTimestamp, entryPoint, overlay, packer})` returns a single
+  `HTMLElement` the caller appends to `wrap`. The helper is pure
+  presentation — it never mutates `findings`; risk calibration and IOC
+  emission remain each renderer's `analyzeForSecurity()` responsibility.
+  File hashes are filled asynchronously: SHA-1 / SHA-256 via
+  `crypto.subtle.digest` (CSP-safe, same path the overlay card uses),
+  MD5 via the shared `md5()` in `hashes.js` wrapped in `setTimeout(…, 0)`
+  so large samples don't stall paint. Fake-timestamp detection lives on
+  `BinarySummary.detectFakedTimestamp(epoch)` and flags four buckets:
+  the sentinel set `{0, 0xFFFFFFFF, 0x2A425E19 (Borland TLINK default)}`,
+  future-dated (`> now + 86400`), pre-2000 (`< 946684800`), and the
+  Feb 2006 reproducible-build sentinel (`[1139011200, 1139184000)`) —
+  the fixed epoch rustc / lld / Wix stamp into reproducible builds.
+  Loading order: `src/binary-summary.js` is appended to `JS_FILES` in
+  `scripts/build.py` immediately after `binary-exports.js` and
+  **before** the three native renderers so its `BinarySummary` global
+  is available at render time. CSS lives in `src/styles/viewers.css`
+  under `.bin-summary-card` / `.bin-summary-header` /
+  `.bin-summary-body` / `.bin-summary-row` / `.bin-summary-label` /
+  `.bin-summary-value` / `.bin-summary-hash` / `.bin-summary-muted` /
+  `.bin-summary-badge[-ok|-warn]`. Per-format wiring:
+  - **PE** — imphash from `pe.imphash`; RichHash from
+    `pe.richHeader.richHash`; signer from `pe.certificates[0].subject.CN
+    || .subjectStr` (falls back to `'unsigned'`); compile timestamp
+    `{epoch: pe.coff.timestamp, displayStr: pe.coff.timestampStr}`; EP
+    anomaly derived from `pe.entryPointInfo` (`.orphaned` / `.inWX` /
+    `.notInText`); overlay via `_computeOverlayStart(pe)` +
+    `BinaryOverlay.sniffMagic`; packer from
+    `pe.sections.find(s => s.packerMatch)`.
+  - **ELF** — telfhash-style import hash computed inline from
+    `elf.dynsyms.filter(s.shndx === 0)` via
+    `computeImportHashFromList()`; signer permanently `{present: false,
+    label: '— (ELF has no structural signer)'}` (code signing on ELF is
+    an external tooling convention, not a structural field);
+    `compileTimestamp: null`; EP section via a section-address sweep of
+    `elf.sections`; packer via an inline `ELF_PACKER_SECTIONS` map
+    (`UPX0` / `UPX1` / `UPX!`) plus a strings-level `UPX!` fallback.
+  - **Mach-O** — import hash computed inline from sorted deduped
+    lowercased `dylib:symbol` pairs (matching the
+    `analyzeForSecurity()` computation); SymHash via
+    `computeSymHash(importedSymNames, dylibBasenames)`; signer derived
+    from `mo.codeSignatureInfo.teamId` →
+    `mo.codeSignatureInfo.certificates[0]` → `mo.codeSignature`
+    (`'Ad-hoc signed'`) → `'unsigned'`; `compileTimestamp: null`
+    (Mach-O has no compile timestamp in its structural header); EP
+    section via an offset-in-range sweep of `mo.sections`; packer via
+    an inline `MACHO_PACKER_SECTIONS` map (`__XHDR → UPX`).
+  The whole card build in every renderer is inside a `try / catch` so a
+  summary-card failure never aborts the normal render path; every call
+  site also guards on `typeof BinarySummary !== 'undefined'` so the
+  renderer keeps working defensively if the helper is stripped.
 - **`NpmRenderer` accepts three input shapes** — gzip tarball (`.tgz`),
   a bare `package.json` manifest, or a `package-lock.json` /
   `npm-shrinkwrap.json` lockfile — routed by dedicated sniff helpers in

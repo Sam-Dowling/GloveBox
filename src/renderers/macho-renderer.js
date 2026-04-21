@@ -1169,6 +1169,144 @@ class MachoRenderer {
         wrap.appendChild(this._renderSection('🏗 Universal Binary', this._renderFatInfo(fatInfo)));
       }
 
+      // ── Binary Pivot (shared triage card) ─────────────────────────
+      // Identical layout to the PE / ELF cards — SHA-256 / SHA-1 / MD5
+      // over the whole file, Mach-O import-hash (MD5 of sorted
+      // dylib:symbol pairs), SymHash, code-signature signer (Team ID
+      // or CMS leaf CN, or "Ad-hoc signed" / "unsigned"), entry-point
+      // offset + section, overlay presence, and a section-name packer
+      // guess. Mach-O carries no compile timestamp in its structural
+      // header so that slot is omitted.
+      try {
+        if (typeof BinarySummary !== 'undefined') {
+          // Import-shape hash — mirror the computation in
+          // analyzeForSecurity() (dylib:symbol pairs, lowercased,
+          // sorted, deduplicated). This is the Mach-O analogue of
+          // imphash/telfhash.
+          let importHash = null;
+          let symHashVal = null;
+          try {
+            const importedSymNames = mo.symbols
+              .filter(s => s && s.name && s.typeField === 0 && s.isExternal)
+              .map(s => s.name);
+            const dylibBasenames = (mo.dylibs || []).map(d => {
+              const n = typeof d === 'string' ? d : (d && d.name) || '';
+              const slash = n.lastIndexOf('/');
+              return slash >= 0 ? n.slice(slash + 1) : n;
+            });
+            if (typeof computeSymHash === 'function') {
+              symHashVal = computeSymHash(importedSymNames, dylibBasenames) || null;
+            }
+            // Mach-O import hash = MD5 of the sorted, deduplicated,
+            // lowercased "dylib:symbol" pairs (matches analyzeForSecurity).
+            if (typeof computeImportHashFromList === 'function' && importedSymNames.length) {
+              const pairs = [];
+              const dylibs = dylibBasenames.filter(Boolean);
+              for (const sym of importedSymNames) {
+                const s = String(sym).toLowerCase();
+                if (dylibs.length === 0) {
+                  pairs.push(s);
+                } else {
+                  for (const dl of dylibs) {
+                    pairs.push(String(dl).toLowerCase() + ':' + s);
+                  }
+                }
+              }
+              const uniq = [...new Set(pairs)].sort();
+              if (uniq.length) importHash = computeImportHashFromList(uniq) || null;
+            }
+          } catch (_) { /* best-effort */ }
+
+          // Signer — prefer Team ID, then the first CMS leaf CN, then
+          // "Ad-hoc signed" for an unauthenticated code-signature blob,
+          // else "unsigned".
+          let signer = { present: false, label: 'unsigned' };
+          const csi = mo.codeSignatureInfo;
+          if (csi && csi.teamId) {
+            signer = { present: true, label: 'Team ID: ' + csi.teamId };
+          } else if (csi && csi.certificates && csi.certificates.length > 0) {
+            const c = csi.certificates[0];
+            const label = (c.subject && c.subject.CN) || c.subjectStr || 'signed';
+            signer = { present: true, label };
+          } else if (mo.codeSignature) {
+            signer = { present: true, label: 'Ad-hoc signed' };
+          }
+
+          // Entry-point section lookup — Mach-O sections use
+          // sectname/segname and `addr` as the virtual address; EP is
+          // a file offset (LC_MAIN) for modern binaries, so the section
+          // match is a best-effort "offset-in-range" sweep.
+          let epSection = null;
+          let epDisplay = null;
+          if (mo.entryPoint !== null && mo.entryPoint !== undefined) {
+            const digits = (mo.magicStr && mo.magicStr.indexOf('64') !== -1) ? 16 : 8;
+            epDisplay = this._hex(mo.entryPoint, digits);
+            try {
+              for (const s of (mo.sections || [])) {
+                if (!s || !s.size || !s.offset) continue;
+                if (mo.entryPoint >= s.offset && mo.entryPoint < s.offset + s.size) {
+                  epSection = (s.segname ? s.segname + ',' : '') + (s.sectname || '');
+                  break;
+                }
+              }
+            } catch (_) { /* best-effort */ }
+          }
+
+          // Overlay + first-bytes magic.
+          let overlayInfo = { present: false };
+          try {
+            const oStart = this._computeOverlayStart(mo);
+            if (oStart > 0 && oStart < bytes.length) {
+              const size = bytes.length - oStart;
+              let label = null;
+              if (typeof BinaryOverlay !== 'undefined' && BinaryOverlay.sniffMagic) {
+                const head = bytes.subarray(oStart, Math.min(bytes.length, oStart + 32));
+                const m = BinaryOverlay.sniffMagic(head);
+                if (m && m.label) label = m.label;
+              }
+              overlayInfo = { present: true, size, label };
+            }
+          } catch (_) { /* best-effort */ }
+
+          // Packer — Mach-O packers are rare; tiny inline lookup for
+          // the best-known section-name markers (UPX Mach-O stubs).
+          let packerInfo = null;
+          try {
+            const MACHO_PACKER_SECTIONS = {
+              '__XHDR': 'UPX',
+            };
+            const hit = (mo.sections || []).find(s => s && MACHO_PACKER_SECTIONS[s.sectname]);
+            if (hit) {
+              packerInfo = {
+                label: MACHO_PACKER_SECTIONS[hit.sectname],
+                source: 'section ' + hit.sectname,
+              };
+            }
+          } catch (_) { /* best-effort */ }
+
+          const formatDetail = [mo.magicStr, mo.cputypeStr].filter(Boolean).join(' · ');
+          const card = BinarySummary.renderCard({
+            bytes,
+            fileSize: bytes.length,
+            format: 'Mach-O',
+            formatDetail,
+            importHash,
+            richHash: null,
+            symHash: symHashVal,
+            signer,
+            compileTimestamp: null,
+            entryPoint: epDisplay ? {
+              displayStr: epDisplay,
+              section: epSection,
+              anomaly: null,
+            } : null,
+            overlay: overlayInfo,
+            packer: packerInfo,
+          });
+          wrap.appendChild(card);
+        }
+      } catch (_) { /* summary card is best-effort */ }
+
       // ── Mach-O Header ─────────────────────────────────────────────
       wrap.appendChild(this._renderSection('📋 Mach-O Header', this._renderHeaders(mo)));
 
