@@ -223,27 +223,6 @@ Object.assign(App.prototype, {
       phaseGrid.appendChild(tile);
     }
 
-    // ── Timeline autoswitch toggle ─────────────────────────────────────
-    // Controls whether dropping a large CSV/TSV or any EVTX automatically
-    // switches the UI out of the regular analyser into the dedicated
-    // Timeline mode. Default is ON. Persisted under `loupe_timeline_autoswitch`
-    // via _isTimelineAutoswitchEnabled / _setTimelineAutoswitchEnabled in
-    // src/app/app-timeline.js.
-    const tlRow = document.createElement('div');
-    tlRow.className = 'settings-row';
-    tlRow.innerHTML = `
-      <div class="settings-row-label">📈 Timeline mode</div>
-      <label class="settings-toggle">
-        <input type="checkbox" id="settings-timeline-autoswitch">
-        <span class="settings-toggle-label">Autoswitch to Timeline when a large CSV / TSV or any EVTX is opened</span>
-      </label>
-      <div class="settings-row-hint">When off, those files still open in the regular analyser. You can always toggle Timeline mode manually with <kbd>T</kbd> or the 📈 toolbar button.</div>`;
-    body.appendChild(tlRow);
-    const tlCb = tlRow.querySelector('#settings-timeline-autoswitch');
-    tlCb.checked = !!(this._isTimelineAutoswitchEnabled && this._isTimelineAutoswitchEnabled());
-    tlCb.addEventListener('change', () => {
-      if (this._setTimelineAutoswitchEnabled) this._setTimelineAutoswitchEnabled(tlCb.checked);
-    });
   },
 
   // ── Nicelists tab ──────────────────────────────────────────────────────
@@ -616,7 +595,6 @@ Object.assign(App.prototype, {
       <h3>Keyboard Shortcuts</h3>
       <table class="help-kbd-table">
         <tr><td><kbd class="help-kbd">S</kbd></td><td>Toggle security sidebar</td></tr>
-        <tr><td><kbd class="help-kbd">T</kbd></td><td>Toggle Timeline mode (CSV / TSV / EVTX)</td></tr>
         <tr><td><kbd class="help-kbd">Y</kbd></td><td>Open YARA rule editor</td></tr>
         <tr><td><kbd class="help-kbd">N</kbd></td><td>Open Nicelists</td></tr>
         <tr><td><kbd class="help-kbd">,</kbd></td><td>Open Settings</td></tr>

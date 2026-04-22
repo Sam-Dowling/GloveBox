@@ -13,11 +13,15 @@ class EvtxRenderer {
     return this._buildView(events, fileName);
   }
 
-  analyzeForSecurity(buffer, fileName) {
+  // Optional `prebuiltEvents` lets a caller (e.g. the Timeline view, which
+  // has already parsed the file to build its grid) skip the second `_parse`
+  // pass on a multi-hundred-MB EVTX. When omitted the behaviour is
+  // identical to the single-arg form. The array is consumed read-only.
+  analyzeForSecurity(buffer, fileName, prebuiltEvents) {
     const bytes = new Uint8Array(buffer);
     const f = { risk: 'low', hasMacros: false, macroSize: 0, macroHash: '', autoExec: [], modules: [], externalRefs: [], metadata: {} };
     try {
-      const events = this._parse(bytes);
+      const events = Array.isArray(prebuiltEvents) ? prebuiltEvents : this._parse(bytes);
       f.metadata.eventCount = events.length;
       if (events.length) {
         const first = events[0], last = events[events.length - 1];
@@ -205,7 +209,7 @@ class EvtxRenderer {
 
         const count = eidCounts[eid] || 0;
         const countSuffix = count > 1 ? ` (${count} events)` : '';
-        f.externalRefs.push({ type: IOC.PATTERN, url: desc + countSuffix, severity });
+        f.externalRefs.push({ type: IOC.PATTERN, url: desc + countSuffix, severity, eventId: eid, count });
 
         if (riskEsc && (riskRank[riskEsc] || 0) > (riskRank[f.risk] || 0)) {
           f.risk = riskEsc;
@@ -1889,6 +1893,15 @@ class EvtxRenderer {
     // intersects `viewer._timeWindow` via `viewer._dataIdxInTimeWindow()`.
     const viewer = new GridViewer({
       columns,
+      // Explicit column-kind hints so the width algorithm knows which
+      // columns are fixed-shape (tight-fit, no viewport growth) and
+      // which should absorb all leftover slack. Order mirrors `columns`
+      // above: Timestamp · Event ID · Level · Provider · Channel ·
+      // Computer · Event Data.  'blob' on the last cell is what lets
+      // Event Data stretch to fill the right-hand side of the viewport
+      // on a typical SOC analyst layout instead of being pinned at the
+      // old 480 px fill-cap while every other column over-inflates.
+      columnKinds: ['timestamp', 'id', 'enum', 'short', 'short', 'short', 'blob'],
       rows,
       rowSearchText: eventSearchText,
       rawText: '',

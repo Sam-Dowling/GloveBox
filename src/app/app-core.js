@@ -17,7 +17,7 @@ class App {
     this._setupSidebarResize();
     this._setupViewerPan();
     this._setupSearch();
-    this._initTimelineMode();
+    this._initTimelineState();
     this._checkVersionParam();
     // Keyboard shortcuts: S=toggle sidebar, Y=YARA dialog, F=focus document search.
     // F (not Ctrl+F) is used because every major browser reserves Ctrl+F for its
@@ -28,7 +28,6 @@ class App {
     document.addEventListener('keydown', e => {
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.altKey || e.ctrlKey || e.metaKey) return;
       if (e.key === 's' || e.key === 'S') this._toggleSidebar();
-      else if (e.key === 't' || e.key === 'T') this._toggleTimelineMode();
       else if (e.key === 'y' || e.key === 'Y') this._openYaraDialog();
       else if (e.key === 'n' || e.key === 'N') this._openSettingsDialog('nicelists');
       else if (e.key === ',') this._openSettingsDialog('settings');
@@ -148,12 +147,13 @@ class App {
   _setupToolbar() {
     document.getElementById('btn-open').addEventListener('click', () => document.getElementById('file-input').click());
     document.getElementById('btn-close').addEventListener('click', () => {
-      if (this._getMode && this._getMode() === 'timeline') this._clearTimelineFile();
+      // Timeline view owns its own cleanup path; fall through to the regular
+      // analyser close otherwise. `_timelineCurrent` is the single source of
+      // truth for "a timeline file is loaded right now".
+      if (this._timelineCurrent) this._clearTimelineFile();
       else this._clearFile();
     });
 
-    const btnTimeline = document.getElementById('btn-timeline');
-    if (btnTimeline) btnTimeline.addEventListener('click', () => this._toggleTimelineMode());
     document.getElementById('btn-security').addEventListener('click', () => this._toggleSidebar());
     document.getElementById('btn-yara').addEventListener('click', () => this._openYaraDialog());
     document.getElementById('btn-settings').addEventListener('click', () => this._openSettingsDialog('settings'));

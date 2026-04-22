@@ -269,6 +269,15 @@ JS_FILES = [
     'src/renderers/reg-renderer.js',
     'src/renderers/inf-renderer.js',
     'src/renderers/msi-renderer.js',
+    # json-tree.js — shared lightweight collapsible JSON tree.
+    # Exposes `window.JsonTree` with {render, pathGet, pathLabel,
+    # maybeJson, tryParse, collectLeafPaths}. Used by GridViewer's drawer
+    # (for auto-detected JSON cells in CSV / EVTX / SQLite / XLSX rows)
+    # and by Timeline's "ƒx Extract" raw-cell popup. Must load BEFORE
+    # grid-viewer.js (which references JsonTree at render time) and
+    # BEFORE app-timeline.js (which replaced its local tree with this
+    # shared one).
+    'src/json-tree.js',
     # grid-viewer.js — bulletproof shared virtual-scroll grid (fixed-height
     # rows, absolute-positioned rows, right-side resizable drawer, unified
     # highlight state machine, chunked cooperative parse, mandatory
@@ -461,7 +470,6 @@ HTML = f"""<!DOCTYPE html>
     <div class="tb-separator"></div>
     <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>
     <div class="tb-separator"></div>
-    <button class="tb-btn tb-icon-btn" id="btn-timeline" title="Timeline mode (T)">📈</button>
     <button class="tb-btn tb-icon-btn" id="btn-yara" title="YARA rule editor (Y)">📐</button>
     <button class="tb-btn tb-icon-btn" id="btn-settings" title="Settings (,) · Help (?)">⚙</button>
     <input type="file" id="file-input" accept="{accept_attr}" style="display:none">
@@ -513,9 +521,9 @@ HTML = f"""<!DOCTYPE html>
       <div id="sb-body"></div>
     </div>
 
-    <!-- Timeline mode root — sibling of #viewer. Shown only when
-         body[data-mode="timeline"]; otherwise hidden via CSS. Populated
-         lazily by src/app/app-timeline.js::_enterTimelineMode(). -->
+    <!-- Timeline root — sibling of #viewer. Shown whenever a CSV / TSV /
+         EVTX is loaded (the analyser surface hides via body.has-timeline).
+         Populated by src/app/app-timeline.js::_loadFileInTimeline(). -->
     <div id="timeline-root"></div>
 
   </div><!-- /#main-area -->

@@ -83,13 +83,47 @@ function _refangString(str) {
 Object.assign(App.prototype, {
 
   async _loadFile(file) {
-    // ── Timeline-mode intercept ───────────────────────────────────────
-    // Handles the file here if (a) the user is already in Timeline mode,
-    // or (b) the file is a CSV/TSV/EVTX big enough to cross the Autoswitch
-    // threshold AND the "Autoswitch to Timeline" setting is enabled.
-    // Returns truthy on handle (success OR explicit refusal-with-toast);
-    // the legacy analyser pipeline only runs when it returns falsy.
-    if (this._timelineTryHandle && this._timelineTryHandle(file)) return;
+    // ── Timeline intercept ────────────────────────────────────────────
+    // Every CSV / TSV / EVTX file opens in the Timeline view
+    // unconditionally. `_timelineTryHandle` returns truthy when it
+    // recognises the extension and dispatches the load; the regular
+    // analyser pipeline only runs when it returns falsy. Extensionless
+    // files are picked up below after the buffer is read via a magic-
+    // byte / text sniff (`_sniffTimelineContent`).
+    //
+    // The `_skipTimelineRoute` flag is an escape-hatch used by the
+    // Timeline loader itself: if the factory yields zero usable rows
+    // (EVTX with an unreadable header, empty CSV) it re-enters
+    // `_loadFile` with the flag set so the file degrades into the
+    // analyser's hex/strings view instead of dead-ending.
+    if (!this._skipTimelineRoute
+        && this._timelineTryHandle
+        && this._timelineTryHandle(file)) return;
+
+    // ── Timeline → Non-Timeline teardown ──────────────────────────────
+    // If a Timeline view is currently mounted but the new file isn't a
+    // Timeline format (otherwise `_timelineTryHandle` above would have
+    // short-circuited), the regular analyser pipeline would render into
+    // #page-container while the Timeline surface still covers the
+    // viewer (body.has-timeline). Clicking the toolbar's X would then
+    // route through `_clearTimelineFile` — which also nulls
+    // `_fileMeta`, making the filename disappear from the breadcrumb.
+    //
+    // Do a UI-only teardown here: destroy the old view, empty the
+    // host, drop the body class. Leave `_fileMeta`, `findings`,
+    // `_navStack`, scroll state alone — the rest of `_loadFile` is
+    // about to repopulate them for the incoming file.
+    //
+    // Extensionless Timeline re-route (below) re-adds `has-timeline`
+    // harmlessly if the sniff later routes this file back into the
+    // Timeline view.
+    if (this._timelineCurrent) {
+      try { this._timelineCurrent.destroy(); } catch (_) { /* noop */ }
+      this._timelineCurrent = null;
+      const tlHost = document.getElementById('timeline-root');
+      if (tlHost) tlHost.innerHTML = '';
+      document.body.classList.remove('has-timeline');
+    }
 
     this._setLoading(true);
 
@@ -117,8 +151,25 @@ Object.assign(App.prototype, {
 
     try {
       const buffer = await ParserWatchdog.run(() => file.arrayBuffer());
+      // ── Extensionless Timeline re-route ──────────────────────────────
+      // If the file's extension wasn't a Timeline one (and we didn't set
+      // `_skipTimelineRoute` to escape the loop), sniff the buffer for
+      // EVTX magic or a CSV/TSV-shaped text head. This catches renamed
+      // / extensionless logs that the fast-path `_timelineTryHandle`
+      // couldn't spot from the filename alone.
+      if (!this._skipTimelineRoute
+          && this._sniffTimelineContent
+          && !this._isTimelineExt(file)) {
+        const sniffed = this._sniffTimelineContent(buffer);
+        if (sniffed) {
+          this._setLoading(false);
+          await this._loadFileInTimeline(file, buffer);
+          return;
+        }
+      }
       // Store buffer for YARA scanning
       this._fileBuffer = buffer;
+
       // Reset YARA state from previous file to prevent stale results bleeding over
       this._yaraBuffer = null;
       this._yaraResults = null;

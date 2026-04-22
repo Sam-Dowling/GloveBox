@@ -4696,12 +4696,15 @@ body.dark .nicelist-empty {
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
-   Timeline mode — sibling layout toggled via body[data-mode="timeline"]
-   See src/app/app-timeline.js for the controller.
+   Timeline layout — sibling of #viewer, activated via `body.has-timeline`
+   which is toggled by src/app/app-timeline.js whenever a CSV / TSV / EVTX
+   is loaded. No toolbar button, no keybind, no user toggle: the route is
+   decided in app-load.js by extension + magic-byte + text sniff.
 
-   When Timeline mode is active we hide the regular viewer / sidebar / resize
-   handle and let `#timeline-root` consume the flex row inside `#main-area`.
-   In analyser mode `#timeline-root` is display:none so it costs nothing.
+   When a timelinable file is loaded we hide the regular viewer / sidebar /
+   resize handle and let `#timeline-root` consume the flex row inside
+   `#main-area`. In every other mode `#timeline-root` is display:none so it
+   costs nothing.
    ══════════════════════════════════════════════════════════════════════════ */
 #timeline-root {
   display: none;
@@ -4711,27 +4714,13 @@ body.dark .nicelist-empty {
   overflow: hidden;
 }
 
-body[data-mode="timeline"] #viewer,
-body[data-mode="timeline"] #sidebar,
-body[data-mode="timeline"] #sidebar-resize {
+body.has-timeline #viewer,
+body.has-timeline #sidebar,
+body.has-timeline #sidebar-resize {
   display: none !important;
 }
 
-body[data-mode="timeline"] #timeline-root {
+body.has-timeline #timeline-root {
   display: flex;
   flex-direction: column;
-}
-
-/* Toolbar toggle — stays themed via --accent-rgb so Latte / Solarized /
-   Mocha all get a matching active-state tint. */
-#btn-timeline.tb-btn-active {
-  background: rgb(var(--accent-rgb) / .14) !important;
-  border-color: rgb(var(--accent-rgb) / .35) !important;
-  color: var(--accent) !important;
-  box-shadow: 0 0 10px rgb(var(--accent-rgb) / .15);
-}
-
-body.dark #btn-timeline.tb-btn-active {
-  background: rgb(var(--accent-rgb) / .18) !important;
-  border-color: rgb(var(--accent-rgb) / .4) !important;
 }

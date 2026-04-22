@@ -1,73 +1,88 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
-// app-timeline.js — Timeline mode
+// app-timeline.js — Timeline view (CSV / TSV / EVTX)
 //
-// A separate top-level mode (button + 'T' shortcut) focused on **large CSV /
-// TSV / EVTX** datasets. Everything about this surface is tuned for speed:
+// Every CSV, TSV, and EVTX file Loupe opens is routed through this view —
+// there is no manual mode toggle, no autoswitch setting, and no minimum
+// filesize threshold. Extensionless CSV / TSV / EVTX files are picked up by
+// a lightweight content sniff (`App._sniffTimelineContent`) so a dropped
+// log with a missing or mislabelled extension still lands here.
 //
-//   - No YARA scan. No sidebar. No IOC extraction. No EncodedContentDetector.
+// The surface is tuned for forensic-size datasets and deliberately bypasses
+// the analyser's heavyweight passes:
+//
+//   - No YARA scan. No sidebar. No EncodedContentDetector.
 //   - No `_rawText` construction for offset-based sidebar nav.
 //   - Reuses the existing CsvRenderer / EvtxRenderer parsers but bypasses
-//     the `analyzeForSecurity()` pass, the `_extractInterestingStrings`
-//     pipeline, and the whole `_loadFile` post-render branch.
+//     the `_extractInterestingStrings` pipeline and the whole post-render
+//     branch of `_loadFile`.
+//   - EVTX still runs `EvtxRenderer.analyzeForSecurity()` against the
+//     *already-parsed* event array (no double-parse) so the Detections /
+//     Entities sections below get full Sigma-style coverage.
 //
-// Layout (vertical stack, no page-level scroll):
-//   [File chip + timestamp/stack col ▼ + bucket ▼ + Reset]    toolbar   40 px
-//   [════════ range scrubber ══════════]                       scrubber  48 px
-//   [░░░░░░░░ stacked bar chart ░░░░░░░]                       chart    240 px
-//   [chip] [chip] [chip] …                                     chips     32 px
-//   [grid — horizontally scrollable, fixed height]             grid     var
-//   [──── vertical splitter ────]                              splitter   8 px
-//   [col card | col card | col card | …  (1:1 with columns)]   columns  flex
+// If parsing fails badly (0 usable rows, EVTX header rejected, etc.) the
+// loader gracefully falls back to the regular analyser pipeline for that
+// file instead of leaving the analyst stranded on an error card.
 //
-// Rules:
-//   - Only the grid is horizontally scrollable.
-//   - Column top-values cards share the viewport width equally (grid CSS).
-//   - Each card owns its own vertical overflow; the page does not scroll.
-//   - Grid height is user-resizable via the splitter; persisted to
-//     `loupe_timeline_grid_h`.
-//   - Chart width = viewport; bucket count adapts on resize.
+// Feature waves layered on top of the baseline above:
+//   1. Sus chips + right-click menu → red-tinted rows everywhere.
+//   2. Separate **Suspicious** section (own chart, grid, top-lists) that
+//      auto-appears when ≥ 1 sus chip exists.
+//   3. Per-column ▾ menu (contains filter, distinct-value checkbox list,
+//      only-this / exclude-this, stack-by / timestamp, extract ƒx).
+//   4. Flexible wrap layout for top-value cards + per-card width resize +
+//      S / M / L zoom.
+//   5. Taller stacked histogram (~340 px) + hover tooltip.
+//   6. Legend click / double-click / shift-click quick filters.
+//   7. JSON cell tree popup → click a node → extracted virtual column.
+//   8. Unified Extraction popup: Auto (URL / hostname leaves & plain-text
+//      URL columns) + Regex (custom pattern + capture group + presets).
+//   9. Collapsible sections + per-section exports (chart → PNG / CSV,
+//      grid → CSV, top-values card → CSV, pivot → CSV).
+//  10. Ad-hoc pivot table: Rows × Columns × Aggregate (count /
+//      count-distinct / sum-numeric).
+//  11. Detections (EVTX): Sigma-style event-id patterns + counts, click
+//      a row to filter the grid by that Event ID.
+//  12. Entities (EVTX only): extracted hostnames, users, hashes,
+//      processes, IPs, URLs, nicelist-demoted; click to filter.
+//      Skipped for CSV / TSV — a row-scan regex sweep over millions of
+//      cells was destroying render performance and the analyser already
+//      surfaces the same IOCs via the sidebar.
 //
 // Persistence keys (all under `loupe_` prefix):
-//   - loupe_mode                  'analyser' | 'timeline'
-//   - loupe_timeline_autoswitch   '0' | '1'   — default '1'
-//   - loupe_timeline_grid_h       integer px  — default 320
-//   - loupe_timeline_bucket       token       — default 'auto'
-//
-// Dispatch rules:
-//   - If the user drops a **CSV / TSV / EVTX** and the Autoswitch setting is
-//     enabled, we switch into Timeline mode and load it here. Otherwise the
-//     legacy analyser path handles it unchanged.
-//   - If the user is already in Timeline mode, only CSV / TSV / EVTX are
-//     accepted. Everything else is refused with a toast pointing to the
-//     'T' shortcut.
+//   - loupe_timeline_grid_h            integer px — default 320
+//   - loupe_timeline_chart_h           integer px — default 220 (histogram)
+//   - loupe_timeline_bucket            token      — default 'auto'
+//   - loupe_timeline_sections          JSON { id: bool } collapsed state
+//   - loupe_timeline_topvals_size      'S' | 'M' | 'L'
+//   - loupe_timeline_card_widths       JSON { fileKey: { colName: { span: N } } }
+//   - loupe_timeline_regex_extracts    JSON { fileKey: [{name,col,pattern,flags,group}] }
+//   - loupe_timeline_pivot             JSON { rows, cols, aggOp, aggCol }
 // ════════════════════════════════════════════════════════════════════════════
 
 const TIMELINE_KEYS = Object.freeze({
-  MODE: 'loupe_mode',
-  AUTOSWITCH: 'loupe_timeline_autoswitch',
   GRID_H: 'loupe_timeline_grid_h',
+  SUS_GRID_H: 'loupe_timeline_sus_grid_h',
+  CHART_H: 'loupe_timeline_chart_h',
   BUCKET: 'loupe_timeline_bucket',
+  SECTIONS: 'loupe_timeline_sections',
+  TOPVALS_SIZE: 'loupe_timeline_topvals_size',
+  CARD_WIDTHS: 'loupe_timeline_card_widths',
+  REGEX_EXTRACTS: 'loupe_timeline_regex_extracts',
+  PIVOT: 'loupe_timeline_pivot',
+  QUERY: 'loupe_timeline_query',
+  QUERY_HISTORY: 'loupe_timeline_query_history',
+  SUS_MARKS: 'loupe_timeline_sus_marks',
 });
 
-// Hard row cap. CSV parser's own cap is 150k; EVTX parser's cap is 50k. We
-// bound the Timeline view to the same 200k upper limit so the column-stats
-// pass (O(rows × cols)) stays under ~50 ms for 20 cols.
+// Hard row cap.
 const TIMELINE_MAX_ROWS = 200_000;
 
-// Heuristic: a file qualifies for Timeline auto-switch if its extension is
-// one of these AND (for CSV/TSV) its byte size is above MIN_BYTES. EVTX is
-// always timelinable — even small logs read better here than in the generic
-// grid.
-const TIMELINE_MIN_BYTES_CSV = 1 * 1024 * 1024;   // 1 MB
-const TIMELINE_EXTS = Object.freeze({
-  csv: { minBytes: TIMELINE_MIN_BYTES_CSV, label: 'CSV' },
-  tsv: { minBytes: TIMELINE_MIN_BYTES_CSV, label: 'TSV' },
-  evtx: { minBytes: 0, label: 'EVTX' },
-});
+// File extensions that always open in the Timeline view.
+const TIMELINE_EXTS = new Set(['csv', 'tsv', 'evtx']);
 
-// Bucket presets. 'auto' picks the one that yields ~TIMELINE_BUCKETS_TARGET
-// bars across the currently visible range.
+
+// Bucket presets.
 const TIMELINE_BUCKETS_TARGET = 80;
 const TIMELINE_BUCKET_OPTIONS = [
   { id: 'auto', label: 'Auto', ms: null },
@@ -82,60 +97,138 @@ const TIMELINE_BUCKET_OPTIONS = [
   { id: '1w', label: '1 week', ms: 604_800_000 },
 ];
 
-// Stack colours — keep the palette readable at 8 bars; any group beyond that
-// collapses into "Other" (last colour). Works in both light + dark themes.
+// Stack palette.
 const TIMELINE_STACK_PALETTE = [
   '#4f8cff', '#f59e0b', '#22c55e', '#ef4444', '#a855f7',
   '#06b6d4', '#ec4899', '#84cc16', '#64748b',
 ];
 const TIMELINE_STACK_MAX = 8;
-const TIMELINE_COL_TOP_N = 500;          // per-card virtual list size
-const TIMELINE_GRID_DEFAULT_H = 320;     // initial splitter height
+const TIMELINE_COL_TOP_N = 500;
+const TIMELINE_GRID_DEFAULT_H = 320;
 const TIMELINE_GRID_MIN_H = 160;
-const TIMELINE_GRID_MAX_BUFFER = 180;    // keep ≥ 180 px for column cards
+const TIMELINE_SUS_GRID_DEFAULT_H = 260;
+const TIMELINE_SUS_GRID_MIN_H = 140;
+const TIMELINE_SUS_GRID_MAX_H = 900;
+const TIMELINE_CHART_DEFAULT_H = 220;
+const TIMELINE_CHART_MIN_H = 120;
+const TIMELINE_CHART_MAX_H = 600;
+
+// Top-values card width presets (S / M / L)
+const TIMELINE_CARD_SIZES = { S: 220, M: 300, L: 420 };
+const TIMELINE_CARD_SIZE_DEFAULT = 'M';
+
+// Extraction patterns. URL = http(s) prefix; Hostname = contains a dot, no whitespace.
+const TL_URL_RE = /\bhttps?:\/\/[^\s"'<>`()\[\]{}]+/i;
+const TL_HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
+const TL_HOSTNAME_INLINE_RE = /\b([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){1,})\b/i;
+
+// Regex presets offered on the Extract popup.
+const TL_REGEX_PRESETS = [
+  { label: 'IPv4 address', pattern: '\\b(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}\\b', group: 0 },
+  { label: 'UUID v4', pattern: '\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b', group: 0, flags: 'i' },
+  { label: 'Hex hash (MD5 / SHA1 / SHA256)', pattern: '\\b(?:[0-9a-f]{32}|[0-9a-f]{40}|[0-9a-f]{64})\\b', group: 0, flags: 'i' },
+  { label: 'Email address', pattern: '\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b', group: 0 },
+  { label: 'Windows path', pattern: '[A-Za-z]:\\\\(?:[^\\\\\\s\\"\\<>|?*]+\\\\)*[^\\\\\\s\\"\\<>|?*]+', group: 0 },
+  { label: 'PID / integer', pattern: '\\b\\d{1,7}\\b', group: 0 },
+];
 
 // ════════════════════════════════════════════════════════════════════════════
-// Time parsing — cheap, forgiving, covers the formats analysts actually see.
-//   - ISO-8601 / RFC 3339                  2024-05-01T12:34:56.789Z
-//   - "YYYY-MM-DD HH:MM:SS"                2024-05-01 12:34:56
-//   - epoch seconds   (10 digits)          1714567890
-//   - epoch millis    (13 digits)          1714567890123
-//   - /Date(…)/                            EVTX-style WebJson
-//   - Other strings: `Date.parse()` fallback
+// Helpers
 // ════════════════════════════════════════════════════════════════════════════
 function _tlParseTimestamp(s) {
   if (s == null) return NaN;
   if (typeof s === 'number') return s;
   const str = String(s).trim();
   if (!str) return NaN;
-
-  // Epoch seconds / millis
+  // Epoch seconds / milliseconds.
   if (/^-?\d{10}$/.test(str)) return Number(str) * 1000;
   if (/^-?\d{13}$/.test(str)) return Number(str);
-
-  // YYYY-MM-DD HH:MM:SS[.fff] — patch the space to 'T' for Date.parse
+  // ISO datetime (with time component).
   if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(str)) {
     const ms = Date.parse(str.replace(' ', 'T'));
     return Number.isFinite(ms) ? ms : NaN;
   }
-
-  // /Date(123456789)/ — EVTX binxml friend
+  // Microsoft .NET JSON dates: /Date(1234567890123)/
   const webJson = /^\/Date\((-?\d+)\)\/$/.exec(str);
   if (webJson) return Number(webJson[1]);
-
-  // Last resort
+  // YYYY-MM-DD | YYYY/MM/DD | YYYY.MM.DD  (date only)
+  let m = /^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/.exec(str);
+  if (m) {
+    const y = +m[1], mo = +m[2], d = +m[3];
+    if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      const ms = Date.UTC(y, mo - 1, d);
+      if (Number.isFinite(ms)) return ms;
+    }
+  }
+  // YYYY-MM | YYYY/MM | YYYY.MM  (2-digit month, most common format).
+  m = /^(\d{4})[-./](\d{2})$/.exec(str);
+  if (m) {
+    const y = +m[1], mo = +m[2];
+    if (mo >= 1 && mo <= 12) return Date.UTC(y, mo - 1, 1);
+    // else fall through to decimal-year interpretation below.
+  }
+  // Decimal-year forms — "1972.06" month-first, "1972.5" month-first,
+  // "1972.13" / "1972.500" / "1972.25" fractional-year fallback.
+  // Rule (option C): try month-first when the fractional part is ≤ 2
+  // digits AND parses to 01..12; otherwise treat as true fractional year.
+  m = /^(\d{4})\.(\d+)$/.exec(str);
+  if (m) {
+    const y = +m[1];
+    const fracStr = m[2];
+    if (fracStr.length <= 2) {
+      const mo = +fracStr;
+      if (mo >= 1 && mo <= 12) return Date.UTC(y, mo - 1, 1);
+    }
+    // Fractional year: year-start + frac × year-length (leap-aware).
+    const frac = Number('0.' + fracStr);
+    if (Number.isFinite(frac)) {
+      const start = Date.UTC(y, 0, 1);
+      const end = Date.UTC(y + 1, 0, 1);
+      return start + frac * (end - start);
+    }
+  }
+  // YYYYMMDD — 8 compact digits, only when they form a valid Gregorian date.
+  if (/^\d{8}$/.test(str)) {
+    const y = +str.slice(0, 4), mo = +str.slice(4, 6), d = +str.slice(6, 8);
+    if (y >= 1000 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+      return Date.UTC(y, mo - 1, d);
+    }
+  }
+  // YYYY alone (1000..9999).
+  if (/^\d{4}$/.test(str)) {
+    const y = +str;
+    if (y >= 1000 && y <= 9999) return Date.UTC(y, 0, 1);
+  }
+  // Fallback: anything Date.parse() will take (locale / RFC 2822 / etc.)
   const ms = Date.parse(str);
   return Number.isFinite(ms) ? ms : NaN;
 }
 
-// Score a column's timestamp-ness: percentage of non-empty cells parseable.
+// Score a column as "mostly plain numbers" (independent of timestamp
+// parsing). Used by the auto-detect fallback so that columns like
+// `id`, `index`, `period` can drive the timeline axis in numeric mode.
+function _tlScoreColumnAsNumber(rows, colIdx, sampleMax) {
+  const n = Math.min(rows.length, sampleMax || 400);
+  if (!n) return 0;
+  let seen = 0, ok = 0;
+  for (let i = 0; i < n; i++) {
+    const r = rows[i]; if (!r) continue;
+    const c = r[colIdx];
+    if (c == null || c === '') continue;
+    seen++;
+    const str = String(c).trim();
+    if (/^-?\d+(?:\.\d+)?$/.test(str) && Number.isFinite(+str)) ok++;
+  }
+  if (!seen) return 0;
+  return ok / seen;
+}
+
 function _tlScoreColumnAsTimestamp(rows, colIdx, sampleMax) {
   const n = Math.min(rows.length, sampleMax || 400);
   if (!n) return 0;
   let seen = 0, ok = 0;
   for (let i = 0; i < n; i++) {
-    const r = rows[i];
-    if (!r) continue;
+    const r = rows[i]; if (!r) continue;
     const c = r[colIdx];
     if (c == null || c === '') continue;
     seen++;
@@ -145,26 +238,60 @@ function _tlScoreColumnAsTimestamp(rows, colIdx, sampleMax) {
   return ok / seen;
 }
 
-const _TL_HEADER_HINT_RE = /^(?:time|timestamp|date|datetime|ts|created|modified|@timestamp|event[_-]?time|logged|occurred)/i;
+// Header hints for "this is a timestamp-ish column" (time / date / year /
+// period / month / …). `year` / `period` / `month` are only timestamp-y
+// when their values parse as timestamps via `_tlParseTimestamp` — otherwise
+// they still get picked up by the numeric-axis fallback below.
+const _TL_HEADER_HINT_RE = /^(?:time|timestamp|date|datetime|ts|created|modified|@timestamp|event[_-]?time|logged|occurred|year|yyyy|period|month)\b/i;
+
+// Header hints for "this is a sequential / ordinal column" that should
+// drive a NUMERIC axis (id, index, period number, row number, etc.).
+// Only consulted as a fallback in `_tlAutoDetectTimestampCol` when no
+// column parses as a timestamp.
+const _TL_NUMERIC_AXIS_HINT_RE = /^(?:id|index|idx|period|seq|sequence|order|row|row[_-]?num|n|num|month|year)\b/i;
 
 function _tlAutoDetectTimestampCol(columns, rows) {
-  // 1. Exact header-name hints win if they also parse usefully
+  // Pass 1 — headers that look timestamp-ish AND parse as timestamps.
   for (let i = 0; i < columns.length; i++) {
     if (_TL_HEADER_HINT_RE.test(String(columns[i] || '').trim())) {
       if (_tlScoreColumnAsTimestamp(rows, i, 200) >= 0.5) return i;
     }
   }
-  // 2. Otherwise score every column, pick highest (≥ 0.6 threshold)
+  // Pass 2 — any column whose cells overwhelmingly parse as timestamps.
   let best = -1, bestScore = 0.6;
   for (let i = 0; i < columns.length; i++) {
     const s = _tlScoreColumnAsTimestamp(rows, i, 200);
     if (s > bestScore) { bestScore = s; best = i; }
   }
-  return best >= 0 ? best : null;
+  if (best >= 0) return best;
+
+  // Pass 3 — numeric-axis fallback. Prefer columns whose header hints at
+  // an ordinal (`id` / `index` / `period` / …) AND whose cells are ≥ 80 %
+  // numeric. No hint-only fallback: we don't want to grab random
+  // all-numeric columns like "amount" or "latitude" for a file with no
+  // real timeline concept — the user can pick those manually.
+  for (let i = 0; i < columns.length; i++) {
+    const name = String(columns[i] || '').trim();
+    if (!_TL_NUMERIC_AXIS_HINT_RE.test(name)) continue;
+    if (_tlScoreColumnAsNumber(rows, i, 200) >= 0.8) return i;
+  }
+  return null;
 }
 
-// Auto-bucket: pick the smallest preset that yields ≤ target bars across the
-// range. Falls back to the coarsest option if the range is huge.
+// Is a given column best represented as a numeric axis (ordinals, not
+// wall-clock times)? Returns true when the cells parse as plain numbers
+// but NOT as timestamps.
+function _tlColumnIsNumericAxis(rows, colIdx) {
+  const numScore = _tlScoreColumnAsNumber(rows, colIdx, 200);
+  if (numScore < 0.8) return false;
+  const tsScore = _tlScoreColumnAsTimestamp(rows, colIdx, 200);
+  // Numeric axis wins unless the column parses as real timestamps
+  // appreciably better than as bare numbers (e.g. 4-digit years that
+  // would otherwise score 1.0 for both paths stay on the timestamp path).
+  return numScore >= tsScore + 0.05;
+}
+
+
 function _tlAutoBucketMs(rangeMs, target) {
   if (!rangeMs || rangeMs <= 0) return 60_000;
   const ideal = rangeMs / (target || TIMELINE_BUCKETS_TARGET);
@@ -175,9 +302,41 @@ function _tlAutoBucketMs(rangeMs, target) {
   return TIMELINE_BUCKET_OPTIONS[TIMELINE_BUCKET_OPTIONS.length - 1].ms;
 }
 
-// Format a ms timestamp for axis labels — compact, context-aware.
-function _tlFormatTick(ms, rangeMs) {
+// Numeric-axis auto-bucket. For a range like 0..1000, target 80 buckets →
+// ideal step 12.5, round up to a "nice" step from the 1-2-5 ladder (→ 20).
+// Returned value is in the axis's native numeric units, NOT ms.
+function _tlAutoBucketNumeric(range, target) {
+  if (!range || range <= 0 || !Number.isFinite(range)) return 1;
+  const ideal = range / (target || TIMELINE_BUCKETS_TARGET);
+  if (!Number.isFinite(ideal) || ideal <= 0) return 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(ideal)));
+  const n = ideal / pow;
+  let nice;
+  if (n <= 1) nice = 1;
+  else if (n <= 2) nice = 2;
+  else if (n <= 2.5) nice = 2.5;
+  else if (n <= 5) nice = 5;
+  else nice = 10;
+  return nice * pow;
+}
+
+// Compact number formatter for numeric-axis tick labels. Picks decimals
+// based on the visible range so tiny sub-unit steps still read cleanly.
+function _tlFormatNumericTick(v, range) {
+  if (!Number.isFinite(v)) return '';
+  const abs = Math.abs(range);
+  let digits = 0;
+  if (abs > 0 && abs < 10) digits = 2;
+  else if (abs < 100) digits = 1;
+  if (abs >= 1_000_000) return v.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  return v.toLocaleString(undefined, { maximumFractionDigits: digits });
+}
+
+// `isNumeric` (optional) switches off the wall-clock date formatting path
+// and renders the tick as a bare number with range-aware precision.
+function _tlFormatTick(ms, rangeMs, isNumeric) {
   if (!Number.isFinite(ms)) return '';
+  if (isNumeric) return _tlFormatNumericTick(ms, rangeMs);
   const d = new Date(ms);
   const pad = n => String(n).padStart(2, '0');
   if (rangeMs < 120_000) return `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
@@ -186,8 +345,11 @@ function _tlFormatTick(ms, rangeMs) {
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
 }
 
-function _tlFormatFullUtc(ms) {
+// `isNumeric` (optional) — render the scrubber / tooltip / chip label as a
+// locale-aware number instead of a UTC wall-clock timestamp.
+function _tlFormatFullUtc(ms, isNumeric) {
   if (!Number.isFinite(ms)) return '—';
+  if (isNumeric) return Number(ms).toLocaleString(undefined, { maximumFractionDigits: 4 });
   const d = new Date(ms);
   const pad = n => String(n).padStart(2, '0');
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
@@ -206,53 +368,1361 @@ function _tlEsc(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+// Stable per-file key for persisted things like regex extractors / card widths.
+function _tlFileKey(file) {
+  if (!file) return 'anon';
+  return `${file.name || ''}|${file.size || 0}|${file.lastModified || 0}`;
+}
+
+// CSV-escape a single cell (RFC 4180-ish).
+function _tlCsvCell(s) {
+  const str = s == null ? '' : String(s);
+  if (/[",\r\n]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
+  return str;
+}
+function _tlCsvRow(cells) { return cells.map(_tlCsvCell).join(','); }
+
+// Evaluate a JSON path-array against a parsed value. Paths look like
+//   ['user', '[2]', 'name'] — bracketed integers select array indices.
+function _tlJsonPathGet(value, path) {
+  let cur = value;
+  for (const seg of path) {
+    if (cur == null) return undefined;
+    if (/^\[\d+\]$/.test(seg)) {
+      const i = Number(seg.slice(1, -1));
+      cur = cur[i];
+    } else {
+      cur = cur[seg];
+    }
+  }
+  return cur;
+}
+
+function _tlJsonPathLabel(path) {
+  if (!path.length) return '(root)';
+  return path.map(s => /^\[\d+\]$/.test(s) ? s : '.' + s).join('').replace(/^\./, '');
+}
+
+// Cheap sniff: does this string look like it could be JSON? Used by the
+// auto-extract scanner to decide whether to `JSON.parse` a cell.
+function _tlMaybeJson(s) {
+  if (!s) return false;
+  const first = s.charAt(0);
+  return first === '{' || first === '[';
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Query language — tokeniser + recursive-descent parser + AST compiler
+// ────────────────────────────────────────────────────────────────────────────
+// Grammar (single-line, case-insensitive keywords):
+//
+//   expr    := or
+//   or      := and ('OR' and)*
+//   and     := not (('AND' | implicit) not)*        // implicit AND = whitespace
+//   not     := 'NOT' not | '-' primary | primary
+//   primary := '(' expr ')'
+//            | predicate
+//            | bareWord                              // any-column contains
+//   predicate := field op value
+//   field      := IDENT | '"…"' | '[…]'
+//   op         := ':' | '=' | ':=' | '!=' | ':!' | '~' | '<' | '<=' | '>' | '>='
+//   value      := IDENT | NUMBER | STRING | REGEX | '-' value-like
+//
+// Tokens produced by `_tlTokenize`:
+//   { kind: 'WORD'|'STRING'|'REGEX'|'NUMBER'|'OP'|'LP'|'RP'|'KW'|'WS'|'ERR',
+//     text: raw, value?: parsed, start: number, end: number }
+//
+// AST nodes (consumed by `_tlCompileAst`):
+//   { k: 'and'|'or', children: [...] }
+//   { k: 'not', child }
+//   { k: 'pred', colIdx, op, val, re?, num? }
+//   { k: 'any', needle }              // bareword / any-column contains
+//   { k: 'empty' }                    // the empty query — matches everything
+//
+// Everything is CSP-safe — `RegExp` is used with user-authored source
+// strings + whitelisted flags, no `eval`, no `new Function`.
+// ════════════════════════════════════════════════════════════════════════════
+
+// Reserved keywords (case-insensitive).
+const _TL_QUERY_KEYWORDS = new Set(['AND', 'OR', 'NOT', 'IN']);
+
+// Operator lookup — ordered so longest prefixes match first in the tokenizer.
+// `,` is here so the bareword scanner breaks on it — used only as a list
+// separator inside `field IN (a, b, c)`. Everywhere else a stray comma is a
+// parse error (parser treats it as an unexpected token).
+const _TL_QUERY_OPS = [
+  '>=', '<=', '!=', ':=', ':!', ':', '=', '~', '<', '>', ',',
+];
+
+function _tlTokenize(src) {
+  const tokens = [];
+  const s = String(src == null ? '' : src);
+  const n = s.length;
+  let i = 0;
+  while (i < n) {
+    const c = s.charAt(i);
+    // Whitespace — collapsed into one WS token so caret-context lookup can
+    // distinguish "just typed a space" from "inside a token".
+    if (c === ' ' || c === '\t' || c === '\r' || c === '\n') {
+      const start = i;
+      while (i < n) {
+        const cc = s.charAt(i);
+        if (cc !== ' ' && cc !== '\t' && cc !== '\r' && cc !== '\n') break;
+        i++;
+      }
+      tokens.push({ kind: 'WS', text: s.slice(start, i), start, end: i });
+      continue;
+    }
+    if (c === '(') { tokens.push({ kind: 'LP', text: '(', start: i, end: i + 1 }); i++; continue; }
+    if (c === ')') { tokens.push({ kind: 'RP', text: ')', start: i, end: i + 1 }); i++; continue; }
+    // Double-quoted string. Backslash escapes supported for `\"` and `\\`.
+    if (c === '"') {
+      const start = i; i++;
+      let buf = '';
+      let closed = false;
+      while (i < n) {
+        const ch = s.charAt(i);
+        if (ch === '\\' && i + 1 < n) { buf += s.charAt(i + 1); i += 2; continue; }
+        if (ch === '"') { i++; closed = true; break; }
+        buf += ch; i++;
+      }
+      tokens.push({
+        kind: closed ? 'STRING' : 'ERR',
+        text: s.slice(start, i), value: buf, start, end: i,
+        err: closed ? null : 'unterminated string',
+      });
+      continue;
+    }
+    // Bracket-quoted field name — `[Event ID]`.
+    if (c === '[') {
+      const start = i; i++;
+      let buf = '';
+      let closed = false;
+      while (i < n) {
+        const ch = s.charAt(i);
+        if (ch === ']') { i++; closed = true; break; }
+        buf += ch; i++;
+      }
+      tokens.push({
+        kind: closed ? 'STRING' : 'ERR',
+        text: s.slice(start, i), value: buf, start, end: i,
+        bracketed: true,
+        err: closed ? null : 'unterminated field name',
+      });
+      continue;
+    }
+    // Regex literal — `/pattern/flags`. Only recognised when a regex makes
+    // sense here (after an op like `~`); otherwise a leading `/` is just a
+    // word character. The parser checks this after the fact; for the
+    // tokenizer we only emit REGEX when the preceding non-WS token is an
+    // OP of kind `~` (or a colon-equivalent).
+    if (c === '/') {
+      // Look back through WS for the last non-WS token.
+      let prev = null;
+      for (let k = tokens.length - 1; k >= 0; k--) {
+        if (tokens[k].kind !== 'WS') { prev = tokens[k]; break; }
+      }
+      const regexOk = prev && prev.kind === 'OP' && prev.text === '~';
+      if (regexOk) {
+        const start = i; i++;
+        let pat = '';
+        let closed = false;
+        while (i < n) {
+          const ch = s.charAt(i);
+          if (ch === '\\' && i + 1 < n) { pat += ch + s.charAt(i + 1); i += 2; continue; }
+          if (ch === '/') { i++; closed = true; break; }
+          pat += ch; i++;
+        }
+        let flags = '';
+        while (i < n && /[imsuy]/.test(s.charAt(i))) { flags += s.charAt(i); i++; }
+        tokens.push({
+          kind: closed ? 'REGEX' : 'ERR',
+          text: s.slice(start, i), value: { pattern: pat, flags }, start, end: i,
+          err: closed ? null : 'unterminated regex',
+        });
+        continue;
+      }
+    }
+    // Operators.
+    let opMatched = null;
+    for (const op of _TL_QUERY_OPS) {
+      if (s.startsWith(op, i)) { opMatched = op; break; }
+    }
+    if (opMatched) {
+      tokens.push({ kind: 'OP', text: opMatched, start: i, end: i + opMatched.length });
+      i += opMatched.length;
+      continue;
+    }
+    // Bare word / number. Stop at whitespace, parens, quotes, or an op char.
+    const start = i;
+    let buf = '';
+    while (i < n) {
+      const ch = s.charAt(i);
+      if (ch === ' ' || ch === '\t' || ch === '\r' || ch === '\n') break;
+      if (ch === '(' || ch === ')' || ch === '"' || ch === '[' || ch === ']') break;
+      // Break on an op — but only if we already have some buffered text.
+      // This lets `col:foo` tokenize as WORD(col) OP(:) WORD(foo).
+      if (buf.length) {
+        let atOp = false;
+        for (const op of _TL_QUERY_OPS) {
+          if (s.startsWith(op, i)) { atOp = true; break; }
+        }
+        if (atOp) break;
+      }
+      buf += ch; i++;
+    }
+    if (!buf.length) {
+      // Shouldn't happen, but avoid infinite loop.
+      tokens.push({ kind: 'ERR', text: s.charAt(i), start: i, end: i + 1, err: 'unexpected character' });
+      i++;
+      continue;
+    }
+    const upper = buf.toUpperCase();
+    if (_TL_QUERY_KEYWORDS.has(upper)) {
+      tokens.push({ kind: 'KW', text: buf, value: upper, start, end: i });
+    } else if (/^-?\d+(?:\.\d+)?$/.test(buf)) {
+      tokens.push({ kind: 'NUMBER', text: buf, value: Number(buf), start, end: i });
+    } else {
+      tokens.push({ kind: 'WORD', text: buf, value: buf, start, end: i });
+    }
+  }
+  return tokens;
+}
+
+// Parse a tokens array into an AST. Throws a `{msg, col}` shaped error
+// object on syntax errors. Whitespace tokens are dropped before parsing.
+function _tlParseQuery(tokens, columnsResolver) {
+  const toks = tokens.filter(t => t.kind !== 'WS');
+  let pos = 0;
+
+  const peek = () => toks[pos];
+  const eat = () => toks[pos++];
+  const atEnd = () => pos >= toks.length;
+
+  const err = (msg, tok) => {
+    const col = tok ? tok.start : (toks.length ? toks[toks.length - 1].end : 0);
+    const e = new Error(msg); e.col = col; e.userMsg = msg; throw e;
+  };
+
+  // Normalise op text → canonical predicate op.
+  //   ':'  / (default)  → contains
+  //   '='  / ':='       → eq
+  //   '!=' / ':!'       → ne
+  //   '~'               → regex
+  //   '<' '<=' '>' '>=' → lt / le / gt / ge
+  const canonOp = (t) => {
+    switch (t) {
+      case ':': return 'contains';
+      case '=': case ':=': return 'eq';
+      case '!=': case ':!': return 'ne';
+      case '~': return 'regex';
+      case '<': return 'lt';
+      case '<=': return 'le';
+      case '>': return 'gt';
+      case '>=': return 'ge';
+      default: return null;
+    }
+  };
+
+  // Resolve a field name to a column index, or -1 for "any column" sentinel.
+  // Matching is case-insensitive; exact match wins over prefix match.
+  const resolveField = (name, tok) => {
+    const raw = String(name || '').trim();
+    if (!raw) err('missing field name', tok);
+    if (raw === '*' || raw.toLowerCase() === 'any') return -1;
+    if (!columnsResolver) err('no columns available', tok);
+    const cols = columnsResolver();
+    const lc = raw.toLowerCase();
+    // Exact match first.
+    for (let i = 0; i < cols.length; i++) {
+      if (String(cols[i] || '').toLowerCase() === lc) return i;
+    }
+    // Trailing-colon tolerance — some user types in a way that includes
+    // punctuation from the column name (e.g. EVTX "Event ID" vs. typed
+    // "event_id"). We don't try to be clever — just flag the error.
+    err(`unknown column: ${raw}`, tok);
+    return -1; // unreachable
+  };
+
+  // Parse a "value" — a single token that yields a scalar comparison value.
+  const parseValue = () => {
+    if (atEnd()) err('expected value', toks[toks.length - 1]);
+    const t = eat();
+    if (t.kind === 'STRING' || t.kind === 'WORD') return { text: t.value, num: Number(t.value), tok: t };
+    if (t.kind === 'NUMBER') return { text: String(t.text), num: Number(t.value), tok: t };
+    if (t.kind === 'REGEX') return { text: t.text, re: t.value, tok: t };
+    if (t.kind === 'ERR') err(t.err || 'invalid token', t);
+    err('expected value', t);
+    return null; // unreachable
+  };
+
+  // Parse a `IN (v1, v2, …)` tail — caller has already consumed the field
+  // token (`fieldTok`) and the `IN` keyword (plus the leading `NOT` when
+  // `negated === true`). Produces an `{k:'in', colIdx, vals:[strings], neg}`
+  // node. `vals` is deduplicated (case-sensitive) but preserves first-seen
+  // order so the serializer round-trips the user's ordering.
+  const parseInList = (fieldTok, negated) => {
+    const fieldName = fieldTok.value != null ? fieldTok.value : fieldTok.text;
+    const colIdx = resolveField(fieldName, fieldTok);
+    if (colIdx === -1) err('IN requires a specific column (not *)', fieldTok);
+    if (atEnd() || peek().kind !== 'LP') err('expected "(" after IN', peek() || fieldTok);
+    eat(); // (
+    const vals = [];
+    const seen = new Set();
+    // Empty list is not allowed.
+    if (!atEnd() && peek().kind === 'RP') err('IN list cannot be empty', peek());
+    while (!atEnd()) {
+      const v = parseValue();
+      const s = String(v.text == null ? '' : v.text);
+      if (!seen.has(s)) { seen.add(s); vals.push(s); }
+      if (atEnd()) err('expected ")" to close IN list', toks[toks.length - 1]);
+      const t = peek();
+      if (t.kind === 'RP') { eat(); break; }
+      if (t.kind === 'OP' && t.text === ',') { eat(); continue; }
+      err('expected "," or ")" in IN list', t);
+    }
+    if (!vals.length) err('IN list cannot be empty', fieldTok);
+    return { k: 'in', colIdx, vals, neg: !!negated };
+  };
+
+  // Parse a primary expression.
+  const parsePrimary = () => {
+
+    if (atEnd()) err('expected expression', toks[toks.length - 1] || { start: 0 });
+    const t = peek();
+    if (t.kind === 'LP') {
+      eat();
+      const inner = parseExpr();
+      if (atEnd() || peek().kind !== 'RP') err('expected ")"', peek() || t);
+      eat();
+      return inner;
+    }
+    // `-word` / `-"phrase"` sugar for NOT.
+    if (t.kind === 'OP' && t.text === '<') {
+      // Not a supported prefix operator — likely a typo. Fall through as
+      // a bareword if the parser got here by accident.
+    }
+    if (t.kind === 'WORD' || t.kind === 'STRING' || t.kind === 'NUMBER' || t.kind === 'REGEX') {
+      // Three shapes:
+      //   (a) field OP value              — a predicate
+      //   (b) field IN (v1, v2, …)        — set-membership  (NEW)
+      //   (c) field NOT IN (v1, v2, …)    — negated set-membership
+      //   (d) bareword                    — any-column contains needle
+      // Look-ahead up to three non-WS tokens.
+      const next = toks[pos + 1];
+      const next2 = toks[pos + 2];
+      // `field IN (...)`
+      if (next && next.kind === 'KW' && next.value === 'IN') {
+        const fieldTok = eat();
+        eat(); // IN
+        return parseInList(fieldTok, false);
+      }
+      // `field NOT IN (...)` — sugar for NOT (field IN (…)) but folded
+      // into the `in` node so the serializer emits it back as a single
+      // `NOT IN` clause (nicer in the query bar).
+      if (next && next.kind === 'KW' && next.value === 'NOT'
+        && next2 && next2.kind === 'KW' && next2.value === 'IN') {
+        const fieldTok = eat();
+        eat(); // NOT
+        eat(); // IN
+        return parseInList(fieldTok, true);
+      }
+      if (next && next.kind === 'OP') {
+
+        const op = canonOp(next.text);
+        if (op) {
+          const fieldTok = eat();
+          eat(); // consume OP
+          const fieldName = fieldTok.value != null ? fieldTok.value : fieldTok.text;
+          const colIdx = resolveField(fieldName, fieldTok);
+          const val = parseValue();
+          if (op === 'regex') {
+            if (val.re == null) {
+              // Allow `col ~ "pattern"` as an alternative to `/pattern/`.
+              try {
+                const re = new RegExp(val.text || '', 'i');
+                return { k: 'pred', colIdx, op, val: val.text || '', re };
+              } catch (e) { err('invalid regex: ' + (e.message || e), val.tok); }
+            }
+            let re;
+            try { re = new RegExp(val.re.pattern, val.re.flags || ''); }
+            catch (e) { err('invalid regex: ' + (e.message || e), val.tok); }
+            return { k: 'pred', colIdx, op, val: val.text, re };
+          }
+          if (op === 'lt' || op === 'le' || op === 'gt' || op === 'ge') {
+            return { k: 'pred', colIdx, op, val: val.text, num: val.num };
+          }
+          // contains / eq / ne — ignore colIdx === -1 for eq/ne (any-column
+          // equality is meaningless); fall through to contains semantics.
+          if ((op === 'eq' || op === 'ne') && colIdx === -1) {
+            return { k: 'any', needle: String(val.text || '') };
+          }
+          return { k: 'pred', colIdx, op, val: String(val.text == null ? '' : val.text) };
+        }
+      }
+      // Bareword → any-column contains. Numbers get stringified.
+      eat();
+      const s = t.kind === 'NUMBER' ? String(t.text) : (t.value != null ? t.value : t.text);
+      return { k: 'any', needle: String(s) };
+    }
+    if (t.kind === 'ERR') err(t.err || 'invalid token', t);
+    err('unexpected token "' + t.text + '"', t);
+    return null;
+  };
+
+  const parseNot = () => {
+    const t = peek();
+    if (!t) err('expected expression', toks[toks.length - 1] || { start: 0 });
+    if (t.kind === 'KW' && t.value === 'NOT') { eat(); return { k: 'not', child: parseNot() }; }
+    // Prefix `-` sugar: `-word` ≡ `NOT word`. Only when immediately followed
+    // by a word / string / number with no space between (which the tokenizer
+    // naturally produces since `-` inside a bareword is part of the word).
+    // Here we only see `-` as its own token when it appears before a
+    // quoted string or paren. Support that.
+    if (t.kind === 'OP' && t.text === '-') {
+      eat();
+      return { k: 'not', child: parseNot() };
+    }
+    return parsePrimary();
+  };
+
+  const parseAnd = () => {
+    let left = parseNot();
+    while (!atEnd()) {
+      const t = peek();
+      if (t.kind === 'KW' && t.value === 'AND') {
+        eat();
+        const right = parseNot();
+        if (left.k === 'and') left.children.push(right);
+        else left = { k: 'and', children: [left, right] };
+        continue;
+      }
+      // Implicit AND — any start-of-primary token glues.
+      if (t.kind === 'WORD' || t.kind === 'STRING' || t.kind === 'NUMBER'
+        || t.kind === 'REGEX' || t.kind === 'LP'
+        || (t.kind === 'KW' && t.value === 'NOT')
+        || (t.kind === 'OP' && t.text === '-')) {
+        const right = parseNot();
+        if (left.k === 'and') left.children.push(right);
+        else left = { k: 'and', children: [left, right] };
+        continue;
+      }
+      break;
+    }
+    return left;
+  };
+
+  const parseExpr = () => {
+    let left = parseAnd();
+    while (!atEnd()) {
+      const t = peek();
+      if (t.kind === 'KW' && t.value === 'OR') {
+        eat();
+        const right = parseAnd();
+        if (left.k === 'or') left.children.push(right);
+        else left = { k: 'or', children: [left, right] };
+        continue;
+      }
+      break;
+    }
+    return left;
+  };
+
+  if (!toks.length) return { k: 'empty' };
+  const ast = parseExpr();
+  if (pos < toks.length) {
+    const t = toks[pos];
+    err('unexpected "' + t.text + '"', t);
+  }
+  return ast;
+}
+
+// Compile an AST into a predicate `(rowIdx) => boolean`, captured against
+// `view` (a TimelineView). Returns `null` for `k: 'empty'` so callers can
+// short-circuit.
+function _tlCompileAst(ast, view) {
+  if (!ast || ast.k === 'empty') return null;
+  const cellAt = (di, ci) => view._cellAt(di, ci);
+  const allColsJoin = (di) => {
+    const total = view.columns.length;
+    const parts = new Array(total);
+    for (let c = 0; c < total; c++) parts[c] = cellAt(di, c);
+    return parts.join('\n').toLowerCase();
+  };
+  const compile = (node) => {
+    switch (node.k) {
+      case 'and': {
+        const kids = node.children.map(compile);
+        return (di) => {
+          for (let i = 0; i < kids.length; i++) if (!kids[i](di)) return false;
+          return true;
+        };
+      }
+      case 'or': {
+        const kids = node.children.map(compile);
+        return (di) => {
+          for (let i = 0; i < kids.length; i++) if (kids[i](di)) return true;
+          return false;
+        };
+      }
+      case 'not': {
+        const inner = compile(node.child);
+        return (di) => !inner(di);
+      }
+      case 'any': {
+        const needle = String(node.needle || '').toLowerCase();
+        if (!needle) return () => true;
+        return (di) => allColsJoin(di).indexOf(needle) !== -1;
+      }
+      case 'in': {
+        const ci = node.colIdx;
+        const vals = Array.isArray(node.vals) ? node.vals : [];
+        const set = new Set(vals.map(v => String(v == null ? '' : v)));
+        const neg = !!node.neg;
+        return (di) => {
+          const hit = set.has(cellAt(di, ci));
+          return neg ? !hit : hit;
+        };
+      }
+      case 'pred': {
+        const ci = node.colIdx;
+        const v = String(node.val == null ? '' : node.val);
+        const lcNeedle = v.toLowerCase();
+
+        switch (node.op) {
+          case 'contains':
+            if (ci === -1) return (di) => allColsJoin(di).indexOf(lcNeedle) !== -1;
+            return (di) => cellAt(di, ci).toLowerCase().indexOf(lcNeedle) !== -1;
+          case 'eq':
+            return (di) => cellAt(di, ci) === v;
+          case 'ne':
+            return (di) => cellAt(di, ci) !== v;
+          case 'regex': {
+            const re = node.re;
+            return (di) => { re.lastIndex = 0; return re.test(cellAt(di, ci)); };
+          }
+          case 'lt': case 'le': case 'gt': case 'ge': {
+            const target = Number(node.num);
+            if (!Number.isFinite(target)) return () => false;
+            const cmp = node.op;
+            return (di) => {
+              const raw = cellAt(di, ci);
+              if (raw === '') return false;
+              // Prefer numeric interpretation; if NaN, fall back to timestamp.
+              let x = Number(raw);
+              if (!Number.isFinite(x)) x = _tlParseTimestamp(raw);
+              if (!Number.isFinite(x)) return false;
+              switch (cmp) {
+                case 'lt': return x < target;
+                case 'le': return x <= target;
+                case 'gt': return x > target;
+                case 'ge': return x >= target;
+              }
+              return false;
+            };
+          }
+          default: return () => true;
+        }
+      }
+      default: return () => true;
+    }
+  };
+  return compile(ast);
+}
+
+// Walk the AST and return the set of column indices referenced by its
+// predicates. Used by the column-menu "Values" path to strip the query's
+// constraints on the target column when computing pivot-counts (mirrors
+// the chip-exclusion logic in `_indexIgnoringColumn`).
+function _tlQueryCollectCols(ast, set) {
+  if (!ast || ast.k === 'empty') return set || new Set();
+  const out = set || new Set();
+  const walk = (n) => {
+    if (!n) return;
+    if (n.k === 'pred' && n.colIdx >= 0) out.add(n.colIdx);
+    if (n.k === 'in' && n.colIdx >= 0) out.add(n.colIdx);
+    if (n.children) for (const c of n.children) walk(c);
+    if (n.child) walk(n.child);
+  };
+
+  walk(ast);
+  return out;
+}
+
+// Compile an AST into a predicate while EXCLUDING any predicate that
+// targets `excludeColIdx`. Used by `_indexIgnoringColumn` so the column
+// menu's "Values" counts reflect only the OTHER constraints in the query.
+// Returns `null` if the stripped AST is empty (everything matches).
+function _tlCompileAstExcluding(ast, view, excludeColIdx) {
+  if (!ast || ast.k === 'empty') return null;
+  const strip = (n) => {
+    if (!n) return null;
+    if (n.k === 'pred') return n.colIdx === excludeColIdx ? null : n;
+    if (n.k === 'in') return n.colIdx === excludeColIdx ? null : n;
+    if (n.k === 'and' || n.k === 'or') {
+      const kids = n.children.map(strip).filter(Boolean);
+      if (!kids.length) return null;
+      if (kids.length === 1) return kids[0];
+      return { k: n.k, children: kids };
+    }
+    if (n.k === 'not') {
+      const c = strip(n.child);
+      return c ? { k: 'not', child: c } : null;
+    }
+    return n;
+  };
+  const stripped = strip(ast);
+  return _tlCompileAst(stripped, view);
+}
+
+// Characters that force a field name / value to be quoted / bracketed when
+// the query is serialized back to a string. Whitespace, DSL operators,
+// the parenthesis + comma IN-list punctuation, and the quote / bracket
+// characters themselves all fall in. Kept as a single shared regex so
+// `_tlEscapeField` and `_tlEscapeValue` stay in lockstep with the
+// tokenizer's break-characters.
+const _TL_FIELD_NEEDS_BRACKETS = /[\s=!:~<>(),"[\]]/;
+const _TL_VALUE_NEEDS_QUOTES = /[\s=!:~<>(),"[\]]/;
+// Column names that clash with a reserved keyword (case-insensitive) also
+// need bracketing so they're not mis-lexed as `AND` / `OR` / `NOT` / `IN`.
+
+function _tlEscapeField(name) {
+  const s = String(name == null ? '' : name);
+  if (!s) return '""';
+  const upper = s.toUpperCase();
+  if (_TL_FIELD_NEEDS_BRACKETS.test(s) || _TL_QUERY_KEYWORDS.has(upper)) {
+    return '[' + s + ']';
+  }
+  return s;
+}
+
+function _tlEscapeValue(v) {
+  const s = String(v == null ? '' : v);
+  if (s === '') return '""';
+  const upper = s.toUpperCase();
+  if (_TL_VALUE_NEEDS_QUOTES.test(s) || _TL_QUERY_KEYWORDS.has(upper)) {
+    return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+  }
+  return s;
+}
+
+// Serialize an AST back to a string suitable for the query editor. Column
+// indices are resolved against the caller-supplied `columns` array (the
+// view's live columns, so extracted virtual columns round-trip too).
+//
+// The `prec` parameter controls when to wrap a sub-expression in parens:
+//   0 = top-level (no wrap)
+//   1 = under OR  (wrap ANDs? no — AND binds tighter than OR → no wrap)
+//   2 = under AND (wrap ORs so `a OR b AND c` doesn't silently re-associate)
+//   3 = under NOT (wrap anything non-atomic)
+// `and` returns paren-wrapped when prec > 2 (i.e. underneath a NOT);
+// `or` returns paren-wrapped when prec > 1 (i.e. under AND or NOT).
+function _tlFormatQuery(ast, columns) {
+  if (!ast || ast.k === 'empty') return '';
+  return _tlSerialize(ast, columns || [], 0);
+}
+
+function _tlSerialize(node, cols, prec) {
+  if (!node) return '';
+  switch (node.k) {
+    case 'empty': return '';
+    case 'any': return _tlEscapeValue(node.needle);
+    case 'pred': {
+      const colName = node.colIdx === -1 ? 'any' : (cols[node.colIdx] || `col${node.colIdx + 1}`);
+      const field = _tlEscapeField(colName);
+      const opStr = {
+        contains: ':', eq: '=', ne: '!=', regex: '~',
+        lt: '<', le: '<=', gt: '>', ge: '>=',
+      }[node.op] || ':';
+      // Regex values serialize with `/pat/flags`; everything else goes
+      // through `_tlEscapeValue`.
+      let valStr;
+      if (node.op === 'regex') {
+        const re = node.re;
+        if (re && re.source != null) {
+          valStr = '/' + re.source + '/' + (re.flags || '');
+        } else {
+          valStr = _tlEscapeValue(node.val);
+        }
+      } else {
+        valStr = _tlEscapeValue(node.val);
+      }
+      return `${field}${opStr}${valStr}`;
+    }
+    case 'in': {
+      const colName = cols[node.colIdx] || `col${node.colIdx + 1}`;
+      const field = _tlEscapeField(colName);
+      const kw = node.neg ? 'NOT IN' : 'IN';
+      const list = (node.vals || []).map(_tlEscapeValue).join(', ');
+      return `${field} ${kw} (${list})`;
+    }
+    case 'not': {
+      // Atomic children don't need wrapping; composite children do. Bump
+      // precedence to 3 so ANDs/ORs inside the NOT get parens.
+      const inner = _tlSerialize(node.child, cols, 3);
+      const kid = node.child;
+      const atomic = kid && (kid.k === 'pred' || kid.k === 'in' || kid.k === 'any' || kid.k === 'not');
+      return 'NOT ' + (atomic ? inner : `(${inner})`);
+    }
+    case 'and': {
+      const parts = node.children.map(c => _tlSerialize(c, cols, 2));
+      const s = parts.join(' AND ');
+      return prec > 2 ? `(${s})` : s;
+    }
+    case 'or': {
+      const parts = node.children.map(c => _tlSerialize(c, cols, 1));
+      const s = parts.join(' OR ');
+      return prec > 1 ? `(${s})` : s;
+    }
+    default: return '';
+  }
+}
+
+
+// Render a token array as syntax-highlighted HTML for the `<pre>` overlay.
+
+// Pills wrap contiguous predicate tokens (`field op value`). Whitespace
+// tokens are preserved verbatim so the overlay stays pixel-aligned with
+// the underlying `<textarea>`.
+function _tlFormatHighlightHtml(tokens) {
+  const esc = _tlEsc;
+  const n = tokens.length;
+  const out = [];
+  let i = 0;
+  while (i < n) {
+    const t = tokens[i];
+    // Predicate detection — field (WORD|STRING) + non-WS OP + value.
+    if (t.kind === 'WORD' || t.kind === 'STRING') {
+      let j = i + 1;
+      while (j < n && tokens[j].kind === 'WS') j++;
+      const opTok = tokens[j];
+      if (opTok && opTok.kind === 'OP' && _TL_QUERY_OPS.indexOf(opTok.text) !== -1) {
+        let k = j + 1;
+        while (k < n && tokens[k].kind === 'WS') k++;
+        const valTok = tokens[k];
+        if (valTok && (valTok.kind === 'WORD' || valTok.kind === 'STRING'
+          || valTok.kind === 'NUMBER' || valTok.kind === 'REGEX')) {
+          // Emit a pill enclosing field+op+value (with any interior WS inline).
+          out.push('<span class="tl-pill">');
+          for (let q = i; q <= k; q++) out.push(_tlFormatHighlightOne(tokens[q], esc));
+          out.push('</span>');
+          i = k + 1;
+          continue;
+        }
+      }
+    }
+    out.push(_tlFormatHighlightOne(t, esc));
+    i++;
+  }
+  return out.join('') || '&nbsp;';
+}
+
+function _tlFormatHighlightOne(t, esc) {
+  if (t.kind === 'WS') return esc(t.text).replace(/ /g, '&nbsp;');
+  const cls = {
+    WORD: 'tl-tok-word',
+    STRING: 'tl-tok-string',
+    REGEX: 'tl-tok-regex',
+    NUMBER: 'tl-tok-number',
+    OP: 'tl-tok-op',
+    LP: 'tl-tok-paren',
+    RP: 'tl-tok-paren',
+    KW: 'tl-tok-kw',
+    ERR: 'tl-tok-err',
+  }[t.kind] || 'tl-tok-word';
+  return `<span class="tl-tok ${cls}" data-s="${t.start}" data-e="${t.end}">${esc(t.text)}</span>`;
+}
+
+// Compute a suggestion context for the caret position within `text`.
+// Returns { kind: 'field'|'value'|'keyword'|'none', fieldName?, prefix, replaceStart, replaceEnd }.
+function _tlSuggestContext(text, caret) {
+  // Walk back from caret to find the start of the current "word" token.
+  let start = caret;
+  while (start > 0) {
+    const ch = text.charAt(start - 1);
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '(' || ch === ')' || ch === '"') break;
+    start--;
+  }
+  let end = caret;
+  while (end < text.length) {
+    const ch = text.charAt(end);
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '(' || ch === ')' || ch === '"') break;
+    end++;
+  }
+  // Raw prefix the user has typed.
+  let prefix = text.slice(start, caret);
+  // Operator suffix — if the user just typed `col:`, we land here with
+  // prefix ending in `:` etc. Treat as "value context" with empty prefix.
+  // Ordered longest-first.
+  for (const op of _TL_QUERY_OPS) {
+    const idx = prefix.lastIndexOf(op);
+    if (idx !== -1 && idx + op.length === prefix.length) {
+      const fieldRaw = prefix.slice(0, idx).trim();
+      return {
+        kind: 'value', fieldName: fieldRaw.replace(/^["[]|["\]]$/g, ''),
+        prefix: '', replaceStart: caret, replaceEnd: caret,
+      };
+    }
+    // Or op appears mid-prefix — the user is now typing the value.
+    const idx2 = prefix.indexOf(op);
+    if (idx2 !== -1 && /^[^\s()]/.test(prefix.charAt(idx2 + op.length) || '')) {
+      const fieldRaw = prefix.slice(0, idx2).trim();
+      const valRaw = prefix.slice(idx2 + op.length);
+      return {
+        kind: 'value', fieldName: fieldRaw.replace(/^["[]|["\]]$/g, ''),
+        prefix: valRaw, replaceStart: start + idx2 + op.length, replaceEnd: end,
+      };
+    }
+  }
+  // No op in prefix — we're either at a field position (start of expression
+  // or after AND/OR/NOT/`(`) or typing a bareword.
+  // Look at the previous non-WS token to decide.
+  const before = text.slice(0, start).trimEnd();
+  const lastChar = before.charAt(before.length - 1);
+  const lastWord = /(AND|OR|NOT)$/i.test(before) ? 'kw' : null;
+  if (before === '' || lastChar === '(' || lastWord) {
+    return { kind: 'field', prefix, replaceStart: start, replaceEnd: end };
+  }
+  // In free text — suggest keywords.
+  return { kind: 'keyword', prefix, replaceStart: start, replaceEnd: end };
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// TimelineQueryEditor — overlay `<textarea>` + syntax-highlighted `<pre>`
+// + suggestion dropdown. Owned by a TimelineView.
+// ════════════════════════════════════════════════════════════════════════════
+class TimelineQueryEditor {
+  constructor(opts) {
+    this.view = opts.view;
+    this.onChange = opts.onChange || (() => { });
+    this.onCommit = opts.onCommit || (() => { });
+    this.debounceMs = opts.debounceMs != null ? opts.debounceMs : 60;
+
+    this._debounceTimer = 0;
+    this._suggest = null;
+    this._suggestSel = 0;
+    this._history = TimelineQueryEditor._loadHistory();
+    this._buildDom();
+    this.setValue(opts.initialValue || '');
+  }
+
+  _buildDom() {
+    const root = document.createElement('div');
+    root.className = 'tl-query';
+    root.innerHTML = `
+      <div class="tl-query-inner">
+        <span class="tl-query-icon" aria-hidden="true">🔍</span>
+        <div class="tl-query-editor">
+          <pre class="tl-query-hl" aria-hidden="true"><code></code></pre>
+          <textarea class="tl-query-input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" rows="1" placeholder='Filter — e.g. User:admin AND (EventID=4624 OR EventID=4625) NOT "svc_backup"'></textarea>
+        </div>
+        <button class="tl-query-clear" type="button" title="Clear filter" tabindex="-1">✕</button>
+        <button class="tl-query-history" type="button" title="History" tabindex="-1">▾</button>
+        <button class="tl-query-help" type="button" title="Query language help" tabindex="-1">?</button>
+      </div>
+      <div class="tl-query-status" aria-live="polite"></div>
+    `;
+    this.root = root;
+    this.input = root.querySelector('.tl-query-input');
+    this.hl = root.querySelector('.tl-query-hl code');
+    this.status = root.querySelector('.tl-query-status');
+    this.clearBtn = root.querySelector('.tl-query-clear');
+    this.historyBtn = root.querySelector('.tl-query-history');
+    this.helpBtn = root.querySelector('.tl-query-help');
+
+    // Mirror input events to the highlight layer + debounced parse.
+    this.input.addEventListener('input', () => {
+      this._refreshHighlight();
+      this._scheduleCommit();
+      this._updateSuggestions();
+    });
+    this.input.addEventListener('keydown', (e) => this._onKeyDown(e));
+    this.input.addEventListener('scroll', () => {
+      // Mirror scroll so the highlight layer stays aligned.
+      this.hl.parentNode.scrollLeft = this.input.scrollLeft;
+      this.hl.parentNode.scrollTop = this.input.scrollTop;
+    });
+    this.input.addEventListener('blur', () => {
+      // Delay close so click inside suggestion list still fires.
+      setTimeout(() => this._closeSuggest(), 120);
+    });
+    this.input.addEventListener('click', () => this._updateSuggestions());
+
+    this.clearBtn.addEventListener('click', () => {
+      if (this.input.value === '') return;
+      this.setValue('');
+      this._scheduleCommit(true);
+      this.input.focus();
+    });
+    this.historyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._openHistoryMenu();
+    });
+    this.helpBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._openHelpPopover();
+    });
+  }
+
+  setValue(v) {
+    this.input.value = v || '';
+    this._refreshHighlight();
+  }
+  getValue() { return this.input.value; }
+
+  focus() { this.input.focus(); }
+
+  // Update the status line — called by the view after compile to report
+  // match counts / parse errors.
+  setStatus(html, kind) {
+    this.status.className = 'tl-query-status' + (kind ? ' tl-query-status-' + kind : '');
+    this.status.innerHTML = html || '';
+  }
+
+  _refreshHighlight() {
+    const raw = this.input.value || '';
+    const tokens = _tlTokenize(raw);
+    this.hl.innerHTML = _tlFormatHighlightHtml(tokens);
+  }
+
+  _scheduleCommit(immediate) {
+    clearTimeout(this._debounceTimer);
+    const run = () => {
+      this._debounceTimer = 0;
+      try {
+        this.onChange(this.input.value);
+      } catch (e) { /* noop */ }
+    };
+    if (immediate) run(); else this._debounceTimer = setTimeout(run, this.debounceMs);
+  }
+
+  _onKeyDown(e) {
+    if (this._suggest && this._suggest.visible) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); this._moveSuggest(1); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); this._moveSuggest(-1); return; }
+      if (e.key === 'Tab') { e.preventDefault(); this._applySuggest(); return; }
+      if (e.key === 'Enter') { e.preventDefault(); this._applySuggest(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); this._closeSuggest(); return; }
+    } else {
+      if (e.key === 'Enter') {
+        // Full commit + push to history.
+        e.preventDefault();
+        this._scheduleCommit(true);
+        this._pushHistory(this.input.value);
+        try { this.onCommit(this.input.value); } catch (_) { /* noop */ }
+        return;
+      }
+      if (e.key === 'Escape') {
+        // Clear the filter.
+        if (this.input.value !== '') {
+          e.preventDefault();
+          this.setValue('');
+          this._scheduleCommit(true);
+        }
+        return;
+      }
+      // Keep single-line.
+      if (e.key === 'Enter' || e.key === 'NumpadEnter') e.preventDefault();
+    }
+  }
+
+  // ── Suggestions ────────────────────────────────────────────────────────
+  _updateSuggestions() {
+    const caret = this.input.selectionStart;
+    const text = this.input.value;
+    const ctx = _tlSuggestContext(text, caret);
+    let items = [];
+    if (ctx.kind === 'field') {
+      items = this._fieldSuggestions(ctx.prefix);
+    } else if (ctx.kind === 'value') {
+      items = this._valueSuggestions(ctx.fieldName, ctx.prefix);
+    } else if (ctx.kind === 'keyword') {
+      items = this._keywordSuggestions(ctx.prefix);
+    }
+    if (!items.length) { this._closeSuggest(); return; }
+    this._openSuggest(items, ctx);
+  }
+
+  _fieldSuggestions(prefix) {
+    const lc = String(prefix || '').toLowerCase();
+    const cols = this.view.columns;
+    const out = [];
+    // Pseudo-field: any column
+    if ('any'.startsWith(lc) || !lc) out.push({ label: 'any', text: 'any:', kind: 'field' });
+    for (let i = 0; i < cols.length; i++) {
+      const name = String(cols[i] || '');
+      if (!name) continue;
+      const lcName = name.toLowerCase();
+      if (!lc || lcName.includes(lc)) {
+        // Escape column names containing spaces / operators via brackets.
+        const safe = /[\s=!:~<>()"]/.test(name) ? `[${name}]` : name;
+        out.push({ label: name, text: safe + ':', kind: 'field', rank: lcName.startsWith(lc) ? 0 : 1 });
+      }
+    }
+    // Keywords allowed as connectors (if typed a word partially match).
+    for (const kw of ['AND', 'OR', 'NOT']) {
+      if (kw.toLowerCase().startsWith(lc) && lc) out.push({ label: kw, text: kw + ' ', kind: 'kw' });
+    }
+    out.sort((a, b) => (a.rank || 0) - (b.rank || 0));
+    return out.slice(0, 40);
+  }
+
+  _valueSuggestions(fieldName, prefix) {
+    const lcPrefix = String(prefix || '').toLowerCase();
+    const cols = this.view.columns;
+    const cleanField = String(fieldName || '').trim();
+    if (!cleanField || cleanField.toLowerCase() === 'any' || cleanField === '*') {
+      // No distinct values for "any" — suggest operators to finish the term.
+      return [];
+    }
+    const lcField = cleanField.toLowerCase();
+    let colIdx = -1;
+    for (let i = 0; i < cols.length; i++) {
+      if (String(cols[i] || '').toLowerCase() === lcField) { colIdx = i; break; }
+    }
+    if (colIdx < 0) return [];
+    const distinct = this.view._distinctValuesFor(colIdx, this.view._filteredIdx || null, 80);
+    const out = [];
+    for (const [val, count] of distinct) {
+      const vs = String(val || '');
+      if (lcPrefix && !vs.toLowerCase().includes(lcPrefix)) continue;
+      // Quote values that contain spaces or reserved characters.
+      const needsQuote = /[\s=!:~<>()"]/.test(vs) || vs === '';
+      const text = needsQuote ? `"${vs.replace(/"/g, '\\"')}"` : vs;
+      out.push({ label: vs === '' ? '(empty)' : vs, text, kind: 'value', count });
+    }
+    return out.slice(0, 30);
+  }
+
+  _keywordSuggestions(prefix) {
+    const lc = String(prefix || '').toLowerCase();
+    const out = [];
+    for (const kw of ['AND', 'OR', 'NOT']) {
+      if (!lc || kw.toLowerCase().startsWith(lc)) out.push({ label: kw, text: kw + ' ', kind: 'kw' });
+    }
+    return out;
+  }
+
+  _openSuggest(items, ctx) {
+    let el = this._suggest && this._suggest.el;
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'tl-query-suggest';
+      document.body.appendChild(el);
+    }
+    el.innerHTML = '';
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const row = document.createElement('div');
+      row.className = 'tl-query-suggest-item tl-query-suggest-' + it.kind + (i === 0 ? ' tl-query-suggest-active' : '');
+      row.dataset.idx = String(i);
+      row.innerHTML = `<span class="tl-query-suggest-label">${_tlEsc(it.label)}</span>${it.count != null ? `<span class="tl-query-suggest-count">${it.count.toLocaleString()}</span>` : ''
+        }`;
+      row.addEventListener('mousedown', (e) => { e.preventDefault(); this._suggestSel = i; this._applySuggest(); });
+      el.appendChild(row);
+    }
+    // Position near the caret.
+    const rect = this.input.getBoundingClientRect();
+    // Estimate caret x — use the character width of the mono font × caret col.
+    const caret = this.input.selectionStart || 0;
+    const before = this.input.value.slice(0, caret);
+    // 7.2 px per char is a reasonable default for the mono stack we use.
+    const approxChW = 7.2;
+    const x = rect.left + 28 + Math.min(rect.width - 60, before.length * approxChW - (this.input.scrollLeft || 0));
+    const y = rect.bottom + 2;
+    el.style.position = 'fixed';
+    el.style.left = Math.max(8, Math.min(window.innerWidth - 260, x)) + 'px';
+    el.style.top = y + 'px';
+    el.style.zIndex = '10001';
+    el.style.display = 'block';
+    this._suggest = { el, items, ctx, visible: true };
+    this._suggestSel = 0;
+  }
+
+  _moveSuggest(d) {
+    if (!this._suggest) return;
+    const items = this._suggest.items;
+    const prev = this._suggestSel;
+    const next = (prev + d + items.length) % items.length;
+    this._suggestSel = next;
+    const rows = this._suggest.el.querySelectorAll('.tl-query-suggest-item');
+    if (rows[prev]) rows[prev].classList.remove('tl-query-suggest-active');
+    if (rows[next]) {
+      rows[next].classList.add('tl-query-suggest-active');
+      rows[next].scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  _applySuggest() {
+    if (!this._suggest) return;
+    const item = this._suggest.items[this._suggestSel];
+    if (!item) { this._closeSuggest(); return; }
+    const ctx = this._suggest.ctx;
+    const before = this.input.value.slice(0, ctx.replaceStart);
+    const after = this.input.value.slice(ctx.replaceEnd);
+    const inserted = item.text;
+    this.input.value = before + inserted + after;
+    const newCaret = (before + inserted).length;
+    this.input.setSelectionRange(newCaret, newCaret);
+    this._refreshHighlight();
+    this._scheduleCommit();
+    // After picking a field, reopen suggestions for value context.
+    this._updateSuggestions();
+  }
+
+  _closeSuggest() {
+    if (!this._suggest) return;
+    if (this._suggest.el && this._suggest.el.parentNode) {
+      this._suggest.el.parentNode.removeChild(this._suggest.el);
+    }
+    this._suggest = null;
+  }
+
+  // ── History ────────────────────────────────────────────────────────────
+  _pushHistory(q) {
+    q = String(q || '').trim();
+    if (!q) return;
+    const list = this._history.filter(e => e !== q);
+    list.unshift(q);
+    if (list.length > 20) list.length = 20;
+    this._history = list;
+    TimelineQueryEditor._saveHistory(this._history);
+  }
+
+  _openHistoryMenu() {
+    const existing = document.querySelector('.tl-query-hist-menu');
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+    if (!this._history.length) {
+      this._openTransientBubble(this.historyBtn, 'No history yet — press Enter to save a query.');
+      return;
+    }
+    const menu = document.createElement('div');
+    menu.className = 'tl-query-hist-menu';
+    for (const q of this._history) {
+      const row = document.createElement('div');
+      row.className = 'tl-query-hist-item';
+      row.textContent = q;
+      row.title = q;
+      row.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        this.setValue(q);
+        this._scheduleCommit(true);
+        if (menu.parentNode) menu.parentNode.removeChild(menu);
+        this.input.focus();
+      });
+      menu.appendChild(row);
+    }
+    const rect = this.historyBtn.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.right = (window.innerWidth - rect.right) + 'px';
+    menu.style.top = (rect.bottom + 2) + 'px';
+    menu.style.zIndex = '10001';
+    document.body.appendChild(menu);
+    const onOutside = (e) => {
+      if (!menu.contains(e.target)) {
+        if (menu.parentNode) menu.parentNode.removeChild(menu);
+        document.removeEventListener('mousedown', onOutside, true);
+      }
+    };
+    setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+  }
+
+  _openHelpPopover() {
+    const existing = document.querySelector('.tl-query-help-menu');
+    if (existing) { existing.parentNode.removeChild(existing); return; }
+    const menu = document.createElement('div');
+    menu.className = 'tl-query-help-menu';
+    menu.innerHTML = `
+      <div class="tl-query-help-title">Query language</div>
+      <div class="tl-query-help-body">
+        <div><code>foo</code> — any column contains <i>foo</i></div>
+        <div><code>col:foo</code> — column contains <i>foo</i></div>
+        <div><code>col=foo</code> — column equals <i>foo</i> (<code>!=</code> for not equals)</div>
+        <div><code>col~/re/i</code> — column matches regex</div>
+        <div><code>col&gt;10</code> <code>col&gt;=10</code> <code>col&lt;10</code> — numeric / time compare</div>
+        <div><code>AND</code> <code>OR</code> <code>NOT</code> <code>(…)</code> — booleans + grouping</div>
+        <div><code>-foo</code> — shorthand for <code>NOT foo</code></div>
+        <div><code>"foo bar"</code> — phrase</div>
+        <div><code>[Event ID]:4624</code> — name with spaces</div>
+      </div>
+    `;
+    const rect = this.helpBtn.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.right = (window.innerWidth - rect.right) + 'px';
+    menu.style.top = (rect.bottom + 2) + 'px';
+    menu.style.zIndex = '10001';
+    document.body.appendChild(menu);
+    const onOutside = (e) => {
+      if (!menu.contains(e.target) && e.target !== this.helpBtn) {
+        if (menu.parentNode) menu.parentNode.removeChild(menu);
+        document.removeEventListener('mousedown', onOutside, true);
+      }
+    };
+    setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+  }
+
+  _openTransientBubble(anchor, text) {
+    const bub = document.createElement('div');
+    bub.className = 'tl-query-bubble';
+    bub.textContent = text;
+    const rect = anchor.getBoundingClientRect();
+    bub.style.position = 'fixed';
+    bub.style.right = (window.innerWidth - rect.right) + 'px';
+    bub.style.top = (rect.bottom + 2) + 'px';
+    bub.style.zIndex = '10001';
+    document.body.appendChild(bub);
+    setTimeout(() => { if (bub.parentNode) bub.parentNode.removeChild(bub); }, 1800);
+  }
+
+  destroy() {
+    this._closeSuggest();
+    clearTimeout(this._debounceTimer);
+    if (this.root && this.root.parentNode) this.root.parentNode.removeChild(this.root);
+  }
+
+  static _loadHistory() {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.QUERY_HISTORY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr.filter(x => typeof x === 'string') : [];
+    } catch (_) { return []; }
+  }
+  static _saveHistory(list) {
+    try { localStorage.setItem(TIMELINE_KEYS.QUERY_HISTORY, JSON.stringify(list || [])); } catch (_) { /* noop */ }
+  }
+}
+
+
 // ════════════════════════════════════════════════════════════════════════════
 // TimelineView — owns all DOM + state for a single loaded file.
 // ════════════════════════════════════════════════════════════════════════════
 class TimelineView {
 
   // ── Factories ────────────────────────────────────────────────────────────
-  // Return `{ columns, rows, sourceLabel, timestampColHint }` without running
-  // any security analysis / IOC extraction / YARA pass.
 
+  // Parse a CSV / TSV buffer resiliently. Janky inputs (unescaped JSON or XML
+  // in cells, ragged row widths, embedded newlines, mixed CRLF/LF) must not
+  // fall through to the plaintext viewer — forensic exports routinely carry
+  // all of the above. We lean on `CsvRenderer._parse`, which already handles
+  // RFC-4180 quoting + embedded newlines, but wrap every step in a try /
+  // catch so a single bad chunk degrades into "fewer rows" rather than
+  // "nothing at all". The header row is tolerated with 0 columns so that
+  // headerless inputs (no named columns at all) still render as col-1,
+  // col-2, … and the view stays usable.
   static fromCsv(file, buffer, explicitDelim) {
     const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
-    // Normalise line endings — CRLF would misalign timestamp parsing on
-    // rows whose timestamp column happens to be last on the line.
-    const norm = text.indexOf('\r') !== -1 ? text.replace(/\r\n?/g, '\n') : text;
-
+    // Strip a leading UTF-8 BOM (common in Excel-exported CSV). Without this
+    // the first column name would start with U+FEFF, which quietly breaks
+    // header-based timestamp detection on files like
+    // `\uFEFFtimestamp,source,message`.
+    const noBom = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+    const norm = noBom.indexOf('\r') !== -1 ? noBom.replace(/\r\n?/g, '\n') : noBom;
+    if (!norm || !norm.trim()) {
+      return new TimelineView({
+        file, columns: [], rows: [],
+        formatLabel: 'CSV', truncated: false, originalRowCount: 0,
+      });
+    }
     const r = new CsvRenderer();
-    const delim = explicitDelim || r._delim(norm);
+    let delim = explicitDelim;
+    if (!delim) {
+      try { delim = r._delim(norm); } catch (_) { delim = ','; }
+    }
     const firstNl = norm.indexOf('\n');
     const headerLine = firstNl === -1 ? norm : norm.substring(0, firstNl);
-    const columns = headerLine.indexOf('"') === -1
-      ? headerLine.split(delim)
-      : r._splitQuoted(headerLine, delim);
-
-    const { rows } = r._parse(norm, delim, firstNl + 1);
-    // Cap at TIMELINE_MAX_ROWS.
+    let columns = [];
+    try {
+      columns = headerLine.indexOf('"') === -1
+        ? headerLine.split(delim)
+        : r._splitQuoted(headerLine, delim);
+    } catch (_) {
+      columns = headerLine.split(delim);
+    }
+    // Trim and de-noise column names — whitespace / stray quotes from
+    // hand-edited exports throw off `_tlAutoDetectTimestampCol` otherwise.
+    columns = columns.map(c => String(c == null ? '' : c).trim());
+    let rows = [];
+    try {
+      const parsed = r._parse(norm, delim, firstNl + 1);
+      rows = parsed && parsed.rows ? parsed.rows : [];
+    } catch (e) {
+      // Parser blew up on a pathological chunk. Fall back to a very
+      // forgiving line-by-line split — loses quoted-newline handling,
+      // but keeps the analyst looking at real data instead of hex.
+      console.warn('[timeline] CSV parser failed, using fallback split:', e);
+      rows = [];
+      const lines = norm.split('\n');
+      for (let i = 1; i < lines.length; i++) {
+        const ln = lines[i];
+        if (!ln) continue;
+        rows.push(ln.indexOf('"') === -1 ? ln.split(delim) : r._splitQuoted(ln, delim));
+      }
+    }
+    // Normalise row width to `columns.length` so downstream code (chip
+    // predicates, pivot, stats) never blows up on ragged rows. Extra cells
+    // are joined back into the final column (common for unescaped JSON
+    // tails); missing cells become ''.
+    if (columns.length) {
+      for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        if (!row) { rows[i] = new Array(columns.length).fill(''); continue; }
+        if (row.length === columns.length) continue;
+        if (row.length < columns.length) {
+          while (row.length < columns.length) row.push('');
+        } else {
+          // Squash trailing overflow into the last column so an
+          // unescaped-comma payload stays with the message it came with.
+          const tail = row.slice(columns.length - 1).join(delim);
+          row.length = columns.length;
+          row[columns.length - 1] = tail;
+        }
+      }
+    } else if (rows.length) {
+      // Headerless input — synthesise generic column names.
+      const n = Math.max(...rows.map(r => (r && r.length) || 0));
+      columns = [];
+      for (let i = 0; i < n; i++) columns.push(`col ${i + 1}`);
+    }
     let truncated = false;
     let rowSet = rows;
     if (rows.length > TIMELINE_MAX_ROWS) {
       rowSet = rows.slice(0, TIMELINE_MAX_ROWS);
       truncated = true;
     }
-
     return new TimelineView({
-      file,
-      columns,
-      rows: rowSet,
+      file, columns, rows: rowSet,
       formatLabel: delim === '\t' ? 'TSV' : 'CSV',
-      truncated,
-      originalRowCount: rows.length,
+      truncated, originalRowCount: rows.length,
     });
   }
 
+  // Parse an EVTX buffer resiliently. `EvtxRenderer._parse` already skips
+  // truncated chunks and malformed BinXml templates, but a hard failure on
+  // the file header would otherwise bubble up and abort the load. We
+  // attach the parsed events + an `EvtxRenderer.analyzeForSecurity` result
+  // to the view so Detections / Entities sections can read them without a
+  // second parse pass.
   static fromEvtx(file, buffer) {
     const r = new EvtxRenderer();
-    const events = r._parse(new Uint8Array(buffer));
-    const columns = ['Timestamp', 'Event ID', 'Level', 'Provider', 'Channel', 'Computer', 'Event Data'];
+    let events = [];
+    try {
+      events = r._parse(new Uint8Array(buffer)) || [];
+    } catch (e) {
+      console.warn('[timeline] EVTX parse failed:', e);
+      events = [];
+    }
+    // Run the Sigma-style analyzer against the events we already have so
+    // the Detections / Entities sections get a full threat-hunt yield
+    // without re-parsing a multi-hundred-MB log.
+    let securityFindings = null;
+    try {
+      securityFindings = r.analyzeForSecurity(buffer, file && file.name, events);
+    } catch (e) {
+      console.warn('[timeline] EVTX analyzeForSecurity failed:', e);
+    }
 
+    const columns = ['Timestamp', 'Event ID', 'Level', 'Provider', 'Channel', 'Computer', 'Event Data'];
     let truncated = false;
     let list = events;
     if (events.length > TIMELINE_MAX_ROWS) {
@@ -261,76 +1731,143 @@ class TimelineView {
     }
     const rows = new Array(list.length);
     for (let i = 0; i < list.length; i++) {
-      const ev = list[i];
+      const ev = list[i] || {};
       rows[i] = [
         ev.timestamp ? ev.timestamp.replace('T', ' ').replace('Z', '') : '',
-        ev.eventId || '',
-        ev.level || '',
-        ev.provider || '',
-        ev.channel || '',
-        ev.computer || '',
-        ev.eventData || '',
+        ev.eventId || '', ev.level || '', ev.provider || '',
+        ev.channel || '', ev.computer || '', ev.eventData || '',
       ];
     }
-
     return new TimelineView({
-      file,
-      columns,
-      rows,
-      formatLabel: 'EVTX',
-      truncated,
-      originalRowCount: events.length,
-      // Defaults chosen for EVTX: timestamp is always col 0, stack by Event ID.
-      defaultTimeColIdx: 0,
-      defaultStackColIdx: 1,
+      file, columns, rows,
+      formatLabel: 'EVTX', truncated, originalRowCount: events.length,
+      defaultTimeColIdx: 0, defaultStackColIdx: 1,
+      evtxEvents: events, evtxFindings: securityFindings,
     });
   }
+
 
   // ── Construction ─────────────────────────────────────────────────────────
   constructor(opts) {
     this.file = opts.file;
-    this.columns = opts.columns || [];
+    this._baseColumns = opts.columns || [];
     this.rows = opts.rows || [];
     this.formatLabel = opts.formatLabel || '';
     this.truncated = !!opts.truncated;
     this.originalRowCount = opts.originalRowCount || this.rows.length;
+    this._fileKey = _tlFileKey(this.file);
 
-    // Time parsing — build a dense Float64Array of ms-since-epoch; NaN for
-    // rows with no parseable timestamp (they're still visible in the grid
-    // and column cards, just excluded from the chart + range window).
+    // EVTX-only side-channel — the parsed event array (same indices as
+    // `this.rows`) and the Sigma-style `analyzeForSecurity` findings
+    // object. Used by the Detections + Entities sections below to render
+    // Sigma-rule hits, click-to-filter on Event ID, and entity pivots
+    // without re-parsing the file. Both are `null` for CSV / TSV.
+    this._evtxEvents = Array.isArray(opts.evtxEvents) ? opts.evtxEvents : null;
+    this._evtxFindings = opts.evtxFindings && typeof opts.evtxFindings === 'object'
+      ? opts.evtxFindings : null;
+
+    // Extracted / regex virtual columns — each entry:
+
+    //   { name, kind: 'json'|'regex'|'auto', sourceCol, path?, pattern?, flags?,
+    //     group?, values: string[] }  — `values[rowIdx]` is the extracted value
+    //   (pre-materialised once).
+    this._extractedCols = [];
+
+    // Per-row parsed-JSON cache (only populated as rows are inspected).
+    this._jsonCache = new Map();
+
+    // Time parsing
     this._timeCol = Number.isInteger(opts.defaultTimeColIdx)
       ? opts.defaultTimeColIdx
-      : _tlAutoDetectTimestampCol(this.columns, this.rows);
+      : _tlAutoDetectTimestampCol(this._baseColumns, this.rows);
     this._stackCol = Number.isInteger(opts.defaultStackColIdx) ? opts.defaultStackColIdx : null;
-    this._bucketId = TimelineView._loadBucketPref();   // user pref
+    this._bucketId = TimelineView._loadBucketPref();
     this._timeMs = new Float64Array(this.rows.length);
+    // `_timeIsNumeric` — switches the axis / bucket / tick formatters from
+    // wall-clock ms into a plain numeric domain. Set by `_parseAllTimestamps`
+    // based on the column's parse-ability. When true, `_timeMs[i]` holds the
+    // raw numeric value (NOT milliseconds since epoch).
+    this._timeIsNumeric = false;
     this._parseAllTimestamps();
-
-    // Range: [min,max] over parseable timestamps. null if no timestamp col.
     this._dataRange = this._computeDataRange();
-    this._window = null;   // user-selected sub-range [min,max] | null
+    this._window = null;
 
-    // Filter chips — array of { colIdx, op: 'eq'|'ne', val }
-    this._chips = [];
+    // Suspicious marks — `[{ colName, val }]`. Persisted by column NAME
+    // so an extracted column that rebuilds under a different index on
+    // reload still re-hydrates its 🚩 marks. Resolved to a live colIdx
+    // at filter-time via `_susMarksResolved()`. Sus marks are a PURE
+    // tint — they never filter the grid (filtering is the query's job).
+    this._susMarks = TimelineView._loadSusMarksFor(this._fileKey);
 
-    // Filter cache — Uint32Array of source row indices that satisfy the
-    // current chip predicate + range window. Rebuilt lazily.
+    // Query language state — the analyst-authored filter DSL that lives
+    // in the `.tl-query` editor above the chips strip. The query bar is
+    // now the SINGLE SOURCE OF TRUTH for every filter on the grid.
+    // Parsed incrementally by `TimelineQueryEditor.onChange` →
+    // `_tlTokenize` → `_tlParseQuery` → `_tlCompileAst`, then applied as
+    // the sole row predicate in `_recomputeFilter` / `_indexIgnoringColumn`.
+    // `_queryPred` is the hot predicate closure `(dataIdx) => bool`
+    // (null = no filter). Every click-pivot (right-click Include /
+    // Exclude / Only, column-card click, column-menu Apply, pivot
+    // double-click, detection drill-down, legend click) MUTATES THE
+    // QUERY STRING via the AST-edit helpers below (`_queryToggleClause`,
+    // `_queryReplaceEqForCol`, …) rather than pushing onto a separate
+    // chip list.
+
+    this._queryStr = TimelineView._loadQueryFor(this._fileKey) || '';
+    this._queryAst = null;
+    this._queryPred = null;
+    this._queryError = null;
+    this._queryEditor = null;
+
+    // Filter cache — rows that satisfy the non-sus chip predicate + window.
     this._filteredIdx = null;
+    // Same set, but computed IGNORING the current time window — cached so
+    // that time-window changes (scrubber / chart rubber-band / chart drill)
+    // can re-derive `_filteredIdx` in O(n) without re-running chip predicates.
+    // Invalidated whenever the query AST, `_timeCol`, or the extracted column
+    // set changes.
+    this._chipFilteredIdx = null;
+    // Sus bitmap over rows[] (1 if row matches ≥ 1 sus chip, 0 otherwise).
+    this._susBitmap = null;
+    this._susAny = false;      // true if ≥ 1 sus chip exists
+    // Intersection of filteredIdx and susBitmap (rows visible AND sus).
+    this._susFilteredIdx = null;
+    // Red-line cursor on the histogram / scrubber / sus chart — which row
+    // is "currently focused" by the analyst (set on grid-row click). null =
+    // no cursor. Cleared on Esc and Reset. Purely decorative: does not
+    // affect filtering, bucketing, or the filteredIdx pipeline.
+    this._cursorDataIdx = null;
+    // Live-drag state — when true, `_scheduleRender` runs only lightweight
+    // tasks (scrubber + chart) and skips grid / columns / sus. Committed on
+    // pointer-up via `_commitWindowDrag()`.
+    this._windowDragging = false;
 
-    // Column stats — computed on first render and whenever the filter
-    // changes. Map<colIdx, { total, values: Array<[val,count]> sorted desc }>.
+    // Column stats — main + sus-only, invalidated on any filter / sus change.
     this._colStats = null;
+    this._susColStats = null;
 
-    // Virtualised column-card scroll state (row offset per card).
-    this._cardScrollRows = new Map();
-
-    // Grid — we delegate virtual-scrolling to GridViewer (it's already
-    // hardened for 150k+ rows and supports `setRows` for re-binding on
-    // filter change). We hide its info bar + builtin timeline via CSS.
+    // Grid — main + sus.
     this._grid = null;
+    this._susGrid = null;
 
     // Splitter
     this._gridH = TimelineView._loadGridH();
+    this._susGridH = TimelineView._loadSusGridH();
+    this._chartH = TimelineView._loadChartH();
+
+    // Collapsible section state (persisted).
+    this._sections = TimelineView._loadSections();
+
+    // Top-values card zoom (S / M / L) + per-card width overrides.
+    this._cardSize = TimelineView._loadCardSize();
+    this._cardWidths = TimelineView._loadCardWidthsFor(this._fileKey);
+
+    // Load any persisted regex extractors for this file.
+    const persistedRegex = TimelineView._loadRegexExtractsFor(this._fileKey);
+    for (const p of persistedRegex) this._addRegexExtractNoRender(p);
+
+    // Pivot last-used spec.
+    this._pivotSpec = TimelineView._loadPivotSpec();
 
     // DOM
     this._root = null;
@@ -338,12 +1875,14 @@ class TimelineView {
     this._destroyed = false;
     this._resizeObs = null;
     this._rafPending = false;
-    this._pendingTasks = new Set();   // 'chart' | 'columns' | 'grid' | 'chips' | 'scrubber'
+    this._pendingTasks = new Set();
+    this._openPopover = null;
+    this._openDialog = null;
 
     this._buildDOM();
     this._wireEvents();
     this._recomputeFilter();
-    this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns']);
+    this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns', 'sus', 'detections', 'entities', 'pivot', 'sections']);
   }
 
   root() { return this._root; }
@@ -352,47 +1891,281 @@ class TimelineView {
     if (this._destroyed) return;
     this._destroyed = true;
     if (this._grid && typeof this._grid.destroy === 'function') {
-      try { this._grid.destroy(); } catch (_) { /* grid teardown best-effort */ }
+      try { this._grid.destroy(); } catch (_) { /* noop */ }
+    }
+    if (this._susGrid && typeof this._susGrid.destroy === 'function') {
+      try { this._susGrid.destroy(); } catch (_) { /* noop */ }
     }
     if (this._resizeObs) { try { this._resizeObs.disconnect(); } catch (_) { /* noop */ } }
+    if (this._queryEditor && typeof this._queryEditor.destroy === 'function') {
+      try { this._queryEditor.destroy(); } catch (_) { /* noop */ }
+    }
+    this._queryEditor = null;
+    this._closePopover();
+    this._closeDialog();
+
+    // Tear down the document / window listeners wired in `_wireEvents`.
+    // Missing teardown would leak across tab switches and route stale
+    // popover-close calls at a destroyed view.
+    if (this._onDocClick) document.removeEventListener('mousedown', this._onDocClick, true);
+    if (this._onDocKey) document.removeEventListener('keydown', this._onDocKey, true);
+    if (this._onDocScroll) window.removeEventListener('scroll', this._onDocScroll, true);
+    this._onDocClick = this._onDocKey = this._onDocScroll = null;
     this._grid = null;
+    this._susGrid = null;
     this._resizeObs = null;
     this._els = {};
     if (this._root && this._root.parentNode) this._root.parentNode.removeChild(this._root);
     this._root = null;
   }
 
-  // ── Persistence helpers (class-static so factories can call before ctor) ──
+  // ── Columns accessor (base + extracted) ─────────────────────────────────
+  get columns() {
+    if (!this._extractedCols || !this._extractedCols.length) return this._baseColumns;
+    const out = this._baseColumns.slice();
+    for (const e of this._extractedCols) out.push(e.name);
+    return out;
+  }
+
+  _isExtractedCol(colIdx) { return colIdx >= this._baseColumns.length; }
+  _extractedColFor(colIdx) { return this._extractedCols[colIdx - this._baseColumns.length] || null; }
+
+  // Cell access — unified base + extracted lookup. Returns a string or ''.
+  _cellAt(dataIdx, colIdx) {
+    if (colIdx < this._baseColumns.length) {
+      const r = this.rows[dataIdx];
+      if (!r) return '';
+      const v = r[colIdx];
+      return v == null ? '' : String(v);
+    }
+    const e = this._extractedColFor(colIdx);
+    if (!e) return '';
+    const v = e.values[dataIdx];
+    return v == null ? '' : String(v);
+  }
+
+  // Does `colIdx` look like a timestamp / numeric-axis column? Drives the
+  // "Use as Timestamp" entry in the column ▾ menu. Samples via `_cellAt`
+  // so extracted (virtual) columns work alongside base columns. Mirrors
+  // the thresholds used by `_tlAutoDetectTimestampCol`: ≥ 50 % parse as
+  // real timestamps OR ≥ 80 % parse as bare numbers (numeric-axis).
+  _columnLooksLikeTimestamp(colIdx) {
+    if (!this.rows || !this.rows.length) return false;
+    const N = Math.min(this.rows.length, 200);
+    let seen = 0, ok = 0, numOk = 0;
+    for (let i = 0; i < N; i++) {
+      const v = this._cellAt(i, colIdx);
+      if (v === '' || v == null) continue;
+      seen++;
+      if (Number.isFinite(_tlParseTimestamp(v))) ok++;
+      const s = String(v).trim();
+      if (/^-?\d+(?:\.\d+)?$/.test(s) && Number.isFinite(+s)) numOk++;
+    }
+    if (!seen) return false;
+    return (ok / seen) >= 0.5 || (numOk / seen) >= 0.8;
+  }
+
+  // ── Persistence helpers ─────────────────────────────────────────────────
   static _loadBucketPref() {
     try {
       const v = localStorage.getItem(TIMELINE_KEYS.BUCKET);
       if (v && TIMELINE_BUCKET_OPTIONS.some(o => o.id === v)) return v;
-    } catch (_) { /* storage blocked */ }
+    } catch (_) { /* noop */ }
     return 'auto';
   }
   static _saveBucketPref(id) {
-    try { localStorage.setItem(TIMELINE_KEYS.BUCKET, id); } catch (_) { /* storage blocked */ }
+    try { localStorage.setItem(TIMELINE_KEYS.BUCKET, id); } catch (_) { /* noop */ }
   }
   static _loadGridH() {
     try {
       const v = parseInt(localStorage.getItem(TIMELINE_KEYS.GRID_H), 10);
       if (Number.isFinite(v) && v >= TIMELINE_GRID_MIN_H) return v;
-    } catch (_) { /* storage blocked */ }
+    } catch (_) { /* noop */ }
     return TIMELINE_GRID_DEFAULT_H;
   }
   static _saveGridH(h) {
-    try { localStorage.setItem(TIMELINE_KEYS.GRID_H, String(h)); } catch (_) { /* storage blocked */ }
+    try { localStorage.setItem(TIMELINE_KEYS.GRID_H, String(h)); } catch (_) { /* noop */ }
+  }
+  static _loadSusGridH() {
+    try {
+      const v = parseInt(localStorage.getItem(TIMELINE_KEYS.SUS_GRID_H), 10);
+      if (Number.isFinite(v) && v >= TIMELINE_SUS_GRID_MIN_H && v <= TIMELINE_SUS_GRID_MAX_H) return v;
+    } catch (_) { /* noop */ }
+    return TIMELINE_SUS_GRID_DEFAULT_H;
+  }
+  static _saveSusGridH(h) {
+    try { localStorage.setItem(TIMELINE_KEYS.SUS_GRID_H, String(h)); } catch (_) { /* noop */ }
+  }
+  static _loadChartH() {
+    try {
+      const v = parseInt(localStorage.getItem(TIMELINE_KEYS.CHART_H), 10);
+      if (Number.isFinite(v) && v >= TIMELINE_CHART_MIN_H && v <= TIMELINE_CHART_MAX_H) return v;
+    } catch (_) { /* noop */ }
+    return TIMELINE_CHART_DEFAULT_H;
+  }
+  static _saveChartH(h) {
+    try { localStorage.setItem(TIMELINE_KEYS.CHART_H, String(h)); } catch (_) { /* noop */ }
+  }
+  static _loadSections() {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.SECTIONS);
+      if (!raw) return {};
+      const obj = JSON.parse(raw);
+      return obj && typeof obj === 'object' ? obj : {};
+    } catch (_) { return {}; }
+  }
+  static _saveSections(obj) {
+    try { localStorage.setItem(TIMELINE_KEYS.SECTIONS, JSON.stringify(obj)); } catch (_) { /* noop */ }
+  }
+  static _loadCardSize() {
+    try {
+      const v = localStorage.getItem(TIMELINE_KEYS.TOPVALS_SIZE);
+      if (v && TIMELINE_CARD_SIZES[v]) return v;
+    } catch (_) { /* noop */ }
+    return TIMELINE_CARD_SIZE_DEFAULT;
+  }
+  static _saveCardSize(v) {
+    try { localStorage.setItem(TIMELINE_KEYS.TOPVALS_SIZE, v); } catch (_) { /* noop */ }
+  }
+  static _loadCardWidthsFor(fileKey) {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.CARD_WIDTHS);
+      if (!raw) return {};
+      const all = JSON.parse(raw);
+      return (all && all[fileKey]) || {};
+    } catch (_) { return {}; }
+  }
+  static _saveCardWidthsFor(fileKey, widths) {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.CARD_WIDTHS);
+      const all = raw ? JSON.parse(raw) : {};
+      all[fileKey] = widths;
+      localStorage.setItem(TIMELINE_KEYS.CARD_WIDTHS, JSON.stringify(all));
+    } catch (_) { /* noop */ }
+  }
+  static _loadRegexExtractsFor(fileKey) {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.REGEX_EXTRACTS);
+      if (!raw) return [];
+      const all = JSON.parse(raw);
+      const list = (all && all[fileKey]) || [];
+      return Array.isArray(list) ? list : [];
+    } catch (_) { return []; }
+  }
+  static _saveRegexExtractsFor(fileKey, list) {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.REGEX_EXTRACTS);
+      const all = raw ? JSON.parse(raw) : {};
+      all[fileKey] = list;
+      localStorage.setItem(TIMELINE_KEYS.REGEX_EXTRACTS, JSON.stringify(all));
+    } catch (_) { /* noop */ }
+  }
+  static _loadPivotSpec() {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.PIVOT);
+      if (!raw) return null;
+      const obj = JSON.parse(raw);
+      return obj && typeof obj === 'object' ? obj : null;
+    } catch (_) { return null; }
+  }
+  static _savePivotSpec(obj) {
+    try { localStorage.setItem(TIMELINE_KEYS.PIVOT, JSON.stringify(obj)); } catch (_) { /* noop */ }
   }
 
+  // Per-file last-typed query — keyed by `_fileKey` so a large CSV the
+  // analyst revisits tomorrow still has their last filter stuck in the
+  // editor when they re-open it. Read on construction (see `_queryStr`
+  // init), written every time the query is committed (Enter key).
+  static _loadQueryFor(fileKey) {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.QUERY);
+      if (!raw) return '';
+      const all = JSON.parse(raw);
+      return (all && typeof all[fileKey] === 'string') ? all[fileKey] : '';
+    } catch (_) { return ''; }
+  }
+  static _saveQueryFor(fileKey, q) {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.QUERY);
+      const all = raw ? JSON.parse(raw) : {};
+      if (q) all[fileKey] = q;
+      else delete all[fileKey];
+      localStorage.setItem(TIMELINE_KEYS.QUERY, JSON.stringify(all));
+    } catch (_) { /* noop */ }
+  }
+
+  // Per-file suspicious marks — `[{ colName, val }]`. Persisted by column
+  // NAME (not index) so an extracted column that rebuilds under a different
+  // index on reload still re-hydrates its 🚩 marks. The view resolves the
+  // name back to a live colIdx at filter-time (`_susMarksResolved`).
+  static _loadSusMarksFor(fileKey) {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.SUS_MARKS);
+      if (!raw) return [];
+      const all = JSON.parse(raw);
+      const arr = all && Array.isArray(all[fileKey]) ? all[fileKey] : [];
+      // Two shapes are persisted: column-scoped marks carry `colName`, and
+      // "Any column" marks carry `any: true` with `colName: null`. Filter
+      // on the presence of a usable discriminator + value.
+      return arr
+        .filter(m => m && m.val != null && (m.any === true || typeof m.colName === 'string'))
+        .map(m => (m.any === true
+          ? { any: true, colName: null, val: String(m.val) }
+          : { colName: String(m.colName), val: String(m.val) }));
+    } catch (_) { return []; }
+  }
+  static _saveSusMarksFor(fileKey, marks) {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.SUS_MARKS);
+      const all = raw ? JSON.parse(raw) : {};
+      if (marks && marks.length) {
+        all[fileKey] = marks.map(m => (m.any === true
+          ? { any: true, colName: null, val: String(m.val) }
+          : { colName: String(m.colName), val: String(m.val) }));
+      } else {
+        delete all[fileKey];
+      }
+      localStorage.setItem(TIMELINE_KEYS.SUS_MARKS, JSON.stringify(all));
+    } catch (_) { /* noop */ }
+  }
+
+
+
   // ── Timestamp parsing ────────────────────────────────────────────────────
+  // Also (re-)derives `_timeIsNumeric` from the column's shape. When the
+  // chosen column parses better as bare numbers than as wall-clock
+  // timestamps (ids, indices, periods, …), `_timeMs[i]` stores the number
+  // directly and every downstream bucket / tick / label path consults
+  // `_timeIsNumeric` to format as numbers rather than UTC dates.
   _parseAllTimestamps() {
     const col = this._timeCol;
     const rows = this.rows;
     const out = this._timeMs;
-    if (col == null) { out.fill(NaN); return; }
-    for (let i = 0; i < rows.length; i++) {
-      const r = rows[i];
-      out[i] = r ? _tlParseTimestamp(r[col]) : NaN;
+    if (col == null) {
+      out.fill(NaN);
+      this._timeIsNumeric = false;
+      return;
+    }
+    // Decide numeric vs. timestamp for THIS column. Extracted columns are
+    // skipped for the numeric path — the sample lives in `rows` which is
+    // base-only — they always go through `_tlParseTimestamp`.
+    const numeric = (col < this._baseColumns.length)
+      && _tlColumnIsNumericAxis(rows, col);
+    this._timeIsNumeric = numeric;
+    if (numeric) {
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r) { out[i] = NaN; continue; }
+        const c = r[col];
+        if (c == null || c === '') { out[i] = NaN; continue; }
+        const n = Number(String(c).trim());
+        out[i] = Number.isFinite(n) ? n : NaN;
+      }
+    } else {
+      for (let i = 0; i < rows.length; i++) {
+        const r = rows[i];
+        out[i] = r ? _tlParseTimestamp(r[col]) : NaN;
+      }
     }
   }
 
@@ -413,105 +2186,298 @@ class TimelineView {
   }
 
   // ── Filter compilation + application ─────────────────────────────────────
+  // Splits chips into "filter" chips (eq/ne/contains) which actually filter
+  // the grid, and "sus" chips which only tint.
+  //
+  // This is the full recompute path — runs chip predicates over every row and
+  // then clips by the current time window. It also populates
+  // `_chipFilteredIdx` (the chip-only result, ignoring the window) which lets
+  // `_applyWindowOnly()` re-clip in O(visible) without re-running chip
+  // predicates. Callers that only change the time window (scrubber drag,
+  // chart rubber-band / drill-down, range-chip remove) should call
+  // `_applyWindowOnly()` instead.
+  // Apply a (possibly partial) query string — parse + compile + recompute.
+  // Safe to call with invalid syntax: the AST is cleared, `_queryError`
+  // holds the error for the status line, and the row pipeline reverts to
+  // chip-only (so the view isn't left in a broken "nothing matches" state
+  // while the analyst is mid-edit).
+  _applyQueryString(q) {
+    const prev = this._queryStr;
+    this._queryStr = q == null ? '' : String(q);
+    const raw = this._queryStr;
+    if (!raw.trim()) {
+      this._queryAst = null;
+      this._queryPred = null;
+      this._queryError = null;
+    } else {
+      try {
+        const tokens = _tlTokenize(raw);
+        const ast = _tlParseQuery(tokens, () => this.columns);
+        this._queryAst = ast;
+        this._queryPred = _tlCompileAst(ast, this);
+        this._queryError = null;
+      } catch (e) {
+        this._queryAst = null;
+        this._queryPred = null;
+        this._queryError = e;
+      }
+    }
+    this._recomputeFilter();
+    this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns', 'sus']);
+    // Status line on the editor — only update if the editor is mounted.
+    if (this._queryEditor) {
+      if (this._queryError) {
+        const msg = this._queryError.userMsg || this._queryError.message || 'syntax error';
+        const col = Number.isFinite(this._queryError.col) ? this._queryError.col : 0;
+        this._queryEditor.setStatus(
+          `<span class="tl-query-status-msg">✗ ${_tlEsc(msg)}</span>` +
+          `<span class="tl-query-status-col">at col ${col + 1}</span>`,
+          'error'
+        );
+      } else if (!raw.trim()) {
+        this._queryEditor.setStatus('', null);
+      } else {
+        const vis = this._filteredIdx ? this._filteredIdx.length : 0;
+        const tot = this.rows.length;
+        this._queryEditor.setStatus(
+          `<span class="tl-query-status-msg">✓ ${vis.toLocaleString()} / ${tot.toLocaleString()} rows</span>`,
+          'ok'
+        );
+      }
+    }
+    // If nothing changed, don't thrash localStorage — the editor's
+    // `onCommit` path handles explicit save-on-Enter.
+    if (raw !== prev) {
+      try { TimelineView._saveQueryFor(this._fileKey, raw); } catch (_) { /* noop */ }
+    }
+  }
+
   _recomputeFilter() {
-    const chips = this._chips;
+    // Query bar is now the single source of truth for row filtering —
+    // every click-pivot (right-click Include / Exclude / Only, column
+    // card click, column-menu Apply, pivot drill-down, detection drill,
+    // legend click) mutates `this._queryStr` via the AST-edit helpers
+    // below rather than pushing onto a separate chip list. Sus marks
+    // (`this._susMarks`, persisted by colName) are orthogonal — they
+    // tint matching rows red but never filter them out.
+    const n = this.rows.length;
+    const queryPred = this._queryPred;
+
+    const buf = new Uint32Array(n);
+    let w = 0;
+    if (!queryPred) {
+      for (let i = 0; i < n; i++) buf[w++] = i;
+    } else {
+      for (let i = 0; i < n; i++) {
+        if (queryPred(i)) buf[w++] = i;
+      }
+    }
+    this._chipFilteredIdx = buf.subarray(0, w);
+
+    // Sus pass — resolve colName → live colIdx, then bitmap every row
+    // whose cell at that column equals the flagged value. Pure tint;
+    // visibility already decided above.
+    const susResolved = this._susMarksResolved();
+    this._susAny = susResolved.length > 0;
+    if (this._susAny) {
+      const bm = new Uint8Array(n);
+      const nCols = this.columns.length;
+      for (let i = 0; i < n; i++) {
+        for (let s = 0; s < susResolved.length; s++) {
+          const spec = susResolved[s];
+          if (spec.any) {
+            // "Any column" mark — match the value in any column.
+            let hit = false;
+            for (let c = 0; c < nCols; c++) {
+              if (this._cellAt(i, c) === spec.val) { hit = true; break; }
+            }
+            if (hit) { bm[i] = 1; break; }
+          } else {
+            if (this._cellAt(i, spec.colIdx) === spec.val) { bm[i] = 1; break; }
+          }
+        }
+      }
+      this._susBitmap = bm;
+    } else {
+      this._susBitmap = null;
+    }
+
+    // Clip by window + materialise sus-visible index.
+    this._applyWindowOnly();
+  }
+
+  // Resolve the name-keyed `_susMarks` array to live `{ colIdx, val }` pairs
+  // against the current column set. Marks whose column has disappeared (e.g.
+  // extracted column removed) silently drop out of the resolve — they stay
+  // persisted so they rehydrate automatically if the column returns.
+  _susMarksResolved() {
+    const out = [];
+    const cols = this.columns;
+    for (const m of this._susMarks) {
+      // "Any column" marks carry `any: true` + null colName — they fan
+      // out over every column in the bitmap pass.
+      if (m.any) { out.push({ any: true, val: m.val }); continue; }
+      const ix = cols.indexOf(m.colName);
+      if (ix >= 0) out.push({ colIdx: ix, val: m.val });
+    }
+    return out;
+  }
+
+
+  // Fast path — re-derives `_filteredIdx` + `_susFilteredIdx` from the cached
+  // `_chipFilteredIdx` + `_susBitmap` using only the current `_window`.
+  // Call this whenever the only thing that changed is `_window` (scrubber
+  // drag, chart rubber-band / drill-down, range-chip remove). Roughly one
+  // order of magnitude cheaper than `_recomputeFilter()` on wide datasets
+  // because it skips the per-cell chip predicate loop.
+  _applyWindowOnly() {
+    if (!this._chipFilteredIdx) { this._recomputeFilter(); return; }
+    const src = this._chipFilteredIdx;
     const win = this._window;
     const tCol = this._timeCol;
     const times = this._timeMs;
-    const rows = this.rows;
-    const n = rows.length;
+    const bm = this._susBitmap;
 
-    // Build chip predicate as a direct array of (colIdx, op, val) tuples to
-    // keep the inner loop monomorphic (no closures per row).
-    const chipsArr = chips.map(c => [c.colIdx, c.op === 'ne' ? 1 : 0, String(c.val)]);
-
-    // Worst-case allocation; we'll trim with .subarray at the end.
-    const buf = new Uint32Array(n);
-    let w = 0;
-    const winLo = win ? win.min : -Infinity;
-    const winHi = win ? win.max : Infinity;
-
-    rowLoop:
-    for (let i = 0; i < n; i++) {
-      if (win && tCol != null) {
-        const t = times[i];
-        // Rows with unparseable timestamps are excluded by an active window.
-        if (!Number.isFinite(t) || t < winLo || t > winHi) continue;
+    if (!win || tCol == null) {
+      this._filteredIdx = src;
+    } else {
+      const buf = new Uint32Array(src.length);
+      let w = 0;
+      const lo = win.min, hi = win.max;
+      for (let i = 0; i < src.length; i++) {
+        const di = src[i];
+        const t = times[di];
+        if (!Number.isFinite(t) || t < lo || t > hi) continue;
+        buf[w++] = di;
       }
-      const r = rows[i];
-      if (!r) continue;
-      for (let c = 0; c < chipsArr.length; c++) {
-        const spec = chipsArr[c];
-        const cell = String(r[spec[0]] == null ? '' : r[spec[0]]);
-        const matches = cell === spec[2];
-        // op 0 = eq, op 1 = ne
-        if (spec[1] === 0 ? !matches : matches) continue rowLoop;
-      }
-      buf[w++] = i;
+      this._filteredIdx = buf.subarray(0, w);
     }
-    this._filteredIdx = buf.subarray(0, w);
-    this._colStats = null;   // invalidate — recomputed on render
+
+    if (this._susAny && bm) {
+      const fi = this._filteredIdx;
+      const buf2 = new Uint32Array(fi.length);
+      let w2 = 0;
+      for (let i = 0; i < fi.length; i++) {
+        const di = fi[i];
+        if (bm[di]) buf2[w2++] = di;
+      }
+      this._susFilteredIdx = buf2.subarray(0, w2);
+    } else {
+      this._susFilteredIdx = null;
+    }
+
+    this._colStats = null;
+    this._susColStats = null;
   }
 
-  _computeColumnStats() {
-    const rows = this.rows;
-    const idx = this._filteredIdx;
+  _computeColumnStats(idx) {
     const cols = this.columns.length;
     const stats = new Array(cols);
-    // Use object-keyed Maps; string values dedupe for free.
     for (let c = 0; c < cols; c++) stats[c] = new Map();
     const total = idx.length;
     for (let i = 0; i < total; i++) {
-      const r = rows[idx[i]];
-      if (!r) continue;
+      const di = idx[i];
       for (let c = 0; c < cols; c++) {
-        const v = r[c] == null ? '' : String(r[c]);
+        const v = this._cellAt(di, c);
         stats[c].set(v, (stats[c].get(v) || 0) + 1);
       }
     }
-    // Sort descending, cap per column.
     const out = new Array(cols);
     for (let c = 0; c < cols; c++) {
       const arr = Array.from(stats[c].entries());
       arr.sort((a, b) => b[1] - a[1]);
-      out[c] = {
-        total,
-        distinct: arr.length,
-        values: arr.slice(0, TIMELINE_COL_TOP_N),
-      };
+      out[c] = { total, distinct: arr.length, values: arr.slice(0, TIMELINE_COL_TOP_N) };
     }
-    this._colStats = out;
+    return out;
+  }
+
+  // Compute distinct values for a single column — used by column menu.
+  _distinctValuesFor(colIdx, fromIdxArr, cap) {
+    const m = new Map();
+    const arr = fromIdxArr || this._filteredIdx || [];
+    for (let i = 0; i < arr.length; i++) {
+      const v = this._cellAt(arr[i], colIdx);
+      m.set(v, (m.get(v) || 0) + 1);
+    }
+    const list = Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
+    return cap ? list.slice(0, cap) : list;
+  }
+
+  // Build an index of rows that would be visible if every filter EXCEPT the
+  // chips targeting `excludeColIdx` were applied. Used by the column-menu
+  // value list so that once an analyst has narrowed a column to e.g.
+  // ["foo","bar"], re-opening the menu still shows the full set of values
+  // (with counts that reflect the *other* query predicates + time window)
+  // — Excel-parity. Without this, the value list shrinks to the already-
+  // selected entries and the user can never broaden the selection without
+  // hitting "All" first.
+  //
+  // Semantics: compiles the query AST with clauses targeting
+  // `excludeColIdx` stripped (see `_tlCompileAstExcluding`) so predicates
+  // on other columns still apply, then clips by the time window. Sus
+  // marks are irrelevant — they only tint, they don't filter.
+  _indexIgnoringColumn(excludeColIdx) {
+    const n = this.rows.length;
+    const buf = new Uint32Array(n);
+    let w = 0;
+    const qp = this._queryAst ? _tlCompileAstExcluding(this._queryAst, this, excludeColIdx) : null;
+    if (!qp) {
+      for (let i = 0; i < n; i++) buf[w++] = i;
+    } else {
+      for (let i = 0; i < n; i++) {
+        if (qp(i)) buf[w++] = i;
+      }
+    }
+
+    // Clip by the current time window, same as _applyWindowOnly.
+    const win = this._window;
+    const tCol = this._timeCol;
+    const times = this._timeMs;
+    if (!win || tCol == null) return buf.subarray(0, w);
+    const out = new Uint32Array(w);
+    let w2 = 0;
+    const lo = win.min, hi = win.max;
+    for (let i = 0; i < w; i++) {
+      const di = buf[i];
+      const t = times[di];
+      if (!Number.isFinite(t) || t < lo || t > hi) continue;
+      out[w2++] = di;
+    }
+    return out.subarray(0, w2);
   }
 
   // ── Chart bucket aggregation ─────────────────────────────────────────────
+  // In numeric-axis mode, the bucket preset dropdown's time-based options
+  // (1 sec / 1 min / 1 hour / …) are meaningless; always pick a nice
+  // numeric step via `_tlAutoBucketNumeric` regardless of what the user
+  // picked. Time-based presets remain in the dropdown for convenience of
+  // switching back — they simply have no effect while numeric.
   _bucketMs(rangeMs) {
+    if (this._timeIsNumeric) return _tlAutoBucketNumeric(rangeMs, TIMELINE_BUCKETS_TARGET);
     if (this._bucketId === 'auto') return _tlAutoBucketMs(rangeMs, TIMELINE_BUCKETS_TARGET);
     const opt = TIMELINE_BUCKET_OPTIONS.find(o => o.id === this._bucketId);
     return opt && opt.ms ? opt.ms : _tlAutoBucketMs(rangeMs, TIMELINE_BUCKETS_TARGET);
   }
 
-  _computeChartData() {
+  _computeChartData(predicateIdx) {
     const dr = this._dataRange;
     if (!dr) return null;
+    const idx = predicateIdx || this._filteredIdx;
+    if (!idx) return null;
     const viewLo = this._window ? this._window.min : dr.min;
     const viewHi = this._window ? this._window.max : dr.max;
     const rangeMs = Math.max(1, viewHi - viewLo);
     const bucketMs = this._bucketMs(rangeMs);
     const bucketCount = Math.max(1, Math.ceil(rangeMs / bucketMs));
-    const idx = this._filteredIdx;
     const times = this._timeMs;
-    const rows = this.rows;
     const stackCol = this._stackCol;
 
-    // Stack keys — compute top-N categories over the filtered set (+ "Other").
     let stackKeys = null;
     let stackKeyOf = null;
     if (Number.isInteger(stackCol)) {
       const counts = new Map();
       for (let i = 0; i < idx.length; i++) {
-        const r = rows[idx[i]];
-        if (!r) continue;
-        const v = r[stackCol] == null ? '' : String(r[stackCol]);
+        const v = this._cellAt(idx[i], stackCol);
         counts.set(v, (counts.get(v) || 0) + 1);
       }
       const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
@@ -520,24 +2486,24 @@ class TimelineView {
       stackKeys = top.map(e => e[0]);
       if (hasOther) stackKeys.push('__other__');
       const topSet = new Set(stackKeys);
-      stackKeyOf = (r) => {
-        const v = r[stackCol] == null ? '' : String(r[stackCol]);
+      stackKeyOf = (dataIdx) => {
+        const v = this._cellAt(dataIdx, stackCol);
         return topSet.has(v) ? v : '__other__';
       };
     }
 
-    // Single O(filteredRows) pass.
     const k = stackKeys ? stackKeys.length : 1;
     const buckets = new Int32Array(bucketCount * k);
     for (let i = 0; i < idx.length; i++) {
-      const t = times[idx[i]];
+      const di = idx[i];
+      const t = times[di];
       if (!Number.isFinite(t)) continue;
       const rel = t - viewLo;
       if (rel < 0 || rel > rangeMs) continue;
       let b = Math.floor(rel / bucketMs);
       if (b >= bucketCount) b = bucketCount - 1;
       if (stackKeyOf) {
-        const key = stackKeyOf(rows[idx[i]]);
+        const key = stackKeyOf(di);
         const ki = stackKeys.indexOf(key);
         buckets[b * k + (ki < 0 ? 0 : ki)]++;
       } else {
@@ -545,7 +2511,6 @@ class TimelineView {
       }
     }
 
-    // Totals per bucket — for max-height scaling.
     let maxTotal = 0;
     for (let b = 0; b < bucketCount; b++) {
       let s = 0;
@@ -553,10 +2518,28 @@ class TimelineView {
       if (s > maxTotal) maxTotal = s;
     }
 
-    return {
-      viewLo, viewHi, rangeMs, bucketMs, bucketCount,
-      buckets, stackKeys, maxTotal,
-    };
+    // Parallel bucket of 🚩-flagged rows, so the main histogram can draw
+    // a red overlay proportional to the sus count in each bucket. Only
+    // populated for the main chart (the sus mini-chart is already all-sus).
+    // The sus overlay is gated on `_susAny` in `_renderChartInto`.
+    let susBuckets = null;
+    if (this._susAny && this._susBitmap && predicateIdx === this._filteredIdx) {
+      const bm = this._susBitmap;
+      susBuckets = new Int32Array(bucketCount);
+      for (let i = 0; i < idx.length; i++) {
+        const di = idx[i];
+        if (!bm[di]) continue;
+        const t = times[di];
+        if (!Number.isFinite(t)) continue;
+        const rel = t - viewLo;
+        if (rel < 0 || rel > rangeMs) continue;
+        let b = Math.floor(rel / bucketMs);
+        if (b >= bucketCount) b = bucketCount - 1;
+        susBuckets[b]++;
+      }
+    }
+
+    return { viewLo, viewHi, rangeMs, bucketMs, bucketCount, buckets, stackKeys, maxTotal, susBuckets };
   }
 
   // ── DOM ──────────────────────────────────────────────────────────────────
@@ -564,6 +2547,15 @@ class TimelineView {
     const root = document.createElement('div');
     root.className = 'timeline-view';
     root.style.setProperty('--tl-grid-h', this._gridH + 'px');
+    root.style.setProperty('--tl-sus-grid-h', this._susGridH + 'px');
+    root.style.setProperty('--tl-chart-h', this._chartH + 'px');
+    root.style.setProperty('--tl-card-min-w', (TIMELINE_CARD_SIZES[this._cardSize] || TIMELINE_CARD_SIZES.M) + 'px');
+
+    // Scrollable host — the page scrolls vertically so all sections
+    // (chart, grid, top-lists, sus, pivot) can be seen by scrolling.
+    const host = document.createElement('div');
+    host.className = 'tl-host';
+    root.appendChild(host);
 
     // Toolbar
     const toolbar = document.createElement('div');
@@ -588,61 +2580,230 @@ class TimelineView {
         <select class="tl-field-select" data-field="bucket"></select>
       </label>
       <span class="tl-spacer"></span>
+      <button class="tl-tb-btn" type="button" data-act="extract" title="Extract URLs / hostnames / regex into new columns">ƒx Extract</button>
+      <button class="tl-tb-btn" type="button" data-act="cardsize" title="Top-values card size">Cards: <span data-v="size">M</span></button>
       <span class="tl-row-stat"></span>
-      <button class="tl-reset-btn" type="button" title="Clear range window + all filter chips">↺ Reset</button>
+      <button class="tl-reset-btn" type="button" title="Reset view: clear query, range window, column hides, 🚩 Suspicious marks, stack column, pivot, and extracted columns">↺ Reset</button>
     `;
-    root.appendChild(toolbar);
+    host.appendChild(toolbar);
 
     // Scrubber
-    const scrubber = document.createElement('div');
-    scrubber.className = 'tl-scrubber';
-    scrubber.innerHTML = `
-      <span class="tl-scrubber-label tl-scrubber-label-left">—</span>
-      <div class="tl-scrubber-track">
-        <div class="tl-scrubber-window"></div>
-        <div class="tl-scrubber-handle tl-scrubber-handle-l"></div>
-        <div class="tl-scrubber-handle tl-scrubber-handle-r"></div>
-      </div>
-      <span class="tl-scrubber-label tl-scrubber-label-right">—</span>
-    `;
-    root.appendChild(scrubber);
+    const scrubber = this._buildSection('scrubber', null, () => {
+      const el = document.createElement('div');
+      el.className = 'tl-scrubber';
+      el.innerHTML = `
+        <span class="tl-scrubber-label tl-scrubber-label-left">—</span>
+        <div class="tl-scrubber-track">
+          <div class="tl-scrubber-window"></div>
+          <div class="tl-scrubber-handle tl-scrubber-handle-l"></div>
+          <div class="tl-scrubber-handle tl-scrubber-handle-r"></div>
+        </div>
+        <span class="tl-scrubber-label tl-scrubber-label-right">—</span>
+      `;
+      return el;
+    });
+    host.appendChild(scrubber.wrapper);
 
-    // Chart
-    const chart = document.createElement('div');
-    chart.className = 'tl-chart';
-    chart.innerHTML = `
-      <canvas class="tl-chart-canvas"></canvas>
-      <div class="tl-chart-legend"></div>
-      <div class="tl-chart-empty hidden">No parseable timestamps in the current filter.</div>
-    `;
-    root.appendChild(chart);
+    // Chart section
+    const chart = this._buildSection('chart', 'Timeline histogram', () => {
+      const el = document.createElement('div');
+      el.className = 'tl-chart';
+      el.innerHTML = `
+        <canvas class="tl-chart-canvas"></canvas>
+        <div class="tl-chart-legend"></div>
+        <div class="tl-chart-tooltip" hidden></div>
+        <div class="tl-chart-empty hidden">No parseable timestamps in the current filter.</div>
+        <div class="tl-chart-resize" role="separator" aria-orientation="horizontal" title="Drag to resize histogram"></div>
+      `;
+      return el;
+    }, {
+      actions: [
+        { label: '⬇ PNG', act: 'chart-png', title: 'Download chart as PNG' },
+        { label: '⬇ CSV', act: 'chart-csv', title: 'Download bucket counts as CSV' },
+      ],
+    });
+    host.appendChild(chart.wrapper);
 
-    // Chips
+    // Query bar — mount point for TimelineQueryEditor. The editor itself
+    // is constructed in `_wireEvents` (after columns are known) and its
+    // `.root` is appended into this container. Kept as a thin shell here
+    // so the layout ordering (scrubber → chart → query → chips → grid)
+    // is visible from `_buildDOM`.
+    const queryBar = document.createElement('div');
+    queryBar.className = 'tl-query-mount';
+    host.appendChild(queryBar);
+
+    // Chips strip. The query bar above is the sole source of truth for
+    // row filtering now (see `_applyQueryString`), so this strip only
+    // hosts: an optional range chip (scrubber / chart rubber-band
+    // window), zero-or-more 🚩 sus chips (from `_susMarks`, tint-only)
+    // and the "＋ Add Sus" affordance.
     const chips = document.createElement('div');
     chips.className = 'tl-chips';
-    chips.innerHTML = `<span class="tl-chips-empty">Click a value in a column card below to filter. Shift-click = NOT.</span>`;
-    root.appendChild(chips);
+    chips.innerHTML = `<span class="tl-chips-empty">Use the query bar above to filter rows; right-click a value → 🚩 to tint it suspicious.</span>`;
+    host.appendChild(chips);
 
-    // Grid + splitter
-    const gridWrap = document.createElement('div');
-    gridWrap.className = 'tl-grid';
-    root.appendChild(gridWrap);
+
+    // Grid section (collapsible)
+    const gridSec = this._buildSection('grid', 'Events', () => {
+      const el = document.createElement('div');
+      el.className = 'tl-grid';
+      return el;
+    }, {
+      actions: [
+        { label: '⬇ CSV', act: 'grid-csv', title: 'Download filtered rows as CSV' },
+      ],
+    });
+    host.appendChild(gridSec.wrapper);
 
     const splitter = document.createElement('div');
     splitter.className = 'tl-splitter';
     splitter.setAttribute('role', 'separator');
     splitter.setAttribute('aria-orientation', 'horizontal');
     splitter.title = 'Drag to resize';
-    root.appendChild(splitter);
+    host.appendChild(splitter);
 
-    // Columns
-    const cols = document.createElement('div');
-    cols.className = 'tl-columns';
-    root.appendChild(cols);
+    // Columns section (collapsible)
+    const colsSec = this._buildSection('columns', 'Top values', () => {
+      const el = document.createElement('div');
+      el.className = 'tl-columns';
+      return el;
+    }, {
+      actions: [
+        { label: '⬇ CSV', act: 'columns-csv', title: 'Download all top-values as CSV' },
+      ],
+    });
+
+    // Sus section — starts hidden; auto-shown when a sus chip exists.
+    const susSec = this._buildSection('sus', '🚩 Suspicious', () => {
+      const wrap = document.createElement('div');
+      wrap.className = 'tl-sus';
+      // The `.tl-sus-splitter` divider mirrors the main-events splitter
+      // (dragged to resize `--tl-sus-grid-h`, persisted to
+      // `loupe_timeline_sus_grid_h`). Structured as: sus chart → grid →
+      // splitter → top-values cards, so the drag handle sits right under
+      // the grid the analyst is resizing.
+      wrap.innerHTML = `
+        <div class="tl-chart tl-sus-chart">
+          <canvas class="tl-chart-canvas"></canvas>
+          <div class="tl-chart-legend"></div>
+          <div class="tl-chart-tooltip" hidden></div>
+          <div class="tl-chart-empty hidden">No suspicious rows in the current filter.</div>
+        </div>
+        <div class="tl-grid tl-sus-grid"></div>
+        <div class="tl-splitter tl-sus-splitter" role="separator" aria-orientation="horizontal" title="Drag to resize"></div>
+        <div class="tl-columns tl-sus-columns"></div>
+      `;
+      return wrap;
+    }, {
+      extraClass: 'tl-sec-sus',
+      actions: [
+        { label: '⬇ CSV', act: 'sus-csv', title: 'Download suspicious rows as CSV' },
+      ],
+    });
+    susSec.wrapper.classList.add('hidden');
+
+    // Detections section — EVTX Sigma-style rule hits, hidden when empty.
+    const detectionsSec = this._buildSection('detections', '🎯 Detections', () => {
+      const el = document.createElement('div');
+      el.className = 'tl-detections';
+      el.innerHTML = '<div class="tl-detections-empty">No detections for this file.</div>';
+      return el;
+    }, {
+      extraClass: 'tl-sec-detections',
+      actions: [
+        { label: '⬇ CSV', act: 'detections-csv', title: 'Download detections as CSV' },
+      ],
+    });
+    detectionsSec.wrapper.classList.add('hidden');
+
+    // Entities section — hostnames / users / URLs / hashes / processes, hidden when empty.
+    const entitiesSec = this._buildSection('entities', '🧩 Entities', () => {
+      const el = document.createElement('div');
+      el.className = 'tl-entities';
+      el.innerHTML = '<div class="tl-entities-empty">No entities extracted from this file.</div>';
+      return el;
+    }, {
+      extraClass: 'tl-sec-entities',
+      actions: [
+        { label: '⬇ CSV', act: 'entities-csv', title: 'Download entities as CSV' },
+      ],
+    });
+    entitiesSec.wrapper.classList.add('hidden');
+
+    // Section order:
+    //   CSV / TSV  → Top values → Suspicious → Detections → Entities
+    //   EVTX       → Detections → Entities   → Top values → Suspicious
+    // EVTX is detected by the presence of the `_evtxFindings` side-channel
+    // attached in `TimelineView.fromEvtx`. The Detections + Entities sections
+    // are always built but stay hidden on CSV / TSV (their render methods
+    // early-return when `_evtxFindings` is null), so the conditional only
+    // changes append order — every `this._els` ref below keeps working.
+    if (this._evtxFindings) {
+      host.appendChild(detectionsSec.wrapper);
+      host.appendChild(entitiesSec.wrapper);
+      host.appendChild(colsSec.wrapper);
+      host.appendChild(susSec.wrapper);
+    } else {
+      host.appendChild(colsSec.wrapper);
+      host.appendChild(susSec.wrapper);
+      host.appendChild(detectionsSec.wrapper);
+      host.appendChild(entitiesSec.wrapper);
+    }
+
+
+    // Pivot section
+    const pivotSec = this._buildSection('pivot', 'Pivot table', () => {
+      const el = document.createElement('div');
+      el.className = 'tl-pivot';
+      el.innerHTML = `
+        <div class="tl-pivot-bar">
+          <label class="tl-field"><span class="tl-field-label">Rows</span>
+            <select class="tl-field-select" data-field="pv-rows"></select>
+          </label>
+          <label class="tl-field"><span class="tl-field-label">Columns</span>
+            <select class="tl-field-select" data-field="pv-cols"></select>
+          </label>
+          <label class="tl-field"><span class="tl-field-label">Aggregate</span>
+            <select class="tl-field-select" data-field="pv-agg"></select>
+          </label>
+          <label class="tl-field" data-v="pv-agg-col-wrap"><span class="tl-field-label">of</span>
+            <select class="tl-field-select" data-field="pv-agg-col"></select>
+          </label>
+          <button class="tl-tb-btn" data-act="pv-build" type="button">Build</button>
+          <button class="tl-tb-btn" data-act="pv-reset" type="button">Reset</button>
+        </div>
+        <div class="tl-pivot-body">
+          <div class="tl-pivot-empty">Pick Rows + Columns + Aggregate → Build.</div>
+        </div>
+      `;
+      return el;
+    }, {
+      startCollapsed: true,
+      actions: [
+        { label: '⬇ CSV', act: 'pivot-csv', title: 'Download pivot as CSV' },
+      ],
+    });
+    host.appendChild(pivotSec.wrapper);
 
     this._root = root;
     this._els = {
-      toolbar, scrubber, chart, chips, gridWrap, splitter, cols,
+      host, toolbar,
+      scrubber: scrubber.body,
+      scrubberSection: scrubber,
+      chart: chart.body, chartSection: chart,
+      queryBar,
+      chips, gridSection: gridSec, gridWrap: gridSec.body,
+      splitter,
+      columnsSection: colsSec, cols: colsSec.body,
+      susSection: susSec, susWrap: susSec.body,
+      susChart: susSec.body.querySelector('.tl-sus-chart'),
+      susGridWrap: susSec.body.querySelector('.tl-sus-grid'),
+      susSplitter: susSec.body.querySelector('.tl-sus-splitter'),
+      susColumns: susSec.body.querySelector('.tl-sus-columns'),
+      detectionsSection: detectionsSec, detectionsBody: detectionsSec.body,
+      entitiesSection: entitiesSec, entitiesBody: entitiesSec.body,
+      pivotSection: pivotSec, pivotBody: pivotSec.body,
       fileName: toolbar.querySelector('.tl-file-name'),
       fileMeta: toolbar.querySelector('.tl-file-meta'),
       rowStat: toolbar.querySelector('.tl-row-stat'),
@@ -650,21 +2811,93 @@ class TimelineView {
       stackColSelect: toolbar.querySelector('[data-field="stack-col"]'),
       bucketSelect: toolbar.querySelector('[data-field="bucket"]'),
       resetBtn: toolbar.querySelector('.tl-reset-btn'),
-      scrubLabelL: scrubber.querySelector('.tl-scrubber-label-left'),
-      scrubLabelR: scrubber.querySelector('.tl-scrubber-label-right'),
-      scrubTrack: scrubber.querySelector('.tl-scrubber-track'),
-      scrubWindow: scrubber.querySelector('.tl-scrubber-window'),
-      scrubHandleL: scrubber.querySelector('.tl-scrubber-handle-l'),
-      scrubHandleR: scrubber.querySelector('.tl-scrubber-handle-r'),
-      chartCanvas: chart.querySelector('.tl-chart-canvas'),
-      chartLegend: chart.querySelector('.tl-chart-legend'),
-      chartEmpty: chart.querySelector('.tl-chart-empty'),
+      extractBtn: toolbar.querySelector('[data-act="extract"]'),
+      cardSizeBtn: toolbar.querySelector('[data-act="cardsize"]'),
+      cardSizeLabel: toolbar.querySelector('[data-v="size"]'),
+      chartCanvas: chart.body.querySelector('.tl-chart-canvas'),
+      chartLegend: chart.body.querySelector('.tl-chart-legend'),
+      chartEmpty: chart.body.querySelector('.tl-chart-empty'),
+      chartTooltip: chart.body.querySelector('.tl-chart-tooltip'),
       chipsEmpty: chips.querySelector('.tl-chips-empty'),
+      scrubLabelL: scrubber.body.querySelector('.tl-scrubber-label-left'),
+      scrubLabelR: scrubber.body.querySelector('.tl-scrubber-label-right'),
+      scrubTrack: scrubber.body.querySelector('.tl-scrubber-track'),
+      scrubWindow: scrubber.body.querySelector('.tl-scrubber-window'),
+      scrubHandleL: scrubber.body.querySelector('.tl-scrubber-handle-l'),
+      scrubHandleR: scrubber.body.querySelector('.tl-scrubber-handle-r'),
+      // Pivot refs
+      pvRows: pivotSec.body.querySelector('[data-field="pv-rows"]'),
+      pvCols: pivotSec.body.querySelector('[data-field="pv-cols"]'),
+      pvAgg: pivotSec.body.querySelector('[data-field="pv-agg"]'),
+      pvAggCol: pivotSec.body.querySelector('[data-field="pv-agg-col"]'),
+      pvAggColWrap: pivotSec.body.querySelector('[data-v="pv-agg-col-wrap"]'),
+      pvBuild: pivotSec.body.querySelector('[data-act="pv-build"]'),
+      pvReset: pivotSec.body.querySelector('[data-act="pv-reset"]'),
+      pvResultBody: pivotSec.body.querySelector('.tl-pivot-body'),
     };
-
-    // Populate static dropdowns
+    this._cardSizeLabelSync();
     this._populateToolbarSelects();
+    this._populatePivotSelects();
     this._refreshFileChip();
+  }
+
+  // Factory for a collapsible, optionally-exportable section wrapper.
+  _buildSection(id, title, bodyFactory, opts) {
+    opts = opts || {};
+    const wrap = document.createElement('section');
+    wrap.className = 'tl-section tl-section-' + id + (opts.extraClass ? ' ' + opts.extraClass : '');
+    wrap.dataset.secId = id;
+    const collapsed = id in this._sections
+      ? !!this._sections[id]
+      : !!opts.startCollapsed;
+    if (collapsed) wrap.classList.add('collapsed');
+
+    let head = null;
+    if (title != null) {
+      head = document.createElement('header');
+      head.className = 'tl-section-head';
+      head.innerHTML = `
+        <button class="tl-section-chev" type="button" aria-label="Toggle section"><span>▾</span></button>
+        <span class="tl-section-title">${_tlEsc(title)}</span>
+        <span class="tl-section-actions"></span>
+      `;
+      const actions = head.querySelector('.tl-section-actions');
+      if (opts.actions) {
+        for (const a of opts.actions) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'tl-tb-btn tl-section-action';
+          b.textContent = a.label;
+          if (a.title) b.title = a.title;
+          b.dataset.act = a.act;
+          actions.appendChild(b);
+        }
+      }
+      wrap.appendChild(head);
+      head.querySelector('.tl-section-chev').addEventListener('click', () => this._toggleSection(id));
+      // Click title also toggles.
+      head.querySelector('.tl-section-title').addEventListener('click', () => this._toggleSection(id));
+    }
+    const body = bodyFactory();
+    body.classList.add('tl-section-body');
+    wrap.appendChild(body);
+    return { wrapper: wrap, head, body };
+  }
+
+  _toggleSection(id) {
+    const wrap = this._root.querySelector(`.tl-section-${id}`);
+    if (!wrap) return;
+    wrap.classList.toggle('collapsed');
+    this._sections[id] = wrap.classList.contains('collapsed');
+    TimelineView._saveSections(this._sections);
+    // Chart + grid canvases/virtuals may need a repaint on expand.
+    this._scheduleRender(['chart', 'grid', 'sus']);
+  }
+
+  _cardSizeLabelSync() {
+    if (this._els.cardSizeLabel) this._els.cardSizeLabel.textContent = this._cardSize;
+    if (this._root) this._root.style.setProperty('--tl-card-min-w',
+      (TIMELINE_CARD_SIZES[this._cardSize] || TIMELINE_CARD_SIZES.M) + 'px');
   }
 
   _refreshFileChip() {
@@ -680,30 +2913,26 @@ class TimelineView {
 
   _populateToolbarSelects() {
     const { timeColSelect, stackColSelect, bucketSelect } = this._els;
+    const cols = this.columns;
 
-    timeColSelect.innerHTML = '';
-    const emptyOpt = document.createElement('option');
-    emptyOpt.value = '-1'; emptyOpt.textContent = '— none —';
-    timeColSelect.appendChild(emptyOpt);
-    for (let i = 0; i < this.columns.length; i++) {
-      const opt = document.createElement('option');
-      opt.value = String(i);
-      opt.textContent = this.columns[i] || `(col ${i + 1})`;
-      timeColSelect.appendChild(opt);
-    }
-    timeColSelect.value = this._timeCol == null ? '-1' : String(this._timeCol);
-
-    stackColSelect.innerHTML = '';
-    const noneOpt = document.createElement('option');
-    noneOpt.value = '-1'; noneOpt.textContent = '— none —';
-    stackColSelect.appendChild(noneOpt);
-    for (let i = 0; i < this.columns.length; i++) {
-      const opt = document.createElement('option');
-      opt.value = String(i);
-      opt.textContent = this.columns[i] || `(col ${i + 1})`;
-      stackColSelect.appendChild(opt);
-    }
-    stackColSelect.value = this._stackCol == null ? '-1' : String(this._stackCol);
+    const rebuild = (sel, includeNone, current, noneLabel) => {
+      sel.innerHTML = '';
+      if (includeNone) {
+        const opt = document.createElement('option');
+        opt.value = '-1'; opt.textContent = noneLabel;
+        sel.appendChild(opt);
+      }
+      for (let i = 0; i < cols.length; i++) {
+        const opt = document.createElement('option');
+        opt.value = String(i);
+        opt.textContent = cols[i] || `(col ${i + 1})`;
+        if (i >= this._baseColumns.length) opt.textContent = '⨯ ' + opt.textContent;
+        sel.appendChild(opt);
+      }
+      sel.value = current == null ? '-1' : String(current);
+    };
+    rebuild(timeColSelect, true, this._timeCol, '— none —');
+    rebuild(stackColSelect, true, this._stackCol, '— none —');
 
     bucketSelect.innerHTML = '';
     for (const o of TIMELINE_BUCKET_OPTIONS) {
@@ -712,6 +2941,44 @@ class TimelineView {
       bucketSelect.appendChild(opt);
     }
     bucketSelect.value = this._bucketId;
+  }
+
+  _populatePivotSelects() {
+    const { pvRows, pvCols, pvAgg, pvAggCol, pvAggColWrap } = this._els;
+    const cols = this.columns;
+    const fill = (sel) => {
+      sel.innerHTML = '';
+      const none = document.createElement('option');
+      none.value = '-1'; none.textContent = '— choose —';
+      sel.appendChild(none);
+      for (let i = 0; i < cols.length; i++) {
+        const o = document.createElement('option');
+        o.value = String(i); o.textContent = cols[i] || `(col ${i + 1})`;
+        sel.appendChild(o);
+      }
+    };
+    fill(pvRows);
+    fill(pvCols);
+    fill(pvAggCol);
+
+    pvAgg.innerHTML = '';
+    for (const a of [
+      { v: 'count', t: 'Count rows' },
+      { v: 'distinct', t: 'Count distinct …' },
+      { v: 'sum', t: 'Sum numeric …' },
+    ]) {
+      const o = document.createElement('option'); o.value = a.v; o.textContent = a.t;
+      pvAgg.appendChild(o);
+    }
+
+    // Restore saved spec.
+    if (this._pivotSpec) {
+      if (this._pivotSpec.rows != null) pvRows.value = String(this._pivotSpec.rows);
+      if (this._pivotSpec.cols != null) pvCols.value = String(this._pivotSpec.cols);
+      if (this._pivotSpec.aggOp) pvAgg.value = this._pivotSpec.aggOp;
+      if (this._pivotSpec.aggCol != null) pvAggCol.value = String(this._pivotSpec.aggCol);
+    }
+    pvAggColWrap.style.display = (pvAgg.value === 'count') ? 'none' : '';
   }
 
   // ── Event wiring ─────────────────────────────────────────────────────────
@@ -725,41 +2992,236 @@ class TimelineView {
       this._dataRange = this._computeDataRange();
       this._window = null;
       this._recomputeFilter();
-      this._scheduleRender(['chart', 'scrubber', 'grid', 'columns', 'chips']);
+      this._scheduleRender(['chart', 'scrubber', 'grid', 'columns', 'chips', 'sus']);
     });
     els.stackColSelect.addEventListener('change', () => {
       const v = parseInt(els.stackColSelect.value, 10);
       this._stackCol = v >= 0 ? v : null;
-      this._scheduleRender(['chart']);
+      this._scheduleRender(['chart', 'sus']);
     });
     els.bucketSelect.addEventListener('change', () => {
       this._bucketId = els.bucketSelect.value;
       TimelineView._saveBucketPref(this._bucketId);
-      this._scheduleRender(['chart']);
+      this._scheduleRender(['chart', 'sus']);
     });
     els.resetBtn.addEventListener('click', () => this._reset());
+    els.extractBtn.addEventListener('click', () => this._openExtractionDialog(null));
+    els.cardSizeBtn.addEventListener('click', () => this._cycleCardSize());
 
-    // Chart clicks → filter chip or range window
-    els.chartCanvas.addEventListener('click', (e) => this._onChartClick(e));
+    // Construct the query editor now that columns / stats are available
+    // (suggestion lookups consult `this.columns` + `_distinctValuesFor`).
+    // The editor's DOM `.root` is appended into the `.tl-query-mount`
+    // container prepared by `_buildDOM`. onChange → live re-parse + filter;
+    // onCommit → persist the string under `loupe_timeline_query` and push
+    // onto the history ring.
+    this._queryEditor = new TimelineQueryEditor({
+      view: this,
+      initialValue: this._queryStr || '',
+      onChange: (q) => this._applyQueryString(q),
+      onCommit: (q) => TimelineView._saveQueryFor(this._fileKey, q),
+    });
+    els.queryBar.appendChild(this._queryEditor.root);
+    if (this._queryStr) {
+      // Kick off an initial parse so the editor reflects the restored
+      // value (pill highlighting + status line) without waiting for the
+      // first keystroke.
+      this._applyQueryString(this._queryStr);
+    }
 
-    // Scrubber drag
+
+    // Chart interaction — pointer-based: short click = drill into bucket,
+    // drag = rubber-band a time-window selection. See `_installChartDrag`.
+    this._installChartDrag(els.chartCanvas, els.chart, els.chartTooltip, () => this._lastChartData);
+
+    // Sus chart events (canvas inside susWrap) — same drag/click semantics.
+    const susCanvas = els.susChart.querySelector('.tl-chart-canvas');
+    const susTooltip = els.susChart.querySelector('.tl-chart-tooltip');
+    this._installChartDrag(susCanvas, els.susChart, susTooltip, () => this._lastSusChartData);
+
+    // Scrubber / splitter / chart resize
     this._installScrubberDrag();
-
-    // Splitter drag
     this._installSplitterDrag();
+    this._installSusSplitterDrag();
+    this._installChartResizeDrag();
 
-    // Chart resize
+    // Section action buttons (export).
+    this._root.addEventListener('click', (e) => {
+      const btn = e.target.closest('.tl-section-action');
+      if (btn) { e.stopPropagation(); this._onSectionAction(btn.dataset.act); return; }
+    });
+
+    // Pivot controls
+    els.pvAgg.addEventListener('change', () => {
+      els.pvAggColWrap.style.display = (els.pvAgg.value === 'count') ? 'none' : '';
+    });
+    els.pvBuild.addEventListener('click', () => this._buildPivot());
+    els.pvReset.addEventListener('click', () => {
+      els.pvRows.value = '-1'; els.pvCols.value = '-1'; els.pvAgg.value = 'count';
+      els.pvAggCol.value = '-1'; els.pvAggColWrap.style.display = 'none';
+      this._pivotSpec = null;
+      TimelineView._savePivotSpec({});
+      this._els.pvResultBody.innerHTML = '<div class="tl-pivot-empty">Pick Rows + Columns + Aggregate → Build.</div>';
+    });
+
+    // ResizeObserver — scrubber/chart layout + grid height recomputes.
     this._resizeObs = new ResizeObserver(() => {
-      this._scheduleRender(['chart']);
+      this._scheduleRender(['chart', 'sus']);
     });
     this._resizeObs.observe(els.chart);
+    this._resizeObs.observe(els.susChart);
+
+    // Close any popover on ESC or outside click.
+    this._onDocClick = (e) => {
+      if (this._openPopover && !this._openPopover.contains(e.target)) this._closePopover();
+    };
+    this._onDocKey = (e) => {
+      if (e.key === 'Escape') {
+        if (this._openDialog) { this._closeDialog(); e.stopPropagation(); return; }
+        if (this._openPopover) { this._closePopover(); e.stopPropagation(); return; }
+        // Nothing open → clear the "you are here" cursor if it's active.
+        if (this._cursorDataIdx != null) { this._setCursorDataIdx(null); e.stopPropagation(); return; }
+      }
+    };
+    // Scrolling the main page (viewer, window, or any nested scroller)
+    // while a row / column popover is open would leave it floating over
+    // moved content, since every menu is `position: fixed` and anchored to
+    // the click coordinates. Dismiss on any scroll, capture-phase so we
+    // also catch scrolls inside the timeline's own sub-scrollers. The
+    // grid-viewer drawer's JSON-tree menu already does the same.
+    this._onDocScroll = () => {
+      if (this._openPopover) this._closePopover();
+    };
+    document.addEventListener('mousedown', this._onDocClick, true);
+    document.addEventListener('keydown', this._onDocKey, true);
+    window.addEventListener('scroll', this._onDocScroll, true);
   }
 
+  // Canonical "put me back to neutral" button. Wipes every piece of
+  // analyst-authored filter / view state on this view: time window,
+  // hidden columns, typed query, 🚩 Suspicious marks, stack column,
+  // pivot spec, and every extracted (ƒx / regex / JSON-leaf) column.
+  // Pure layout preferences (`_gridH`, `_susGridH`, `_chartH`,
+  // `_sections`, `_cardSize`, `_bucketId`) and global cross-file state
+  // (query history) are intentionally preserved — those are
+  // workstation settings, not per-file filter state.
+  //
+  // Extracted columns are cleared inline (not via `_clearAllExtractedCols`)
+  // because that helper pops a window.confirm dialog and emits a toast —
+  // both inappropriate for an explicit one-click Reset.
   _reset() {
+    const baseLen = this._baseColumns.length;
+
+    // Query must be torn down BEFORE extracted columns, so the AST
+    // serializer can still resolve extracted colIdx → name while the
+    // query string is edited / cleared. After this, `_queryStr`,
+    // `_queryAst`, `_queryPred` are all null and persistence is blanked.
+    if (this._queryStr || this._queryEditor) {
+      if (this._queryEditor) this._queryEditor.setValue('');
+      this._applyQueryString('');
+    }
+
+    // Time-range window + grid cursor.
     this._window = null;
-    this._chips = [];
+    this._cursorDataIdx = null;
+
+    // 🚩 Suspicious marks — wipe in-memory array + persisted entry.
+    if (this._susMarks && this._susMarks.length) {
+      this._susMarks = [];
+      TimelineView._saveSusMarksFor(this._fileKey, []);
+    }
+
+    // Stack column — blank both state + select widget.
+    if (this._stackCol != null) {
+      this._stackCol = null;
+      if (this._els && this._els.stackColSelect) this._els.stackColSelect.value = '-1';
+    }
+
+    // Pivot spec — clear persisted + cached results, and blank the
+    // result body back to its placeholder so a stale table isn't left
+    // visible until the next Build.
+    if (this._pivotSpec) {
+      this._pivotSpec = null;
+      TimelineView._savePivotSpec({});
+    }
+    this._lastPivot = null;
+    if (this._els) {
+      if (this._els.pvRows) this._els.pvRows.value = '-1';
+      if (this._els.pvCols) this._els.pvCols.value = '-1';
+      if (this._els.pvAgg) this._els.pvAgg.value = 'count';
+      if (this._els.pvAggCol) this._els.pvAggCol.value = '-1';
+      if (this._els.pvAggColWrap) this._els.pvAggColWrap.style.display = 'none';
+      if (this._els.pvResultBody) {
+        this._els.pvResultBody.innerHTML = '<div class="tl-pivot-empty">Pick Rows + Columns + Aggregate → Build.</div>';
+      }
+    }
+
+    // Extracted columns — strip every ƒx / regex / JSON-leaf column.
+    // Query clauses targeting extracted cols were already dropped above
+    // by the `_applyQueryString('')` pass, so we can splice the list
+    // directly. Snap timestamp back to auto-detect if it pointed into
+    // extracted space.
+    if (this._extractedCols && this._extractedCols.length) {
+      if (this._timeCol != null && this._timeCol >= baseLen) {
+        this._timeCol = _tlAutoDetectTimestampCol(this._baseColumns, this.rows);
+        if (this._els && this._els.timeColSelect) {
+          this._els.timeColSelect.value = this._timeCol == null ? '-1' : String(this._timeCol);
+        }
+        this._parseAllTimestamps();
+        this._dataRange = this._computeDataRange();
+      }
+      this._extractedCols = [];
+      this._jsonCache.clear();
+      this._persistRegexExtracts();   // writes an empty list for this file
+    }
+
+    // Unhide any columns the analyst hid via Ctrl+Click / column menu /
+    // tl-col-card Ctrl+Click — Reset is the canonical "put me back to
+    // neutral" button, so every grid-side UI toggle belongs here too.
+    if (this._grid && typeof this._grid._unhideAllColumns === 'function') {
+      try { this._grid._unhideAllColumns(); } catch (_) { /* noop */ }
+    }
+    if (this._susGrid && typeof this._susGrid._unhideAllColumns === 'function') {
+      try { this._susGrid._unhideAllColumns(); } catch (_) { /* noop */ }
+    }
+
+    // Invalidate every derived / cached render product so the next
+    // scheduleRender starts from scratch.
+    this._colStats = null;
+    this._susColStats = null;
+    this._lastChartData = null;
+    this._lastSusChartData = null;
+
+    // Column count may have changed (extracted columns dropped) — kill
+    // the grids so they rebuild with the correct column set. Mirrors
+    // `_rebuildExtractedStateAndRender`.
+    if (this._grid) {
+      try { this._grid.destroy(); } catch (_) { /* noop */ }
+      this._grid = null;
+    }
+    if (this._susGrid) {
+      try { this._susGrid.destroy(); } catch (_) { /* noop */ }
+      this._susGrid = null;
+    }
+
+    // Re-populate toolbar + pivot dropdowns so extracted-column options
+    // disappear from them. `_populateToolbarSelects` also re-applies the
+    // (now-cleared) `_timeCol` / `_stackCol` / `_bucketId` values.
+    this._populateToolbarSelects();
+    this._populatePivotSelects();
+
     this._recomputeFilter();
-    this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns']);
+    this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns', 'sus', 'detections', 'entities', 'pivot']);
+  }
+
+
+
+  _cycleCardSize() {
+    const order = ['S', 'M', 'L'];
+    const i = order.indexOf(this._cardSize);
+    this._cardSize = order[(i + 1) % order.length];
+    TimelineView._saveCardSize(this._cardSize);
+    this._cardSizeLabelSync();
+    this._scheduleRender(['columns', 'sus']);
   }
 
   // ── Render scheduler ─────────────────────────────────────────────────────
@@ -772,26 +3234,36 @@ class TimelineView {
       if (this._destroyed) return;
       const set = new Set(this._pendingTasks);
       this._pendingTasks.clear();
-      // Column stats are shared by 'grid' and 'columns' rendering — compute
-      // once if either is pending.
       if ((set.has('grid') || set.has('columns')) && !this._colStats) {
-        this._computeColumnStats();
+        this._colStats = this._computeColumnStats(this._filteredIdx || new Uint32Array(0));
+      }
+      if (set.has('sus') && this._susAny && !this._susColStats) {
+        this._susColStats = this._computeColumnStats(this._susFilteredIdx || new Uint32Array(0));
       }
       if (set.has('scrubber')) this._renderScrubber();
       if (set.has('chart')) this._renderChart();
       if (set.has('chips')) this._renderChips();
       if (set.has('grid')) this._renderGrid();
       if (set.has('columns')) this._renderColumns();
+      if (set.has('sus')) this._renderSus();
+      if (set.has('detections')) this._renderDetections();
+      if (set.has('entities')) this._renderEntities();
+      if (set.has('pivot')) {/* lazy; built on demand via Build button */ }
       this._refreshRowStat();
+
     });
   }
 
   _refreshRowStat() {
     const total = this.rows.length;
     const visible = this._filteredIdx ? this._filteredIdx.length : total;
-    const txt = visible === total
+    let txt = visible === total
       ? `${total.toLocaleString()} rows`
       : `${visible.toLocaleString()} / ${total.toLocaleString()} rows`;
+    if (this._susAny) {
+      const susCount = this._susFilteredIdx ? this._susFilteredIdx.length : 0;
+      txt += ` · ${susCount.toLocaleString()} 🚩`;
+    }
     this._els.rowStat.textContent = txt;
   }
 
@@ -808,9 +3280,8 @@ class TimelineView {
       els.scrubHandleR.style.left = '100%';
       return;
     }
-    els.scrubLabelL.textContent = _tlFormatFullUtc(dr.min);
-    els.scrubLabelR.textContent = _tlFormatFullUtc(dr.max);
-
+    els.scrubLabelL.textContent = _tlFormatFullUtc(dr.min, this._timeIsNumeric);
+    els.scrubLabelR.textContent = _tlFormatFullUtc(dr.max, this._timeIsNumeric);
     const span = dr.max - dr.min;
     const win = this._window;
     const lo = win ? (win.min - dr.min) / span : 0;
@@ -829,40 +3300,40 @@ class TimelineView {
     const handleR = this._els.scrubHandleR;
     const winEl = this._els.scrubWindow;
 
-    const pctAt = (clientX) => {
+    const pctAt = (x) => {
       const rect = track.getBoundingClientRect();
-      return Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+      return Math.max(0, Math.min(1, (x - rect.left) / rect.width));
     };
     const msAt = (pct) => {
       const dr = this._dataRange; if (!dr) return NaN;
       return dr.min + pct * (dr.max - dr.min);
     };
-
     const beginDrag = (mode, startX) => {
       if (!this._dataRange) return;
       let dragging = true;
       const startWindow = this._window ? { ...this._window } : { min: this._dataRange.min, max: this._dataRange.max };
       const startPct = pctAt(startX);
+      // Enter live-drag mode: renders skip grid/columns/sus for the duration
+      // of the drag. Chip predicates are NOT re-run — only the cached
+      // `_chipFilteredIdx` is re-clipped by the new window via
+      // `_applyWindowOnly()`.
+      this._windowDragging = true;
       const onMove = (e) => {
         if (!dragging) return;
         const pct = pctAt(e.clientX);
         const nowMs = msAt(pct);
         let lo, hi;
         if (mode === 'create') {
-          // dragging from startPct to current
           const a = Math.min(startPct, pct), b = Math.max(startPct, pct);
           lo = msAt(a); hi = msAt(b);
         } else if (mode === 'left') {
-          lo = Math.min(startWindow.max - 1, nowMs);
-          hi = startWindow.max;
+          lo = Math.min(startWindow.max - 1, nowMs); hi = startWindow.max;
         } else if (mode === 'right') {
-          lo = startWindow.min;
-          hi = Math.max(startWindow.min + 1, nowMs);
+          lo = startWindow.min; hi = Math.max(startWindow.min + 1, nowMs);
         } else if (mode === 'move') {
           const deltaPct = pct - startPct;
           const deltaMs = deltaPct * (this._dataRange.max - this._dataRange.min);
-          lo = startWindow.min + deltaMs;
-          hi = startWindow.max + deltaMs;
+          lo = startWindow.min + deltaMs; hi = startWindow.max + deltaMs;
           const span = hi - lo;
           if (lo < this._dataRange.min) { lo = this._dataRange.min; hi = lo + span; }
           if (hi > this._dataRange.max) { hi = this._dataRange.max; lo = hi - span; }
@@ -872,60 +3343,76 @@ class TimelineView {
             min: Math.max(this._dataRange.min, lo),
             max: Math.min(this._dataRange.max, hi),
           };
-          this._recomputeFilter();
-          this._scheduleRender(['scrubber', 'chart', 'grid', 'columns']);
+          this._applyWindowOnly();
+          // Lightweight: only scrubber + chart visibly update during drag.
+          // Row-stat reflects the new count but grid/columns/sus wait for
+          // pointerup. This keeps drag rAF under a few ms even at 100k+ rows.
+          this._scheduleRender(['scrubber', 'chart']);
         }
       };
       const onUp = () => {
         dragging = false;
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
+        this._windowDragging = false;
+        // Commit: run the full render pass once, including grid/columns/sus.
+        this._scheduleRender(['scrubber', 'chart', 'chips', 'grid', 'columns', 'sus']);
       };
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
     };
 
     track.addEventListener('pointerdown', (e) => {
-      // Clicking a handle or the window lets those handlers take over.
       if (e.target === handleL) { beginDrag('left', e.clientX); return; }
       if (e.target === handleR) { beginDrag('right', e.clientX); return; }
       if (e.target === winEl) { beginDrag('move', e.clientX); return; }
-      // Empty-track click: start a fresh window from that point.
       beginDrag('create', e.clientX);
     });
   }
 
   // ── Chart ────────────────────────────────────────────────────────────────
   _renderChart() {
-    const canvas = this._els.chartCanvas;
-    const data = this._computeChartData();
-    if (!data) {
-      this._els.chartEmpty.classList.remove('hidden');
-      canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight;
+    this._lastChartData = this._renderChartInto(
+      this._els.chartCanvas, this._els.chartLegend, this._els.chartEmpty,
+      this._filteredIdx, 'main',
+    );
+  }
+
+  _renderChartInto(canvas, legendEl, emptyEl, idx, role) {
+    if (!canvas) return null;
+    const data = this._computeChartData(idx);
+    if (!data || !idx || idx.length === 0) {
+      emptyEl.classList.remove('hidden');
+      const dprE = window.devicePixelRatio || 1;
+      const bwE = Math.round(canvas.clientWidth * dprE);
+      const bhE = Math.round(canvas.clientHeight * dprE);
+      if (canvas.width !== bwE || canvas.height !== bhE) { canvas.width = bwE; canvas.height = bhE; }
       const ctx = canvas.getContext('2d');
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      this._els.chartLegend.innerHTML = '';
-      this._lastChartData = null;
-      return;
+      legendEl.innerHTML = '';
+      return null;
     }
-    this._els.chartEmpty.classList.add('hidden');
-
-    // Resize for DPR.
+    emptyEl.classList.add('hidden');
     const dpr = window.devicePixelRatio || 1;
     const w = canvas.clientWidth, h = canvas.clientHeight;
-    if (canvas.width !== w * dpr) { canvas.width = w * dpr; canvas.height = h * dpr; }
+    // Re-size the backing store whenever EITHER dimension changes. The
+    // previous width-only guard missed vertical-only resizes (dragging
+    // `.tl-chart-resize`), leaving a stale backing store that the browser
+    // then stretched up to fill `clientHeight`.
+    const bw = Math.round(w * dpr), bh = Math.round(h * dpr);
+    if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
     const ctx = canvas.getContext('2d');
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
 
-    const { buckets, bucketCount, maxTotal, stackKeys, rangeMs, viewLo } = data;
-    const padL = 42, padR = 12, padT = 12, padB = 22;
+    const { buckets, bucketCount, maxTotal, stackKeys, rangeMs, viewLo, bucketMs } = data;
+    const padL = 48, padR = 14, padT = 14, padB = 24;
     const plotW = Math.max(1, w - padL - padR);
     const plotH = Math.max(1, h - padT - padB);
     const barW = plotW / bucketCount;
     const k = stackKeys ? stackKeys.length : 1;
 
-    // Axis grid — 4 horizontal lines
+    // Grid lines
     ctx.strokeStyle = 'rgba(128,128,128,0.15)';
     ctx.lineWidth = 1;
     for (let g = 1; g <= 4; g++) {
@@ -933,25 +3420,20 @@ class TimelineView {
       ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
     }
 
-    // Y-axis labels (max count)
     ctx.fillStyle = 'rgba(128,128,128,0.8)';
     ctx.font = '10px system-ui, -apple-system, Segoe UI, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
     ctx.fillText(String(maxTotal), padL - 4, padT);
     ctx.fillText('0', padL - 4, padT + plotH);
 
-    // X-axis labels (4 ticks)
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
-    const ticks = 4;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    const ticks = 5;
     for (let i = 0; i <= ticks; i++) {
       const t = viewLo + (rangeMs * i) / ticks;
       const x = padL + (plotW * i) / ticks;
-      ctx.fillText(_tlFormatTick(t, rangeMs), x, padT + plotH + 4);
+      ctx.fillText(_tlFormatTick(t, rangeMs, this._timeIsNumeric), x, padT + plotH + 4);
     }
 
-    // Bars
     const scale = maxTotal > 0 ? plotH / maxTotal : 0;
     for (let b = 0; b < bucketCount; b++) {
       let yAcc = padT + plotH;
@@ -961,168 +3443,1266 @@ class TimelineView {
         if (!c) continue;
         const barH = c * scale;
         ctx.fillStyle = TIMELINE_STACK_PALETTE[j % TIMELINE_STACK_PALETTE.length];
-        // Inset by 1px so bars are separated.
         const bw = Math.max(1, barW - 1);
         ctx.fillRect(x, yAcc - barH, bw, barH);
         yAcc -= barH;
       }
     }
 
-    // Frame
+    // Red-tinted sus overlay — drawn only on the main histogram (the sus
+    // mini-chart is already all-sus). The tint sits on TOP of the stacked
+    // bars, proportional to the sus-share within each bucket, so the user
+    // can read how much of each bar is 🚩-flagged without losing the
+    // stack colours beneath. `--risk-high` is #dc2626 = rgb(220,38,38);
+    // canvas can't resolve CSS custom properties so we hardcode it.
+    const susBuckets = data.susBuckets;
+    if (susBuckets && role === 'main') {
+      ctx.fillStyle = 'rgba(220,38,38,0.55)';
+      for (let b = 0; b < bucketCount; b++) {
+        const sc = susBuckets[b];
+        if (!sc) continue;
+        // Total bucket height (sum of stacks) = baseline for positioning
+        // the tint. Clamp to total so overlays never exceed the bar.
+        let total = 0;
+        for (let j = 0; j < k; j++) total += buckets[b * k + j];
+        if (!total) continue;
+        const totalH = total * scale;
+        const susH = Math.min(totalH, sc * scale);
+        const x = padL + b * barW;
+        const bw = Math.max(1, barW - 1);
+        const y = padT + plotH - totalH;
+        ctx.fillRect(x, y, bw, susH);
+      }
+    }
+
     ctx.strokeStyle = 'rgba(128,128,128,0.35)';
     ctx.strokeRect(padL, padT, plotW, plotH);
 
+    // Sus-bucket indicator strip — high-contrast red tick along the top
+    // edge of the plot area for every bucket that contains ≥ 1 🚩
+    // suspicious event. Complements the proportional in-bar red wash
+    // above: the wash reads "how MUCH of this bar is sus" (can be small
+    // / invisible on a bar dominated by benign rows), whereas this strip
+    // is a binary "HERE be dragons" signal that stays loud even when
+    // the sus share is tiny. Drawn AFTER the plot border so the ticks
+    // sit on top of `strokeRect` rather than being clipped by it.
+    // Skipped on the sus mini-chart (every bar is already all-sus there).
+    if (susBuckets && role === 'main') {
+      ctx.fillStyle = 'rgb(220,38,38)';
+      for (let b = 0; b < bucketCount; b++) {
+        if (!susBuckets[b]) continue;
+        const x = padL + b * barW;
+        const bw = Math.max(2, barW - 1);
+        // 3 px strip pinned just inside the top of the plot — sits
+        // clear of both the y-axis tick labels and the cursor's top
+        // triangle (the `.tl-chart-cursor::before` at top: -4px).
+        ctx.fillRect(x, padT, bw, 3);
+      }
+    }
+
+
     // Legend
-    const legend = this._els.chartLegend;
-    legend.innerHTML = '';
+    legendEl.innerHTML = '';
     if (stackKeys && stackKeys.length) {
       const stackColName = this._stackCol != null ? (this.columns[this._stackCol] || '') : '';
       if (stackColName) {
         const hdr = document.createElement('span');
         hdr.className = 'tl-legend-hdr';
         hdr.textContent = `stacked by ${stackColName}:`;
-        legend.appendChild(hdr);
+        legendEl.appendChild(hdr);
       }
       for (let i = 0; i < stackKeys.length; i++) {
         const k2 = stackKeys[i];
         const chip = document.createElement('span');
         chip.className = 'tl-legend-chip';
+        chip.dataset.key = k2;
+        chip.dataset.role = role;
         chip.innerHTML = `<span class="tl-legend-swatch" style="background:${TIMELINE_STACK_PALETTE[i % TIMELINE_STACK_PALETTE.length]}"></span>${_tlEsc(k2 === '__other__' ? 'Other' : k2)}`;
-        legend.appendChild(chip);
+        chip.title = 'Click = filter · Dbl-click = only this · Shift-click = exclude · Right-click = more';
+        legendEl.appendChild(chip);
       }
+      // Wire legend interactions once per legend render.
+      legendEl.addEventListener('click', this._onLegendClick || (this._onLegendClick = (e) => this._handleLegendClick(e)));
+      legendEl.addEventListener('dblclick', this._onLegendDbl || (this._onLegendDbl = (e) => this._handleLegendDbl(e)));
+      legendEl.addEventListener('contextmenu', this._onLegendCtx || (this._onLegendCtx = (e) => this._handleLegendContext(e)));
     }
 
-    // Cache for click hit-testing
-    this._lastChartData = { ...data, layout: { padL, padR, padT, padB, plotW, plotH, barW } };
+    // Paint the red-line cursor (if any) after the bars. Implemented as a
+    // cheap absolutely-positioned <div> overlay inside `.tl-chart` so grid-
+    // row clicks don't have to redraw the whole canvas. We position it
+    // here off the fresh layout to stay in sync with zoom / bucket changes.
+    this._paintChartCursorFor(canvas, { padL, padT, plotW, plotH, viewLo, rangeMs });
+
+    return { ...data, layout: { padL, padR, padT, padB, plotW, plotH, barW, bucketMs } };
   }
 
-  _onChartClick(e) {
-    const data = this._lastChartData;
+  // ── Red-line "you are here" cursor ───────────────────────────────────────
+  // Paints a thin vertical red line on the given chart canvas at the
+  // x-position matching `this._cursorDataIdx`. Called from `_renderChartInto`
+  // so the cursor stays glued to the correct time even when bucket / zoom /
+  // stack settings change. The cursor is a lazily-created absolutely-
+  // positioned <div.tl-chart-cursor> inside the chart wrapper — much cheaper
+  // than re-drawing the whole canvas whenever the focused row changes.
+  _paintChartCursorFor(canvas, layout) {
+    const wrap = canvas && canvas.parentElement; if (!wrap) return;
+    let cur = wrap.querySelector('.tl-chart-cursor');
+    const di = this._cursorDataIdx;
+    if (di == null || !this._timeMs) {
+      if (cur) cur.hidden = true;
+      return;
+    }
+    const t = this._timeMs[di];
+    if (!Number.isFinite(t)) { if (cur) cur.hidden = true; return; }
+    const { padL, padT, plotW, plotH, viewLo, rangeMs } = layout;
+    const rel = (t - viewLo) / rangeMs;
+    if (!Number.isFinite(rel) || rel < 0 || rel > 1) {
+      if (cur) cur.hidden = true;
+      return;
+    }
+    if (!cur) {
+      cur = document.createElement('div');
+      cur.className = 'tl-chart-cursor';
+      wrap.appendChild(cur);
+    }
+    // Offset by the canvas's position within `.tl-chart` so the cursor
+    // lines up with the plot area. `.tl-chart` has padding (see
+    // viewers.css) and absolute children are positioned against its
+    // padding-box — without `canvas.offsetLeft/Top` the cursor lands to
+    // the left of the canvas (visible on the very first event, where
+    // `rel ≈ 0`, because `padL` alone is in canvas-local pixels).
+    cur.hidden = false;
+    cur.style.left = (canvas.offsetLeft + padL + rel * plotW) + 'px';
+    cur.style.top = (canvas.offsetTop + padT) + 'px';
+    cur.style.height = plotH + 'px';
+  }
+
+
+  // Paint (or clear) the matching cursor on the scrubber track — so the
+  // cursor reads sensibly even when the histogram is zoomed past it.
+  _paintScrubberCursor() {
+    const track = this._els && this._els.scrubTrack; if (!track) return;
+    let cur = track.querySelector('.tl-scrubber-cursor');
+    const di = this._cursorDataIdx;
+    const dr = this._dataRange;
+    if (di == null || !dr || !this._timeMs) { if (cur) cur.hidden = true; return; }
+    const t = this._timeMs[di];
+    if (!Number.isFinite(t)) { if (cur) cur.hidden = true; return; }
+    const pct = (t - dr.min) / Math.max(1, dr.max - dr.min);
+    if (!Number.isFinite(pct) || pct < 0 || pct > 1) { if (cur) cur.hidden = true; return; }
+    if (!cur) {
+      cur = document.createElement('div');
+      cur.className = 'tl-scrubber-cursor';
+      track.appendChild(cur);
+    }
+    cur.hidden = false;
+    cur.style.left = (pct * 100) + '%';
+  }
+
+  // Anchor the "you are here" cursor to the row currently nearest the
+  // vertical middle of a grid's viewport (or the row opened in the
+  // drawer, if any — that wins because it's a stable fixed reference).
+  // Called rAF-throttled from each grid's scroll handler; the CSS
+  // `transition: left 140ms ease-out` on `.tl-chart-cursor` provides the
+  // visual glide, so this just needs to set the right dataIdx. The
+  // ±8-row bidirectional scan tolerates rows with missing / unparseable
+  // timestamps without hiding or snapping the cursor — mirrors the
+  // anchor logic in `grid-viewer.js` `_updateTimelineCursor`.
+  _updateCursorFromGridScroll(viewer) {
+    if (!viewer || !viewer._scr || !this._timeMs) return;
+
+    // 1. Drawer-pin: if the user has a row open in the detail drawer
+    //    that's a stable reference — don't let scroll wander the cursor
+    //    off it. Mirrors grid-viewer's anchor priority.
+    const drw = viewer.state && viewer.state.drawer;
+    if (drw && drw.open && drw.dataIdx >= 0) {
+      this._setCursorDataIdx(drw.dataIdx);
+      return;
+    }
+
+    // 2. Scroll-anchored: row nearest the vertical middle of the
+    //    viewport. Middle (not top-edge) to avoid twitch on fine
+    //    trackpad scroll.
+    const visible = viewer._visibleCount ? viewer._visibleCount() : 0;
+    if (!visible) return;
+    const rowH = viewer.ROW_HEIGHT || 28;
+    const midPx = (viewer._scr.scrollTop || 0) + ((viewer._scr.clientHeight || 0) / 2);
+    const midV = Math.max(0, Math.min(visible - 1, Math.floor(midPx / rowH)));
+
+    // 3. ±8-row scan to tolerate rows with no parseable time — prevents
+    //    the cursor from hiding / snapping when the user scrolls through
+    //    a stretch of blank-timestamp rows.
+    const WIN = 8;
+    const lo = Math.max(0, midV - WIN);
+    const hi = Math.min(visible - 1, midV + WIN);
+    let bestDist = Infinity;
+    let bestDataIdx = null;
+    for (let v = lo; v <= hi; v++) {
+      const di = viewer._dataIdxOf ? viewer._dataIdxOf(v) : null;
+      if (di == null) continue;
+      // `di` here is an index into the grid's `rowsConcat` — which is the
+      // same as the original dataIdx because we pass rows in the exact
+      // order of `this._filteredIdx` / `this._susFilteredIdx` (see
+      // `_renderGridInto`). Map grid-virtual → original data row.
+      const role = viewer._tlRole;
+      const srcArr = (role === 'main') ? this._filteredIdx : this._susFilteredIdx;
+      const orig = srcArr ? srcArr[di] : di;
+      const t = this._timeMs[orig];
+      if (!Number.isFinite(t)) continue;
+      const dist = Math.abs(v - midV);
+      if (dist < bestDist) { bestDist = dist; bestDataIdx = orig; }
+    }
+    if (bestDataIdx != null) this._setCursorDataIdx(bestDataIdx);
+  }
+
+  // Public-ish setter — called from grid-row click. Clears the cursor when
+  // passed `null`. Triggers a cheap cursor-only repaint; the chart bars
+  // themselves do not need to redraw.
+  _setCursorDataIdx(dataIdx) {
+
+    this._cursorDataIdx = (dataIdx == null) ? null : (dataIdx | 0);
+    // Main chart
+    if (this._els && this._els.chartCanvas && this._lastChartData && this._lastChartData.layout) {
+      this._paintChartCursorFor(this._els.chartCanvas, {
+        ...this._lastChartData.layout,
+        viewLo: this._lastChartData.viewLo,
+        rangeMs: this._lastChartData.rangeMs,
+      });
+    }
+    // Sus mini-chart
+    if (this._susAny && this._els && this._els.susChart && this._lastSusChartData && this._lastSusChartData.layout) {
+      const susCanvas = this._els.susChart.querySelector('.tl-chart-canvas');
+      this._paintChartCursorFor(susCanvas, {
+        ...this._lastSusChartData.layout,
+        viewLo: this._lastSusChartData.viewLo,
+        rangeMs: this._lastSusChartData.rangeMs,
+      });
+    }
+    this._paintScrubberCursor();
+  }
+
+  // Single-bucket drill — invoked by `_installChartDrag` when the user
+  // pointer-clicks without dragging. Uses the fast window-only path because
+  // chip predicates don't change.
+  _onChartClick(canvas, data, clientX) {
     if (!data) return;
-    const canvas = this._els.chartCanvas;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const { padL, plotW, barW } = data.layout;
+    const x = clientX - rect.left;
+    const { padL, plotW, barW, bucketMs } = data.layout;
     if (x < padL || x > padL + plotW) return;
     const b = Math.min(data.bucketCount - 1, Math.max(0, Math.floor((x - padL) / barW)));
-    const bucketLo = data.viewLo + b * data.bucketMs;
-    const bucketHi = bucketLo + data.bucketMs;
+    const bucketLo = data.viewLo + b * bucketMs;
+    const bucketHi = bucketLo + bucketMs;
     this._window = { min: bucketLo, max: bucketHi };
-    this._recomputeFilter();
-    this._scheduleRender(['scrubber', 'chart', 'grid', 'columns']);
+    this._applyWindowOnly();
+    this._scheduleRender(['scrubber', 'chart', 'chips', 'grid', 'columns', 'sus']);
+  }
+
+  // ── Chart rubber-band selection ──────────────────────────────────────────
+  // Layered over each chart canvas. Three interactions from one pointer stream:
+  //   - tap (no drag, move < 4 px) → existing single-bucket drill
+  //   - drag within plot area      → set the time window to [startX, endX],
+  //                                  snapped to bucket boundaries on pointer-up
+  //   - Shift-drag                 → union the selection with the current window
+  //   - double-click               → reset window to data range (like Reset chip)
+  //
+  // During the drag itself we stay in the cheap path: `_applyWindowOnly()` +
+  // `_scheduleRender(['scrubber','chart'])`. Grid / columns / sus are deferred
+  // until pointer-up so 100k-row datasets stay interactive. The visible
+  // selection overlay is a cheap absolutely-positioned <div> inside `.tl-chart`.
+  _installChartDrag(canvas, chartWrap, tooltip, getData) {
+    // Hover tooltip stays wired — `_onChartHover` reads `.layout` off the
+    // currently-cached chart data to highlight the nearest bucket.
+    canvas.addEventListener('mousemove', (e) => this._onChartHover(e, getData(), tooltip));
+    canvas.addEventListener('mouseleave', () => { tooltip.hidden = true; });
+
+    // Double-click anywhere on the plot clears the window.
+    canvas.addEventListener('dblclick', (e) => {
+      const data = getData();
+      if (!data) return;
+      const rect = canvas.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const { padL, plotW } = data.layout;
+      if (x < padL || x > padL + plotW) return;
+      if (this._window) {
+        this._window = null;
+        this._applyWindowOnly();
+        this._scheduleRender(['scrubber', 'chart', 'chips', 'grid', 'columns', 'sus']);
+      }
+    });
+
+    const DRAG_THRESHOLD_PX = 4;
+
+    canvas.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;   // left button only — right-click reserved
+      const data = getData();
+      if (!data) return;
+      const rect = canvas.getBoundingClientRect();
+      const x0 = e.clientX - rect.left;
+      const { padL, plotW, padT, plotH } = data.layout;
+      if (x0 < padL || x0 > padL + plotW) return;   // clicked in axis margin — ignore
+      // Snapshot the window state at drag-start so Shift-union works against
+      // the stable starting window rather than the in-flight one.
+      const startWindow = this._window
+        ? { min: this._window.min, max: this._window.max }
+        : null;
+      // Convert a plot-space x (pixels) to a time (ms) in the chart's domain.
+      const xToMs = (px) => {
+        const clamped = Math.max(padL, Math.min(padL + plotW, px));
+        const rel = (clamped - padL) / plotW;
+        return data.viewLo + rel * data.rangeMs;
+      };
+      // Snap a time to bucket boundaries so the selection lands on whole bars.
+      const snap = (ms, floor) => {
+        const off = ms - data.viewLo;
+        const idx = floor ? Math.floor(off / data.bucketMs) : Math.ceil(off / data.bucketMs);
+        return data.viewLo + idx * data.bucketMs;
+      };
+
+      // Build the selection overlay lazily — reused across drags on the same
+      // chart. Lives inside `.tl-chart` so it's relative to the plot.
+      let overlay = chartWrap.querySelector('.tl-chart-selection');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.className = 'tl-chart-selection';
+        overlay.hidden = true;
+        chartWrap.appendChild(overlay);
+      }
+
+      let dragged = false;
+      try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* noop */ }
+      this._windowDragging = true;
+
+      // `.tl-chart` has padding (see viewers.css), and the overlay is
+      // positioned relative to `.tl-chart` (its padding-box), while
+      // `padL` is in canvas-local coordinates. Offset by the canvas's
+      // position within its parent so the overlay lines up 1:1 with
+      // the plot area.
+      const canvasOffX = canvas.offsetLeft;
+      const canvasOffY = canvas.offsetTop;
+      const onMove = (ev) => {
+        const xNow = ev.clientX - rect.left;
+        const dx = Math.abs(xNow - x0);
+        if (!dragged && dx < DRAG_THRESHOLD_PX) return;
+        dragged = true;
+        tooltip.hidden = true;
+
+        const a = Math.min(x0, xNow);
+        const b = Math.max(x0, xNow);
+        const aClamped = Math.max(padL, Math.min(padL + plotW, a));
+        const bClamped = Math.max(padL, Math.min(padL + plotW, b));
+        overlay.hidden = false;
+        overlay.style.left = (canvasOffX + aClamped) + 'px';
+        overlay.style.top = (canvasOffY + padT) + 'px';
+        overlay.style.width = Math.max(1, bClamped - aClamped) + 'px';
+        overlay.style.height = plotH + 'px';
+        // NOTE: the selection is purely visual during the drag — we
+        // do NOT touch `this._window` / `_applyWindowOnly` / render
+        // here. The histogram, scrubber, grid, columns and sus panes
+        // all stay in their pre-drag state until pointer-up, which
+        // keeps even 100k-row datasets buttery while the user picks
+        // a range.
+      };
+      const onUp = (ev) => {
+        canvas.removeEventListener('pointermove', onMove);
+        canvas.removeEventListener('pointerup', onUp);
+        canvas.removeEventListener('pointercancel', onUp);
+        try { canvas.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ }
+        this._windowDragging = false;
+
+        if (!dragged) {
+          // Click, not drag → treat as bucket drill.
+          overlay.hidden = true;
+          this._onChartClick(canvas, data, ev.clientX);
+          return;
+        }
+
+        // Snap to bucket boundaries.
+        const xEnd = ev.clientX - rect.left;
+        const a = Math.min(x0, xEnd);
+        const b = Math.max(x0, xEnd);
+        let lo = snap(xToMs(Math.max(padL, Math.min(padL + plotW, a))), true);
+        let hi = snap(xToMs(Math.max(padL, Math.min(padL + plotW, b))), false);
+        if (ev.shiftKey && startWindow) {
+          lo = Math.min(lo, startWindow.min);
+          hi = Math.max(hi, startWindow.max);
+        }
+        if (this._dataRange) {
+          lo = Math.max(this._dataRange.min, lo);
+          hi = Math.min(this._dataRange.max, hi);
+        }
+        if (!(Number.isFinite(lo) && Number.isFinite(hi) && hi > lo)) {
+          overlay.hidden = true;
+          return;
+        }
+        overlay.hidden = true;
+        this._window = { min: lo, max: hi };
+        this._applyWindowOnly();
+        // Commit: full render pass now that the selection is final.
+        this._scheduleRender(['scrubber', 'chart', 'chips', 'grid', 'columns', 'sus']);
+      };
+      canvas.addEventListener('pointermove', onMove);
+      canvas.addEventListener('pointerup', onUp);
+      canvas.addEventListener('pointercancel', onUp);
+    });
+  }
+
+  _onChartHover(e, data, tooltip) {
+    if (!data) { tooltip.hidden = true; return; }
+    const canvas = e.currentTarget;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const { padL, plotW, padT, plotH, barW, bucketMs } = data.layout;
+    if (x < padL || x > padL + plotW || y < padT || y > padT + plotH) { tooltip.hidden = true; return; }
+    const b = Math.min(data.bucketCount - 1, Math.max(0, Math.floor((x - padL) / barW)));
+    const lo = data.viewLo + b * bucketMs;
+    const hi = lo + bucketMs;
+    const k = data.stackKeys ? data.stackKeys.length : 1;
+    let total = 0;
+    const parts = [];
+    for (let j = 0; j < k; j++) {
+      const c = data.buckets[b * k + j];
+      if (c) {
+        total += c;
+        const label = data.stackKeys ? (data.stackKeys[j] === '__other__' ? 'Other' : data.stackKeys[j]) : 'Count';
+        parts.push(`<span class="tl-chart-tooltip-dot" style="background:${TIMELINE_STACK_PALETTE[j % TIMELINE_STACK_PALETTE.length]}"></span>${_tlEsc(label)}: <b>${c.toLocaleString()}</b>`);
+      }
+    }
+    // 🚩 Suspicious row — only present on the main chart (see the
+    // `role === 'main'` gate in `_computeChartData` for `susBuckets`).
+    let susLine = '';
+    if (data.susBuckets && data.susBuckets[b]) {
+      susLine = `<div class="tl-chart-tooltip-sus">🚩 Suspicious: <b>${data.susBuckets[b].toLocaleString()}</b></div>`;
+    }
+    tooltip.innerHTML = `<div class="tl-chart-tooltip-h">${_tlEsc(_tlFormatFullUtc(lo, this._timeIsNumeric))} → ${_tlEsc(_tlFormatFullUtc(hi, this._timeIsNumeric))}</div>
+      <div class="tl-chart-tooltip-total">${total.toLocaleString()} events</div>
+      ${parts.length ? '<div class="tl-chart-tooltip-rows">' + parts.join('<br>') + '</div>' : ''}
+      ${susLine}`;
+    tooltip.hidden = false;
+    const tW = tooltip.offsetWidth || 160;
+    const tH = tooltip.offsetHeight || 40;
+    let left = x + 12, top = y + 12;
+    if (left + tW > canvas.clientWidth) left = x - tW - 12;
+    if (top + tH > canvas.clientHeight) top = y - tH - 12;
+    tooltip.style.left = left + 'px';
+    tooltip.style.top = top + 'px';
+  }
+
+  _handleLegendClick(e) {
+    const chip = e.target.closest('.tl-legend-chip');
+    if (!chip || this._stackCol == null) return;
+    const key = chip.dataset.key;
+    if (key === '__other__') return; // "Other" isn't a real value
+    const op = e.shiftKey ? 'ne' : 'eq';
+    this._addOrToggleChip(this._stackCol, key, { op });
+  }
+  _handleLegendDbl(e) {
+    const chip = e.target.closest('.tl-legend-chip');
+    if (!chip || this._stackCol == null) return;
+    const key = chip.dataset.key;
+    if (key === '__other__') return;
+    // "Only this" → replace all chips on this column with a single eq.
+    this._addOrToggleChip(this._stackCol, key, { op: 'eq', replace: true });
+  }
+  _handleLegendContext(e) {
+    const chip = e.target.closest('.tl-legend-chip');
+    if (!chip || this._stackCol == null) return;
+    e.preventDefault();
+    const key = chip.dataset.key;
+    if (key === '__other__') return;
+    this._openRowContextMenu(e, this._stackCol, key);
   }
 
   // ── Chips ────────────────────────────────────────────────────────────────
+  // The chips strip is now a read-only display of side-band state that
+  // LIVES OUTSIDE the query DSL: the current time `range` (from
+  // `_window`) and the suspicious-value marks (from `_susMarks`,
+  // persisted by column name). Row-filtering chips were migrated to the
+  // query bar above — every Include / Exclude / Only / column-menu
+  // Apply action now mutates the query string, not a parallel chip list.
   _renderChips() {
     const el = this._els.chips;
     el.innerHTML = '';
-    if (!this._chips.length && !this._window) {
+
+    // "＋ Add Sus" button — the only authorable chip from this strip.
+    // Everything else in the strip (range, existing sus marks) is
+    // derived from state and rendered with an ⊗ remove button.
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.className = 'tl-chip tl-chip-add';
+    addBtn.innerHTML = `<span class="tl-chip-plus">＋</span><span class="tl-chip-val">Add Suspicious Indicator</span>`;
+    addBtn.title = 'Flag a value as 🚩 suspicious (tint-only, does not filter rows)';
+    addBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._openAddSusPopover(addBtn);
+    });
+
+    const susResolved = this._susMarksResolved();
+    if (!susResolved.length && !this._window) {
       const hint = document.createElement('span');
       hint.className = 'tl-chips-empty';
-      hint.textContent = 'Click a value in a column card below to filter. Shift-click = NOT.';
+      hint.textContent = 'Use the query bar above to filter rows. Right-click a cell for quick actions.';
       el.appendChild(hint);
+      el.appendChild(addBtn);
       return;
     }
     if (this._window) {
       const chip = document.createElement('span');
       chip.className = 'tl-chip tl-chip-range';
-      chip.innerHTML = `<span class="tl-chip-col">range</span><span class="tl-chip-val">${_tlEsc(_tlFormatFullUtc(this._window.min))} → ${_tlEsc(_tlFormatFullUtc(this._window.max))}</span><button class="tl-chip-x" title="Clear range">⊗</button>`;
+      chip.innerHTML = `<span class="tl-chip-col">range</span><span class="tl-chip-val">${_tlEsc(_tlFormatFullUtc(this._window.min, this._timeIsNumeric))} → ${_tlEsc(_tlFormatFullUtc(this._window.max, this._timeIsNumeric))}</span><button class="tl-chip-x" title="Clear range">⊗</button>`;
       chip.querySelector('.tl-chip-x').addEventListener('click', () => {
+        // Window-only change → fast path (no filter re-run).
         this._window = null;
-        this._recomputeFilter();
-        this._scheduleRender(['scrubber', 'chart', 'chips', 'grid', 'columns']);
+        this._applyWindowOnly();
+        this._scheduleRender(['scrubber', 'chart', 'chips', 'grid', 'columns', 'sus']);
       });
       el.appendChild(chip);
     }
-    for (let i = 0; i < this._chips.length; i++) {
-      const c = this._chips[i];
+    // Render sus marks from `_susMarks` (resolved to live colIdx). Note
+    // that we iterate `_susMarks` directly (not the resolved list) so
+    // the ⊗ handler can splice the PERSISTED index and keep the
+    // by-name persistence stable. Marks whose column is currently
+    // missing (extracted col removed etc.) stay persisted but don't
+    // render — `_susMarksResolved()` drops them.
+    for (let i = 0; i < this._susMarks.length; i++) {
+      const m = this._susMarks[i];
+      // "Any column" marks render with a synthetic "Any" column label and
+      // always bind to the persisted index (they don't resolve to a live
+      // colIdx). Column-scoped marks whose column has disappeared (e.g.
+      // extracted col removed) stay persisted but don't render — mirrors
+      // `_susMarksResolved()`.
+      const isAny = m.any === true;
+      if (!isAny) {
+        const colIdx = this.columns.indexOf(m.colName);
+        if (colIdx < 0) continue;
+      }
       const chip = document.createElement('span');
-      chip.className = 'tl-chip' + (c.op === 'ne' ? ' tl-chip-not' : '');
-      const colName = this.columns[c.colIdx] || `(col ${c.colIdx + 1})`;
-      chip.innerHTML = `<span class="tl-chip-col">${_tlEsc(colName)}</span><span class="tl-chip-op">${c.op === 'ne' ? '≠' : '='}</span><span class="tl-chip-val">${_tlEsc(c.val)}</span><button class="tl-chip-x" title="Remove filter">⊗</button>`;
+      chip.className = 'tl-chip tl-chip-sus' + (isAny ? ' tl-chip-sus-any' : '');
+      const label = isAny ? '＊ Any' : m.colName;
+      chip.innerHTML = `<span class="tl-chip-col">${_tlEsc(label)}</span><span class="tl-chip-op">🚩</span><span class="tl-chip-val">${_tlEsc(m.val)}</span><button class="tl-chip-x" title="Remove">⊗</button>`;
+      const persistIdx = i;
       chip.querySelector('.tl-chip-x').addEventListener('click', () => {
-        this._chips.splice(i, 1);
+        this._susMarks.splice(persistIdx, 1);
+        TimelineView._saveSusMarksFor(this._fileKey, this._susMarks);
         this._recomputeFilter();
-        this._scheduleRender(['chart', 'chips', 'grid', 'columns']);
+        this._scheduleRender(['chart', 'chips', 'grid', 'columns', 'sus']);
       });
       el.appendChild(chip);
     }
+
+    el.appendChild(addBtn);
   }
+
+  // ── "＋ Add Sus" popover ─────────────────────────────────────────────────
+  // Compact form anchored on the Add-Sus button. Pick a column + value
+  // and push onto `_susMarks` (persisted by column name). Sus marks
+  // tint rows but do NOT filter — use the query bar for row filtering.
+  _openAddSusPopover(anchor) {
+    this._closePopover();
+    const menu = document.createElement('div');
+    menu.className = 'tl-popover tl-add-sus';
+
+    // Build column <select>. An "Any column" sentinel (value -1) is
+    // offered first and selected by default — this is the most common
+    // sus pattern ("flag this value wherever it appears") and having it
+    // sit at the top avoids the footgun where a user flags "admin" under
+    // the first real column and then can't see why a later row with
+    // admin in a different column is tinted.
+    const cols = this.columns;
+    let colOptions = '<option value="-1" selected>＊ Any column</option>';
+    for (let i = 0; i < cols.length; i++) {
+      const name = cols[i] || `(col ${i + 1})`;
+      const prefix = (i >= this._baseColumns.length) ? '⨯ ' : '';
+      colOptions += `<option value="${i}">${_tlEsc(prefix + name)}</option>`;
+    }
+
+    menu.innerHTML = `
+      <div class="tl-add-filter-form">
+        <label class="tl-field">
+          <span class="tl-field-label">Column</span>
+          <select class="tl-field-select" data-f="col">${colOptions}</select>
+        </label>
+        <label class="tl-field tl-field-wide">
+          <span class="tl-field-label">Value</span>
+          <input type="text" class="tl-field-select" data-f="val" spellcheck="false" placeholder="exact value to flag as suspicious">
+        </label>
+        <div class="tl-add-filter-hint">🚩 Sus marks tint rows but do NOT filter — use the query bar for row filtering.</div>
+        <div class="tl-add-filter-actions">
+          <button class="tl-tb-btn" type="button" data-act="cancel">Cancel</button>
+          <button class="tl-tb-btn tl-tb-btn-primary" type="button" data-act="add">Mark suspicious</button>
+        </div>
+      </div>
+    `;
+
+    const colSel = menu.querySelector('[data-f="col"]');
+    const valEl = menu.querySelector('[data-f="val"]');
+
+    const submit = () => {
+      const colIdx = parseInt(colSel.value, 10);
+      const val = valEl.value;
+      if (val === '') { valEl.focus(); return; }
+      // colIdx === -1 is the "Any column" sentinel. Everything else must
+      // resolve to a live column index.
+      if (colIdx === -1) {
+        // Toggle an "Any column" mark. Keyed on { any:true, val } so
+        // repeated adds of the same value de-dupe as a removal.
+        const valStr = String(val);
+        const ix = this._susMarks.findIndex(m => m.any === true && m.val === valStr);
+        if (ix >= 0) this._susMarks.splice(ix, 1);
+        else this._susMarks.push({ any: true, colName: null, val: valStr });
+        TimelineView._saveSusMarksFor(this._fileKey, this._susMarks);
+        this._recomputeFilter();
+        this._scheduleRender(['chart', 'chips', 'grid', 'columns', 'sus']);
+        this._closePopover();
+        return;
+      }
+      if (!Number.isFinite(colIdx) || colIdx < 0 || colIdx >= cols.length) return;
+      this._addOrToggleChip(colIdx, val, { op: 'sus' });
+      this._closePopover();
+    };
+    menu.querySelector('[data-act="add"]').addEventListener('click', submit);
+    menu.querySelector('[data-act="cancel"]').addEventListener('click', () => this._closePopover());
+    valEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
+      else if (e.key === 'Escape') { e.preventDefault(); this._closePopover(); }
+    });
+
+    // Anchor below the button.
+    const rect = anchor.getBoundingClientRect();
+    this._positionFloating(menu, rect.left, rect.bottom + 4);
+    document.body.appendChild(menu);
+    this._openPopover = menu;
+    setTimeout(() => valEl.focus(), 0);
+  }
+
 
   // ── Grid ─────────────────────────────────────────────────────────────────
   _renderGrid() {
-    const wrap = this._els.gridWrap;
-    // Materialise filtered rows. For 200k-row cap × typical 15 cols this is
-    // a shallow reference copy, O(visible) — fine on main thread.
-    const idx = this._filteredIdx;
-    const filteredRows = new Array(idx.length);
-    for (let i = 0; i < idx.length; i++) filteredRows[i] = this.rows[idx[i]];
+    this._renderGridInto(this._els.gridWrap, this._filteredIdx || new Uint32Array(0), 'main');
+  }
 
-    if (!this._grid) {
+  _renderGridInto(wrap, idx, role) {
+    const rowsConcat = new Array(idx.length);
+    for (let i = 0; i < idx.length; i++) rowsConcat[i] = this._buildRowConcat(idx[i]);
+    const sus = this._susBitmap;
+    const origIdx = idx;
+
+    const rowClass = (rowIdx) => {
+      const orig = origIdx[rowIdx];
+      return (sus && sus[orig]) ? 'tl-row-sus' : '';
+    };
+
+    const existing = (role === 'main' ? this._grid : this._susGrid);
+    if (!existing) {
       const viewer = new GridViewer({
         columns: this.columns,
-        rows: filteredRows,
+        rows: rowsConcat,
         className: 'tl-grid-inner csv-view',
         hideFilterBar: true,
         infoText: '',
-        // Turn OFF the built-in chart / scrubber strip — Timeline mode has
-        // its own. `timeColumn: null` keeps the auto-sniffer from firing,
-        // but the strip is also hidden via CSS inside `#timeline-root` for
-        // belt-and-braces.
         timeColumn: -1,
+        rowClass,
+        // In Timeline Mode the embedded grid's built-in "Use as timeline"
+        // and "Stack timeline by this column" column-header actions must
+        // drive the outer Timeline histogram + stack selects instead of
+        // promoting GridViewer's internal `.grid-timeline` strip.
+        onUseAsTimeline: role === 'main' ? (colIdx) => this._setTimeColFromGrid(colIdx) : null,
+        onStackTimelineBy: role === 'main' ? (colIdx) => this._setStackColFromGrid(colIdx) : null,
+        // Drawer → key right-click menu → promote the JSON leaf to a
+        // virtual (extracted) column and optionally chain a filter chip.
+        // `colIdx` is the column index in the GridViewer's column array,
+        // which matches `_baseColumns` + `_extractedCols` — we only allow
+        // picks rooted at base columns (the JSON source cell).
+        //
+        // `action` ∈ 'extract' | 'include' | 'exclude' (leaves only — the
+        // JsonTree context menu is not wired on composite keys).
+        //   - extract        — just add the extracted column
+        //   - include/exclude — add the column AND push an eq/ne chip
+        //     against the leaf's current value
+        onCellPick: (dataIdx, colIdx, path, leafValue, action) => {
+          void dataIdx;
+          try {
+            // Empty-path sentinel — grid-drawer plain-text field right-click
+            // ("Include value" / "Exclude value" on an ordinary non-JSON
+            // cell). Do NOT synthesise a virtual extracted column; push
+            // the chip directly against the source column. Extract is
+            // intentionally not supported here — the source column
+            // already exists so extraction would produce a duplicate.
+            if (!path || path.length === 0) {
+              if (colIdx < 0 || colIdx >= this.columns.length) return;
+              const act = action || 'include';
+              if (act !== 'include' && act !== 'exclude') return;
+              const chipOp = act === 'exclude' ? 'ne' : 'eq';
+              const chipVal = (leafValue == null) ? ''
+                : (typeof leafValue === 'object' ? JSON.stringify(leafValue) : String(leafValue));
+              this._addOrToggleChip(colIdx, chipVal, { op: chipOp });
+              if (this._app && typeof this._app._toast === 'function') {
+                const verb = act === 'include' ? 'Include' : 'Exclude';
+                const colName = this.columns[colIdx] || `col${colIdx}`;
+                this._app._toast(`${verb} filter added: ${colName}`, 'info');
+              }
+              return;
+            }
+
+            // Non-empty path — JSON-leaf pick. Extract a virtual column
+            // (and chain a chip for include/exclude). Only allowed on
+            // base columns — picks against an already-extracted column
+            // are intentionally ignored to avoid recursion.
+            if (colIdx >= this._baseColumns.length) return;
+            const label = _tlJsonPathLabel(path);
+            const fullLabel = `${this._baseColumns[colIdx] || 'col' + colIdx}.${label}`;
+            const newColIdx = this._addJsonExtractedCol(colIdx, path, fullLabel);
+            const act = action || 'extract';
+            if (newColIdx >= 0 && act !== 'extract') {
+              let chipVal = '';
+              let chipOp = 'eq';
+              if (act === 'include') {
+                chipOp = 'eq';
+                chipVal = (leafValue == null) ? ''
+                  : (typeof leafValue === 'object' ? JSON.stringify(leafValue) : String(leafValue));
+              } else if (act === 'exclude') {
+                chipOp = 'ne';
+                chipVal = (leafValue == null) ? ''
+                  : (typeof leafValue === 'object' ? JSON.stringify(leafValue) : String(leafValue));
+              }
+              this._addOrToggleChip(newColIdx, chipVal, { op: chipOp });
+            }
+            if (this._app && typeof this._app._toast === 'function') {
+              const verb = act === 'extract' ? 'Added column'
+                : act === 'include' ? 'Added column + include filter'
+                  : act === 'exclude' ? 'Added column + exclude filter'
+                    : 'Added column';
+              this._app._toast(`${verb}: ${fullLabel}`, 'info');
+            }
+          } catch (err) { console.error('onCellPick failed', err); }
+        },
+
       });
+
+      // Stamp the role on the viewer so the scroll handler below (and any
+      // future per-role logic) can look up the live filtered-index array
+      // on `this` rather than relying on a stale closure — `origIdx` here
+      // is the snapshot that was passed in for the first render; later
+      // re-renders call `existing.setRows()` with a fresh filtered set, so
+      // any virtual-row → original-row mapping has to be re-read each time
+      // from `this._filteredIdx` / `this._susFilteredIdx`.
+      viewer._tlRole = role;
       wrap.innerHTML = '';
       wrap.appendChild(viewer.root());
-      this._grid = viewer;
+
+      // Left-click a row → move the red-line cursor on the histogram to
+      // this row's timestamp. Uses the virtual row index from data-idx
+      // (populated by GridViewer) to look up the original dataIdx.
+      viewer.root().addEventListener('click', (e) => {
+        const rowEl = e.target.closest('.grid-row');
+        if (!rowEl) return;
+        // Don't eat clicks on interactive children (links, buttons, etc.).
+        if (e.target.closest('button, a, input, select, textarea')) return;
+        const virtualIdx = parseInt(rowEl.dataset.idx || '-1', 10);
+        if (!Number.isFinite(virtualIdx) || virtualIdx < 0) return;
+        const curIdx = (viewer._tlRole === 'main') ? this._filteredIdx : this._susFilteredIdx;
+        const origRow = curIdx ? curIdx[virtualIdx] : origIdx[virtualIdx];
+        this._setCursorDataIdx(origRow);
+      });
+
+      // Scroll → move the red-line cursor on the histogram so it tracks
+      // where the analyst is reading, not just the last row they clicked.
+      // rAF-throttled to stay cheap; the CSS `transition: left 140ms
+      // ease-out` on `.tl-chart-cursor` provides the same visual
+      // smoothening as `.grid-timeline-cursor` in non-timeline mode.
+      let scrollRaf = 0;
+      viewer._scr.addEventListener('scroll', () => {
+        if (scrollRaf) return;
+        scrollRaf = requestAnimationFrame(() => {
+          scrollRaf = 0;
+          this._updateCursorFromGridScroll(viewer);
+        });
+      }, { passive: true });
+
+
+      // Wire right-click on rows.
+      viewer.root().addEventListener('contextmenu', (e) => {
+        // Right-click on a header cell → open the Excel-style column menu
+        // (same surface as the ▾ affordance on Top-Values cards). Gives
+        // the analyst Contains + checkbox filtering directly from the
+        // column header without having to scroll down to the matching
+        // top-values card. Header left-click remains GridViewer's own
+        // sort / hide / pin menu — only the right-click gesture is
+        // claimed here. Checked before the body-row branch so the native
+        // browser menu is suppressed either way.
+        const headCell = e.target.closest('.grid-header-cell.grid-header-clickable');
+        if (headCell) {
+          const colAttr = parseInt(headCell.dataset.col || '-1', 10);
+          if (Number.isFinite(colAttr) && colAttr >= 0) {
+            e.preventDefault();
+            this._openColumnMenu(colAttr, headCell);
+          }
+          return;
+        }
+        const cell = e.target.closest('.grid-cell');
+        if (!cell) return;
+        const rowEl = cell.closest('.grid-row');
+        if (!rowEl) return;
+        const virtualIdx = parseInt(rowEl.dataset.idx || '-1', 10);
+        if (!Number.isFinite(virtualIdx) || virtualIdx < 0) return;
+        // grid-viewer uses data-idx = dataIdx within the viewer's rows array;
+        // that's the position in `rowsConcat`, NOT the original index.
+        // IMPORTANT: resolve the virtual → original-row mapping against the
+        // LIVE filtered-index on `this`, not the `origIdx` captured in this
+        // listener's closure at first-render time. The contextmenu listener
+        // is wired once, but `_renderGridInto` re-uses the same GridViewer
+        // and swaps rows via `existing.setRows(rowsConcat)` whenever a
+        // filter is applied — `origIdx` becomes stale the moment the query
+        // bar narrows the grid, which previously made the right-click
+        // menu's `Include / Exclude "<value>"` labels (and the resulting
+        // chips) point at the wrong cell. Mirrors the same pattern the
+        // left-click handler above already uses.
+        const curIdx = (viewer._tlRole === 'main') ? this._filteredIdx : this._susFilteredIdx;
+        const origRow = curIdx ? curIdx[virtualIdx] : origIdx[virtualIdx];
+        // Determine which column was clicked by counting prior siblings,
+        // skipping the row-number cell.
+        const cells = Array.from(rowEl.querySelectorAll('.grid-cell'));
+        const cellIdx = cells.indexOf(cell);
+        if (cellIdx <= 0) return;
+        const colIdx = cellIdx - 1;   // row-num is 0
+        const val = this._cellAt(origRow, colIdx);
+        e.preventDefault();
+        this._openRowContextMenu(e, colIdx, val, { origRow });
+      });
+      if (role === 'main') this._grid = viewer; else this._susGrid = viewer;
     } else {
-      this._grid.setRows(filteredRows);
+      // Preserve columns in case new extracted columns were added.
+      existing.columns = this.columns;
+      existing._rowClassFn = rowClass;
+      existing.setRows(rowsConcat);
     }
+  }
+
+  // Build a concatenated row (base + extracted cell values) for GridViewer.
+  _buildRowConcat(dataIdx) {
+    const base = this.rows[dataIdx] || [];
+    if (!this._extractedCols.length) return base;
+    const out = new Array(this._baseColumns.length + this._extractedCols.length);
+    for (let c = 0; c < this._baseColumns.length; c++) out[c] = base[c] == null ? '' : base[c];
+    for (let e = 0; e < this._extractedCols.length; e++) {
+      out[this._baseColumns.length + e] = this._extractedCols[e].values[dataIdx] || '';
+    }
+    return out;
   }
 
   // ── Column top-values cards ──────────────────────────────────────────────
   _renderColumns() {
-    const host = this._els.cols;
-    host.style.setProperty('--tl-col-count', String(this.columns.length));
-    // Build fresh — DOM per card is small (header + virtual list viewport).
-    // For 40 columns we're creating ~40 × 12 nodes = 480 nodes. Fine.
-    host.innerHTML = '';
-    const stats = this._colStats;
-    const rowHeight = 22;                                            // sync with .tl-col-row
-    const visibleRows = 10;                                           // fits in min card height
+    this._paintColumnCards(this._els.cols, this._colStats, 'main');
+  }
 
-    for (let c = 0; c < this.columns.length; c++) {
-      const s = stats ? stats[c] : { total: 0, distinct: 0, values: [] };
+  _renderSus() {
+    const sec = this._els.susSection;
+    if (!this._susAny) {
+      // All sus chips removed — fully clear the sub-chart / sub-grid /
+      // sub-columns so the next time a sus chip is added we don't briefly
+      // flash stale rows / cards from the previous run before the new
+      // render lands. Keep `sec.wrapper.classList.add('hidden')` at the
+      // end so the actual visibility toggle is a single line. The
+      // matching CSS rule `.timeline-view .tl-section.hidden { display:
+      // none }` takes the wrapper out of layout flow entirely.
+      this._susColStats = null;
+      this._lastSusChartData = null;
+      if (this._susGrid) {
+        try { this._susGrid.destroy(); } catch (_) { /* noop */ }
+        this._susGrid = null;
+      }
+      if (this._els.susGridWrap) this._els.susGridWrap.innerHTML = '';
+      if (this._els.susColumns) this._els.susColumns.innerHTML = '';
+      if (this._els.susChart) {
+        const cv = this._els.susChart.querySelector('.tl-chart-canvas');
+        if (cv) {
+          const ctx = cv.getContext('2d');
+          if (ctx) ctx.clearRect(0, 0, cv.width, cv.height);
+        }
+        const lg = this._els.susChart.querySelector('.tl-chart-legend');
+        if (lg) lg.innerHTML = '';
+        const em = this._els.susChart.querySelector('.tl-chart-empty');
+        if (em) em.classList.add('hidden');
+      }
+      sec.wrapper.classList.add('hidden');
+      return;
+    }
+    sec.wrapper.classList.remove('hidden');
+    // Sub-chart
+    const susCanvas = this._els.susChart.querySelector('.tl-chart-canvas');
+    const susLegend = this._els.susChart.querySelector('.tl-chart-legend');
+    const susEmpty = this._els.susChart.querySelector('.tl-chart-empty');
+    this._lastSusChartData = this._renderChartInto(susCanvas, susLegend, susEmpty, this._susFilteredIdx, 'sus');
+    // Sub-grid
+    this._renderGridInto(this._els.susGridWrap, this._susFilteredIdx || new Uint32Array(0), 'sus');
+    // Sub-columns
+    this._paintColumnCards(this._els.susColumns, this._susColStats, 'sus');
+  }
+
+  // ── Detections (EVTX-only) ───────────────────────────────────────────────
+  // Renders Sigma-style rule hits pulled from `this._evtxFindings.externalRefs`
+  // (where `type === IOC.PATTERN`). Each row is: severity dot / description /
+  // count / target Event ID. Clicking a row pushes an `eq` chip on the Event
+  // ID column (colIdx 1 for the default EVTX schema) so the analyst can pivot
+  // to just the rows that triggered the detection.
+  _renderDetections() {
+    const sec = this._els.detectionsSection;
+    const body = this._els.detectionsBody;
+    if (!sec || !body) return;
+
+    const refs = this._evtxFindings && Array.isArray(this._evtxFindings.externalRefs)
+      ? this._evtxFindings.externalRefs.filter(r => r && r.type === IOC.PATTERN)
+      : [];
+    if (!refs.length) {
+      sec.wrapper.classList.add('hidden');
+      return;
+    }
+    sec.wrapper.classList.remove('hidden');
+
+    // Force-expand the Detections section whenever it has content — analysts
+    // glance at this section first on EVTX so a previously-collapsed state
+    // carried over from a different file shouldn't hide the Sigma hits.
+    // Also persist the uncollapsed state so it survives the next rebuild.
+    if (sec.wrapper.classList.contains('collapsed')) {
+      sec.wrapper.classList.remove('collapsed');
+      this._sections.detections = false;
+      TimelineView._saveSections(this._sections);
+    }
+
+    const sevRank = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+
+    refs.sort((a, b) => {
+      const sa = sevRank[a.severity] || 0, sb = sevRank[b.severity] || 0;
+      if (sa !== sb) return sb - sa;
+      return (b.count || 0) - (a.count || 0);
+    });
+
+    // Event ID column index for EVTX (matches `fromEvtx` schema).
+    const eventIdCol = this._baseColumns.indexOf('Event ID');
+
+    body.innerHTML = '';
+    const tbl = document.createElement('table');
+    tbl.className = 'tl-detections-table';
+    tbl.innerHTML = `
+      <thead><tr>
+        <th class="tl-det-sev">Severity</th>
+        <th class="tl-det-desc">Detection</th>
+        <th class="tl-det-eid">Event ID</th>
+        <th class="tl-det-count">Hits</th>
+      </tr></thead>
+      <tbody></tbody>`;
+    const tb = tbl.querySelector('tbody');
+    for (const r of refs) {
+      const tr = document.createElement('tr');
+      tr.className = 'tl-det-row tl-det-sev-' + (r.severity || 'info');
+      const eid = r.eventId == null ? '' : String(r.eventId);
+      // The raw `url` field holds "<description> (N match(es))" — strip the
+      // trailing count suffix for display since we show it in its own column.
+      const raw = String(r.url || '');
+      const desc = raw.replace(/\s*\((\d+)\s+match(?:es)?\)\s*$/i, '');
+      const cnt = r.count != null ? r.count : '';
+      tr.innerHTML = `
+        <td class="tl-det-sev"><span class="tl-det-sev-badge">${_tlEsc((r.severity || 'info').toUpperCase())}</span></td>
+        <td class="tl-det-desc" title="${_tlEsc(desc)}">${_tlEsc(desc)}</td>
+        <td class="tl-det-eid">${_tlEsc(eid)}</td>
+        <td class="tl-det-count">${cnt === '' ? '' : Number(cnt).toLocaleString()}</td>`;
+      if (eid && eventIdCol >= 0) {
+        tr.classList.add('tl-det-row-clickable');
+        tr.title = `Filter Event ID = ${eid} (Ctrl/⌘-click to add to current query)`;
+        tr.addEventListener('click', (ev) => {
+          // Default: clear the whole query first so the detection stands
+          // alone — otherwise a surviving `contains` / `NOT` / other-column
+          // chip would keep filtering the result set to nothing. Ctrl/Meta
+          // is an opt-out for analysts who want to stack detections
+          // additively on top of an existing query.
+          const additive = ev.ctrlKey || ev.metaKey;
+          if (!additive) this._queryCommitClauses([]);
+          this._addOrToggleChip(eventIdCol, eid, { op: 'eq' });
+        });
+      }
+      tb.appendChild(tr);
+    }
+    body.appendChild(tbl);
+  }
+
+  // ── Entities (EVTX IOCs) ────────────────────────────────────────────────
+  // Collects non-PATTERN / non-INFO IOCs from EVTX `externalRefs` (users,
+  // hosts, hashes, processes, IPs, URLs, UNC paths, file paths, command
+  // lines, registry keys, domains, emails). Results are grouped by type,
+  // deduplicated (and capped) for display, and each row offers a
+  // click-to-filter pivot against the best matching column. CSV / TSV are
+  // intentionally skipped — scanning every cell with URL + hostname
+  // regexes was an O(rows × cols) drag on large logs, and the analyser's
+  // sidebar already surfaces the same IOCs via the rawText path.
+  _renderEntities() {
+    const sec = this._els.entitiesSection;
+    const body = this._els.entitiesBody;
+    if (!sec || !body) return;
+
+    // EVTX-only feature — hide for CSV / TSV without running the collector.
+    if (!this._evtxFindings) {
+      sec.wrapper.classList.add('hidden');
+      return;
+    }
+
+    const groups = this._collectEntities();
+    if (!groups.size) {
+      sec.wrapper.classList.add('hidden');
+      return;
+    }
+    sec.wrapper.classList.remove('hidden');
+
+    body.innerHTML = '';
+    // Stable display order — most useful pivots first.
+    const order = [
+      IOC.USERNAME, IOC.HOSTNAME, IOC.IP, IOC.DOMAIN, IOC.URL,
+      IOC.EMAIL, IOC.PROCESS, IOC.COMMAND_LINE, IOC.FILE_PATH,
+      IOC.UNC_PATH, IOC.REGISTRY_KEY, IOC.HASH,
+    ];
+    const typeLabels = {
+      [IOC.USERNAME]: '👤 Users',
+      [IOC.HOSTNAME]: '🖥 Hosts',
+      [IOC.IP]: '🌐 IPs',
+      [IOC.DOMAIN]: '🌐 Domains',
+      [IOC.URL]: '🔗 URLs',
+      [IOC.EMAIL]: '✉ Emails',
+      [IOC.PROCESS]: '⚙ Processes',
+      [IOC.COMMAND_LINE]: '📟 Command lines',
+      [IOC.FILE_PATH]: '📄 File paths',
+      [IOC.UNC_PATH]: '📂 UNC paths',
+      [IOC.REGISTRY_KEY]: '🗝 Registry keys',
+      [IOC.HASH]: '🔑 Hashes',
+    };
+
+    const ordered = order.filter(t => groups.has(t));
+    for (const t of groups.keys()) if (!ordered.includes(t)) ordered.push(t);
+
+    const wrap = document.createElement('div');
+    wrap.className = 'tl-entities-wrap';
+    for (const t of ordered) {
+      const entries = groups.get(t);
+      if (!entries || !entries.length) continue;
+      const grp = document.createElement('div');
+      grp.className = 'tl-entity-group tl-entity-group-' + String(t).toLowerCase();
+      const head = document.createElement('div');
+      head.className = 'tl-entity-head';
+      head.innerHTML = `<span class="tl-entity-title">${_tlEsc(typeLabels[t] || t)}</span>
+        <span class="tl-entity-count">${entries.length.toLocaleString()}</span>`;
+      grp.appendChild(head);
+
+      const list = document.createElement('div');
+      list.className = 'tl-entity-list';
+      for (const e of entries) {
+        const row = document.createElement('div');
+        row.className = 'tl-entity-row';
+        row.title = `Filter rows containing "${e.value}"`;
+        row.innerHTML = `
+          <span class="tl-entity-val">${_tlEsc(e.value)}</span>
+          <span class="tl-entity-hits">${e.count ? e.count.toLocaleString() : ''}</span>`;
+        row.addEventListener('click', () => this._pivotOnEntity(t, e.value));
+        list.appendChild(row);
+      }
+      grp.appendChild(list);
+      wrap.appendChild(grp);
+    }
+    body.appendChild(wrap);
+  }
+
+  // Gather entity groups for the Entities section. Returns a Map<type, Array<{value, count}>>.
+  _collectEntities() {
+    const groups = new Map();
+    const ENTITY_CAP_PER_TYPE = 100;
+
+    const push = (type, value) => {
+      if (value == null) return;
+      const v = String(value).trim();
+      if (!v) return;
+      if (!groups.has(type)) groups.set(type, new Map());
+      const m = groups.get(type);
+      m.set(v, (m.get(v) || 0) + 1);
+    };
+
+    // EVTX-only — use the findings from `analyzeForSecurity`. CSV / TSV
+    // used to get a full-grid regex sweep here; it was quadratic on big
+    // logs and has been removed. The analyser's sidebar still surfaces
+    // the same IOCs for those formats via the rawText scan.
+    if (this._evtxFindings && Array.isArray(this._evtxFindings.externalRefs)) {
+      for (const r of this._evtxFindings.externalRefs) {
+        if (!r || !r.type) continue;
+        if (r.type === IOC.PATTERN || r.type === IOC.INFO || r.type === IOC.YARA) continue;
+        const val = r.url || r.value;
+        if (!val) continue;
+        if (typeof isNicelisted === 'function' && isNicelisted(val, r.type)) continue;
+        push(r.type, val);
+      }
+    }
+
+    // Materialise as sorted arrays, capped per type.
+    const out = new Map();
+    for (const [type, m] of groups) {
+      const arr = Array.from(m.entries()).map(([value, count]) => ({ value, count }));
+      arr.sort((a, b) => b.count - a.count || (a.value < b.value ? -1 : 1));
+      if (arr.length > ENTITY_CAP_PER_TYPE) arr.length = ENTITY_CAP_PER_TYPE;
+      out.set(type, arr);
+    }
+    return out;
+  }
+
+  // Find the best column for pivoting on a clicked entity. Prefers a
+  // column whose name hints at the IOC type (e.g. "User" → USERNAME,
+  // "Computer" → HOSTNAME); falls back to a `contains` chip against the
+  // Event Data column (EVTX) or any text-heavy column.
+  _pivotOnEntity(iocType, value) {
+    const cols = this.columns;
+    const lowered = cols.map(c => String(c || '').toLowerCase());
+    const hints = {
+      [IOC.USERNAME]: ['user', 'account', 'subjectusername', 'targetusername'],
+      [IOC.HOSTNAME]: ['computer', 'hostname', 'host', 'workstation'],
+      [IOC.IP]: ['ip', 'ipaddress', 'sourceip', 'destip', 'src', 'dst'],
+    };
+    const hs = hints[iocType];
+    if (hs) {
+      for (const h of hs) {
+        const ix = lowered.indexOf(h);
+        if (ix >= 0) { this._addOrToggleChip(ix, value, { op: 'eq' }); return; }
+      }
+      // Partial match fallback.
+      for (const h of hs) {
+        const ix = lowered.findIndex(n => n.includes(h));
+        if (ix >= 0) { this._addOrToggleChip(ix, value, { op: 'eq' }); return; }
+      }
+    }
+    // Default — contains-chip on Event Data (EVTX) or last column.
+    let ix = lowered.indexOf('event data');
+    if (ix < 0) ix = cols.length - 1;
+    if (ix < 0) return;
+    // USERNAME entities are built as "DOMAIN\user" by `_extractEvtxIOCs`
+    // for display context (distinguishes same-named accounts across
+    // domains). That compound string never appears in any EVTX row —
+    // the renderer serialises domain and user as SEPARATE Event Data
+    // key=value tokens (`SubjectUserName=user | SubjectDomainName=DOMAIN`),
+    // so a literal contains-match on "DOMAIN\user" silently returns
+    // zero rows. Strip the domain prefix so the contains search uses
+    // the bare username, which DOES appear verbatim in Event Data.
+    let needle = String(value);
+    if (iocType === IOC.USERNAME && needle.indexOf('\\') !== -1) {
+      needle = needle.slice(needle.lastIndexOf('\\') + 1);
+    }
+    this._addContainsChipsReplace(ix, needle);
+  }
+
+  _paintColumnCards(host, stats, role) {
+
+    host.innerHTML = '';
+    const rowHeight = 22;
+    const visibleRows = 14;
+    const cols = this.columns;
+
+    for (let c = 0; c < cols.length; c++) {
+      // Skip the column currently in use as the timestamp axis — its "top
+      // values" would be near-all-distinct and only serve to push the
+      // interesting columns off-screen. The card is re-added automatically
+      // when the analyst picks a different column via the "Use as Timestamp"
+      // action (which invalidates `_colStats` and re-renders this section).
+      if (c === this._timeCol) continue;
+      const s = (stats && stats[c]) || { total: 0, distinct: 0, values: [] };
+
       const card = document.createElement('div');
       card.className = 'tl-col-card';
+      if (this._isExtractedCol(c)) {
+        card.classList.add('tl-col-card-extracted');
+        const e = this._extractedColFor(c);
+        if (e && e.kind) card.classList.add('tl-col-card-kind-' + e.kind);
+      }
       card.dataset.colIdx = String(c);
+      card.dataset.role = role;
 
-      const title = this.columns[c] || `(col ${c + 1})`;
+      const colName = cols[c] || `(col ${c + 1})`;
+      const savedSpan = this._cardSpanFor(colName);
+      if (savedSpan > 1) card.style.gridColumn = `span ${savedSpan}`;
+
       const head = document.createElement('div');
       head.className = 'tl-col-head';
-      head.innerHTML = `<span class="tl-col-name" title="${_tlEsc(title)}">${_tlEsc(title)}</span><span class="tl-col-sub" title="distinct values">${s.distinct.toLocaleString()}</span>`;
+      const extractedMark = this._isExtractedCol(c) ? '<span class="tl-col-badge" title="Extracted column">ƒx</span>' : '';
+      // Per-card sort mode — cycles count-desc → count-asc → a-z → z-a on
+      // each click of the hidden `.tl-col-sort` button. Alt-click resets
+      // to the default (count-desc). Stored on the DOM node so it survives
+      // re-paints within the same card — but every card starts fresh on
+      // rebuild (stats refresh), which matches user expectations for a
+      // transient view-state toggle.
+      const sortLabels = { 'count-desc': '# ↓', 'count-asc': '# ↑', 'az': 'A→Z', 'za': 'Z→A' };
+      head.innerHTML = `
+        ${extractedMark}
+        <span class="tl-col-name" title="${_tlEsc(colName)}">${_tlEsc(colName)}</span>
+        <span class="tl-col-sub" title="distinct values">${s.distinct.toLocaleString()}</span>
+        <button class="tl-col-sort" type="button" title="Cycle sort (count ↓ → count ↑ → A→Z → Z→A · Alt-click to reset)" data-mode="count-desc">${sortLabels['count-desc']}</button>
+        <button class="tl-col-menu" type="button" title="Column menu">▾</button>
+      `;
       card.appendChild(head);
 
-      // Virtual list — absolute-positioned rows inside a sized sizer.
+      // Per-card search row — filters the distinct values displayed in
+      // this card without touching any global chips / query. Empty by
+      // default; hiding behind ". tl-col-card:hover" in CSS would make
+      // it invisible to keyboard-only users so we leave it always visible
+      // but kept visually subtle.
+      const searchRow = document.createElement('div');
+      searchRow.className = 'tl-col-search-wrap';
+      searchRow.innerHTML = `<input type="text" class="tl-col-search" placeholder="filter values…" spellcheck="false" autocomplete="off">`;
+      card.appendChild(searchRow);
+      const searchInput = searchRow.querySelector('.tl-col-search');
+
       const viewport = document.createElement('div');
       viewport.className = 'tl-col-viewport';
       const sizer = document.createElement('div');
       sizer.className = 'tl-col-sizer';
-      sizer.style.height = (s.values.length * rowHeight) + 'px';
       viewport.appendChild(sizer);
       card.appendChild(viewport);
+
+      // Local filtered + sorted list (computed from `s.values` — which is
+      // already sorted count-desc by `_computeColumnStats`).
+      let displayValues = s.values;
+      const applySortAndFilter = () => {
+        const mode = card._sortMode || 'count-desc';
+        const q = (card._searchText || '').toLowerCase();
+        let arr = s.values;
+        if (q) arr = arr.filter(([val]) => String(val).toLowerCase().includes(q));
+        if (mode !== 'count-desc') {
+          arr = arr.slice();
+          if (mode === 'count-asc') arr.sort((a, b) => a[1] - b[1]);
+          else if (mode === 'az') arr.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+          else if (mode === 'za') arr.sort((a, b) => String(b[0]).localeCompare(String(a[0])));
+        }
+        displayValues = arr;
+        sizer.style.height = (displayValues.length * rowHeight) + 'px';
+        // Reset scroll if the visible set shrank below the current offset.
+        if (viewport.scrollTop > Math.max(0, sizer.offsetHeight - viewport.clientHeight)) {
+          viewport.scrollTop = 0;
+        }
+      };
+      applySortAndFilter();
 
       const renderRows = () => {
         const scroll = viewport.scrollTop;
         const start = Math.max(0, Math.floor(scroll / rowHeight) - 2);
-        const end = Math.min(s.values.length, start + visibleRows + 6);
-        // Clear and repaint visible rows.
-        // (Re-creating ~20 nodes per card per filter-change beats diffing.)
+        const end = Math.min(displayValues.length, start + visibleRows + 6);
         while (sizer.firstChild) sizer.removeChild(sizer.firstChild);
+        // Top value is always derived from `s.values[0]` (the global
+        // unfiltered max) so the bar widths stay comparable across cards
+        // rather than rescaling on every keystroke.
         const topVal = s.values.length ? s.values[0][1] : 1;
+        const susVals = this._susValsForCol(c);
+        if (!displayValues.length) {
+          const empty = document.createElement('div');
+          empty.className = 'tl-col-empty';
+          empty.textContent = card._searchText ? 'No matches' : '—';
+          sizer.appendChild(empty);
+          return;
+        }
         for (let i = start; i < end; i++) {
-          const [val, count] = s.values[i];
+          const [val, count] = displayValues[i];
           const row = document.createElement('div');
           row.className = 'tl-col-row';
+          if (susVals && susVals.has(val)) row.classList.add('tl-col-row-sus');
           row.style.top = (i * rowHeight) + 'px';
           row.dataset.value = val;
           const pct = topVal > 0 ? Math.max(2, Math.round((count / topVal) * 100)) : 0;
@@ -1135,44 +4715,423 @@ class TimelineView {
       };
       renderRows();
 
-      viewport.addEventListener('scroll', () => {
-        if (this._cardRaf) return;
-        this._cardRaf = requestAnimationFrame(() => {
-          this._cardRaf = null;
+      // Wire per-card search — debounced input → re-sort + re-render.
+      let searchTimer = 0;
+      searchInput.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+          card._searchText = searchInput.value;
+          applySortAndFilter();
           renderRows();
-        });
+        }, 80);
+      });
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && searchInput.value) {
+          e.preventDefault();
+          searchInput.value = '';
+          card._searchText = '';
+          applySortAndFilter();
+          renderRows();
+        }
       });
 
-      // Clicks on rows → add chip
+      // Wire the sort-cycle button — single click cycles forward, Alt-click
+      // resets. Updates both the button label and the per-card state.
+      const sortBtn = head.querySelector('.tl-col-sort');
+      sortBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const order = ['count-desc', 'count-asc', 'az', 'za'];
+        if (e.altKey) {
+          card._sortMode = 'count-desc';
+        } else {
+          const cur = card._sortMode || 'count-desc';
+          const ix = order.indexOf(cur);
+          card._sortMode = order[(ix + 1) % order.length];
+        }
+        sortBtn.dataset.mode = card._sortMode;
+        sortBtn.textContent = sortLabels[card._sortMode];
+        applySortAndFilter();
+        renderRows();
+      });
+
+
+      viewport.addEventListener('scroll', () => {
+        if (card._rowsRaf) return;
+        card._rowsRaf = requestAnimationFrame(() => { card._rowsRaf = null; renderRows(); });
+      });
+
+      // Click = add eq chip; shift-click = ne chip; ctrl/meta = only this
       sizer.addEventListener('click', (e) => {
         const row = e.target.closest('.tl-col-row');
         if (!row) return;
         const val = row.dataset.value;
-        const shift = e.shiftKey;
-        const meta = e.ctrlKey || e.metaKey;
-        this._addOrToggleChip(c, val, { op: shift ? 'ne' : 'eq', replace: meta });
+        this._addOrToggleChip(c, val, {
+          op: e.shiftKey ? 'ne' : 'eq',
+          replace: e.ctrlKey || e.metaKey,
+        });
       });
+      // Right-click = context menu
+      sizer.addEventListener('contextmenu', (e) => {
+        const row = e.target.closest('.tl-col-row');
+        if (!row) return;
+        e.preventDefault();
+        this._openRowContextMenu(e, c, row.dataset.value);
+      });
+
+      // Column-menu button
+      head.querySelector('.tl-col-menu').addEventListener('click', (e) => {
+        e.stopPropagation();
+        this._openColumnMenu(c, head);
+      });
+
+      // Ctrl/Meta-click anywhere on the card head (but not the ▾ menu
+      // button) = hide this column on the underlying grids. Mirrors the
+      // Ctrl+Click hide on GridViewer column headers so the user has a
+      // consistent "quickly hide this column" gesture regardless of which
+      // surface they're looking at. Re-hide on the OTHER grid too so the
+      // Suspicious sub-grid stays in sync with the main grid.
+      head.addEventListener('click', (e) => {
+        if (!(e.ctrlKey || e.metaKey)) return;
+        if (e.target.closest('.tl-col-menu')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (this._grid && typeof this._grid._toggleHideColumn === 'function') {
+          try { this._grid._toggleHideColumn(c); } catch (_) { /* noop */ }
+        }
+        if (this._susGrid && typeof this._susGrid._toggleHideColumn === 'function') {
+          try { this._susGrid._toggleHideColumn(c); } catch (_) { /* noop */ }
+        }
+        if (this._app && typeof this._app._toast === 'function') {
+          this._app._toast(`Hid column "${colName}" (use the chip in the grid's filter bar to unhide)`, 'info');
+        }
+      });
+      // Add the hint into the column-name tooltip so users can discover the gesture.
+      const nameEl = head.querySelector('.tl-col-name');
+      if (nameEl) nameEl.title = `${colName} · Ctrl+Click card header to hide this column in the grid`;
+
+
+      // Resize handle (right edge)
+      const resizer = document.createElement('div');
+      resizer.className = 'tl-col-resize';
+      card.appendChild(resizer);
+      resizer.addEventListener('pointerdown', (e) => this._installCardResize(e, card, colName));
 
       host.appendChild(card);
     }
   }
 
-  _addOrToggleChip(colIdx, val, opts) {
-    const op = opts && opts.op === 'ne' ? 'ne' : 'eq';
-    const replace = !!(opts && opts.replace);
+  // Sus values keyed by column — for highlighting top-values cards.
+  // Sourced from `_susMarks` (resolved to live colIdx): sus is a tint-
+  // only parallel data model, not a query-bar clause.
+  _susValsForCol(colIdx) {
+    if (!this._susAny) return null;
+    const m = new Set();
+    const resolved = this._susMarksResolved();
+    for (const r of resolved) {
+      if (r.colIdx === colIdx) m.add(String(r.val));
+    }
+    return m;
+  }
 
-    if (replace) {
-      this._chips = this._chips.filter(c => c.colIdx !== colIdx);
+  // Per-column card width is expressed as a `grid-column: span N` override so
+  // it cooperates with the `.tl-columns` auto-fill grid (plain `width: Npx`
+  // silently fights the grid's implicit track width). We compute the current
+  // track width from the host's box + the `--tl-card-min-w` preset, then
+  // snap the drag to integer column spans.
+  _cardSpanFor(colName) {
+    const v = this._cardWidths[colName];
+    if (v == null) return 1;
+    if (typeof v === 'number') {
+      // Legacy px value saved by an earlier build — translate to a span
+      // based on the current card-size preset.
+      const trackW = TIMELINE_CARD_SIZES[this._cardSize] || TIMELINE_CARD_SIZES.M;
+      return Math.max(1, Math.min(4, Math.round(v / trackW)));
     }
-    // If an identical chip already exists, treat the click as "remove".
-    const ix = this._chips.findIndex(c => c.colIdx === colIdx && c.op === op && c.val === val);
-    if (ix >= 0) {
-      this._chips.splice(ix, 1);
-    } else {
-      this._chips.push({ colIdx, op, val });
+    if (typeof v === 'object' && Number.isFinite(v.span)) {
+      return Math.max(1, Math.min(6, v.span | 0));
     }
-    this._recomputeFilter();
-    this._scheduleRender(['chart', 'chips', 'grid', 'columns']);
+    return 1;
+  }
+
+  _installCardResize(e, card, colName) {
+    e.preventDefault();
+    const host = card.parentElement;   // .tl-columns
+    const startX = e.clientX;
+    const startSpan = this._cardSpanFor(colName);
+    const { trackW, cols, gap } = this._columnsGridGeometry(host);
+    const startW = startSpan * trackW + (startSpan - 1) * gap;
+    const apply = (span) => {
+      const clamped = Math.max(1, Math.min(cols, span));
+      if (clamped <= 1) card.style.gridColumn = '';
+      else card.style.gridColumn = `span ${clamped}`;
+      card.dataset.span = String(clamped);
+    };
+    const onMove = (ev) => {
+      const w = Math.max(trackW, Math.round(startW + (ev.clientX - startX)));
+      const span = Math.round(w / (trackW + gap));
+      apply(span);
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      const span = parseInt(card.dataset.span || String(startSpan), 10);
+      if (span <= 1) delete this._cardWidths[colName];
+      else this._cardWidths[colName] = { span };
+      TimelineView._saveCardWidthsFor(this._fileKey, this._cardWidths);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  }
+
+  // Resolve the `.tl-columns` grid geometry — how many tracks fit and each
+  // track's effective pixel width. Mirrors the CSS
+  //   grid-template-columns: repeat(auto-fill, minmax(var(--tl-card-min-w), 1fr));
+  _columnsGridGeometry(host) {
+    const style = getComputedStyle(host);
+    const pad = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    const gap = parseFloat(style.columnGap || style.gap) || 10;
+    const hostW = host.getBoundingClientRect().width - pad;
+    const minW = TIMELINE_CARD_SIZES[this._cardSize] || TIMELINE_CARD_SIZES.M;
+    const cols = Math.max(1, Math.floor((hostW + gap) / (minW + gap)));
+    const trackW = (hostW - gap * (cols - 1)) / cols;
+    return { trackW, cols, gap };
+  }
+
+  // ── AST edit helpers ─────────────────────────────────────────────────────
+  // The query bar is the single source of truth for row filtering, so every
+  // click-pivot (right-click Include / Exclude / Only, column-card click,
+  // column-menu Apply, pivot drill-down, detection drill, legend click)
+  // must MUTATE THE QUERY STRING rather than push onto a parallel chip
+  // list. These helpers do the plumbing: parse `_queryStr` into an AST,
+  // manipulate the top-level AND clauses, serialize back with live column
+  // names (`_tlFormatQuery` uses `this.columns` so extracted columns
+  // round-trip) and push into the editor + `_applyQueryString`. Every
+  // helper funnels through `_queryCommitClauses` so exactly one parse /
+  // render cycle happens per user action.
+  _queryCurrentAst() {
+    const s = (this._queryStr || '').trim();
+    if (!s) return { k: 'empty' };
+    try {
+      return _tlParseQuery(_tlTokenize(s), () => this.columns);
+    } catch (_) {
+      // Mid-edit parse error — treat as empty so callers can still add
+      // clauses (serializer will produce a valid string overwriting the
+      // broken one).
+      return { k: 'empty' };
+    }
+  }
+  _queryTopLevelClauses(ast) {
+    if (!ast || ast.k === 'empty') return [];
+    if (ast.k === 'and') return ast.children.slice();
+    return [ast];
+  }
+  _queryClausesToAst(clauses) {
+    if (!clauses.length) return { k: 'empty' };
+    if (clauses.length === 1) return clauses[0];
+    return { k: 'and', children: clauses };
+  }
+  _queryCommitClauses(clauses) {
+    const ast = this._queryClausesToAst(clauses);
+    const s = _tlFormatQuery(ast, this.columns);
+    if (this._queryEditor) this._queryEditor.setValue(s);
+    this._applyQueryString(s);
+  }
+  // Does a single top-level clause reference `colIdx`?
+  _clauseTargetsCol(c, colIdx) {
+    if (!c) return false;
+    if (c.k === 'pred' || c.k === 'in') return c.colIdx === colIdx;
+    return false;
+  }
+
+  // Append a clause to the top-level AND. `opts.dedupe` skips duplicates.
+  _queryAddClause(node, opts) {
+    opts = opts || {};
+    const clauses = this._queryTopLevelClauses(this._queryCurrentAst());
+    if (opts.dedupe) {
+      const key = JSON.stringify(node);
+      for (const c of clauses) if (JSON.stringify(c) === key) return;
+    }
+    clauses.push(node);
+    this._queryCommitClauses(clauses);
+  }
+
+  // Toggle an eq match against `col = val`. Handles both `pred(eq)` and
+  // positive `in` nodes: if the value is found inside an `in` list, it's
+  // removed (collapsing to a bare eq if one value remains, dropping the
+  // clause entirely if empty). If not present, appends a bare eq clause.
+  _queryToggleEqClause(colIdx, val) {
+    const clauses = this._queryTopLevelClauses(this._queryCurrentAst());
+    const valStr = String(val);
+    for (let i = 0; i < clauses.length; i++) {
+      const c = clauses[i];
+      if (c.k === 'pred' && c.op === 'eq' && c.colIdx === colIdx && String(c.val) === valStr) {
+        clauses.splice(i, 1);
+        this._queryCommitClauses(clauses);
+        return;
+      }
+      if (c.k === 'in' && !c.neg && c.colIdx === colIdx) {
+        const ix = c.vals.indexOf(valStr);
+        if (ix >= 0) {
+          const newVals = c.vals.slice(); newVals.splice(ix, 1);
+          if (newVals.length === 0) clauses.splice(i, 1);
+          else if (newVals.length === 1) clauses[i] = { k: 'pred', colIdx, op: 'eq', val: newVals[0] };
+          else clauses[i] = { k: 'in', colIdx, vals: newVals, neg: false };
+          this._queryCommitClauses(clauses);
+          return;
+        }
+      }
+    }
+    clauses.push({ k: 'pred', colIdx, op: 'eq', val: valStr });
+    this._queryCommitClauses(clauses);
+  }
+
+  // Toggle a ne match against `col != val`. Symmetric with the eq path
+  // above but never folds into an `in` list (DSL has no `NOT IN` toggle).
+  _queryToggleNeClause(colIdx, val) {
+    const clauses = this._queryTopLevelClauses(this._queryCurrentAst());
+    const valStr = String(val);
+    for (let i = 0; i < clauses.length; i++) {
+      const c = clauses[i];
+      if (c.k === 'pred' && c.op === 'ne' && c.colIdx === colIdx && String(c.val) === valStr) {
+        clauses.splice(i, 1);
+        this._queryCommitClauses(clauses);
+        return;
+      }
+    }
+    clauses.push({ k: 'pred', colIdx, op: 'ne', val: valStr });
+    this._queryCommitClauses(clauses);
+  }
+
+  // Strip existing `col : text` contains clauses, then optionally append a
+  // new one. Contains is "replace on column" by convention (legacy
+  // `_addContainsChipsReplace` semantics).
+  _queryReplaceContainsForCol(colIdx, text) {
+    const clauses = this._queryTopLevelClauses(this._queryCurrentAst())
+      .filter(c => !(c.k === 'pred' && c.op === 'contains' && c.colIdx === colIdx));
+    if (text) clauses.push({ k: 'pred', colIdx, op: 'contains', val: String(text) });
+    this._queryCommitClauses(clauses);
+  }
+
+  // Strip every eq / in / ne clause on this column, then install a fresh
+  // set. 0 values → clears; 1 value → `col = v`; ≥ 2 values → `col IN (…)`.
+  _queryReplaceEqForCol(colIdx, values) {
+    const clauses = this._queryTopLevelClauses(this._queryCurrentAst())
+      .filter(c => !(
+        (c.k === 'pred' && (c.op === 'eq' || c.op === 'ne') && c.colIdx === colIdx) ||
+        (c.k === 'in' && c.colIdx === colIdx)
+      ));
+    const vals = (values || []).map(v => String(v));
+    const seen = new Set();
+    const dedup = [];
+    for (const v of vals) if (!seen.has(v)) { seen.add(v); dedup.push(v); }
+    if (dedup.length === 1) {
+      clauses.push({ k: 'pred', colIdx, op: 'eq', val: dedup[0] });
+    } else if (dedup.length >= 2) {
+      clauses.push({ k: 'in', colIdx, vals: dedup, neg: false });
+    }
+    this._queryCommitClauses(clauses);
+  }
+
+  // Strip every top-level clause referencing this column. Used by the
+  // column menu's Reset button and by extracted-column removal.
+  _queryReplaceAllForCol(colIdx) {
+    const clauses = this._queryTopLevelClauses(this._queryCurrentAst())
+      .filter(c => !this._clauseTargetsCol(c, colIdx));
+    this._queryCommitClauses(clauses);
+  }
+
+  // Bulk variant — drop clauses targeting any of `colIndices`.
+  _queryRemoveClausesForCols(colIndices) {
+    const set = new Set(colIndices);
+    const clauses = this._queryTopLevelClauses(this._queryCurrentAst())
+      .filter(c => {
+        if (c.k === 'pred' || c.k === 'in') return !set.has(c.colIdx);
+        return true;
+      });
+    this._queryCommitClauses(clauses);
+  }
+
+  // ── Chip operations ──────────────────────────────────────────────────────
+  // Thin dispatch wrappers. `op: 'sus'` writes to `_susMarks` (parallel
+  // tint-only data model, persisted by column name). Everything else
+  // mutates the query string via the AST-edit helpers above so the query
+  // bar stays authoritative for row filtering.
+  _addOrToggleChip(colIdx, val, opts) {
+    const op = (opts && opts.op) || 'eq';
+    const replace = !!(opts && opts.replace);
+    if (op === 'sus') {
+      const colName = this.columns[colIdx];
+      if (colName == null) return;
+      const valStr = String(val);
+      const ix = this._susMarks.findIndex(m => m.colName === colName && m.val === valStr);
+      if (ix >= 0) this._susMarks.splice(ix, 1);
+      else this._susMarks.push({ colName, val: valStr });
+      TimelineView._saveSusMarksFor(this._fileKey, this._susMarks);
+      this._recomputeFilter();
+      this._scheduleRender(['chart', 'chips', 'grid', 'columns', 'sus']);
+      return;
+    }
+    if (op === 'eq') {
+      if (replace) this._queryReplaceEqForCol(colIdx, [val]);
+      else this._queryToggleEqClause(colIdx, val);
+      return;
+    }
+    if (op === 'ne') {
+      this._queryToggleNeClause(colIdx, val);
+      return;
+    }
+    if (op === 'contains') {
+      // Contains on an "any" column (colIdx === -1) can't go through the
+      // replace-for-col helper (it keys on colIdx). Fall through to the
+      // generic add-clause path for the -1 case.
+      if (colIdx === -1) {
+        this._queryAddClause({ k: 'any', needle: String(val) }, { dedupe: true });
+      } else {
+        this._queryReplaceContainsForCol(colIdx, val);
+      }
+      return;
+    }
+  }
+
+  _addContainsChipsReplace(colIdx, text) {
+    this._queryReplaceContainsForCol(colIdx, text);
+  }
+
+  _replaceEqChipsForCol(colIdx, values) {
+    this._queryReplaceEqForCol(colIdx, values);
+  }
+
+
+  // ── Chart height drag ────────────────────────────────────────────────────
+  // Mirrors the main splitter but targets the `.tl-chart-resize` grab-bar
+  // rendered at the bottom edge of the histogram body. Persists the new
+  // height to `loupe_timeline_chart_h` on pointer-up.
+  _installChartResizeDrag() {
+    const root = this._root;
+    const handle = this._els.chart.querySelector('.tl-chart-resize');
+    if (!handle) return;
+    handle.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      document.body.classList.add('tl-chart-resizing');
+      const startY = e.clientY;
+      const startH = this._chartH;
+      const onMove = (ev) => {
+        const dy = ev.clientY - startY;
+        const h = Math.max(TIMELINE_CHART_MIN_H, Math.min(TIMELINE_CHART_MAX_H, startH + dy));
+        this._chartH = h;
+        root.style.setProperty('--tl-chart-h', h + 'px');
+      };
+      const onUp = () => {
+        document.body.classList.remove('tl-chart-resizing');
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        TimelineView._saveChartH(this._chartH);
+        // Canvas size changed → redraw.
+        this._scheduleRender(['chart', 'sus']);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    });
   }
 
   // ── Splitter ─────────────────────────────────────────────────────────────
@@ -1181,19 +5140,17 @@ class TimelineView {
     const splitter = this._els.splitter;
     splitter.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      document.body.classList.add('tl-splitter-dragging');
       const startY = e.clientY;
       const startH = this._gridH;
-      const rect = root.getBoundingClientRect();
-      const maxH = Math.max(TIMELINE_GRID_MIN_H, rect.height - 400);
       const onMove = (ev) => {
         const dy = ev.clientY - startY;
-        let h = startH + dy;
-        if (h < TIMELINE_GRID_MIN_H) h = TIMELINE_GRID_MIN_H;
-        if (h > maxH) h = maxH;
+        let h = Math.max(TIMELINE_GRID_MIN_H, Math.min(900, startH + dy));
         this._gridH = h;
         root.style.setProperty('--tl-grid-h', h + 'px');
       };
       const onUp = () => {
+        document.body.classList.remove('tl-splitter-dragging');
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
         TimelineView._saveGridH(this._gridH);
@@ -1202,260 +5159,1698 @@ class TimelineView {
       window.addEventListener('pointerup', onUp);
     });
   }
+
+  // ── Suspicious-events splitter ───────────────────────────────────────────
+  // Same drag-to-resize pattern as the main events splitter but targets
+  // the Suspicious section's sub-grid. Persists to
+  // `loupe_timeline_sus_grid_h` on pointer-up. The splitter DOM node
+  // lives inside `.tl-sus` between the sub-grid and the sub-columns
+  // cards; it only visually matters while the Suspicious section is
+  // un-hidden (`_renderSus` adds/removes the `.hidden` class on the
+  // whole `tl-sec-sus` wrapper).
+  // ── GridViewer → outer Timeline select bridges ──────────────────────────
+  // Passed as `onUseAsTimeline` / `onStackTimelineBy` into the main-role
+  // embedded GridViewer. Returning truthy tells the grid that we handled
+  // the action, which suppresses its built-in internal `.grid-timeline`
+  // strip promotion. Behaviour mirrors the column-menu Apply handlers in
+  // `_openColumnMenu` — keep those two in lockstep.
+  _setTimeColFromGrid(colIdx) {
+    if (!Number.isInteger(colIdx) || colIdx < 0 || colIdx >= this.columns.length) return true;
+    this._timeCol = colIdx;
+    if (this._els.timeColSelect) this._els.timeColSelect.value = String(colIdx);
+    this._parseAllTimestamps();
+    this._dataRange = this._computeDataRange();
+    this._window = null;
+    this._recomputeFilter();
+    this._scheduleRender(['chart', 'scrubber', 'grid', 'columns', 'chips', 'sus']);
+    return true;
+  }
+  _setStackColFromGrid(colIdx) {
+    if (!Number.isInteger(colIdx) || colIdx < 0 || colIdx >= this.columns.length) return true;
+    this._stackCol = colIdx;
+    if (this._els.stackColSelect) this._els.stackColSelect.value = String(colIdx);
+    this._scheduleRender(['chart', 'sus']);
+    return true;
+  }
+
+  _installSusSplitterDrag() {
+    const root = this._root;
+    const splitter = this._els.susSplitter;
+    if (!splitter) return;
+    splitter.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      document.body.classList.add('tl-splitter-dragging');
+      const startY = e.clientY;
+      const startH = this._susGridH;
+      const onMove = (ev) => {
+        const dy = ev.clientY - startY;
+        const h = Math.max(TIMELINE_SUS_GRID_MIN_H, Math.min(TIMELINE_SUS_GRID_MAX_H, startH + dy));
+        this._susGridH = h;
+        root.style.setProperty('--tl-sus-grid-h', h + 'px');
+      };
+      const onUp = () => {
+        document.body.classList.remove('tl-splitter-dragging');
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        TimelineView._saveSusGridH(this._susGridH);
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    });
+  }
+
+  // ── Right-click row context menu ─────────────────────────────────────────
+  _openRowContextMenu(e, colIdx, val, opts) {
+    opts = opts || {};
+    this._closePopover();
+    const menu = document.createElement('div');
+    menu.className = 'tl-popover tl-rowmenu';
+    const items = [];
+    items.push({ label: `✓ Include "${this._ellipsis(val, 60)}"`, act: () => this._addOrToggleChip(colIdx, val, { op: 'eq' }) });
+    items.push({ label: `✕ Exclude "${this._ellipsis(val, 60)}"`, act: () => this._addOrToggleChip(colIdx, val, { op: 'ne' }) });
+    // "Only …" is a shortcut for "clear this column's filters, then include X".
+    // Hide it when the column has no existing non-sus chips, because in that
+    // state it is functionally identical to the ✓ Include item above (the
+    // `replace: true` wipe step has nothing to remove). `sus` chips are
+    // preserved by `_addOrToggleChip` either way, so they don't count here.
+    // Query-bar is the single source of truth for column filters; walk the
+    // current AST's top-level clauses and ask if any of them target `colIdx`.
+    // Sus marks live in `_susMarks` (not the query) so they can never show up
+    // here, which matches the old `c.op !== 'sus'` carve-out.
+    const _hasOtherChipsOnCol = this._queryTopLevelClauses(this._queryCurrentAst())
+      .some(c => this._clauseTargetsCol(c, colIdx));
+    if (_hasOtherChipsOnCol) {
+      items.push({
+        label: `↺ Only "${this._ellipsis(val, 60)}" on this column`,
+        act: () => this._addOrToggleChip(colIdx, val, { op: 'eq', replace: true }),
+      });
+    }
+    items.push({ sep: true });
+    items.push({ label: `🚩 Mark suspicious`, act: () => this._addOrToggleChip(colIdx, val, { op: 'sus' }) });
+    items.push({ sep: true });
+    items.push({ label: `ƒx Extract from this column…`, act: () => this._openExtractionDialog(colIdx) });
+    items.push({ sep: true });
+    // Auto-pivot — pick a sensible Rows × Cols × Count triple based on the
+    // clicked column + the current stack column (if any) and expand the
+    // pivot section. See `_autoPivotFromColumn` for the heuristic (which
+    // already prefers the current stack column as Cols when one is set, so
+    // a single entry is sufficient here).
+    items.push({ label: `🧮 Auto pivot on this column`, act: () => this._autoPivotFromColumn(colIdx) });
+    items.push({ sep: true });
+    items.push({ label: `Copy value`, act: () => this._copyToClipboard(val) });
+
+
+    for (const it of items) {
+      if (it.sep) {
+        const sep = document.createElement('div');
+        sep.className = 'tl-popover-sep';
+        menu.appendChild(sep);
+      } else {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tl-popover-item';
+        b.textContent = it.label;
+        b.addEventListener('click', () => { try { it.act(); } finally { this._closePopover(); } });
+        menu.appendChild(b);
+      }
+    }
+    this._positionFloating(menu, e.clientX, e.clientY);
+    document.body.appendChild(menu);
+    this._openPopover = menu;
+  }
+
+  _ellipsis(s, max) {
+    const str = String(s == null ? '' : s);
+    return str.length > max ? str.slice(0, max) + '…' : str;
+  }
+
+  _copyToClipboard(text) {
+    try { navigator.clipboard.writeText(String(text)); } catch (_) { /* noop */ }
+  }
+
+  _positionFloating(el, x, y) {
+    el.style.position = 'fixed';
+    el.style.left = x + 'px';
+    el.style.top = y + 'px';
+    el.style.zIndex = '9999';
+    // After append we might nudge back into the viewport.
+    requestAnimationFrame(() => {
+      const w = el.offsetWidth, h = el.offsetHeight;
+      const vw = window.innerWidth, vh = window.innerHeight;
+      if (x + w > vw) el.style.left = Math.max(8, vw - w - 8) + 'px';
+      if (y + h > vh) el.style.top = Math.max(8, vh - h - 8) + 'px';
+    });
+  }
+
+  _closePopover() {
+    if (this._openPopover && this._openPopover.parentNode) {
+      this._openPopover.parentNode.removeChild(this._openPopover);
+    }
+    this._openPopover = null;
+  }
+
+  // ── Column menu (Excel-style) ────────────────────────────────────────────
+  _openColumnMenu(colIdx, anchor) {
+    this._closePopover();
+    const menu = document.createElement('div');
+    menu.className = 'tl-popover tl-colmenu';
+    const name = this.columns[colIdx] || `(col ${colIdx + 1})`;
+    // Pre-fill the Contains input + Values checkboxes from the current
+    // query AST rather than a separate chip list — the query bar is now
+    // the single source of truth. For `existingContains`, match the
+    // first top-level `contains` predicate on this column. For
+    // `existingEqs`, collect the union of (positive) `eq` predicate
+    // values AND the values inside any positive `IN (…)` clause on
+    // this column — the Apply handler below emits either an eq or an
+    // `IN` list depending on cardinality, so both round-trip cleanly.
+    const _astClauses = this._queryTopLevelClauses(this._queryCurrentAst());
+    const _containsClause = _astClauses.find(c => c.k === 'pred' && c.op === 'contains' && c.colIdx === colIdx);
+    const existingContains = _containsClause ? { val: _containsClause.val } : null;
+    const existingEqs = [];
+    for (const c of _astClauses) {
+      if (c.k === 'pred' && c.op === 'eq' && c.colIdx === colIdx) existingEqs.push(String(c.val));
+      else if (c.k === 'in' && !c.neg && c.colIdx === colIdx) {
+        for (const v of c.vals) existingEqs.push(String(v));
+      }
+    }
+    const eqSet = new Set(existingEqs);
+
+    // Only offer "Use as Timestamp" when the column's values actually parse
+    // as timestamps (or bare numbers suitable for a numeric axis). Reuses the
+    // scorers already used by `_tlAutoDetectTimestampCol`. Extracted columns
+    // are sampled via `_cellAt` since their values live in `_extractedCols`.
+    // The button is also hidden for the column that's already the current
+    // timestamp — setting it a second time is a no-op.
+    const showTimeBtn = this._columnLooksLikeTimestamp(colIdx)
+      && colIdx !== this._timeCol;
+
+    menu.innerHTML = `
+      <div class="tl-colmenu-head">
+        <strong>${_tlEsc(name)}</strong>
+      </div>
+      <div class="tl-colmenu-section">
+        <label class="tl-colmenu-label">Contains</label>
+        <input type="text" class="tl-colmenu-input" data-f="contains" placeholder="substring…" spellcheck="false" value="${_tlEsc((existingContains && existingContains.val) || '')}">
+      </div>
+      <div class="tl-colmenu-section">
+        <div class="tl-colmenu-row">
+          <label class="tl-colmenu-label">Values (top 200)</label>
+          <input type="text" class="tl-colmenu-input tl-colmenu-input-sm" data-f="valsearch" placeholder="search values…" spellcheck="false">
+        </div>
+        <div class="tl-colmenu-values"></div>
+        <div class="tl-colmenu-valactions">
+          <button class="tl-tb-btn" data-act="selall">All</button>
+          <button class="tl-tb-btn" data-act="selnone">None</button>
+        </div>
+      </div>
+      <div class="tl-colmenu-section">
+        ${showTimeBtn ? '<button class="tl-tb-btn" data-act="timecol">Use as Timestamp</button>' : ''}
+        <button class="tl-tb-btn" data-act="stackcol">Stack chart by this</button>
+      </div>
+      ${this._isExtractedCol(colIdx) ? '<div class="tl-colmenu-section"><button class="tl-tb-btn tl-tb-btn-danger" data-act="removeExtract">✕ Remove extracted column</button></div>' : ''}
+      <div class="tl-colmenu-section">
+        <button class="tl-tb-btn" data-act="extract">ƒx Extract from this column…</button>
+        <button class="tl-tb-btn" data-act="autopivot">🧮 Auto pivot on this column</button>
+      </div>
+      <div class="tl-colmenu-foot">
+        <button class="tl-tb-btn" data-act="reset">Reset filters</button>
+        <button class="tl-tb-btn tl-tb-btn-primary" data-act="apply">Apply</button>
+      </div>
+    `;
+
+    const valsWrap = menu.querySelector('.tl-colmenu-values');
+    // Populate distinct values using the "all-but-this-column" filter so
+    // the user can broaden a narrowed selection without hitting Reset
+    // first. Excel-parity — see `_indexIgnoringColumn` for semantics.
+    const items = this._distinctValuesFor(colIdx, this._indexIgnoringColumn(colIdx), 200);
+    const sel = new Set(eqSet);
+    // If no eq chips exist for this col, default to all-selected (no-op).
+    const initialAll = existingEqs.length === 0;
+
+    const paint = (filterText) => {
+      valsWrap.innerHTML = '';
+      const lo = (filterText || '').toLowerCase();
+      for (const [val, count] of items) {
+        if (lo && !val.toLowerCase().includes(lo)) continue;
+        const line = document.createElement('label');
+        line.className = 'tl-colmenu-value';
+        const checked = initialAll ? true : sel.has(val);
+        line.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} data-val="${_tlEsc(val)}"> <span class="tl-colmenu-value-label" title="${_tlEsc(val)}">${_tlEsc(val === '' ? '(empty)' : val)}</span> <span class="tl-colmenu-value-count">${count.toLocaleString()}</span>`;
+        valsWrap.appendChild(line);
+      }
+      if (!valsWrap.firstChild) {
+        const hint = document.createElement('div');
+        hint.className = 'tl-colmenu-empty';
+        hint.textContent = 'No matches.';
+        valsWrap.appendChild(hint);
+      }
+    };
+    paint('');
+
+    menu.querySelector('[data-f="valsearch"]').addEventListener('input', (e) => paint(e.target.value));
+    menu.querySelector('[data-act="selall"]').addEventListener('click', () => {
+      valsWrap.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = true; });
+    });
+    menu.querySelector('[data-act="selnone"]').addEventListener('click', () => {
+      valsWrap.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = false; });
+    });
+    // The `Use as Timestamp` button is now conditional (see `showTimeBtn`
+    // above — hidden when the column doesn't parse as timestamps / numbers,
+    // and on the already-selected timestamp column). Null-guard the wire
+    // up; without this, if the button isn't rendered the following
+    // `querySelector(...).addEventListener` throws mid-handler and kills
+    // every subsequent listener wire-up in this menu — including the
+    // value-search <input>, which is how the user most often discovers it.
+    const timeColBtn = menu.querySelector('[data-act="timecol"]');
+    if (timeColBtn) timeColBtn.addEventListener('click', () => {
+      this._timeCol = colIdx;
+      this._els.timeColSelect.value = String(colIdx);
+      this._parseAllTimestamps();
+      this._dataRange = this._computeDataRange();
+      this._window = null;
+      this._recomputeFilter();
+      this._scheduleRender(['chart', 'scrubber', 'grid', 'columns', 'chips', 'sus']);
+      this._closePopover();
+    });
+    menu.querySelector('[data-act="stackcol"]').addEventListener('click', () => {
+      this._stackCol = colIdx;
+      this._els.stackColSelect.value = String(colIdx);
+      this._scheduleRender(['chart', 'sus']);
+      this._closePopover();
+    });
+    menu.querySelector('[data-act="extract"]').addEventListener('click', () => {
+      this._closePopover();
+      this._openExtractionDialog(colIdx);
+    });
+    menu.querySelector('[data-act="autopivot"]').addEventListener('click', () => {
+      this._closePopover();
+      this._autoPivotFromColumn(colIdx);
+    });
+    const removeExtractBtn = menu.querySelector('[data-act="removeExtract"]');
+    if (removeExtractBtn) removeExtractBtn.addEventListener('click', () => {
+      this._removeExtractedCol(colIdx);
+      this._closePopover();
+    });
+    menu.querySelector('[data-act="reset"]').addEventListener('click', () => {
+      // Strip every top-level clause targeting this column from the
+      // query AST. Sus marks aren't query-bar clauses, so they're
+      // unaffected — matches the old `c.op !== 'sus'` carve-out.
+      this._queryReplaceAllForCol(colIdx);
+      this._closePopover();
+    });
+    menu.querySelector('[data-act="apply"]').addEventListener('click', () => {
+      // Contains
+      const containsText = menu.querySelector('[data-f="contains"]').value.trim();
+      this._addContainsChipsReplace(colIdx, containsText);
+      // Eq set
+      const checks = Array.from(valsWrap.querySelectorAll('input[type=checkbox]'));
+      const all = checks.length && checks.every(cb => cb.checked);
+      const none = checks.length && checks.every(cb => !cb.checked);
+      if (all) {
+        // "All selected" → no eq chip narrowing needed.
+        this._replaceEqChipsForCol(colIdx, []);
+      } else if (none) {
+        // "None" → rarely useful, but treat as excluding all — user probably
+        // means clear + contains only.
+        this._replaceEqChipsForCol(colIdx, []);
+      } else {
+        const vals = checks.filter(cb => cb.checked).map(cb => cb.dataset.val);
+        this._replaceEqChipsForCol(colIdx, vals);
+      }
+      this._closePopover();
+    });
+
+    // Anchor below the column head
+    const rect = anchor.getBoundingClientRect();
+    this._positionFloating(menu, rect.left, rect.bottom + 2);
+    document.body.appendChild(menu);
+    this._openPopover = menu;
+    menu.querySelector('[data-f="contains"]').focus();
+  }
+
+  _closeDialog() {
+    if (this._openDialog && this._openDialog.parentNode) {
+      this._openDialog.parentNode.removeChild(this._openDialog);
+    }
+    this._openDialog = null;
+  }
+
+  // ── Extraction dialog (Auto + Regex tabs) ────────────────────────────────
+  _openExtractionDialog(preselectCol) {
+    this._closePopover();
+    this._closeDialog();
+    const dlg = this._openDialog = document.createElement('div');
+    dlg.className = 'tl-dialog';
+    dlg.innerHTML = `
+      <div class="tl-dialog-card tl-dialog-extract">
+        <header class="tl-dialog-head">
+          <strong>ƒx Extract columns</strong>
+          <span class="tl-dialog-spacer"></span>
+          ${this._extractedCols.length
+        ? `<button class="tl-tb-btn tl-tb-btn-danger" data-act="clear-all" title="Remove all extracted columns">✕ Clear all extracted (${this._extractedCols.length})</button>`
+        : ''}
+          <button class="tl-dialog-close" type="button" aria-label="Close">✕</button>
+        </header>
+        <div class="tl-dialog-tabs">
+          <button class="tl-dialog-tab tl-dialog-tab-active" data-tab="auto">Auto (URLs &amp; hostnames)</button>
+          <button class="tl-dialog-tab" data-tab="regex">Regex</button>
+        </div>
+        <div class="tl-dialog-body">
+          <section class="tl-dialog-pane tl-dialog-pane-auto">
+            <p class="tl-dialog-muted">Scans the first 200 rows of every non-empty column for JSON leaves, pipe-delimited <code>Key=Value</code> fields (e.g. EVTX Event Data), and URL/hostname-shaped values. Tick rows to turn them into new columns.</p>
+            <div class="tl-auto-body">
+              <div class="tl-auto-empty">Running auto-scan…</div>
+            </div>
+            <footer class="tl-dialog-foot">
+              <button class="tl-tb-btn" data-act="auto-rescan">Rescan</button>
+              <span class="tl-dialog-spacer"></span>
+              <button class="tl-tb-btn tl-tb-btn-primary" data-act="auto-extract" disabled>Extract selected</button>
+            </footer>
+          </section>
+          <section class="tl-dialog-pane tl-dialog-pane-regex" style="display:none">
+            <div class="tl-regex-grid">
+              <label class="tl-field">
+                <span class="tl-field-label">Column</span>
+                <select class="tl-field-select" data-field="col"></select>
+              </label>
+              <label class="tl-field">
+                <span class="tl-field-label">Preset</span>
+                <select class="tl-field-select" data-field="preset">
+                  <option value="-1">— custom —</option>
+                </select>
+              </label>
+              <label class="tl-field tl-field-wide">
+                <span class="tl-field-label">Pattern</span>
+                <input type="text" class="tl-field-select" data-field="pattern" spellcheck="false" placeholder="e.g. \\b\\d+\\b">
+              </label>
+              <label class="tl-field">
+                <span class="tl-field-label">Flags</span>
+                <input type="text" class="tl-field-select" data-field="flags" value="i" maxlength="8" spellcheck="false">
+              </label>
+              <label class="tl-field">
+                <span class="tl-field-label">Group</span>
+                <input type="number" class="tl-field-select" data-field="group" value="0" min="0" max="9">
+              </label>
+              <label class="tl-field tl-field-wide">
+                <span class="tl-field-label">Name</span>
+                <input type="text" class="tl-field-select" data-field="name" placeholder="auto">
+              </label>
+            </div>
+            <div class="tl-regex-hint">
+              <b>Cheatsheet:</b>
+              <code>\\b</code> word boundary · <code>\\d+</code> digits · <code>[a-z]+</code> letters ·
+              <code>(...)</code> capture group · <code>\\.</code> literal dot · flags: <code>i</code> case-insensitive.
+              Capture group <code>0</code> is the full match; <code>1</code> is the first <code>(...)</code>.
+              <br>⚠ <code>|</code> is alternation — to match a literal pipe, escape it as <code>\\|</code>
+              (e.g. in an EVTX Event Data cell, write <code>DestAddress=(.+?) \\|</code>, not <code>DestAddress=(.+?) |</code>).
+            </div>
+            <div class="tl-regex-preview">
+              <div class="tl-regex-status">Enter a pattern to preview.</div>
+              <div class="tl-regex-samples"></div>
+            </div>
+            <footer class="tl-dialog-foot">
+              <button class="tl-tb-btn" data-act="regex-test">Test</button>
+              <span class="tl-dialog-spacer"></span>
+              <button class="tl-tb-btn tl-tb-btn-primary" data-act="regex-extract">Extract</button>
+            </footer>
+          </section>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(dlg);
+
+    // Tabs
+    const tabs = dlg.querySelectorAll('.tl-dialog-tab');
+    const paneAuto = dlg.querySelector('.tl-dialog-pane-auto');
+    const paneReg = dlg.querySelector('.tl-dialog-pane-regex');
+    tabs.forEach(t => t.addEventListener('click', () => {
+      tabs.forEach(x => x.classList.remove('tl-dialog-tab-active'));
+      t.classList.add('tl-dialog-tab-active');
+      const which = t.dataset.tab;
+      paneAuto.style.display = which === 'auto' ? '' : 'none';
+      paneReg.style.display = which === 'regex' ? '' : 'none';
+    }));
+
+    // Close
+    const close = () => this._closeDialog();
+    dlg.querySelector('.tl-dialog-close').addEventListener('click', close);
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) close(); });
+
+    // Clear-all (only rendered when _extractedCols.length > 0)
+    const clearAllBtn = dlg.querySelector('[data-act="clear-all"]');
+    if (clearAllBtn) {
+      clearAllBtn.addEventListener('click', () => {
+        if (this._clearAllExtractedCols()) close();
+      });
+    }
+
+    // ── Auto tab wiring
+    const autoBody = dlg.querySelector('.tl-auto-body');
+    const autoExtractBtn = dlg.querySelector('[data-act="auto-extract"]');
+    const runAuto = () => {
+      autoBody.innerHTML = '<div class="tl-auto-empty">Running auto-scan…</div>';
+      autoExtractBtn.disabled = true;
+      // Defer to next tick so UI paints.
+      setTimeout(() => {
+        const proposals = this._autoExtractScan();
+        if (!proposals.length) {
+          autoBody.innerHTML = '<div class="tl-auto-empty">No URL/hostname-shaped values found in the first 200 rows.</div>';
+          return;
+        }
+        const list = document.createElement('div');
+        list.className = 'tl-auto-list';
+        for (let i = 0; i < proposals.length; i++) {
+          const p = proposals[i];
+          const row = document.createElement('label');
+          row.className = 'tl-auto-row';
+          const colName = this.columns[p.sourceCol] || `(col ${p.sourceCol + 1})`;
+          const pathLabel = p.path ? _tlJsonPathLabel(p.path) : '(whole cell)';
+          row.innerHTML = `
+            <input type="checkbox" data-i="${i}" checked>
+            <span class="tl-auto-kind">${_tlEsc(p.kindLabel)}</span>
+            <span class="tl-auto-col" title="${_tlEsc(colName)}">${_tlEsc(colName)}</span>
+            <span class="tl-auto-path">${_tlEsc(pathLabel)}</span>
+            <span class="tl-auto-rate" title="match rate in sample">${p.matchPct.toFixed(0)}%</span>
+            <span class="tl-auto-sample" title="${_tlEsc(p.sample)}">${_tlEsc(this._ellipsis(p.sample, 70))}</span>
+          `;
+          list.appendChild(row);
+        }
+        autoBody.innerHTML = '';
+        autoBody.appendChild(list);
+        autoExtractBtn.disabled = false;
+        autoExtractBtn._proposals = proposals;
+      }, 10);
+    };
+    dlg.querySelector('[data-act="auto-rescan"]').addEventListener('click', runAuto);
+    autoExtractBtn.addEventListener('click', () => {
+      const props = autoExtractBtn._proposals || [];
+      const chks = autoBody.querySelectorAll('input[type=checkbox]');
+      const pick = [];
+      chks.forEach((cb) => { if (cb.checked) pick.push(props[+cb.dataset.i]); });
+      if (!pick.length) return;
+      const before = this._extractedCols.length;
+      for (const p of pick) {
+        if (p.kind === 'json-url' || p.kind === 'json-host' || p.kind === 'json-leaf') {
+          this._addJsonExtractedColNoRender(p.sourceCol, p.path, p.proposedName, { autoKind: p.kind });
+        } else if (p.kind === 'text-url' || p.kind === 'text-host') {
+
+          this._addRegexExtractNoRender({
+            name: p.proposedName,
+            col: p.sourceCol,
+            pattern: (p.kind === 'text-url' ? TL_URL_RE.source : TL_HOSTNAME_INLINE_RE.source),
+            flags: 'i',
+            group: (p.kind === 'text-host') ? 1 : 0,
+            kind: 'auto',
+          });
+        } else if (p.kind === 'kv-field') {
+          // Pipe-delimited Key=Value cells (e.g. EVTX Event Data rendered as
+          // "Key1=val | Key2=val | …"). The value can span newlines (e.g.
+          // `UserAccountControl=\n%%2080\n%%2082`) or contain XML payloads,
+          // so we use `[\s\S]*?` and a lookahead that stops at the next
+          // real " | SomeKey=" boundary or end-of-string.
+          const esc = String(p.fieldName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const pattern = `(?:^|\\s\\|\\s)${esc}=([\\s\\S]*?)(?=\\s\\|\\s[A-Za-z_][\\w.-]*=|$)`;
+          this._addRegexExtractNoRender({
+            name: p.proposedName,
+            col: p.sourceCol,
+            pattern,
+            flags: '',
+            group: 1,
+            kind: 'auto',
+          });
+        }
+      }
+      const added = this._extractedCols.length - before;
+      const skipped = pick.length - added;
+      if (this._app && this._app._toast) {
+        if (added && skipped) this._app._toast(`Added ${added} column${added === 1 ? '' : 's'}; skipped ${skipped} duplicate${skipped === 1 ? '' : 's'}`, 'info');
+        else if (added) this._app._toast(`Added ${added} column${added === 1 ? '' : 's'}`, 'info');
+        else if (skipped) this._app._toast(`Skipped ${skipped} duplicate${skipped === 1 ? '' : 's'} — already extracted`, 'info');
+      }
+      this._rebuildExtractedStateAndRender();
+      close();
+    });
+    runAuto();
+
+    // ── Regex tab wiring
+    const colSel = dlg.querySelector('[data-field="col"]');
+    colSel.innerHTML = '';
+    for (let i = 0; i < this._baseColumns.length; i++) {
+      const o = document.createElement('option');
+      o.value = String(i); o.textContent = this._baseColumns[i] || `(col ${i + 1})`;
+      colSel.appendChild(o);
+    }
+    if (preselectCol != null && preselectCol < this._baseColumns.length) colSel.value = String(preselectCol);
+
+    const presetSel = dlg.querySelector('[data-field="preset"]');
+    for (const p of TL_REGEX_PRESETS) {
+      const o = document.createElement('option');
+      o.value = p.label; o.textContent = p.label; presetSel.appendChild(o);
+    }
+    const patternEl = dlg.querySelector('[data-field="pattern"]');
+    const flagsEl = dlg.querySelector('[data-field="flags"]');
+    const groupEl = dlg.querySelector('[data-field="group"]');
+    const nameEl = dlg.querySelector('[data-field="name"]');
+    const statusEl = dlg.querySelector('.tl-regex-status');
+    const samplesEl = dlg.querySelector('.tl-regex-samples');
+
+    presetSel.addEventListener('change', () => {
+      const p = TL_REGEX_PRESETS.find(x => x.label === presetSel.value);
+      if (p) {
+        patternEl.value = p.pattern;
+        flagsEl.value = p.flags || '';
+        groupEl.value = String(p.group == null ? 0 : p.group);
+        nameEl.value = p.label;
+      }
+    });
+
+    // Detect an UNESCAPED top-level `|` in the pattern — that's alternation,
+    // not a literal pipe. The classic footgun: `DestAddress=(.+?) |` reads as
+    // the alternation `"DestAddress=(.+?) " OR ""`, so every row matches at
+    // offset 0 with group 1 = undefined → the preview's old "matched" count
+    // rings 100% while every saved value is empty. We strip out escaped `\|`
+    // and character classes `[...]` before scanning so we only warn on the
+    // genuine gotcha.
+    const _hasTopLevelPipe = (src) => {
+      if (!src) return false;
+      // Remove escaped metacharacters (notably `\|`).
+      let stripped = src.replace(/\\./g, '');
+      // Remove character classes `[…]` — `|` inside a class is literal.
+      stripped = stripped.replace(/\[[^\]]*\]/g, '');
+      return stripped.indexOf('|') !== -1;
+    };
+
+    const runTest = () => {
+      const pattern = patternEl.value;
+      const flags = flagsEl.value;
+      if (!pattern) { statusEl.textContent = 'Enter a pattern to preview.'; samplesEl.innerHTML = ''; return; }
+      let re;
+      try { re = new RegExp(pattern, flags); }
+      catch (e) { statusEl.textContent = 'Invalid regex: ' + (e.message || e); samplesEl.innerHTML = ''; return; }
+      const col = parseInt(colSel.value, 10);
+      const gp = Math.max(0, Math.min(9, parseInt(groupEl.value, 10) || 0));
+      const sampleMax = 200;
+      const N = Math.min(this.rows.length, sampleMax);
+      // `matched`  — rows where `re.exec()` returned any match at all.
+      // `captured` — rows where the selected group `gp` captured a
+      //              NON-EMPTY string. This is the count the user actually
+      //              cares about: it's what the saved extractor will emit.
+      //              Historical bug: the preview reported `matched` alone
+      //              as "N/M matched (100%)" and then saved an all-empty
+      //              column, because `DestAddress=(.+?) |` matches the
+      //              empty alternative at offset 0 for every row and
+      //              leaves group 1 undefined.
+      let seen = 0, matched = 0, captured = 0, emptyCap = 0;
+      const hits = [];
+      for (let i = 0; i < N; i++) {
+        const v = this._cellAt(i, col);
+        if (!v) continue;
+        seen++;
+        const m = re.exec(v);
+        if (!m) continue;
+        matched++;
+        const cap = (gp < m.length) ? (m[gp] == null ? '' : m[gp]) : m[0];
+        if (cap !== '') {
+          captured++;
+          if (hits.length < 20) hits.push({ src: v, cap });
+        } else {
+          emptyCap++;
+        }
+      }
+      const capPct = seen ? (captured * 100 / seen) : 0;
+      let status;
+      if (matched === captured) {
+        status = `${captured}/${seen} sampled rows captured (${capPct.toFixed(0)}%).`;
+      } else {
+        // The preview that will actually be saved is the non-empty column.
+        // Surface both numbers so the user can see the honest gap.
+        status = `${captured}/${seen} captured (${capPct.toFixed(0)}%) · ${matched} matched but ${emptyCap} produced empty values (group ${gp} was undefined / empty).`;
+      }
+      // Pipe-alternation footgun — strong hint that the user meant a
+      // literal pipe. Only warn when there's a real discrepancy, to
+      // avoid alarming users who intentionally wrote alternations.
+      if (_hasTopLevelPipe(pattern) && matched > captured) {
+        status += `  ⚠ Your pattern contains "|" (regex alternation). To match a literal pipe character use "\\|".`;
+      }
+      statusEl.textContent = status;
+      samplesEl.innerHTML = '';
+      for (const h of hits) {
+        const d = document.createElement('div');
+        d.className = 'tl-regex-sample';
+        d.innerHTML = `<span class="tl-regex-sample-cap">${_tlEsc(h.cap)}</span><span class="tl-regex-sample-src" title="${_tlEsc(h.src)}">${_tlEsc(this._ellipsis(h.src, 90))}</span>`;
+        samplesEl.appendChild(d);
+      }
+    };
+    patternEl.addEventListener('input', runTest);
+    flagsEl.addEventListener('input', runTest);
+    groupEl.addEventListener('input', runTest);
+    colSel.addEventListener('change', runTest);
+    dlg.querySelector('[data-act="regex-test"]').addEventListener('click', runTest);
+
+    dlg.querySelector('[data-act="regex-extract"]').addEventListener('click', () => {
+      const pattern = patternEl.value;
+      if (!pattern) { if (this._app) this._app._toast('Enter a regex pattern', 'error'); return; }
+      let re;
+      try { re = new RegExp(pattern, flagsEl.value); } catch (e) { if (this._app) this._app._toast('Invalid regex: ' + e.message, 'error'); return; }
+      const col = parseInt(colSel.value, 10);
+      const gp = Math.max(0, Math.min(9, parseInt(groupEl.value, 10) || 0));
+      const colName = this._baseColumns[col] || `(col ${col + 1})`;
+      const name = (nameEl.value || '').trim() || `${colName} (regex)`;
+      const before = this._extractedCols.length;
+      this._addRegexExtractNoRender({
+        name, col, pattern, flags: flagsEl.value, group: gp, kind: 'regex',
+      });
+      if (this._extractedCols.length === before) {
+        if (this._app && this._app._toast) this._app._toast('That column is already extracted', 'info');
+        return;
+      }
+      this._rebuildExtractedStateAndRender();
+      close();
+      void re;  // re already constructed
+    });
+  }
+
+  // ── Auto-extract scanner ─────────────────────────────────────────────────
+  _autoExtractScan() {
+    const proposals = [];
+    const sampleCap = Math.min(this.rows.length, 200);
+    const cols = this._baseColumns.length;
+
+    for (let c = 0; c < cols; c++) {
+      // Sample cells.
+      const samples = [];
+      for (let i = 0; i < sampleCap; i++) {
+        const v = this._cellAt(i, c);
+        if (v !== '') samples.push({ i, v });
+      }
+      if (!samples.length) continue;
+
+      // Determine: JSON-dominant column?
+      let jsonOk = 0;
+      const parsedList = new Array(samples.length);
+      for (let i = 0; i < samples.length; i++) {
+        const v = samples[i].v;
+        if (_tlMaybeJson(v)) {
+          try { parsedList[i] = JSON.parse(v); if (parsedList[i] != null && typeof parsedList[i] === 'object') jsonOk++; }
+          catch (_) { parsedList[i] = null; }
+        } else {
+          parsedList[i] = null;
+        }
+      }
+      if (jsonOk >= samples.length * 0.5 && jsonOk >= 3) {
+        // Score path leaves.
+        const pathStats = new Map();
+        for (let i = 0; i < samples.length; i++) {
+          const parsed = parsedList[i];
+          if (parsed == null || typeof parsed !== 'object') continue;
+          this._jsonCollectLeafPaths(parsed, [], (pathKey, path, v) => {
+            let rec = pathStats.get(pathKey);
+            if (!rec) { rec = { path: path.slice(), total: 0, url: 0, host: 0, sample: '' }; pathStats.set(pathKey, rec); }
+            rec.total++;
+            const vs = String(v);
+            if (!rec.sample) rec.sample = vs;
+            if (TL_URL_RE.test(vs)) rec.url++;
+            else if (TL_HOSTNAME_RE.test(vs.trim())) rec.host++;
+          }, 4);   // max depth
+        }
+        // Bounded enumeration of leaf paths → one proposal per distinct
+        // leaf path, so the analyst can flatten an entire JSON column into
+        // a set of CSV-like columns ("JSON → CSV"). URL / hostname paths
+        // are already emitted above with their richer kind labels; all
+        // other leaves fall through to the generic `json-leaf` proposal
+        // here. Cap per-column to keep the Extract dialog readable on
+        // pathological payloads.
+        const JSON_LEAF_CAP = 60;
+        let emittedLeaves = 0;
+        for (const [, rec] of pathStats) {
+          if (rec.total < Math.max(3, samples.length * 0.3)) continue;
+          const isUrl = rec.url >= rec.total * 0.4;
+          const isHost = !isUrl && rec.host >= rec.total * 0.4;
+          if (isUrl) {
+            proposals.push({
+              kind: 'json-url', kindLabel: 'URL', sourceCol: c, path: rec.path,
+              matchPct: rec.url * 100 / rec.total,
+              proposedName: `${this._baseColumns[c] || 'col' + c}.${_tlJsonPathLabel(rec.path)}`,
+              sample: rec.sample,
+            });
+          } else if (isHost) {
+            proposals.push({
+              kind: 'json-host', kindLabel: 'Hostname', sourceCol: c, path: rec.path,
+              matchPct: rec.host * 100 / rec.total,
+              proposedName: `${this._baseColumns[c] || 'col' + c}.${_tlJsonPathLabel(rec.path)}`,
+              sample: rec.sample,
+            });
+          } else if (emittedLeaves < JSON_LEAF_CAP) {
+            // Generic JSON leaf — lets the user flatten arbitrary nested
+            // keys (`Events[*].EventID`, `response.status`, …) into
+            // extracted columns via the Auto tab.
+            proposals.push({
+              kind: 'json-leaf', kindLabel: 'JSON leaf', sourceCol: c, path: rec.path,
+              matchPct: rec.total * 100 / samples.length,
+              proposedName: `${this._baseColumns[c] || 'col' + c}.${_tlJsonPathLabel(rec.path)}`,
+              sample: rec.sample,
+            });
+            emittedLeaves++;
+          }
+        }
+
+      } else {
+        // Pipe-delimited Key=Value detection — catches EVTX Event Data
+        // (`TargetUserName=foo | SubjectUserName=bar | …`), Sysmon-style
+        // key=value strings, and any other column whose cells encode an
+        // ad-hoc mini-schema the analyst would otherwise have to rip
+        // apart with hand-rolled regex. Runs BEFORE the URL/host branch
+        // so KV-dominant columns don't also try to match whole-cell URLs
+        // (noisy on EVTX) — if we detect enough KV rows we emit per-field
+        // proposals and skip straight to the next column.
+        //
+        // Heuristic: split each cell on ` | ` (the exact separator emitted
+        // by EvtxRenderer) and count parts starting with an identifier +
+        // `=`. If ≥ 50 % of sampled rows have ≥ 2 such pairs, tally field
+        // names across the whole sample and emit one `kv-field` proposal
+        // per field that appears in ≥ 30 % of rows (min 3 occurrences).
+        const KV_KEY_RE = /^([A-Za-z_][\w.-]{0,63})=/;
+        const fieldStats = new Map();
+        let kvRows = 0;
+        for (const s of samples) {
+          const parts = s.v.split(' | ');
+          let pairs = 0;
+          for (const part of parts) {
+            const m = KV_KEY_RE.exec(part);
+            if (!m) continue;
+            pairs++;
+            const name = m[1];
+            let rec = fieldStats.get(name);
+            if (!rec) {
+              rec = { count: 0, sample: '' };
+              fieldStats.set(name, rec);
+            }
+            rec.count++;
+            if (!rec.sample) {
+              const val = part.slice(m[0].length);
+              // Keep the sample on a single line — multi-line values
+              // (`UserAccountControl=\n%%2080\n…`) render fine as a
+              // preview once collapsed.
+              rec.sample = val.replace(/\s+/g, ' ').trim() || '(empty)';
+            }
+          }
+          if (pairs >= 2) kvRows++;
+        }
+        const kvDominant = kvRows >= Math.max(3, samples.length * 0.5);
+        if (kvDominant && fieldStats.size) {
+          const KV_FIELD_CAP = 80;
+          const minCount = Math.max(3, Math.floor(samples.length * 0.3));
+          const ranked = Array.from(fieldStats.entries())
+            .filter(([, rec]) => rec.count >= minCount)
+            .sort((a, b) => b[1].count - a[1].count)
+            .slice(0, KV_FIELD_CAP);
+          for (const [name, rec] of ranked) {
+            proposals.push({
+              kind: 'kv-field', kindLabel: 'Field', sourceCol: c, path: null,
+              fieldName: name,
+              matchPct: rec.count * 100 / samples.length,
+              proposedName: `${this._baseColumns[c] || 'col' + c}.${name}`,
+              sample: rec.sample,
+            });
+          }
+          continue;   // skip URL / host probing on KV-dominant columns
+        }
+
+        // Plain-text column: test URL + hostname patterns directly.
+        let urlHits = 0, hostHits = 0;
+        let urlSample = '', hostSample = '';
+        for (const s of samples) {
+          if (TL_URL_RE.test(s.v)) { urlHits++; if (!urlSample) urlSample = s.v; }
+          else {
+            const m = TL_HOSTNAME_INLINE_RE.exec(s.v);
+            if (m && m[1] && m[1].indexOf('.') > 0) { hostHits++; if (!hostSample) hostSample = m[1]; }
+          }
+        }
+        const total = samples.length;
+        if (urlHits >= Math.max(3, total * 0.3)) {
+          proposals.push({
+            kind: 'text-url', kindLabel: 'URL', sourceCol: c, path: null,
+            matchPct: urlHits * 100 / total,
+            proposedName: `${this._baseColumns[c] || 'col' + c} (URL)`,
+            sample: urlSample,
+          });
+        }
+        if (hostHits >= Math.max(3, total * 0.3) && !urlHits) {
+          proposals.push({
+            kind: 'text-host', kindLabel: 'Hostname', sourceCol: c, path: null,
+            matchPct: hostHits * 100 / total,
+            proposedName: `${this._baseColumns[c] || 'col' + c} (host)`,
+            sample: hostSample,
+          });
+        }
+      }
+    }
+    proposals.sort((a, b) => b.matchPct - a.matchPct);
+    return proposals;
+  }
+
+
+  _jsonCollectLeafPaths(value, path, cb, maxDepth) {
+    if (path.length >= maxDepth) return;
+    if (value == null) return;
+    if (typeof value === 'object') {
+      if (Array.isArray(value)) {
+        // Treat all array entries as the same path (use [*]).
+        for (let i = 0; i < Math.min(value.length, 5); i++) {
+          this._jsonCollectLeafPaths(value[i], path.concat('[*]'), cb, maxDepth);
+        }
+      } else {
+        for (const k of Object.keys(value)) {
+          this._jsonCollectLeafPaths(value[k], path.concat(k), cb, maxDepth);
+        }
+      }
+    } else {
+      if (path.length === 0) return;
+      const key = path.join('·');
+      cb(key, path, value);
+    }
+  }
+
+  // Walk a value with a path that may contain [*] — returns the first found
+  // leaf string (deterministic first-match semantics).
+  _jsonPathGetWithStar(value, path) {
+    let cur = [value];
+    for (const seg of path) {
+      const next = [];
+      for (const v of cur) {
+        if (v == null) continue;
+        if (seg === '[*]' && Array.isArray(v)) {
+          for (const el of v) next.push(el);
+        } else if (/^\[\d+\]$/.test(seg) && Array.isArray(v)) {
+          next.push(v[Number(seg.slice(1, -1))]);
+        } else if (typeof v === 'object') {
+          next.push(v[seg]);
+        }
+      }
+      cur = next;
+      if (!cur.length) return undefined;
+    }
+    for (const v of cur) {
+      if (v != null && typeof v !== 'object') return v;
+    }
+    return undefined;
+  }
+
+  // ── Add / remove extracted columns ──────────────────────────────────────
+  // Returns the new column's index in `this.columns` (base + extracted),
+  // so callers can chain a filter chip against it (see `onCellPick`).
+  _addJsonExtractedCol(colIdx, path, label) {
+    const before = this._extractedCols.length;
+    this._addJsonExtractedColNoRender(colIdx, path, label);
+    // Duplicate rejected — nothing to rebuild, and the caller needs a
+    // sentinel so downstream chip-chaining can fall back gracefully.
+    if (this._extractedCols.length === before) return -1;
+    const newColIdx = this._baseColumns.length + this._extractedCols.length - 1;
+    this._rebuildExtractedStateAndRender();
+    return newColIdx;
+  }
+  _addJsonExtractedColNoRender(colIdx, path, label, opts) {
+    // Dedup: same source column + same JSON path == same extractor. Reject
+    // silently so repeated clicks on the same JSON leaf don't pile up
+    // duplicate columns.
+    if (this._findDuplicateExtractedCol({ kind: 'json', sourceCol: colIdx, path }) >= 0) return;
+    const name = this._uniqueColName(label || _tlJsonPathLabel(path));
+    const values = new Array(this.rows.length);
+
+    for (let i = 0; i < this.rows.length; i++) {
+      const raw = this._cellAt(i, colIdx);
+      if (!raw) { values[i] = ''; continue; }
+      let parsed = this._jsonCache.get(i);
+      if (parsed === undefined) {
+        try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
+        this._jsonCache.set(i, parsed);
+      }
+      if (parsed == null || typeof parsed !== 'object') { values[i] = ''; continue; }
+      const v = this._jsonPathGetWithStar(parsed, path);
+      values[i] = v == null ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+    }
+    this._extractedCols.push({
+      name, kind: (opts && opts.autoKind) ? 'auto' : 'json',
+      sourceCol: colIdx, path, values,
+    });
+  }
+
+  _addRegexExtractNoRender(spec) {
+    let re;
+    try { re = new RegExp(spec.pattern, spec.flags || ''); } catch (_) { return; }
+    const col = spec.col;
+    const gp = Math.max(0, Math.min(9, spec.group || 0));
+    // Dedup: same source column + same (pattern, flags, group) == same
+    // extractor. Reject silently; the Regex-tab extract button detects
+    // the no-op by list-length diff and toasts a user-facing "already
+    // extracted" notice. Persisted-regex replay on construction hits
+    // this path too — legacy storage that stacked duplicates is
+    // collapsed on the next load.
+    if (this._findDuplicateExtractedCol({
+      kind: spec.kind || 'regex',
+      sourceCol: col,
+      pattern: spec.pattern,
+      flags: spec.flags || '',
+      group: gp,
+    }) >= 0) return;
+    const values = new Array(this.rows.length);
+    for (let i = 0; i < this.rows.length; i++) {
+      const v = this._cellAt(i, col);
+      if (!v) { values[i] = ''; continue; }
+      // Reset lastIndex if global flag used
+      if (re.global) re.lastIndex = 0;
+      const m = re.exec(v);
+      if (!m) { values[i] = ''; continue; }
+      const captured = (gp < m.length) ? (m[gp] == null ? '' : m[gp]) : m[0];
+      values[i] = String(captured);
+    }
+    this._extractedCols.push({
+      name: this._uniqueColName(spec.name || 'regex'),
+      kind: spec.kind || 'regex',
+      sourceCol: col, pattern: spec.pattern, flags: spec.flags || '', group: gp,
+      values,
+    });
+    // Persist regex extractors.
+    this._persistRegexExtracts();
+  }
+
+  // Returns the index of an existing extractor equivalent to `spec`, or -1
+  // if none. `spec` is one of:
+  //   { kind: 'json'|'auto', sourceCol, path }      — JSON-leaf extractor
+  //   { kind: 'regex'|'auto', sourceCol, pattern, flags, group }  — regex
+  // The `auto` kind is normalised by presence/absence of `path` so that an
+  // Auto-tab json-leaf and a manually-picked JSON leaf on the same path
+  // collapse into a single column. Paths compared by JSON.stringify — cheap
+  // and stable for the small arrays these paths use.
+  _findDuplicateExtractedCol(spec) {
+    if (!spec) return -1;
+    const sHasPath = Array.isArray(spec.path);
+    const sKind = sHasPath ? 'json' : 'regex';
+    const sPathKey = sHasPath ? JSON.stringify(spec.path) : null;
+    const sFlags = spec.flags || '';
+    const sGroup = spec.group || 0;
+    for (let i = 0; i < this._extractedCols.length; i++) {
+      const e = this._extractedCols[i];
+      if (e.sourceCol !== spec.sourceCol) continue;
+      const eHasPath = Array.isArray(e.path);
+      const eKind = eHasPath ? 'json' : 'regex';
+      if (eKind !== sKind) continue;
+      if (sKind === 'json') {
+        if (JSON.stringify(e.path || []) === sPathKey) return i;
+      } else {
+        if (e.pattern === spec.pattern
+          && (e.flags || '') === sFlags
+          && (e.group || 0) === sGroup) return i;
+      }
+    }
+    return -1;
+  }
+
+  // Wipe every extractor on this view. Called from the "✕ Clear all
+  // extracted" button in the Extract dialog header. Drops chips that
+  // reference extracted cols, resets time/stack/pivot if they point into
+  // extracted space, then calls `_rebuildExtractedStateAndRender()` to
+  // recreate both grids with the trimmed column set and persist an empty
+  // regex-extracts list for this file.
+  _clearAllExtractedCols() {
+    if (!this._extractedCols.length) return false;
+    const n = this._extractedCols.length;
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(`Remove ${n} extracted column${n === 1 ? '' : 's'}? This cannot be undone.`)) return false;
+    const baseLen = this._baseColumns.length;
+
+    // Strip query clauses targeting any extracted column (colIdx >= baseLen)
+    // BEFORE wiping `_extractedCols`, so the serializer can still resolve
+    // those column indices to names while editing the query string.
+    if (this.columns.length > baseLen) {
+      const extractedIndices = [];
+      for (let i = baseLen; i < this.columns.length; i++) extractedIndices.push(i);
+      this._queryRemoveClausesForCols(extractedIndices);
+    }
+    // Time/stack/pivot sometimes reference an extracted col — snap back.
+    if (this._timeCol != null && this._timeCol >= baseLen) {
+      this._timeCol = _tlAutoDetectTimestampCol(this._baseColumns, this.rows);
+      this._parseAllTimestamps();
+      this._dataRange = this._computeDataRange();
+      this._window = null;
+    }
+    if (this._stackCol != null && this._stackCol >= baseLen) this._stackCol = null;
+    if (this._pivotSpec) {
+      const refs = [this._pivotSpec.rows, this._pivotSpec.cols, this._pivotSpec.aggCol];
+      if (refs.some(v => typeof v === 'number' && v >= baseLen)) {
+        this._pivotSpec = null;
+        TimelineView._savePivotSpec({});
+      }
+    }
+
+    this._extractedCols = [];
+    this._persistRegexExtracts();          // writes empty list for this file
+    this._rebuildExtractedStateAndRender();
+    if (this._app && typeof this._app._toast === 'function') {
+      this._app._toast(`Removed ${n} extracted column${n === 1 ? '' : 's'}`, 'info');
+    }
+    return true;
+  }
+
+
+  _uniqueColName(want) {
+    let base = String(want || 'extract').trim() || 'extract';
+    const existing = new Set(this.columns);
+    if (!existing.has(base)) return base;
+    for (let i = 2; i < 999; i++) {
+      const name = base + ' ' + i;
+      if (!existing.has(name)) return name;
+    }
+    return base + ' ' + Date.now();
+  }
+
+  _removeExtractedCol(colIdx) {
+    if (!this._isExtractedCol(colIdx)) return;
+    // Strip query clauses targeting this column BEFORE splicing it out of
+    // `_extractedCols` — the serializer uses `this.columns` to resolve
+    // colIdx → name, so the column must still exist while we edit the
+    // query string. After splice, columns above `colIdx` shift down by
+    // one; the query serialises by NAME not index, so round-trip picks
+    // the correct column automatically.
+    this._queryRemoveClausesForCols([colIdx]);
+    this._extractedCols.splice(colIdx - this._baseColumns.length, 1);
+    this._persistRegexExtracts();
+    this._rebuildExtractedStateAndRender();
+  }
+
+  _rebuildExtractedStateAndRender() {
+    // Any time the column set changes: recompute filter (chips may ref extracted cols),
+    // re-populate toolbar & pivot dropdowns, invalidate stats, kill the grid so it
+    // rebuilds with the new columns.
+    this._recomputeFilter();
+    this._populateToolbarSelects();
+    this._populatePivotSelects();
+    // Destroy existing grids — columns count changed.
+    if (this._grid) { try { this._grid.destroy(); } catch (_) { } this._grid = null; }
+    if (this._susGrid) { try { this._susGrid.destroy(); } catch (_) { } this._susGrid = null; }
+    this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns', 'sus']);
+  }
+
+  _persistRegexExtracts() {
+    const list = this._extractedCols
+      .filter(e => e.kind === 'regex' || e.kind === 'auto')
+      .map(e => ({
+        name: e.name, col: e.sourceCol, pattern: e.pattern, flags: e.flags,
+        group: e.group, kind: e.kind,
+      }))
+      .filter(e => e.pattern);
+    TimelineView._saveRegexExtractsFor(this._fileKey, list);
+  }
+
+  // ── Pivot ────────────────────────────────────────────────────────────────
+  // Auto-pivot heuristic — pick sensible Rows / Cols / Aggregate selections
+  // from a user-clicked column and (optionally) the current stack column,
+  // expand the pivot section (it starts collapsed), write the choices into
+  // the select widgets, and call `_buildPivot()`. Scrolls the result into
+  // view with a brief flash so the user can see where it went.
+  //
+  // Heuristic (simple on purpose — pivot is ultimately interactive):
+  //   - Rows     = clicked column (always).
+  //   - Cols     = opts.colsCol if provided; else the current stack column
+  //                if it differs from Rows and has 2..60 distinct values;
+  //                else the first OTHER column with 2..60 distinct values,
+  //                skipping the timestamp column and Rows.
+  //   - Agg      = 'count' (the only aggregate that always makes sense for
+  //                categorical x categorical).
+  _autoPivotFromColumn(rowsCol, opts) {
+    opts = opts || {};
+    if (!Number.isInteger(rowsCol) || rowsCol < 0 || rowsCol >= this.columns.length) return;
+
+    // Ensure column stats are fresh so the heuristic can read distinct counts.
+    if (!this._colStats) {
+      this._colStats = this._computeColumnStats(this._filteredIdx || new Uint32Array(0));
+    }
+    const stats = this._colStats;
+
+    const MIN = 2, MAX = 60;
+    const good = (ci) => {
+      if (ci === rowsCol) return false;
+      if (ci === this._timeCol) return false;
+      const s = stats[ci]; if (!s) return false;
+      return s.distinct >= MIN && s.distinct <= MAX;
+    };
+
+    let colsCol = Number.isInteger(opts.colsCol) ? opts.colsCol : null;
+    if (colsCol == null && this._stackCol != null && good(this._stackCol)) {
+      colsCol = this._stackCol;
+    }
+    if (colsCol == null) {
+      // Pick the column with the most "interesting" cardinality — prefer
+      // mid-range distinct counts (10..30 is ideal for a readable pivot).
+      let bestCol = -1, bestScore = -Infinity;
+      for (let c = 0; c < this.columns.length; c++) {
+        if (!good(c)) continue;
+        const d = stats[c].distinct;
+        // Score = closeness to 15 (peak), capped. Prefer 5..30.
+        const score = -Math.abs(d - 15);
+        if (score > bestScore) { bestScore = score; bestCol = c; }
+      }
+      if (bestCol >= 0) colsCol = bestCol;
+    }
+
+    if (colsCol == null) {
+      if (this._app) this._app._toast('No suitable pivot column found (need a column with 2–60 distinct values).', 'error');
+      return;
+    }
+
+    // Wire up the pivot UI.
+    const els = this._els;
+    els.pvRows.value = String(rowsCol);
+    els.pvCols.value = String(colsCol);
+    els.pvAgg.value = 'count';
+    els.pvAggCol.value = '-1';
+    els.pvAggColWrap.style.display = 'none';
+
+    // Uncollapse the pivot section (it defaults to collapsed).
+    const pivotSec = this._root.querySelector('.tl-section-pivot');
+    if (pivotSec && pivotSec.classList.contains('collapsed')) {
+      pivotSec.classList.remove('collapsed');
+      this._sections.pivot = false;
+      TimelineView._saveSections(this._sections);
+    }
+
+    this._buildPivot();
+
+    // Scroll into view + brief flash highlight.
+    if (pivotSec && pivotSec.scrollIntoView) {
+      pivotSec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      pivotSec.classList.add('tl-section-flash');
+      setTimeout(() => pivotSec.classList.remove('tl-section-flash'), 1200);
+    }
+  }
+
+  _buildPivot() {
+    const rowsCol = parseInt(this._els.pvRows.value, 10);
+    const colsCol = parseInt(this._els.pvCols.value, 10);
+    const aggOp = this._els.pvAgg.value;
+    const aggCol = parseInt(this._els.pvAggCol.value, 10);
+    if (rowsCol < 0 || colsCol < 0) {
+      this._els.pvResultBody.innerHTML = '<div class="tl-pivot-empty">Pick Rows and Columns to build a pivot.</div>';
+      return;
+    }
+    this._pivotSpec = { rows: rowsCol, cols: colsCol, aggOp, aggCol };
+    TimelineView._savePivotSpec(this._pivotSpec);
+
+    const idx = this._filteredIdx;
+    const rowKeys = new Map(); // rowVal → index
+    const colKeys = new Map(); // colVal → index
+    const rowList = [];
+    const colList = [];
+    const rowKeyOf = new Array(idx.length);
+    const colKeyOf = new Array(idx.length);
+
+    for (let i = 0; i < idx.length; i++) {
+      const rv = this._cellAt(idx[i], rowsCol);
+      const cv = this._cellAt(idx[i], colsCol);
+      if (!rowKeys.has(rv)) { rowKeys.set(rv, rowList.length); rowList.push(rv); }
+      if (!colKeys.has(cv)) { colKeys.set(cv, colList.length); colList.push(cv); }
+      rowKeyOf[i] = rowKeys.get(rv);
+      colKeyOf[i] = colKeys.get(cv);
+    }
+    // Sort col keys by total, row keys by total, then cap to 50×50.
+    const rowTotals = new Int32Array(rowList.length);
+    const colTotals = new Int32Array(colList.length);
+    for (let i = 0; i < idx.length; i++) {
+      rowTotals[rowKeyOf[i]]++;
+      colTotals[colKeyOf[i]]++;
+    }
+    const rowOrder = Array.from(rowList.keys()).sort((a, b) => rowTotals[b] - rowTotals[a]);
+    const colOrder = Array.from(colList.keys()).sort((a, b) => colTotals[b] - colTotals[a]);
+    const MAX = 50;
+    const visibleRows = rowOrder.slice(0, MAX);
+    const visibleCols = colOrder.slice(0, MAX);
+    const rowMap = new Map(visibleRows.map((v, i) => [v, i]));
+    const colMap = new Map(visibleCols.map((v, i) => [v, i]));
+
+    // Build the aggregate matrix.
+    const nR = visibleRows.length, nC = visibleCols.length;
+    // For 'count' and 'sum' → Float64Array.
+    // For 'distinct' → Array of Set<string> per cell.
+    let mat;
+    if (aggOp === 'distinct') {
+      mat = new Array(nR * nC);
+      for (let k = 0; k < mat.length; k++) mat[k] = null;
+    } else {
+      mat = new Float64Array(nR * nC);
+    }
+
+    // `rowMap` / `colMap` are keyed by INDEX into rowList/colList (not by the
+    // raw cell value) — `rowKeyOf[i]` / `colKeyOf[i]` are already those
+    // indices, so pass them straight through. Passing the resolved value
+    // here silently missed on every row (empty pivot table, integer
+    // headers) — see CONTRIBUTING for the history of this fix.
+    for (let i = 0; i < idx.length; i++) {
+      const rk = rowMap.get(rowKeyOf[i]);
+      const ck = colMap.get(colKeyOf[i]);
+      if (rk == null || ck == null) continue;  // in 'Other' bucket — skip for v1
+      const cellIdx = rk * nC + ck;
+      if (aggOp === 'count') mat[cellIdx]++;
+      else if (aggOp === 'distinct' && aggCol >= 0) {
+        let s = mat[cellIdx]; if (!s) { s = new Set(); mat[cellIdx] = s; }
+        s.add(this._cellAt(idx[i], aggCol));
+      } else if (aggOp === 'sum' && aggCol >= 0) {
+        const n = parseFloat(this._cellAt(idx[i], aggCol));
+        if (Number.isFinite(n)) mat[cellIdx] += n;
+      }
+    }
+
+    // Render table.
+    const cellVal = (rk, ck) => {
+      const x = mat[rk * nC + ck];
+      if (aggOp === 'distinct') return x ? x.size : 0;
+      return x || 0;
+    };
+    let maxV = 0;
+    for (let r = 0; r < nR; r++) for (let c = 0; c < nC; c++) {
+      const v = cellVal(r, c); if (v > maxV) maxV = v;
+    }
+    const heat = (v) => {
+      if (!maxV || v <= 0) return '';
+      const pct = Math.min(1, v / maxV);
+      return `background: rgb(var(--accent-rgb) / ${(0.05 + pct * 0.45).toFixed(3)});`;
+    };
+
+    // Resolve the visible-*-index arrays to their actual cell values for
+    // display / drill-down / export. `visibleRows` / `visibleCols` are
+    // arrays of indices into `rowList` / `colList`, NOT values.
+    const visibleRowVals = visibleRows.map(i => rowList[i]);
+    const visibleColVals = visibleCols.map(i => colList[i]);
+
+    const tbl = document.createElement('table');
+    tbl.className = 'tl-pivot-table';
+    let html = '<thead><tr><th class="tl-pivot-corner"></th>';
+    for (const cv of visibleColVals) html += `<th title="${_tlEsc(cv)}">${_tlEsc(cv === '' ? '(empty)' : this._ellipsis(cv, 30))}</th>`;
+    if (colOrder.length > MAX) html += `<th class="tl-pivot-other" title="${colOrder.length - MAX} more columns not shown">…+${colOrder.length - MAX}</th>`;
+    html += '</tr></thead><tbody>';
+    for (let r = 0; r < nR; r++) {
+      const rv = visibleRowVals[r];
+      html += `<tr><th title="${_tlEsc(rv)}">${_tlEsc(rv === '' ? '(empty)' : this._ellipsis(rv, 30))}</th>`;
+      for (let c = 0; c < nC; c++) {
+        const v = cellVal(r, c);
+        html += `<td data-r="${r}" data-c="${c}" style="${heat(v)}">${v ? v.toLocaleString() : ''}</td>`;
+      }
+      if (colOrder.length > MAX) html += '<td class="tl-pivot-other"></td>';
+      html += '</tr>';
+    }
+    if (rowOrder.length > MAX) html += `<tr><th class="tl-pivot-other">…+${rowOrder.length - MAX} more rows</th><td colspan="${nC + (colOrder.length > MAX ? 1 : 0)}"></td></tr>`;
+    html += '</tbody>';
+    tbl.innerHTML = html;
+
+    // Double-click a cell = filter-drill-down. Each add-clause commit
+    // triggers a full re-parse + render cycle, but that's fine for a
+    // user-initiated drill-down — we get the same render either way.
+    tbl.addEventListener('dblclick', (e) => {
+      const td = e.target.closest('td[data-r]');
+      if (!td) return;
+      const r = +td.dataset.r, c = +td.dataset.c;
+      const rv = visibleRowVals[r]; const cv = visibleColVals[c];
+      this._queryAddClause({ k: 'pred', colIdx: rowsCol, op: 'eq', val: String(rv) }, { dedupe: true });
+      this._queryAddClause({ k: 'pred', colIdx: colsCol, op: 'eq', val: String(cv) }, { dedupe: true });
+    });
+
+    const summary = document.createElement('div');
+    summary.className = 'tl-pivot-summary';
+    summary.textContent = `${rowOrder.length.toLocaleString()} × ${colOrder.length.toLocaleString()} → showing ${nR} × ${nC}. Double-click a cell to drill down.`;
+
+    this._els.pvResultBody.innerHTML = '';
+    this._els.pvResultBody.appendChild(summary);
+    const scroll = document.createElement('div');
+    scroll.className = 'tl-pivot-scroll';
+    scroll.appendChild(tbl);
+    this._els.pvResultBody.appendChild(scroll);
+
+    // Stash for CSV export. Expose the RESOLVED values (not the opaque
+    // into-rowList indices) so `_exportPivotCsv` produces a human-readable
+    // sheet.
+    this._lastPivot = { rowsCol, colsCol, aggOp, aggCol, visibleRowVals, visibleColVals, nR, nC, cellVal };
+  }
+
+  // ── Exports / section actions ────────────────────────────────────────────
+  _onSectionAction(act) {
+    switch (act) {
+      case 'chart-png': this._exportChartPng(this._els.chartCanvas, this._forensicFilename('chart', 'png')); break;
+      case 'chart-csv': this._exportChartCsv(this._lastChartData, this._forensicFilename('buckets', 'csv')); break;
+      case 'grid-csv': this._exportGridCsv(this._filteredIdx, this._forensicFilename('rows', 'csv')); break;
+      case 'columns-csv': this._exportColumnsCsv(this._colStats, this._forensicFilename('top-values', 'csv')); break;
+      case 'sus-csv': this._exportGridCsv(this._susFilteredIdx, this._forensicFilename('suspicious', 'csv')); break;
+      case 'pivot-csv': this._exportPivotCsv(this._forensicFilename('pivot', 'csv')); break;
+    }
+  }
+
+  // Build a forensic-flavoured filename for a timeline export. Shape:
+  //
+  //   {sourceStem}__{section}__{fromCompact}_to_{toCompact}.{ext}
+  //
+  // Where `fromCompact` / `toCompact` are compact UTC timestamps
+  // (`YYYYMMDDTHHMMZ` — no seconds, no punctuation, trailing Z) covering
+  // the data actually in the export: the current `_window` if the analyst
+  // has narrowed the scrubber, else the full `_dataRange`. For numeric-axis
+  // columns (ids / periods / years) the compact range falls back to
+  // `num_{lo}_to_num_{hi}` with locale-free integer strings, so a file of
+  // year-numbered rows doesn't emit misleading 1970 dates.
+  //
+  // If no timestamp column is chosen, or zero rows parsed, the range
+  // segment is omitted — `{sourceStem}__{section}.{ext}`.
+  //
+  // The source stem is sanitised: non-filename-safe characters become `_`,
+  // length capped at 80 chars so the full name stays well under the ~255-
+  // byte OS limit.
+  _forensicFilename(section, ext) {
+    const stem = this._forensicSourceStem();
+    const range = this._forensicRangeSegment();
+    const parts = [stem, section];
+    if (range) parts.push(range);
+    return parts.join('__') + '.' + ext;
+  }
+
+  _forensicSourceStem() {
+    const raw = (this.file && this.file.name) ? String(this.file.name) : '';
+    let stem = raw;
+    const dot = stem.lastIndexOf('.');
+    if (dot > 0) stem = stem.slice(0, dot);
+    // Replace filename-unsafe characters (Windows + POSIX reserved) + controls.
+    stem = stem.replace(/[\\/:*?"<>|\x00-\x1f]+/g, '_').trim();
+    if (!stem) stem = 'timeline';
+    if (stem.length > 80) stem = stem.slice(0, 80);
+    return stem;
+  }
+
+  // Compact UTC formatter — `YYYYMMDDTHHMMZ`. Minute-level precision
+  // deliberately (seconds are rarely meaningful on a range spanning
+  // hours / days and make filenames noisier to skim).
+  _forensicCompactUtc(ms) {
+    if (!Number.isFinite(ms)) return '';
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}`
+      + `T${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}Z`;
+  }
+
+  // Compact numeric formatter — strips punctuation so filenames stay
+  // shell-safe across platforms. Large magnitudes pass through as plain
+  // integers (no thousand-separators), fractional values round to 4 dp.
+  _forensicCompactNum(v) {
+    if (!Number.isFinite(v)) return '';
+    if (Number.isInteger(v)) return String(v);
+    return String(Math.round(v * 10000) / 10000);
+  }
+
+  _forensicRangeSegment() {
+    const dr = this._dataRange; if (!dr) return '';
+    const lo = this._window ? this._window.min : dr.min;
+    const hi = this._window ? this._window.max : dr.max;
+    if (!Number.isFinite(lo) || !Number.isFinite(hi)) return '';
+    if (this._timeIsNumeric) {
+      const a = this._forensicCompactNum(lo);
+      const b = this._forensicCompactNum(hi);
+      if (!a || !b) return '';
+      return `num_${a}_to_num_${b}`;
+    }
+    const a = this._forensicCompactUtc(lo);
+    const b = this._forensicCompactUtc(hi);
+    if (!a || !b) return '';
+    return `${a}_to_${b}`;
+  }
+
+
+  _exportChartPng(canvas, filename) {
+    if (!canvas) return;
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      if (window.FileDownload && typeof window.FileDownload.downloadBlob === 'function') {
+        window.FileDownload.downloadBlob(blob, filename, 'image/png');
+      }
+    }, 'image/png');
+  }
+
+  _exportChartCsv(data, filename) {
+    if (!data) return;
+    const { buckets, bucketCount, stackKeys, viewLo, bucketMs } = data;
+    const k = stackKeys ? stackKeys.length : 1;
+    const header = ['Bucket start (UTC)', 'Bucket end (UTC)'];
+    if (stackKeys && stackKeys.length) for (const s of stackKeys) header.push(s === '__other__' ? 'Other' : s);
+    else header.push('Count');
+    const lines = [_tlCsvRow(header)];
+    for (let b = 0; b < bucketCount; b++) {
+      const lo = viewLo + b * bucketMs;
+      const hi = lo + bucketMs;
+      const row = [_tlFormatFullUtc(lo, this._timeIsNumeric), _tlFormatFullUtc(hi, this._timeIsNumeric)];
+      for (let j = 0; j < k; j++) row.push(String(buckets[b * k + j]));
+      lines.push(_tlCsvRow(row));
+    }
+    if (window.FileDownload) window.FileDownload.downloadText(lines.join('\r\n'), filename, 'text/csv');
+  }
+
+  _exportGridCsv(idx, filename) {
+    if (!idx || !idx.length) return;
+    const cols = this.columns;
+    const lines = [_tlCsvRow(cols)];
+    for (let i = 0; i < idx.length; i++) {
+      const di = idx[i];
+      const row = new Array(cols.length);
+      for (let c = 0; c < cols.length; c++) row[c] = this._cellAt(di, c);
+      lines.push(_tlCsvRow(row));
+    }
+    if (window.FileDownload) window.FileDownload.downloadText(lines.join('\r\n'), filename, 'text/csv');
+  }
+
+  _exportColumnsCsv(stats, filename) {
+    if (!stats) return;
+    const lines = [_tlCsvRow(['Column', 'Value', 'Count'])];
+    for (let c = 0; c < this.columns.length; c++) {
+      const s = stats[c]; if (!s) continue;
+      for (const [val, cnt] of s.values) {
+        lines.push(_tlCsvRow([this.columns[c] || '', val, String(cnt)]));
+      }
+    }
+    if (window.FileDownload) window.FileDownload.downloadText(lines.join('\r\n'), filename, 'text/csv');
+  }
+
+  _exportPivotCsv(filename) {
+    const p = this._lastPivot; if (!p) return;
+    const header = [''];
+    for (const cv of p.visibleColVals) header.push(cv);
+    const lines = [_tlCsvRow(header)];
+    for (let r = 0; r < p.nR; r++) {
+      const row = [p.visibleRowVals[r]];
+      for (let c = 0; c < p.nC; c++) row.push(String(p.cellVal(r, c)));
+      lines.push(_tlCsvRow(row));
+    }
+    if (window.FileDownload) window.FileDownload.downloadText(lines.join('\r\n'), filename, 'text/csv');
+  }
 }
 
 
 // ════════════════════════════════════════════════════════════════════════════
-// App mixin — mode lifecycle, auto-switch, file-type gate, toolbar wiring.
+// App mixin — Timeline routing + container lifecycle.
+//
+// Every CSV / TSV / EVTX file routes through the Timeline view unconditionally.
+// There is no "Timeline mode" state on the App any more — a Timeline file is
+// considered loaded iff `this._timelineCurrent` is non-null. `_loadFile`
+// calls `_timelineTryHandle(file)`; if it returns truthy, the file has been
+// (or is being) rendered in the Timeline surface and the analyser pipeline
+// is skipped.
+//
+// Extensionless dispatch: `_sniffTimelineContent(buffer)` recognises the
+// EVTX `ElfFile\0` magic and performs a light CSV / TSV text sniff so a
+// dropped log with a missing or mislabelled extension still lands here
+// instead of falling through to the plaintext renderer.
 // ════════════════════════════════════════════════════════════════════════════
 Object.assign(App.prototype, {
 
-  // ── Persistence ────────────────────────────────────────────────────────
-  _getMode() { return this._mode === 'timeline' ? 'timeline' : 'analyser'; },
-
-  _initTimelineMode() {
-    // Default mode is 'analyser'. We deliberately don't persist the mode
-    // choice across reloads — the user always starts on Analyser and the
-    // autoswitch heuristic (or the T shortcut / button) gets them into
-    // Timeline from there. This avoids surprising reopens into Timeline
-    // after they cleared state.
-    this._mode = 'analyser';
+  _initTimelineState() {
     this._timelineCurrent = null;
-    document.body.setAttribute('data-mode', 'analyser');
-
-    // Note: the `#btn-timeline` toolbar click listener is wired once in
-    // `app-core.js` alongside the other toolbar buttons. Wiring it here
-    // as well would double-fire `_toggleTimelineMode()` on every click,
-    // making the button appear to do nothing (enter → exit in the same
-    // tick). The `T` keyboard shortcut is also handled in `app-core.js`.
   },
 
-
-  _isTimelineAutoswitchEnabled() {
-    try {
-      const v = localStorage.getItem(TIMELINE_KEYS.AUTOSWITCH);
-      // Default ON when unset.
-      if (v == null) return true;
-      return v !== '0';
-    } catch (_) { return true; }
-  },
-
-  _setTimelineAutoswitchEnabled(on) {
-    try {
-      localStorage.setItem(TIMELINE_KEYS.AUTOSWITCH, on ? '1' : '0');
-    } catch (_) { /* storage blocked */ }
-  },
-
-  // ── Heuristic ──────────────────────────────────────────────────────────
-  // Pure extension check — used when the user is *explicitly* in Timeline
-  // mode (they opted in via T / 📈). We don't gate by size because they've
-  // already chosen the surface; a 1 KB `timeline.csv` is still a timeline.
+  // Pure extension check — used by the fast path in `_loadFile` before the
+  // buffer is even read. EVTX files are also caught by the magic-byte pass
+  // in `_sniffTimelineContent` so a renamed .evtx still lands here.
   _isTimelineExt(file) {
     if (!file || !file.name) return false;
     const ext = file.name.split('.').pop().toLowerCase();
-    return !!TIMELINE_EXTS[ext];
+    return TIMELINE_EXTS.has(ext);
   },
 
-  // Autoswitch heuristic: extension + minBytes threshold. Used only by the
-  // auto-enter-on-drop path so analysts opening a tiny CSV in the analyser
-  // aren't surprised by a mode change. Explicit Timeline-mode loads go via
-  // `_isTimelineExt`.
-  _isTimelinableFile(file) {
+  // Content sniff for extensionless (or mis-named) timeline files. Returns
+  // the ext to use (`'evtx'`, `'csv'`, `'tsv'`) or null.
+  //
+  // * EVTX: first 8 bytes = `ElfFile\0`.
+  // * CSV / TSV: decode the first ~4 KB as UTF-8, reject blobs that look
+  //   like JSON / XML / shebangs, then try each of `,\t;|` and keep the
+  //   delimiter that yields ≥ 2 consistent columns across ≥ 80% of the
+  //   first ~20 non-empty lines. TSV wins if the tab version has more
+  //   columns than the comma version.
+  _sniffTimelineContent(buffer) {
+    if (!buffer || buffer.byteLength < 8) return null;
+    const bytes = new Uint8Array(buffer);
+    // EVTX magic
+    if (bytes.length >= 8
+      && bytes[0] === 0x45 && bytes[1] === 0x6C && bytes[2] === 0x66
+      && bytes[3] === 0x46 && bytes[4] === 0x69 && bytes[5] === 0x6C
+      && bytes[6] === 0x65 && bytes[7] === 0x00) return 'evtx';
+
+    // Text sniff — decode only the first 4 KB, tolerate a leading BOM.
+    let text;
+    try {
+      const head = bytes.subarray(0, Math.min(bytes.length, 4096));
+      text = new TextDecoder('utf-8', { fatal: false }).decode(head);
+    } catch (_) { return null; }
+    if (!text) return null;
+    if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+    const trimmed = text.trimStart();
+    if (!trimmed) return null;
+    // Reject obvious non-tabular shapes: JSON, XML, shebangs, HTML fragments.
+    const firstCh = trimmed.charAt(0);
+    if (firstCh === '{' || firstCh === '[' || firstCh === '<') return null;
+    if (trimmed.startsWith('#!') || trimmed.startsWith('<?')) return null;
+    // Reject binary-ish heads (NUL in the first kB).
+    if (text.indexOf('\u0000') !== -1) return null;
+    // Reject tabular-but-not-CSV formats that happen to use `;` or tabs
+    // as separators and would otherwise pass the delimiter probe:
+    //   - SLK (Symbolic Link) — starts with `ID;` and uses `;`-delimited
+    //     records; belongs to `IqySlkRenderer`, not the CSV viewer.
+    //   - IQY (Excel Web Query) — starts with `WEB` on its own line and
+    //     is handled by `IqySlkRenderer`.
+    // Extensions for these land here only when the file is renamed /
+    // extensionless, so sniffing is our only defence against mis-routing.
+    if (trimmed.startsWith('ID;')) return null;
+    if (/^WEB\s*\r?\n/.test(trimmed)) return null;
+
+
+    const lines = text.split(/\r\n|\r|\n/).map(l => l).filter(l => l.length > 0).slice(0, 20);
+    if (lines.length < 2) return null;
+    const candidates = [',', '\t', ';', '|'];
+    let best = { delim: null, cols: 0, confidence: 0 };
+    for (const d of candidates) {
+      const counts = lines.map(l => l.split(d).length);
+      const maxC = Math.max(...counts);
+      if (maxC < 2) continue;
+      const consistent = counts.filter(n => n === maxC).length;
+      const confidence = consistent / counts.length;
+      if (confidence >= 0.8 && maxC > best.cols) {
+        best = { delim: d, cols: maxC, confidence };
+      }
+    }
+    if (!best.delim) return null;
+    return best.delim === '\t' ? 'tsv' : 'csv';
+  },
+
+  // Attempt to route `file` into the Timeline view. Called from `_loadFile`.
+  //   - If the extension is one of csv / tsv / evtx → always load (no gate).
+  //   - Otherwise return `false` so the regular analyser pipeline runs.
+  //
+  // Extensionless files are handled separately inside `_loadFile` via the
+  // magic + text sniff (see `_sniffTimelineContent`).
+  _timelineTryHandle(file) {
     if (!this._isTimelineExt(file)) return false;
-    const ext = file.name.split('.').pop().toLowerCase();
-    const meta = TIMELINE_EXTS[ext];
-    if (meta.minBytes && (file.size || 0) < meta.minBytes) return false;
+    this._loadFileInTimeline(file);
     return true;
   },
 
-  // Called at the top of _loadFile. Returns true if this load was handled
-  // (or explicitly refused) by Timeline mode; false to fall through to the
-  // legacy analyser pipeline.
-  _timelineTryHandle(file) {
-    const inTimeline = this._getMode() === 'timeline';
-
-    if (inTimeline) {
-      // Already in Timeline — accept any CSV/TSV/EVTX regardless of size.
-      if (!this._isTimelineExt(file)) {
-        this._toast('Timeline mode only accepts CSV / TSV / EVTX — press T to exit and open other formats', 'error');
-        return true; // handled (refused)
-      }
-      this._loadFileInTimeline(file);
-      return true;
-    }
-    // Analyser mode — only auto-enter Timeline if the file is both a
-    // timeline-capable extension AND crosses the autoswitch size threshold.
-    if (this._isTimelinableFile(file) && this._isTimelineAutoswitchEnabled()) {
-      this._enterTimelineMode();
-      this._loadFileInTimeline(file);
-      return true;
-    }
-    return false;
-  },
-
-  // ── Mode switching ─────────────────────────────────────────────────────
-  _toggleTimelineMode() {
-    if (this._getMode() === 'timeline') this._exitTimelineMode();
-    else this._enterTimelineMode();
-  },
-
-  _enterTimelineMode() {
-    if (this._getMode() === 'timeline') return;
-    this._mode = 'timeline';
-    document.body.setAttribute('data-mode', 'timeline');
-    const btn = document.getElementById('btn-timeline');
-    if (btn) btn.classList.add('tb-btn-active');
-
-    // Swap out of the analyser viewer: hide it and clear sidebar state.
-    // We don't actually destroy the existing docEl — the user may flip
-    // back. But we do close the sidebar if it was open (Timeline mode has
-    // no sidebar concept).
-    if (this.sidebarOpen) {
-      try { this._toggleSidebar(); } catch (_) { /* ignore toggle errors */ }
-    }
-
-    // Ensure the timeline root exists and is visible. The element is
-    // created once on first entry so analyser mode keeps its DOM pristine.
-    let tr = document.getElementById('timeline-root');
-    if (!tr) {
-      tr = document.createElement('div');
-      tr.id = 'timeline-root';
-      const main = document.getElementById('main-area') || document.body;
-      main.appendChild(tr);
-    }
-    // Always (re)render the empty state on entry so mode-switching is
-    // idempotent — if the user entered from the analyser with a file
-    // loaded, or from a stale error splash, we paint a fresh prompt.
-    this._renderTimelineEmptyState(tr);
-
-    this._toast('Timeline mode', 'info');
-  },
-
-  _exitTimelineMode() {
-    if (this._getMode() === 'analyser') return;
-    this._mode = 'analyser';
-    document.body.setAttribute('data-mode', 'analyser');
-    const btn = document.getElementById('btn-timeline');
-    if (btn) btn.classList.remove('tb-btn-active');
-    // Tear down the current view; next re-entry rebuilds fresh.
-    if (this._timelineCurrent) {
-      try { this._timelineCurrent.destroy(); } catch (_) { /* noop */ }
-      this._timelineCurrent = null;
-    }
-    this._toast('Analyser mode', 'info');
-  },
-
-  // Shared empty-state painter. Matches the Analyser #drop-zone affordance:
-  // dashed border, clickable to open the file picker, hover/drag-over
-  // highlight (see .timeline-empty / .timeline-empty.drag-over in
-  // viewers.css). Re-renders on every entry / clear so stale error
-  // splashes or stale "previous-file" markup never leak into a fresh
-  // prompt.
-  _renderTimelineEmptyState(host) {
-    host.innerHTML = '';
-    const empty = document.createElement('div');
-    empty.className = 'timeline-empty';
-    empty.setAttribute('role', 'button');
-    empty.setAttribute('tabindex', '0');
-    empty.innerHTML = `
-      <span class="timeline-empty-icon" aria-hidden="true">📈</span>
-      <div class="timeline-empty-title">Timeline mode</div>
-      <div class="timeline-empty-body">Drop a CSV, TSV, or EVTX file here &mdash; press <kbd>T</kbd> to return to the analyser</div>`;
-    // Click / keyboard-activate opens the same native file picker the
-    // analyser drop-zone uses. Timeline-mode file-type gating happens in
-    // `_timelineTryHandle` once the file arrives via `_loadFile`.
-    const openPicker = () => {
-      const fi = document.getElementById('file-input');
-      if (fi) fi.click();
-    };
-    empty.addEventListener('click', openPicker);
-    empty.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPicker(); }
-    });
-    // Mirror the analyser drop-zone's `.drag-over` visual while a file is
-    // being dragged over the window. Matches the cue analysts already
-    // know. The handlers are installed exactly once (guarded by
-    // `_timelineDragWired`) — re-rendering the empty surface simply
-    // re-queries `#timeline-root .timeline-empty` each time they fire so
-    // stale element refs don't leak across mode toggles.
-    if (!this._timelineDragWired) {
-      this._timelineDragWired = true;
-      const currentEmpty = () =>
-        document.querySelector('#timeline-root .timeline-empty');
-      window.addEventListener('dragenter', () => {
-        if (this._getMode() !== 'timeline') return;
-        const el = currentEmpty();
-        if (el) el.classList.add('drag-over');
-      });
-      window.addEventListener('dragleave', () => {
-        const el = currentEmpty();
-        if (el) el.classList.remove('drag-over');
-      });
-      window.addEventListener('drop', () => {
-        const el = currentEmpty();
-        if (el) el.classList.remove('drag-over');
-      });
-    }
-    host.appendChild(empty);
-  },
-
-  // ── Load pipeline ──────────────────────────────────────────────────────
-  async _loadFileInTimeline(file) {
+  async _loadFileInTimeline(file, prefetchedBuffer /* optional */) {
     this._setLoading(true);
     try {
-      // Destroy the previous view so we don't stack GridViewer instances.
       if (this._timelineCurrent) {
         try { this._timelineCurrent.destroy(); } catch (_) { /* noop */ }
         this._timelineCurrent = null;
       }
-      const buffer = await ParserWatchdog.run(() => file.arrayBuffer());
-      const ext = file.name.split('.').pop().toLowerCase();
+      const buffer = prefetchedBuffer
+        || await ParserWatchdog.run(() => file.arrayBuffer());
+      // Resolve the effective extension — may come from the filename or,
+      // for extensionless inputs, from the magic-byte / text sniff.
+      let ext = (file.name && file.name.indexOf('.') !== -1)
+        ? file.name.split('.').pop().toLowerCase() : '';
+      if (!TIMELINE_EXTS.has(ext)) {
+        const sniffed = this._sniffTimelineContent(buffer);
+        if (sniffed) ext = sniffed;
+      }
 
-      // Stash filemeta for the breadcrumb; mode='timeline' means the
-      // sidebar is hidden so findings aren't wired up.
       this._fileMeta = {
         name: file.name, size: file.size,
         mimeType: file.type || '',
-        lastModified: file.lastModified ? new Date(file.lastModified).toISOString() : '',
+        lastModified: file.lastModified
+          ? new Date(file.lastModified).toISOString() : '',
       };
       this._renderBreadcrumbs();
 
-      let view;
-      if (ext === 'evtx') {
-        view = TimelineView.fromEvtx(file, buffer);
-      } else if (ext === 'csv' || ext === 'tsv') {
-        view = TimelineView.fromCsv(file, buffer, ext === 'tsv' ? '\t' : null);
-      } else {
-        // Belt-and-braces — the entrypoint already rejects non-timelinable
-        // extensions, but guard anyway.
-        throw new Error('Unsupported Timeline format: .' + ext);
+      // If the sniffed / declared format still isn't a Timeline one, fall
+      // back to the regular analyser pipeline. Callers (`_loadFile`) handle
+      // this by only calling us after `_shouldRouteToTimeline` confirms it.
+      let view = null;
+      try {
+        if (ext === 'evtx') {
+          view = TimelineView.fromEvtx(file, buffer);
+        } else if (ext === 'csv' || ext === 'tsv') {
+          view = TimelineView.fromCsv(file, buffer, ext === 'tsv' ? '\t' : null);
+        } else {
+          throw new Error('Unsupported Timeline format: .' + ext);
+        }
+      } catch (factoryErr) {
+        // Factory blew up even with its own try/catch coverage — last-ditch
+        // escape hatch: surface a dismissible error card so the analyst
+        // isn't stuck looking at the regular drop-zone without feedback.
+        throw factoryErr;
       }
 
-      const host = document.getElementById('timeline-root');
+      // If the factory returned zero rows AND no pre-parsed events (EVTX
+      // with an unreadable header, empty CSV) fall back to the analyser
+      // pipeline so the file isn't a dead-end. The analyser can still
+      // render a hex dump + strings.
+      const rowCount = view && view.rows ? view.rows.length : 0;
+      const evtCount = view && view._evtxEvents ? view._evtxEvents.length : 0;
+      if (rowCount === 0 && evtCount === 0) {
+        if (view) { try { view.destroy(); } catch (_) { /* noop */ } }
+        this._setLoading(false);
+        // Re-enter the regular loader by calling `_loadFile` with a flag
+        // that skips the timeline re-route.
+        this._skipTimelineRoute = true;
+        try { await this._loadFile(file); } finally { this._skipTimelineRoute = false; }
+        return;
+      }
+
+      // Let the view emit toasts through the app.
+      view._app = this;
+
+      // Mount the view into #timeline-root, creating it on demand. The
+      // container exists purely to host the Timeline surface — there is
+      // no persistent "Timeline mode" any more.
+      let host = document.getElementById('timeline-root');
+      if (!host) {
+        host = document.createElement('div');
+        host.id = 'timeline-root';
+        const main = document.getElementById('main-area') || document.body;
+        main.appendChild(host);
+      }
       host.innerHTML = '';
       host.appendChild(view.root());
       this._timelineCurrent = view;
 
-      // Show the analyser toolbar's close button so the user has the
-      // same affordance for "close this file".
+      // Hide the analyser chrome that doesn't belong on a Timeline screen:
+      // sidebar (close if open), viewer toolbar. The toolbar Close button
+      // stays visible so the analyst can return to the drop-zone.
+      if (this.sidebarOpen) { try { this._toggleSidebar(); } catch (_) { /* noop */ } }
       const btnClose = document.getElementById('btn-close');
       if (btnClose) btnClose.classList.remove('hidden');
-
-      // Hide the analyser viewer-toolbar (Summarize / Export / Search /
-      // Zoom) — none of that applies in Timeline mode.
       const vt = document.getElementById('viewer-toolbar');
       if (vt) vt.classList.add('hidden');
-
+      document.body.classList.add('has-timeline');
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error('[timeline] load failed:', e);
-      this._toast(`Failed to open in Timeline: ${e && e.message ? e.message : e}`, 'error');
+      this._toast(`Failed to open in Timeline: ${e && e.message ? e.message : e}`,
+        'error');
       const host = document.getElementById('timeline-root');
       if (host) {
         host.innerHTML = '';
         const err = document.createElement('div');
         err.className = 'timeline-empty';
-        err.innerHTML = `<div class="timeline-empty-icon">⚠</div><div class="timeline-empty-title">Failed to open</div><div class="timeline-empty-body">${_tlEsc(e && e.message ? e.message : String(e))}</div>`;
+        err.innerHTML = `<div class="timeline-empty-icon">⚠</div>`
+          + `<div class="timeline-empty-title">Failed to open</div>`
+          + `<div class="timeline-empty-body">${_tlEsc(e && e.message ? e.message : String(e))}</div>`;
         host.appendChild(err);
       }
     } finally {
@@ -1463,38 +6858,30 @@ Object.assign(App.prototype, {
     }
   },
 
-  // ── Close handler override — route to timeline when in that mode ───────
-  // Mirror the state reset in `app-ui.js::_clearFile()` so closing a
-  // timeline file doesn't leave a stale breadcrumb, tab title, buffer,
-  // findings, or binary-triage blob pointing at the previous sample.
   _clearTimelineFile() {
+    // Tear down the Timeline surface itself. The drop-zone is Loupe's
+    // canonical empty state, so we don't render a Timeline-specific
+    // placeholder here.
     if (this._timelineCurrent) {
       try { this._timelineCurrent.destroy(); } catch (_) { /* noop */ }
       this._timelineCurrent = null;
     }
-
-    // Wipe per-file state. Timeline mode doesn't populate `findings` /
-    // `fileHashes` / `_binaryParsed`, but clearing them anyway keeps the
-    // invariant simple: after `_clearTimelineFile` no state survives that
-    // could influence a subsequent analyser-mode load.
-    this.findings = null;
-    this.fileHashes = null;
-    this._fileBuffer = null;
-    this._yaraBuffer = null;
-    this._yaraResults = null;
-    this._fileMeta = null;
-    this._binaryParsed = null;
-    this._binaryFormat = null;
-    this._navStack = [];
-    // Breadcrumb hides itself + resets document.title when `_fileMeta` is
-    // null.
-    if (this._renderBreadcrumbs) this._renderBreadcrumbs();
-
-    // Re-paint the Timeline drop affordance.
     const host = document.getElementById('timeline-root');
-    if (host) this._renderTimelineEmptyState(host);
+    if (host) host.innerHTML = '';
+    document.body.classList.remove('has-timeline');
 
-    const btnClose = document.getElementById('btn-close');
-    if (btnClose) btnClose.classList.add('hidden');
+    // Delegate the rest of the reset to the generic _clearFile(). This
+    // matters when the Timeline was mounted on top of a prior analyser
+    // view (e.g. open .sqlite → open .csv): _loadFile() leaves the old
+    // SQLite DOM sitting inside #page-container and only hides it via
+    // body.has-timeline. Without this call, dropping .has-timeline here
+    // would reveal that stale DOM, while _fileMeta / breadcrumbs / the
+    // ✕ button had already been nulled — so the user would land on the
+    // old SQLite view with no toolbar entry. _clearFile() clears
+    // #page-container, restores the drop-zone, hides viewer-toolbar /
+    // btn-close, closes the sidebar, nulls _fileMeta / _navStack /
+    // findings, re-renders breadcrumbs, clears search, and resets zoom.
+    this._clearFile();
   },
+
 });
