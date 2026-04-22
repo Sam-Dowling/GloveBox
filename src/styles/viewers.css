@@ -181,15 +181,22 @@ body.dark .copy-url-btn:hover {
    XLSX / SPREADSHEET VIEW
    ══════════════════════════════════════════════════════ */
 .xlsx-view {
+  /* Hosts the sheet tab bar + one GridViewer per sheet. The GridViewer
+     uses the `flex: 1 + min-height: 0` column-flex primitive, which only
+     resolves to non-zero pixels if every ancestor in the flex chain sets
+     a concrete block-size — hence the explicit `height: 70vh` on
+     `.sheet-content-area` below. Without it the grid's virtualiser
+     measures the viewport at 0 px and renders no rows at all. */
   width: 100%;
-  max-width: 1100px;
   background: white;
   box-shadow: 0 2px 16px rgba(0, 0, 0, .25);
   border-radius: 6px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  min-height: 0;
 }
+
 
 body.dark .xlsx-view {
   background: var(--panel-bg);
@@ -251,10 +258,34 @@ body.dark .sheet-tab:hover:not(.active) {
 }
 
 .sheet-content-area {
-  overflow: auto;
-  flex: 1;
-  max-height: 70vh;
+  /* Host slot for the per-sheet panes. The GridViewer used by
+     XlsxRenderer/Wave-B wants a concrete height to measure against —
+     `flex: 1` + `min-height: 0` alone collapses to zero inside the
+     `.xlsx-view` column-flex because our outer chrome doesn't force a
+     block-size, so we pin an explicit viewport-relative height here.
+     Overflow moves from this container into the GridViewer's own
+     `.grid-scroll`, so we no longer want this level to scroll. */
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 70vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
+
+/* Every sheet is rendered as a `.sheet-content` pane inside
+   `.sheet-content-area`. Only the active pane is shown (display:flex —
+   toggled from xlsx-renderer.js); the hidden ones stay as
+   `display: none`. Column-flex with `min-height: 0` so the GridViewer
+   inside can fill the slot without overflowing. */
+.sheet-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 
 .xlsx-table {
   border-collapse: collapse;
@@ -884,9 +915,12 @@ body.dark .grid-filter-status {
   min-width: var(--grid-min-width);
   position: sticky;
   top: 0;
-  z-index: 2;
-  background: #f0f0f0;
-  border-bottom: 1px solid #ccc;
+  /* Raise above rows so the scroll-under area stays readable when the grid
+     is scrolled — opaque background below prevents row text bleed-through. */
+  z-index: 3;
+  background: #e8e8e8;
+  border-bottom: 1px solid #b5b5b5;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .04);
   height: 32px;   /* GridViewer.HEADER_H */
   font-size: 12px;
   font-family: 'Fira Code', 'Consolas', 'Courier New', monospace;
@@ -894,9 +928,12 @@ body.dark .grid-filter-status {
 }
 
 body.dark .grid-header {
-  background: var(--hairline-soft);
-  border-bottom-color: var(--hairline);
+  /* Fully opaque surface — `var(--hairline-soft)` at 6% alpha used to let
+     scrolling rows bleed through and made column names near-unreadable. */
+  background: #20212b;
+  border-bottom-color: var(--hairline-strong);
   color: var(--text-muted);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, .35);
 }
 
 .grid-header-cell {
@@ -904,8 +941,12 @@ body.dark .grid-header {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  border-right: 1px solid #d5d5d5;
+  border-right: 1px solid #cfcfcf;
   user-select: none;
+  position: relative; /* anchor for .grid-col-resize-handle */
+  /* Inherit the opaque header background so individual cells don't expose
+     the row layer underneath during horizontal scroll. */
+  background: inherit;
 }
 
 body.dark .grid-header-cell {
@@ -915,11 +956,11 @@ body.dark .grid-header-cell {
 .grid-header-cell.grid-row-num {
   text-align: right;
   color: #888;
-  background: #ececec;
+  background: #dcdcdc;
 }
 
 body.dark .grid-header-cell.grid-row-num {
-  background: var(--row-hover);
+  background: #191a22;
   color: var(--text-faint);
 }
 
@@ -4137,6 +4178,25 @@ body.dark .grid-header-cell.grid-header-clickable:hover {
 /* Row-number header is clickable too (to clear sort). */
 .grid-header-cell.grid-row-num { cursor: pointer; }
 
+/* ── Per-column drag-to-resize handle (injected by _wireColumnResize).
+      Thin strip on the right edge of every header cell; hovers/highlights
+      without changing layout because the parent is position:relative. */
+.grid-col-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 4;
+  user-select: none;
+}
+.grid-col-resize-handle:hover,
+body.grid-resizing .grid-col-resize-handle {
+  background: rgb(var(--accent-rgb) / .25);
+}
+
 /* ── Popover (shared: header menu + top-values) ───────────────────────── */
 .grid-popover {
   position: fixed;
@@ -4288,61 +4348,181 @@ body.dark .grid-row.grid-row-malformed .grid-cell.grid-row-num {
   box-shadow: inset 3px 0 0 #ef5350;
 }
 
-/* ── JSON tree (drawer body) ─────────────────────────────────────────── */
-.json-tree {
-  font-family: var(--mono-font, monospace);
-  font-size: 12.5px;
-  line-height: 1.55;
-  padding: 8px 12px;
+/* ── Hidden-columns chip + popover ────────────────────────────────────── */
+/* Sibling to `.grid-malformed-chip`; same visual shape, different accent */
+/* so the two chips read as a matched pair in the filter bar.            */
+.grid-hidden-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 4px 2px 4px;
+  border-radius: 12px;
+  background: rgb(var(--accent-rgb) / .14);
+  color: var(--text);
+  font-size: 11px;
 }
-.json-tree-node { }
-.json-tree-head {
+body.dark .grid-hidden-chip {
+  background: rgb(var(--accent-rgb) / .22);
+}
+.grid-hidden-chip .tb-btn {
+  padding: 2px 8px;
+  font-size: 10.5px;
+  background: transparent;
+  border-color: transparent;
+}
+.grid-hidden-chip .grid-hidden-label {
+  cursor: pointer;
+}
+.grid-hidden-chip .grid-hidden-label:hover,
+.grid-hidden-chip .grid-hidden-show:hover {
+  background: rgb(var(--accent-rgb) / .22);
+  border-color: rgb(var(--accent-rgb) / .4);
+}
+.grid-hidden-popover {
+  /* Reuses the `.grid-popover` base; constrain so a dozen hidden columns
+     don't stretch the popover past the viewport. */
+  max-width: 320px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+.grid-hidden-popover-header {
+  padding: 6px 10px 4px;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.grid-hidden-popover-list {
+  display: flex;
+  flex-direction: column;
+}
+.grid-hidden-popover-item {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+}
+.grid-hidden-popover-all {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── JSON tree in grid drawer body (shared module: src/json-tree.js) ──── */
+/* Selectors below are authored against the class namespace produced by   */
+/* `JsonTree.render()`; keep in sync with src/json-tree.js if renamed.    */
+.csv-detail-val-json {
+  /* Let the tree manage its own vertical rhythm — drop the default   */
+  /* `white-space:pre-wrap` inherited from `.csv-detail-val` so ▸/▾   */
+  /* toggle rows don't carry stray newlines from the source string.  */
+  white-space: normal;
+  padding: 0;
+}
+.json-tree {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text);
+}
+.json-tree-row {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  cursor: default;
-}
-.json-tree-node > .json-tree-head:hover {
-  background: rgb(var(--accent-rgb) / .06);
-  border-radius: 3px;
+  gap: 4px;
+  padding: 1px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .json-tree-toggle {
   display: inline-block;
   width: 12px;
-  color: var(--text-muted, #888);
-  user-select: none;
+  flex: 0 0 12px;
+  color: var(--text-muted);
   cursor: pointer;
-  flex-shrink: 0;
+  user-select: none;
+  text-align: center;
 }
 .json-tree-toggle-leaf {
   cursor: default;
-  opacity: .35;
+  color: transparent;
 }
 .json-tree-key {
-  color: #7b1fa2;
+  color: var(--accent);
+  cursor: pointer;
   font-weight: 500;
-  flex-shrink: 0;
 }
-body.dark .json-tree-key { color: #d091e8; }
-.json-tree-summary {
-  color: var(--text-muted, #777);
+.json-tree-key:hover {
+  text-decoration: underline;
+}
+.json-tree-val {
+  color: var(--text);
+}
+.json-tree-val-string  { color: #b47e00; }
+.json-tree-val-number  { color: #1a7fa8; }
+.json-tree-val-boolean { color: #7a2fa8; font-weight: 600; }
+.json-tree-val-null    { color: var(--text-muted); font-style: italic; }
+.json-tree-val-object,
+.json-tree-val-array   { color: var(--text-muted); font-style: italic; }
+body.dark .json-tree-val-string  { color: #e7c27a; }
+body.dark .json-tree-val-number  { color: #78c7e8; }
+body.dark .json-tree-val-boolean { color: #c69aee; }
+/* Right-click context menu on .json-tree-key — Extract / Include / Exclude /
+   Has / Missing. Floats above the drawer, positioned at cursor by
+   `JsonTree._openKeyMenu`. Themed off the same accent CSS custom props the
+   rest of the drawer uses, so Light / Dark / overlay themes all pick it up
+   without further work. */
+.json-tree-menu {
+  position: fixed;
+  z-index: 12000;
+  min-width: 180px;
+  max-width: 280px;
+  padding: 4px 0;
+  background: var(--panel-bg-raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .25);
+  font-size: 12px;
+  color: var(--text);
+}
+.json-tree-menu-item {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 5px 14px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.json-tree-menu-item:hover,
+.json-tree-menu-item:focus {
+  background: rgb(var(--accent-rgb) / .14);
+  color: var(--accent);
+  outline: none;
+}
+.json-tree-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--hairline);
+}
+
+.json-tree-child {
+  margin-left: 14px;
+  border-left: 1px dashed rgb(var(--accent-rgb) / .25);
+  padding-left: 6px;
+}
+.json-tree-hint {
+  color: var(--text-muted);
   font-style: italic;
+  padding: 1px 0 1px 14px;
 }
-.json-tree-val-str   { color: #2e7d32; word-break: break-all; }
-.json-tree-val-num   { color: #1565c0; }
-.json-tree-val-bool  { color: #ad1457; font-weight: 600; }
-.json-tree-val-null  { color: var(--text-muted, #777); font-style: italic; }
-.json-tree-val-other { color: inherit; }
-body.dark .json-tree-val-str  { color: #8be28b; }
-body.dark .json-tree-val-num  { color: #6fa8ff; }
-body.dark .json-tree-val-bool { color: #ff8fbf; }
-.json-tree-body { margin-top: 1px; }
-.json-tree-more {
-  padding: 2px 0 2px 18px;
-  color: var(--text-muted, #999);
-  font-style: italic;
-  font-size: 11.5px;
-}
+
+
 
 
 /* ══════════════════════════════════════════════════════
@@ -11159,17 +11339,20 @@ body.grid-timeline-dragging * {
    evenly via `grid-template-columns`.
    ══════════════════════════════════════════════════════════════════════════ */
 
+/* ── Timeline root ──────────────────────────────────────────────────────
+   The Timeline mode used to use a fixed grid-template-rows layout with
+   one row per feature (toolbar, scrubber, chart, chips, grid, splitter,
+   columns). The rewrite replaces that with a scrollable `.tl-host`
+   container that holds collapsible `.tl-section` blocks — so the user
+   can scroll down past the histogram and grid into top-value cards,
+   pivots, and the Suspicious section. `.timeline-view` itself is now
+   just a flex column: toolbar pinned at top, everything else inside the
+   scrolling host below. */
 .timeline-view {
-  --tl-grid-h: 320px;
-  display: grid;
-  grid-template-rows:
-    40px              /* toolbar  */
-    48px              /* scrubber */
-    240px             /* chart    */
-    auto              /* chips    */
-    var(--tl-grid-h)  /* grid     */
-    8px               /* splitter */
-    minmax(180px, 1fr);   /* columns */
+  --tl-card-min-w: 260px;
+  --tl-card-grow: 1;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   width: 100%;
   min-height: 0;
@@ -11178,6 +11361,16 @@ body.grid-timeline-dragging * {
   color: var(--text);
   font-size: 12px;
 }
+
+.timeline-view .tl-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 
 /* ── Toolbar row ────────────────────────────────────────────────────────── */
 .timeline-view .tl-toolbar {
@@ -11375,6 +11568,53 @@ body.grid-timeline-dragging * {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  /* User-resizable via the bottom-edge drag handle; the JS writes
+     `--tl-chart-h` on `.timeline-view` and persists it to
+     `loupe_timeline_chart_h`. Kept compact by default (220 px) so the
+     grid + top-value cards are visible on first paint — the histogram
+     can be expanded with the drag handle when the analyst needs more
+     resolution. The `.tl-section.collapsed` wrapper still hides the
+     whole body via `display:none`. */
+  height: var(--tl-chart-h, 220px);
+  min-height: 120px;
+}
+
+/* Bottom-edge grab handle for resizing the histogram. Matches the
+   horizontal `.tl-splitter` aesthetic but lives inside the chart body
+   so it only affects chart height. */
+.timeline-view .tl-chart-resize {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 6px;
+  cursor: ns-resize;
+  background: transparent;
+  z-index: 4;
+}
+
+.timeline-view .tl-chart-resize::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  transform: translateX(-50%);
+  width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background .15s ease;
+}
+
+.timeline-view .tl-chart-resize:hover::after,
+body.tl-chart-resizing .timeline-view .tl-chart-resize::after {
+  background: var(--accent);
+}
+
+body.tl-chart-resizing,
+body.tl-chart-resizing * {
+  cursor: ns-resize !important;
+  user-select: none !important;
 }
 
 .timeline-view .tl-chart-canvas {
@@ -11440,8 +11680,364 @@ body.grid-timeline-dragging * {
   display: none;
 }
 
+/*
+ * Chart rubber-band selection overlay. Created lazily by
+ * `_installChartDrag` on first drag and re-used across subsequent drags
+ * on the same chart. Absolutely positioned against `.tl-chart` so its
+ * `left/width` coordinates line up 1:1 with the canvas plot area
+ * (which is the first child of `.tl-chart` and has no offset of its
+ * own). `pointer-events: none` so the drag keeps flowing to the
+ * canvas's pointer-capture — the overlay is purely decorative.
+ */
+.timeline-view .tl-chart-selection {
+  position: absolute;
+  pointer-events: none;
+  z-index: 15;
+  background: rgb(var(--accent-rgb) / .16);
+  border-left: 1px solid var(--accent);
+  border-right: 1px solid var(--accent);
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / .15);
+}
+
+.timeline-view .tl-chart-selection[hidden] {
+  display: none;
+}
+
+/* ── "You are here" cursor ────────────────────────────────────────────────
+   Thin vertical red line overlaid on a `.tl-chart` canvas to show where the
+   currently-focused grid row falls on the histogram timeline. Added lazily
+   by `_paintChartCursorFor()` as a sibling to the canvas. `--risk-high` is
+   used so it matches the sus red overlay on the bars themselves. */
+.timeline-view .tl-chart-cursor {
+  position: absolute;
+  width: 2px;
+  pointer-events: none;
+  z-index: 16;
+  background: var(--risk-high);
+  box-shadow: 0 0 4px rgb(var(--risk-high-rgb) / .6);
+  /* Smooth lateral motion while the analyst scrolls through the grid —
+     matches the 140 ms ease-out used by `.grid-timeline-cursor` in
+     non-timeline mode, so the cursor glides between bucket x-positions
+     instead of twitching. `will-change: left` hints the compositor to
+     promote the cursor to its own layer so the transition is
+     GPU-accelerated and never forces a re-layout of `.tl-chart`. */
+  transition: left 140ms ease-out;
+  will-change: left;
+}
+
+.timeline-view .tl-chart-cursor::before,
+.timeline-view .tl-chart-cursor::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+}
+.timeline-view .tl-chart-cursor::before {
+  top: -4px;
+  border-top: 5px solid var(--risk-high);
+}
+.timeline-view .tl-chart-cursor::after {
+  bottom: -4px;
+  border-bottom: 5px solid var(--risk-high);
+}
+.timeline-view .tl-chart-cursor[hidden] { display: none; }
+
+/* Matching scrubber-track cursor — same red line on the mini-scrubber so
+   the cursor is still visible when the chart is zoomed past the focused row. */
+.timeline-view .tl-scrubber-cursor {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  pointer-events: none;
+  background: var(--risk-high);
+  box-shadow: 0 0 3px rgb(var(--risk-high-rgb) / .7);
+  z-index: 5;
+  /* Matches `.tl-chart-cursor` — see the note there. The mini-scrubber
+     cursor tracks the same `_cursorDataIdx`, so keeping the two on the
+     same ease curve keeps them visually in sync as the analyst scrolls. */
+  transition: left 140ms ease-out;
+  will-change: left;
+}
+
+.timeline-view .tl-scrubber-cursor[hidden] { display: none; }
+
+
+/* ════════════════════════════════════════════════════════════════════════
+   Query editor — single-textbox DSL filter with syntax highlighting
+   ──────────────────────────────────────────────────────────────────────
+   The editor is an overlay pattern: a transparent `<textarea>` sits on
+   top of a syntax-highlighted `<pre><code>` layer rendered from the same
+   tokenised source string. Typing / caret / scroll / selection all come
+   from the textarea; the pre-layer only paints. This stays CSP-safe
+   (no contenteditable, no eval, no new Function) and keeps IME / spell-
+   check / clipboard behaviour identical to a normal input.
+
+   The mounted component lives in `.tl-query-mount` (see
+   `_buildDOM` → `queryBar`), so the z-index / stacking is scoped to
+   the timeline surface. Tokens are tagged with `data-s` / `data-e`
+   offsets by the highlighter; the classes below only style them —
+   click-to-focus and pill-grouping logic is implemented in JS.
+   ════════════════════════════════════════════════════════════════════════ */
+.timeline-view .tl-query-mount {
+  padding: 8px 12px 4px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel-bg-section);
+}
+
+.timeline-view .tl-query {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.timeline-view .tl-query-inner {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  padding: 3px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  transition: border-color 120ms, box-shadow 120ms;
+  min-height: 32px;
+}
+.timeline-view .tl-query-inner:focus-within {
+  border-color: var(--accent, #4f8cff);
+  box-shadow: 0 0 0 2px rgb(var(--accent-rgb, 79 140 255) / 0.15);
+}
+
+.timeline-view .tl-query-icon {
+  align-self: center;
+  font-size: 12px;
+  opacity: 0.55;
+  padding: 0 2px 0 4px;
+  user-select: none;
+}
+
+.timeline-view .tl-query-editor {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.timeline-view .tl-query-hl,
+.timeline-view .tl-query-input {
+  /* Both layers must occupy the same padding-box so caret / highlight
+     positions line up 1:1. Any font / size / spacing change here must
+     be mirrored on the other selector. */
+  margin: 0;
+  padding: 4px 6px;
+  border: 0;
+  font: inherit;
+  letter-spacing: 0;
+  white-space: pre;
+  overflow: hidden;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 22px;
+  line-height: 1.4;
+}
+.timeline-view .tl-query-hl {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  color: var(--text);
+  background: transparent;
+  overflow: hidden;
+}
+.timeline-view .tl-query-hl code {
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  white-space: pre;
+}
+.timeline-view .tl-query-input {
+  position: relative;
+  background: transparent;
+  color: transparent;                /* text rendered by the hl layer */
+  caret-color: var(--text);
+  resize: none;
+  outline: none;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-text-fill-color: transparent;
+}
+.timeline-view .tl-query-input::placeholder {
+  color: var(--text-muted);
+  -webkit-text-fill-color: var(--text-muted);
+  opacity: 0.7;
+}
+.timeline-view .tl-query-input::selection {
+  background: rgb(var(--accent-rgb, 79 140 255) / 0.35);
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Syntax-highlight token classes — emitted by `_tlFormatHighlightOne`.
+   Colours deliberately keep the base `--text` tone and only tint the
+   accent + literals so the editor reads quietly alongside the rest of
+   the timeline chrome. */
+.timeline-view .tl-tok { color: var(--text); }
+.timeline-view .tl-tok-word    { color: var(--text); }
+.timeline-view .tl-tok-string  { color: var(--risk-medium, #f59e0b); }
+.timeline-view .tl-tok-regex   { color: #a855f7; }
+.timeline-view .tl-tok-number  { color: #06b6d4; }
+.timeline-view .tl-tok-op      { color: var(--text-muted); font-weight: 600; }
+.timeline-view .tl-tok-paren   { color: var(--text-muted); font-weight: 600; }
+.timeline-view .tl-tok-kw      { color: #22c55e; font-weight: 700; text-transform: uppercase; }
+.timeline-view .tl-tok-err     {
+  color: var(--risk-high, #dc2626);
+  text-decoration: underline wavy var(--risk-high, #dc2626);
+}
+
+/* Pills — wrap contiguous field+op+value spans so the DSL reads like a
+   row of tags. Rendered as a span so caret movement stays seamless.
+   MUST NOT add any horizontal padding/margin/border-width to the flow —
+   the highlight layer sits behind a transparent <textarea> whose caret
+   is positioned by raw character advance. Any extra inline width here
+   shifts the visible text relative to the caret and every subsequent
+   character looks misaligned (the bug is cumulative: N pills => 4*N px
+   of drift). We keep the visual padding via negative compensating
+   margins so the box still renders identically but occupies exactly
+   the width of its contained tokens. */
+.timeline-view .tl-pill {
+  display: inline;
+  padding: 0 2px;
+  margin: 0 -2px;
+  border-radius: 3px;
+  background: rgb(var(--accent-rgb, 79 140 255) / 0.08);
+  box-shadow: inset 0 0 0 1px rgb(var(--accent-rgb, 79 140 255) / 0.25);
+}
+
+/* Trailing action buttons — clear / history / help. Kept flat to match
+   the `.tl-tb-btn` bar but slightly tighter so they sit comfortably
+   inside the editor frame. */
+.timeline-view .tl-query-clear,
+.timeline-view .tl-query-history,
+.timeline-view .tl-query-help {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  padding: 0 6px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+  align-self: center;
+}
+.timeline-view .tl-query-clear:hover,
+.timeline-view .tl-query-history:hover,
+.timeline-view .tl-query-help:hover {
+  background: var(--panel-bg-hover, rgb(0 0 0 / 0.06));
+  color: var(--text);
+}
+
+/* Status line under the editor. Kept reserved height so the layout
+   doesn't jitter when an error appears / disappears between keystrokes. */
+.timeline-view .tl-query-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  min-height: 14px;
+  padding: 0 6px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.timeline-view .tl-query-status-error { color: var(--risk-high, #dc2626); }
+.timeline-view .tl-query-status-ok    { color: var(--risk-low, #22c55e); }
+.timeline-view .tl-query-status-col   { opacity: 0.7; }
+
+/* Suggestion dropdown (portal'd to body with position: fixed). */
+.tl-query-suggest {
+  min-width: 220px;
+  max-width: 420px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--panel-bg);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  padding: 4px 0;
+}
+.tl-query-suggest-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.tl-query-suggest-item:hover,
+.tl-query-suggest-item.tl-query-suggest-active {
+  background: rgb(var(--accent-rgb, 79 140 255) / 0.18);
+}
+.tl-query-suggest-label { color: var(--text); }
+.tl-query-suggest-count { color: var(--text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.tl-query-suggest-field .tl-query-suggest-label { color: var(--accent, #4f8cff); font-weight: 600; }
+.tl-query-suggest-kw    .tl-query-suggest-label { color: #22c55e; font-weight: 700; }
+.tl-query-suggest-value .tl-query-suggest-label { color: var(--risk-medium, #f59e0b); }
+
+/* History menu + help popover (also portal'd to body). */
+.tl-query-hist-menu,
+.tl-query-help-menu {
+  background: var(--panel-bg);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
+  min-width: 260px;
+  max-width: 480px;
+  font-size: 12px;
+  overflow: hidden;
+}
+.tl-query-hist-item {
+  padding: 4px 10px;
+  cursor: pointer;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tl-query-hist-item:hover { background: rgb(var(--accent-rgb, 79 140 255) / 0.15); }
+
+.tl-query-help-menu { padding: 10px 12px; }
+.tl-query-help-title { font-weight: 700; margin-bottom: 6px; }
+.tl-query-help-body { display: flex; flex-direction: column; gap: 3px; color: var(--text-muted); line-height: 1.5; }
+.tl-query-help-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: rgb(128 128 128 / 0.15);
+  padding: 0 3px;
+  border-radius: 3px;
+  color: var(--text);
+}
+
+.tl-query-bubble {
+  padding: 6px 10px;
+  background: var(--panel-bg);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgb(0 0 0 / 0.2);
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: 260px;
+}
+
+
 /* ── Chip row ──────────────────────────────────────────────────────────── */
 .timeline-view .tl-chips {
+
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -11477,12 +12073,6 @@ body.grid-timeline-dragging * {
   white-space: nowrap;
   max-width: 280px;
   overflow: hidden;
-}
-
-.timeline-view .tl-chip-not {
-  background: rgb(var(--risk-high-rgb) / .1);
-  border-color: rgb(var(--risk-high-rgb) / .28);
-  color: var(--risk-high);
 }
 
 .timeline-view .tl-chip-range {
@@ -11543,16 +12133,27 @@ body.dark .timeline-view .tl-chip-x:hover {
 /* ── Grid row ──────────────────────────────────────────────────────────── */
 .timeline-view .tl-grid {
   position: relative;
-  min-height: 0;
+  /* Fixed-height slot for the virtual GridViewer. Without an explicit
+     height the flex column collapses this section to 0 px (the parent
+     `.tl-host` is `overflow-y: auto`, not stretching), so the inner
+     GridViewer's `height: 100%` resolves to zero and no rows are
+     rendered — the classic "events aren't showing up" symptom.
+     The splitter JS writes `--tl-grid-h` on `.timeline-view` and
+     persists it to `loupe_timeline_grid_h`. */
+  height: var(--tl-grid-h, 320px);
+  min-height: 160px;
   overflow: hidden;
   border-bottom: 0;   /* splitter draws the visible divider */
   background: var(--panel-bg-inset);
+  display: flex;
+  flex-direction: column;
 }
 
 /* The inner GridViewer host already sets its own layout; we just make sure
    it fills the row and suppresses the internal timeline strip (we pass
    timeColumn:-1 from the JS, so nothing to do here beyond sizing). */
 .timeline-view .tl-grid-inner {
+  flex: 1 1 auto;
   height: 100%;
   width: 100%;
   min-height: 0;
@@ -11596,28 +12197,108 @@ body.tl-splitter-dragging * {
   user-select: none !important;
 }
 
-/* ── Columns row — per-column top-value cards ─────────────────────────── */
+/* ── Columns row — per-column top-value cards ─────────────────────────────
+   CSS-Grid auto-fill tiling: cards flow left-to-right, wrapping to the
+   next row once the available width drops below `--tl-card-min-w`. This
+   gives ~5-per-row at the default 220px preset on a 1200px viewport and
+   scales naturally with the window / card-size preset. A lone card no
+   longer stretches to fill the entire row (the bug with flex: 1 1 basis).
+   Users can still drag a card's right-edge resize handle to override its
+   individual min-width. Each card owns its vertical overflow inside the
+   scrollable .tl-host. */
 .timeline-view .tl-columns {
-  --tl-col-count: 1;
   display: grid;
-  /* Cards share the viewport width equally so the row never introduces
-     its own horizontal scrollbar. Each card owns its vertical overflow. */
-  grid-template-columns: repeat(var(--tl-col-count, 1), minmax(0, 1fr));
-  gap: 1px;
-  min-height: 0;
-  overflow: hidden;
-  background: var(--hairline);
-  border-top: 1px solid var(--hairline);
+  grid-template-columns: repeat(auto-fill, minmax(var(--tl-card-min-w, 220px), 1fr));
+  gap: 10px;
+  padding: 12px;
+  background: var(--panel-bg);
 }
 
 .timeline-view .tl-col-card {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  min-height: 0;
+  min-height: 180px;
+  max-height: 520px;
   background: var(--panel-bg);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
   overflow: hidden;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
 }
+
+.timeline-view .tl-col-card-extracted {
+  border-color: rgb(var(--accent-rgb) / .35);
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / .15);
+}
+
+.timeline-view .tl-col-card-sus {
+  border-color: rgb(var(--risk-high-rgb) / .35);
+  background: rgb(var(--risk-high-rgb) / .025);
+}
+
+.timeline-view .tl-col-badge {
+  display: inline-block;
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 1px 5px;
+  margin-left: 4px;
+  border-radius: 3px;
+  background: rgb(var(--accent-rgb) / .15);
+  color: var(--accent);
+  letter-spacing: .04em;
+  vertical-align: middle;
+}
+
+.timeline-view .tl-col-menu {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0 4px;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1;
+  flex: 0 0 auto;
+  border-radius: 3px;
+}
+
+.timeline-view .tl-col-menu:hover {
+  background: rgb(var(--accent-rgb) / .14);
+  color: var(--accent);
+}
+
+.timeline-view .tl-col-resize {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 3;
+}
+
+.timeline-view .tl-col-resize:hover,
+body.tl-col-resizing .timeline-view .tl-col-resize {
+  background: rgb(var(--accent-rgb) / .4);
+}
+
+body.tl-col-resizing,
+body.tl-col-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.timeline-view .tl-col-row-sus {
+  background: rgb(var(--risk-high-rgb) / .08);
+}
+
+.timeline-view .tl-col-row-sus .tl-col-bar {
+  background: rgb(var(--risk-high-rgb) / .14);
+}
+
 
 .timeline-view .tl-col-head {
   display: flex;
@@ -11645,6 +12326,76 @@ body.tl-splitter-dragging * {
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
   flex: 0 0 auto;
+}
+
+.timeline-view .tl-col-sort {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  margin-left: 2px;
+  cursor: pointer;
+  opacity: 0;
+  border-radius: 3px;
+  transition: opacity .12s ease, background .12s ease, color .12s ease;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-view .tl-col-card:hover .tl-col-sort,
+.timeline-view .tl-col-sort:focus-visible,
+.timeline-view .tl-col-sort.active {
+  opacity: 1;
+}
+
+.timeline-view .tl-col-sort:hover {
+  background: rgb(var(--accent-rgb) / .14);
+  color: var(--accent);
+}
+
+.timeline-view .tl-col-sort.active {
+  color: var(--accent);
+}
+
+.timeline-view .tl-col-search-wrap {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel-bg-section);
+  flex: 0 0 auto;
+}
+
+.timeline-view .tl-col-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  font: inherit;
+  font-size: 10.5px;
+  border: 1px solid var(--input-border, var(--hairline));
+  border-radius: 3px;
+  background: var(--input-bg, var(--panel-bg));
+  color: var(--text);
+  outline: none;
+}
+
+.timeline-view .tl-col-search::placeholder {
+  color: var(--text-muted);
+  opacity: .7;
+}
+
+.timeline-view .tl-col-search:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / .35);
+}
+
+.timeline-view .tl-col-empty {
+  padding: 12px 10px;
+  text-align: center;
+  font-style: italic;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 .timeline-view .tl-col-viewport {
@@ -11799,5 +12550,1349 @@ body.tl-splitter-dragging * {
      `.timeline-empty-body` opacity. */
   opacity: 1;
 }
+
+/* ── Collapsible/exportable section frame ────────────────────────────────
+   Every block inside `.tl-host` (scrubber, chart, chips, grid, columns,
+   sus, pivot) is wrapped in `<section class="tl-section tl-section-<id>">`
+   with a header carrying the chevron-toggle and any per-section actions
+   (CSV / JSON / Copy for exportable sections). The `body` is the original
+   content (e.g. `.tl-chart`, `.tl-grid`, `.tl-columns`) and gets the
+   `.tl-section-body` class applied by _buildSection(). When the user
+   collapses a section, the `.collapsed` class is added on the wrapper and
+   the body goes `display:none` — the header chevron rotates. */
+.timeline-view .tl-section {
+  display: flex;
+  flex-direction: column;
+  flex: 0 0 auto;
+  min-height: 0;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel-bg);
+}
+
+.timeline-view .tl-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--panel-bg-section);
+  border-bottom: 1px solid var(--hairline);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  user-select: none;
+  cursor: default;
+  min-height: 26px;
+}
+
+.timeline-view .tl-section-chev {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 2px 4px;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.timeline-view .tl-section-chev span {
+  display: inline-block;
+  transition: transform .15s ease;
+  font-size: 11px;
+}
+
+.timeline-view .tl-section.collapsed .tl-section-chev span {
+  transform: rotate(-90deg);
+}
+
+.timeline-view .tl-section-title {
+  flex: 1 1 auto;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  letter-spacing: .04em;
+  color: var(--text);
+  opacity: .9;
+}
+
+.timeline-view .tl-section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.timeline-view .tl-section-action {
+  padding: 2px 8px;
+  font-size: 10.5px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Every block inside `.tl-host` that is the body of a collapsible
+   section carries this class. It deliberately does NOT declare
+   `display` / `flex-direction` — those are owned by the specific
+   body class (.tl-scrubber = flex row, .tl-columns = grid,
+   .tl-chart / .tl-grid / .tl-sus = flex column). This rule only
+   guarantees flex children can shrink below their content size. */
+.timeline-view .tl-section-body {
+  min-height: 0;
+}
+
+.timeline-view .tl-section.collapsed .tl-section-body {
+  display: none;
+}
+
+/* When `_renderSus()` empties the Suspicious section (i.e. no sus chips
+   remain) it stamps `.hidden` on the `.tl-section` wrapper. Without this
+   rule the wrapper itself stays in layout flow — an empty red-tinted bar
+   — even though its `.tl-section-body` is blank. Taking it out of flow
+   entirely is the right visual signal that there is currently nothing
+   suspicious to look at. */
+.timeline-view .tl-section.hidden {
+  display: none;
+}
+
+/* The Suspicious section wraps the whole block in a red-tinted edge so
+   analysts can spot it at a glance even when collapsed. */
+.timeline-view .tl-sec-sus {
+  border-left: 3px solid rgb(var(--risk-high-rgb) / .55);
+  background: rgb(var(--risk-high-rgb) / .03);
+}
+
+.timeline-view .tl-sec-sus > .tl-section-head {
+  background: rgb(var(--risk-high-rgb) / .08);
+  color: var(--risk-high);
+}
+
+.timeline-view .tl-sec-sus .tl-section-title {
+  color: var(--risk-high);
+}
+
+/* The sus-section's body holds a mini-histogram + grid + top-value
+   cards. Keep it visually distinct from the main sections — the red
+   tint already signals "evidence", but we stop short of stacking more
+   borders on every child. */
+.timeline-view .tl-sus {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Suspicious sub-grid height is user-resizable via the `.tl-sus-splitter`
+   drag bar (stored in `loupe_timeline_sus_grid_h`). Mirrors the main
+   events grid's `--tl-grid-h` pattern. The `display: flex; flex-direction:
+   column` + `min-height: 0` combo is required so the inner `GridViewer`
+   virtual-scroll pane can shrink inside this fixed-height container. */
+.timeline-view .tl-sus-grid {
+  height: var(--tl-sus-grid-h, 260px);
+  min-height: 140px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-view .tl-sus-columns {
+  min-height: 180px;
+}
+
+.timeline-view .tl-sus-chart {
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* Red-tinted grid rows (both main & sus tables) — rowClass('tl-row-sus')
+   is applied per-row by GridViewer via the new rowClass hook. */
+.grid-row.tl-row-sus,
+.csv-table tr.tl-row-sus {
+  background: rgb(var(--risk-high-rgb) / .10) !important;
+  box-shadow: inset 3px 0 0 rgb(var(--risk-high-rgb) / .7);
+}
+
+.grid-row.tl-row-sus:hover,
+.csv-table tr.tl-row-sus:hover {
+  background: rgb(var(--risk-high-rgb) / .16) !important;
+}
+
+/* ── Toolbar buttons (primary + danger variants) ────────────────────────
+   Used both in the top toolbar and inside dialogs / popovers. Matches
+   the section-action + legacy .tb-btn aesthetic so all surfaces share
+   one button family. */
+.timeline-view .tl-tb-btn,
+.tl-dialog .tl-tb-btn,
+.tl-popover .tl-tb-btn,
+.tl-rowmenu .tl-tb-btn,
+.tl-colmenu .tl-tb-btn {
+  appearance: none;
+  border: 1px solid var(--hairline-strong);
+  background: var(--panel-bg-raised);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+  line-height: 1.4;
+  white-space: nowrap;
+  transition: background .12s ease, border-color .12s ease, color .12s ease;
+}
+
+.timeline-view .tl-tb-btn:hover,
+.tl-dialog .tl-tb-btn:hover,
+.tl-popover .tl-tb-btn:hover,
+.tl-rowmenu .tl-tb-btn:hover,
+.tl-colmenu .tl-tb-btn:hover {
+  background: rgb(var(--accent-rgb) / .1);
+  border-color: rgb(var(--accent-rgb) / .3);
+  color: var(--accent);
+}
+
+.tl-tb-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.tl-tb-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.tl-tb-btn-primary:hover {
+  background: var(--accent-hover) !important;
+  border-color: var(--accent-hover) !important;
+  color: #fff !important;
+}
+
+.tl-tb-btn-danger {
+  background: rgb(var(--risk-high-rgb) / .08);
+  border-color: rgb(var(--risk-high-rgb) / .35);
+  color: var(--risk-high);
+}
+
+.tl-tb-btn-danger:hover {
+  background: rgb(var(--risk-high-rgb) / .18) !important;
+  border-color: rgb(var(--risk-high-rgb) / .5) !important;
+  color: var(--risk-high) !important;
+}
+
+/* ── Sus chip variant (additions to .tl-chip family) ──────────────────── */
+.timeline-view .tl-chip-sus {
+  background: rgb(var(--risk-high-rgb) / .12);
+  border-color: rgb(var(--risk-high-rgb) / .35);
+  color: var(--risk-high);
+}
+
+/* ── "＋ Add filter" affordance inside the chips strip ──────────────── */
+/* A dashed-border ghost chip that invites the user to author a new
+   filter. Sits at the end of the chips row (after any range / chip
+   pills). See `_renderChips` in app-timeline.js for the render site. */
+.timeline-view .tl-chip-add {
+  background: transparent;
+  border: 1px dashed var(--hairline-strong);
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1.2;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+
+.timeline-view .tl-chip-add:hover,
+.timeline-view .tl-chip-add:focus-visible {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgb(var(--accent-rgb) / .08);
+  outline: none;
+}
+
+.timeline-view .tl-chip-add .tl-chip-plus {
+  font-weight: 600;
+  opacity: .9;
+}
+
+.timeline-view .tl-chip-add .tl-chip-val {
+  color: inherit;
+  font-weight: 500;
+}
+
+/* ── "＋ Add Sus" popover form ──────────────────────────────────────── */
+/* Tight grid layout — keeps Column + Operator on one row, Value on a
+   wider row, and action buttons on their own. The popover itself uses
+   the shared `.tl-popover` styles; this block only layouts the form.
+   The JS mint site (`_openAddSusPopover` in app-timeline.js) stamps
+   `tl-add-sus` on the popover root; the add-sus chip in the chips row
+   opens it. Sus marks tint rows red but do NOT filter — row filtering
+   is owned exclusively by the query bar. */
+.tl-popover.tl-add-sus {
+  min-width: 320px;
+  padding: 10px;
+}
+
+.tl-popover.tl-add-sus .tl-add-filter-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+}
+
+.tl-popover.tl-add-sus .tl-add-filter-form .tl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.tl-popover.tl-add-sus .tl-add-filter-form .tl-field-wide {
+  grid-column: 1 / -1;
+}
+
+.tl-popover.tl-add-sus .tl-add-filter-form .tl-field-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.tl-popover.tl-add-sus .tl-add-filter-form .tl-field-select {
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--panel-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  min-width: 0;
+}
+
+.tl-popover.tl-add-sus .tl-add-filter-hint {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.35;
+  padding: 2px 0;
+}
+
+.tl-popover.tl-add-sus .tl-add-filter-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 4px;
+}
+
+/* ── Chart tooltip (hover over a bucket) ────────────────────────────── */
+
+.tl-chart-tooltip {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  min-width: 140px;
+  max-width: 280px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--panel-bg-raised);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .2);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.tl-chart-tooltip[hidden] {
+  display: none;
+}
+
+.tl-chart-tooltip-h {
+  font-weight: 600;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-bottom: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-chart-tooltip-total {
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.tl-chart-tooltip-rows {
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 10.5px;
+  color: var(--text);
+  max-height: 120px;
+  overflow: hidden;
+}
+
+.tl-chart-tooltip-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .12) inset;
+}
+
+/* 🚩 Suspicious line in the chart tooltip — only present on the main
+   histogram when the hovered bucket contains any sus rows. See
+   `_onChartHover` for the gate. */
+.tl-chart-tooltip-sus {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed rgb(var(--risk-high-rgb) / .4);
+  font-size: 11px;
+  color: var(--risk-high);
+}
+.tl-chart-tooltip-sus b {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Brief flash applied to the pivot section when the auto-pivot feature
+   (right-click column → 🧮 Auto pivot on this column) scrolls it into
+   view — gives the analyst a moment of visual feedback that the pivot
+   results appeared here. Removed by a 1200 ms setTimeout. */
+@keyframes tl-section-flash {
+  0%, 40% { background: rgb(var(--accent-rgb) / .22); }
+  100%    { background: transparent; }
+}
+.timeline-view .tl-section-flash {
+  animation: tl-section-flash 1.2s ease-out;
+}
+
+
+/* ── Popover (row context-menu + generic) ───────────────────────────── */
+.tl-popover {
+  position: fixed;
+  z-index: 12000;
+  min-width: 200px;
+  max-width: 320px;
+  max-height: 70vh;
+  overflow: auto;
+  background: var(--panel-bg-raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .25);
+  padding: 4px 0;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.tl-popover-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 5px 14px;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-popover-item:hover {
+  background: rgb(var(--accent-rgb) / .14);
+  color: var(--accent);
+}
+
+.tl-popover-sep {
+  height: 1px;
+  background: var(--hairline);
+  margin: 4px 0;
+}
+
+.tl-rowmenu {
+  /* Row context-menu inherits from .tl-popover; just mark it so future
+     styling can diverge without having to replumb the DOM. */
+}
+
+/* ── Column menu (Excel-style checkbox filter + extract actions) ────── */
+.tl-colmenu {
+  position: fixed;
+  z-index: 12000;
+  width: 340px;
+  max-height: 80vh;
+  background: var(--panel-bg-raised);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 8px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, .3);
+  display: flex;
+  flex-direction: column;
+  color: var(--text);
+  font-size: 12px;
+  overflow: hidden;
+}
+
+.tl-colmenu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel-bg-section);
+  border-bottom: 1px solid var(--hairline);
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.tl-colmenu-section {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.tl-colmenu-section:last-child {
+  border-bottom: 0;
+}
+
+.tl-colmenu-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 3px;
+}
+
+.tl-colmenu-input,
+.tl-colmenu-input-sm {
+  width: 100%;
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  border: 1px solid var(--input-border);
+  border-radius: 5px;
+  background: var(--input-bg);
+  color: var(--text);
+}
+
+.tl-colmenu-input:focus,
+.tl-colmenu-input-sm:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / .15);
+}
+
+.tl-colmenu-input-sm {
+  padding: 3px 6px;
+  font-size: 11px;
+}
+
+.tl-colmenu-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.tl-colmenu-values {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--panel-bg);
+  margin-top: 4px;
+}
+
+.tl-colmenu-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  cursor: pointer;
+  position: relative;
+}
+
+.tl-colmenu-value:hover {
+  background: rgb(var(--accent-rgb) / .08);
+}
+
+.tl-colmenu-value input[type="checkbox"] {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.tl-colmenu-value-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  position: relative;
+  z-index: 1;
+}
+
+.tl-colmenu-value-count {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  position: relative;
+  z-index: 1;
+}
+
+.tl-colmenu-valbar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgb(var(--accent-rgb) / .08);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.tl-colmenu-value:hover .tl-colmenu-valbar {
+  background: rgb(var(--accent-rgb) / .16);
+}
+
+/*
+ * Top-List / column-menu "All" + "None" action buttons. This used to (by
+ * mistake) share the `.tl-colmenu-valbar` class above, which is
+ * position: absolute + pointer-events: none — that made the buttons pin to
+ * the top-left of the popup and swallow clicks. A dedicated class keeps
+ * the two concerns separated: valbar = per-row fill, valactions = button bar.
+ */
+.tl-colmenu-valactions {
+  display: flex;
+  gap: 4px;
+  padding: 4px 0 2px;
+}
+
+
+.tl-colmenu-empty {
+  padding: 12px;
+  text-align: center;
+  font-style: italic;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.tl-colmenu-foot {
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--hairline);
+  background: var(--panel-bg-section);
+  flex-wrap: wrap;
+}
+
+/* ── Dialog (modal-ish — click outside to close) ───────────────────── */
+.tl-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 15000;
+  background: rgba(0, 0, 0, .45);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+}
+
+.tl-dialog-card {
+  width: 100%;
+  max-width: 820px;
+  max-height: 80vh;
+  background: var(--panel-bg);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, .35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.tl-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--panel-bg-section);
+  border-bottom: 1px solid var(--hairline);
+  font-weight: 700;
+  font-size: 12.5px;
+}
+
+.tl-dialog-close {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 4px 8px;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.tl-dialog-close:hover {
+  background: rgb(var(--risk-high-rgb) / .15);
+  color: var(--risk-high);
+}
+
+.tl-dialog-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0;
+}
+
+.tl-dialog-pane {
+  padding: 12px 16px;
+}
+
+.tl-dialog-muted {
+  margin: 0 0 10px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.tl-dialog-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 12px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--hairline);
+  flex: 0 0 auto;
+}
+
+.tl-dialog-tab {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 8px 14px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  font-weight: 500;
+}
+
+.tl-dialog-tab:hover {
+  color: var(--text);
+  background: rgb(var(--accent-rgb) / .06);
+}
+
+.tl-dialog-tab-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--panel-bg);
+  font-weight: 700;
+}
+
+.tl-dialog-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--hairline);
+  background: var(--panel-bg-section);
+  flex-wrap: wrap;
+}
+
+.tl-dialog-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  flex: 1 1 auto;
+}
+
+.tl-dialog-spacer {
+  flex: 1 1 auto;
+}
+
+/* Extract dialog — 2 panes (auto + regex) */
+.tl-dialog-extract .tl-dialog-body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Auto-extract list ───────────────────────────────────────────── */
+.tl-auto-body {
+  padding: 8px 14px 14px;
+  min-height: 120px;
+}
+
+.tl-auto-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 11.5px;
+}
+
+.tl-auto-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.tl-auto-row {
+  display: grid;
+  grid-template-columns: 18px 90px 120px 1fr 50px minmax(120px, 1.6fr);
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--panel-bg);
+  cursor: pointer;
+  transition: background .12s ease;
+}
+
+.tl-auto-row:hover {
+  background: rgb(var(--accent-rgb) / .06);
+}
+
+.tl-auto-row input[type="checkbox"] {
+  margin: 0;
+}
+
+.tl-auto-kind {
+  font-size: 9.5px;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgb(var(--accent-rgb) / .14);
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-auto-col {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-auto-path {
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-auto-rate {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  text-align: right;
+}
+
+.tl-auto-sample {
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 10.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: .8;
+}
+
+/* ── Regex extract pane ──────────────────────────────────────────── */
+.tl-regex-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 12px;
+  padding: 8px 14px 6px;
+}
+
+.tl-regex-grid .tl-field {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+
+.tl-regex-grid .tl-field-label {
+  font-size: 10px;
+}
+
+.tl-regex-grid .tl-field-select,
+.tl-regex-grid input[type="text"] {
+  padding: 4px 8px;
+  font-size: 11.5px;
+  border: 1px solid var(--input-border);
+  border-radius: 5px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-family: 'Fira Code', 'Consolas', monospace;
+  max-width: none;
+}
+
+.tl-regex-grid input[type="text"]:focus,
+.tl-regex-grid .tl-field-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / .15);
+}
+
+.tl-field-wide {
+  grid-column: 1 / -1;
+}
+
+.tl-regex-hint {
+  padding: 6px 14px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  background: var(--panel-bg-section);
+  border-top: 1px solid var(--hairline);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.tl-regex-hint code {
+  font-family: 'Fira Code', 'Consolas', monospace;
+  background: rgb(var(--accent-rgb) / .08);
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--accent);
+}
+
+.tl-regex-preview {
+  padding: 8px 14px;
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: 240px;
+  overflow: auto;
+  background: var(--panel-bg);
+}
+
+.tl-regex-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-bottom: 6px;
+}
+
+.tl-regex-samples {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tl-regex-sample {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 2fr;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 6px;
+  font-size: 10.5px;
+  border-radius: 3px;
+}
+
+.tl-regex-sample:hover {
+  background: rgb(var(--accent-rgb) / .06);
+}
+
+.tl-regex-sample-cap {
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-weight: 600;
+  color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-regex-sample-src {
+  font-family: 'Fira Code', 'Consolas', monospace;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: .75;
+}
+
+/* ── JSON tree (inside dialog body) ─────────────────────────────── */
+.tl-dialog-jsontree .tl-dialog-body {
+  padding: 0;
+}
+
+/* ── Pivot table ─────────────────────────────────────────────────── */
+.tl-pivot {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 14px 12px;
+  min-height: 0;
+}
+
+.tl-pivot-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0 10px;
+  border-bottom: 1px solid var(--hairline);
+  margin-bottom: 10px;
+}
+
+.tl-pivot-body {
+  min-height: 160px;
+  max-height: 540px;
+  overflow: auto;
+}
+
+.tl-pivot-empty {
+  padding: 24px;
+  text-align: center;
+  font-style: italic;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.tl-pivot-summary {
+  padding: 4px 0 6px;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.tl-pivot-scroll {
+  overflow: auto;
+  max-width: 100%;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+}
+
+.tl-pivot-table {
+  border-collapse: collapse;
+  font-size: 11px;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  width: max-content;
+  min-width: 100%;
+}
+
+.tl-pivot-table th,
+.tl-pivot-table td {
+  padding: 3px 8px;
+  border: 1px solid var(--hairline);
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-pivot-table thead th {
+  background: var(--panel-bg-section);
+  font-weight: 700;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  text-align: left;
+}
+
+.tl-pivot-table tbody th {
+  background: var(--panel-bg-section);
+  text-align: left;
+  font-weight: 600;
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.tl-pivot-corner {
+  background: var(--panel-bg-section) !important;
+  position: sticky;
+  left: 0;
+  top: 0;
+  z-index: 3 !important;
+}
+
+.tl-pivot-table tbody td {
+  background: var(--panel-bg);
+  cursor: pointer;
+  color: var(--text);
+}
+
+.tl-pivot-table tbody td:hover {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+  background: rgb(var(--accent-rgb) / .12) !important;
+}
+
+/* Heat-colour intensities applied inline via `style="--tl-h:0..1"` on
+   each <td>; fall back to transparent if unset. */
+.tl-pivot-table tbody td[data-heat] {
+  background: rgb(var(--accent-rgb) / calc(var(--tl-h, 0) * .55));
+  color: var(--text);
+}
+
+.tl-pivot-other {
+  background: var(--panel-bg-section) !important;
+  color: var(--text-muted) !important;
+  font-style: italic;
+  cursor: default !important;
+}
+
+.tl-pivot-bar-fallback {
+  display: inline-block;
+  height: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   Timeline — Detections + Entities sections
+   ─────────────────────────────────────────────────────────────────────────
+   Populated from Sigma-style pattern hits and entity IOCs pushed onto
+   `findings.externalRefs` by EvtxRenderer.analyzeForSecurity. Rendered by
+   `_renderDetections` / `_renderEntities` in app-timeline.js. Clicking a
+   detection row filters the grid by EventID; clicking an entity row pivots
+   the grid to rows containing that value.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* Wrapper + empty-state — shared by both sections. */
+.timeline-view .tl-detections,
+.timeline-view .tl-entities {
+  padding: 8px 10px 12px;
+}
+
+.timeline-view .tl-detections-empty,
+.timeline-view .tl-entities-empty {
+  padding: 14px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  border: 1px dashed var(--hairline-strong);
+  border-radius: 6px;
+}
+
+/* Detections table — severity · description · event id · hit count. */
+.timeline-view .tl-detections-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+}
+
+.timeline-view .tl-detections-table th {
+  padding: 6px 8px;
+  background: var(--panel-bg-section);
+  border-bottom: 1px solid var(--hairline-strong);
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.timeline-view .tl-detections-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-view .tl-detections-table th.tl-det-sev,
+.timeline-view .tl-detections-table td.tl-det-sev {
+  width: 88px;
+}
+
+.timeline-view .tl-detections-table th.tl-det-eid,
+.timeline-view .tl-detections-table td.tl-det-eid {
+  width: 80px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-view .tl-detections-table th.tl-det-count,
+.timeline-view .tl-detections-table td.tl-det-count {
+  width: 64px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.timeline-view .tl-detections-table td.tl-det-desc {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.timeline-view .tl-det-row-clickable {
+  cursor: pointer;
+  transition: background .12s ease;
+}
+
+.timeline-view .tl-det-row-clickable:hover td {
+  background: rgb(var(--accent-rgb) / .08);
+}
+
+/* Severity badge — same vocabulary as the analyser sidebar (critical / high
+   / medium / low / info). Colour is driven by the row modifier so hover
+   tint doesn't override the pill. */
+.timeline-view .tl-det-sev-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  background: rgba(148, 163, 184, .18);
+  color: var(--text-muted);
+}
+
+.timeline-view .tl-det-row.tl-det-sev-critical .tl-det-sev-badge {
+  background: rgba(168, 85, 247, .18);
+  color: #7c3aed;
+}
+
+.timeline-view .tl-det-row.tl-det-sev-high .tl-det-sev-badge {
+  background: rgb(var(--risk-high-rgb) / .15);
+  color: var(--risk-high);
+}
+
+.timeline-view .tl-det-row.tl-det-sev-medium .tl-det-sev-badge {
+  background: rgba(251, 191, 36, .18);
+  color: #b45309;
+}
+
+.timeline-view .tl-det-row.tl-det-sev-low .tl-det-sev-badge {
+  background: rgba(16, 185, 129, .16);
+  color: var(--risk-low);
+}
+
+.timeline-view .tl-det-row.tl-det-sev-info .tl-det-sev-badge {
+  background: rgb(var(--accent-rgb) / .14);
+  color: var(--accent);
+}
+
+body.dark .timeline-view .tl-det-row.tl-det-sev-critical .tl-det-sev-badge {
+  background: rgba(192, 132, 252, .2);
+  color: #c084fc;
+}
+
+body.dark .timeline-view .tl-det-row.tl-det-sev-medium .tl-det-sev-badge {
+  color: var(--risk-med);
+}
+
+/* Subtle left-edge severity rail on the whole row so the eye can scan
+   the severity column even on wide viewports where the badge is far
+   from the description. */
+.timeline-view .tl-det-row.tl-det-sev-critical td:first-child { box-shadow: inset 3px 0 0 #a855f7; }
+.timeline-view .tl-det-row.tl-det-sev-high     td:first-child { box-shadow: inset 3px 0 0 var(--risk-high); }
+.timeline-view .tl-det-row.tl-det-sev-medium   td:first-child { box-shadow: inset 3px 0 0 var(--risk-med); }
+.timeline-view .tl-det-row.tl-det-sev-low      td:first-child { box-shadow: inset 3px 0 0 var(--risk-low); }
+.timeline-view .tl-det-row.tl-det-sev-info     td:first-child { box-shadow: inset 3px 0 0 rgb(var(--accent-rgb)); }
+
+/* Entities section — grouped by type (Host / User / Process / Hash / …).
+   Each group is a titled block with a vertical stack of entity rows. */
+.timeline-view .tl-entities-wrap {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.timeline-view .tl-entity-group {
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.timeline-view .tl-entity-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 6px 10px;
+  background: var(--panel-bg-section);
+  border-bottom: 1px solid var(--hairline);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.timeline-view .tl-entity-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-view .tl-entity-count {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
+.timeline-view .tl-entity-list {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+
+.timeline-view .tl-entity-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background .12s ease;
+  min-width: 0;
+}
+
+.timeline-view .tl-entity-row:hover {
+  background: rgb(var(--accent-rgb) / .08);
+}
+
+.timeline-view .tl-entity-val {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 11px;
+  color: var(--text);
+}
+
+.timeline-view .tl-entity-hits {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-faint);
+}
+
 
 
