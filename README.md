@@ -102,7 +102,7 @@ Every format gets risk assessment, IOC extraction, and YARA scanning on top of t
 - **Certificates & keys** — X.509 and OpenPGP with weak-key and expiry flagging.
 - **Recursive drill-down** — a macro inside a `.docm` inside a `.zip` inside a `.msi` — every layer gets its own full analysis with Back navigation and a breadcrumb trail.
 - **Exports** — one-click clipboard brief for tickets or LLMs, plus STIX 2.1, MISP, and IOC JSON/CSV.
-- **📈 Timeline** — every CSV / TSV / EVTX (including extensionless drops identified by magic bytes or text sniffing) opens in a dedicated timeliner: scrubber, stacked-bar chart, virtual grid, per-column filter chips, plus Sigma-style **Detections** and **Entities** sections for EVTX.
+- **Timeline** — every CSV / TSV / EVTX opens in a dedicated timeliner: scrubber, stacked-bar chart, virtual grid, per-column filter chips, plus Sigma-style **Detections** and **Entities** sections for EVTX.
 
 Six themes, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
 
