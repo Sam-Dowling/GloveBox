@@ -11138,3 +11138,666 @@ body.grid-timeline-dragging * {
   user-select: none !important;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   Timeline mode
+   ──────────────────────────────────────────────────────────────────────────
+   A separate top-level mode (📈 toolbar button / `T` shortcut) tuned for
+   large CSV / TSV / EVTX datasets. See `src/app/app-timeline.js` for the
+   controller; this block is the visual layer.
+
+   Layout (vertical stack, no page-level scroll):
+
+     [toolbar   ── file chip + time col + stack col + bucket + reset    40]
+     [scrubber  ── dragged-window range selector                        48]
+     [chart     ── stacked bar chart                                   240]
+     [chips     ── active filter chips                                  32]
+     [grid      ── virtual GridViewer, user-resizable via --tl-grid-h  var]
+     [splitter  ── drag to resize grid                                   8]
+     [columns   ── per-column top-value cards (flex:1, share viewport) ...]
+
+   Only the grid scrolls horizontally; columns split the viewport width
+   evenly via `grid-template-columns`.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.timeline-view {
+  --tl-grid-h: 320px;
+  display: grid;
+  grid-template-rows:
+    40px              /* toolbar  */
+    48px              /* scrubber */
+    240px             /* chart    */
+    auto              /* chips    */
+    var(--tl-grid-h)  /* grid     */
+    8px               /* splitter */
+    minmax(180px, 1fr);   /* columns */
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--panel-bg);
+  color: var(--text);
+  font-size: 12px;
+}
+
+/* ── Toolbar row ────────────────────────────────────────────────────────── */
+.timeline-view .tl-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel-bg-section);
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.timeline-view .tl-sep {
+  width: 1px;
+  height: 22px;
+  background: var(--hairline-strong);
+  flex: 0 0 auto;
+}
+
+.timeline-view .tl-spacer {
+  flex: 1 1 auto;
+}
+
+.timeline-view .tl-file-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: rgb(var(--accent-rgb) / .1);
+  border: 1px solid rgb(var(--accent-rgb) / .25);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 11.5px;
+  max-width: 280px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.timeline-view .tl-file-icon {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.timeline-view .tl-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.timeline-view .tl-file-meta {
+  flex: 0 0 auto;
+  font-weight: 400;
+  opacity: .7;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-view .tl-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.timeline-view .tl-field-label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.timeline-view .tl-field-select {
+  padding: 3px 8px;
+  font-size: 11.5px;
+  border: 1px solid var(--input-border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: inherit;
+  max-width: 160px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+
+.timeline-view .tl-field-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / .12);
+}
+
+.timeline-view .tl-row-stat {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.timeline-view .tl-reset-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 6px;
+  background: var(--panel-bg-raised);
+  color: inherit;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+
+.timeline-view .tl-reset-btn:hover {
+  background: rgb(var(--accent-rgb) / .1);
+  border-color: rgb(var(--accent-rgb) / .3);
+  color: var(--accent);
+}
+
+/* ── Scrubber row ──────────────────────────────────────────────────────── */
+.timeline-view .tl-scrubber {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel-bg);
+  min-width: 0;
+}
+
+.timeline-view .tl-scrubber-label {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  min-width: 120px;
+}
+
+.timeline-view .tl-scrubber-label-right {
+  text-align: right;
+}
+
+.timeline-view .tl-scrubber-track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--panel-bg-raised);
+  border: 1px solid var(--hairline-strong);
+  cursor: pointer;
+  user-select: none;
+}
+
+.timeline-view .tl-scrubber-window {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgb(var(--accent-rgb) / .25);
+  border-left: 1px solid var(--accent);
+  border-right: 1px solid var(--accent);
+  cursor: grab;
+  transition: background .15s ease;
+}
+
+.timeline-view .tl-scrubber-window:hover {
+  background: rgb(var(--accent-rgb) / .32);
+}
+
+.timeline-view .tl-scrubber-handle {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 10px;
+  margin-left: -5px;
+  border-radius: 3px;
+  background: var(--accent);
+  cursor: ew-resize;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .2), 0 0 6px rgb(var(--accent-rgb) / .5);
+  z-index: 2;
+}
+
+.timeline-view .tl-scrubber-handle:hover {
+  background: var(--accent-hover);
+}
+
+/* ── Chart row ─────────────────────────────────────────────────────────── */
+.timeline-view .tl-chart {
+  position: relative;
+  padding: 8px 14px 4px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel-bg);
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.timeline-view .tl-chart-canvas {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  display: block;
+}
+
+.timeline-view .tl-chart-legend {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 4px 0 0;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  max-height: 40px;
+  overflow: hidden;
+}
+
+.timeline-view .tl-legend-hdr {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  font-weight: 600;
+  opacity: .8;
+}
+
+.timeline-view .tl-legend-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timeline-view .tl-legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .1) inset;
+}
+
+.timeline-view .tl-chart-empty {
+  position: absolute;
+  inset: 8px 14px 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  pointer-events: none;
+}
+
+.timeline-view .tl-chart-empty.hidden {
+  display: none;
+}
+
+/* ── Chip row ──────────────────────────────────────────────────────────── */
+.timeline-view .tl-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel-bg-section);
+  min-height: 32px;
+  overflow: hidden;
+  /* The row normally fits; if the user stacks many chips we scroll it
+     vertically rather than push the grid down. */
+  max-height: 72px;
+  overflow-y: auto;
+}
+
+.timeline-view .tl-chips-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.timeline-view .tl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 12px;
+  background: rgb(var(--accent-rgb) / .12);
+  border: 1px solid rgb(var(--accent-rgb) / .3);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  max-width: 280px;
+  overflow: hidden;
+}
+
+.timeline-view .tl-chip-not {
+  background: rgb(var(--risk-high-rgb) / .1);
+  border-color: rgb(var(--risk-high-rgb) / .28);
+  color: var(--risk-high);
+}
+
+.timeline-view .tl-chip-range {
+  background: rgba(168, 85, 247, .12);
+  border-color: rgba(168, 85, 247, .3);
+  color: #7c3aed;
+}
+
+body.dark .timeline-view .tl-chip-range {
+  background: rgba(167, 139, 250, .14);
+  border-color: rgba(167, 139, 250, .3);
+  color: #a78bfa;
+}
+
+.timeline-view .tl-chip-col {
+  font-weight: 600;
+  opacity: .85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 120px;
+}
+
+.timeline-view .tl-chip-op {
+  opacity: .7;
+  font-weight: 700;
+  padding: 0 2px;
+}
+
+.timeline-view .tl-chip-val {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+
+.timeline-view .tl-chip-x {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0 4px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  color: inherit;
+  opacity: .65;
+  border-radius: 50%;
+}
+
+.timeline-view .tl-chip-x:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, .1);
+}
+
+body.dark .timeline-view .tl-chip-x:hover {
+  background: rgba(255, 255, 255, .15);
+}
+
+/* ── Grid row ──────────────────────────────────────────────────────────── */
+.timeline-view .tl-grid {
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 0;   /* splitter draws the visible divider */
+  background: var(--panel-bg-inset);
+}
+
+/* The inner GridViewer host already sets its own layout; we just make sure
+   it fills the row and suppresses the internal timeline strip (we pass
+   timeColumn:-1 from the JS, so nothing to do here beyond sizing). */
+.timeline-view .tl-grid-inner {
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+/* ── Splitter ──────────────────────────────────────────────────────────── */
+.timeline-view .tl-splitter {
+  position: relative;
+  background: var(--hairline);
+  cursor: ns-resize;
+  transition: background .15s ease;
+}
+
+.timeline-view .tl-splitter::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 40px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--hairline-bold);
+  transition: background .15s ease;
+}
+
+.timeline-view .tl-splitter:hover,
+body.tl-splitter-dragging .timeline-view .tl-splitter {
+  background: rgb(var(--accent-rgb) / .2);
+}
+
+.timeline-view .tl-splitter:hover::after,
+body.tl-splitter-dragging .timeline-view .tl-splitter::after {
+  background: var(--accent);
+}
+
+body.tl-splitter-dragging,
+body.tl-splitter-dragging * {
+  cursor: ns-resize !important;
+  user-select: none !important;
+}
+
+/* ── Columns row — per-column top-value cards ─────────────────────────── */
+.timeline-view .tl-columns {
+  --tl-col-count: 1;
+  display: grid;
+  /* Cards share the viewport width equally so the row never introduces
+     its own horizontal scrollbar. Each card owns its vertical overflow. */
+  grid-template-columns: repeat(var(--tl-col-count, 1), minmax(0, 1fr));
+  gap: 1px;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--hairline);
+  border-top: 1px solid var(--hairline);
+}
+
+.timeline-view .tl-col-card {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel-bg);
+  overflow: hidden;
+}
+
+.timeline-view .tl-col-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel-bg-section);
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.timeline-view .tl-col-name {
+  font-weight: 600;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.timeline-view .tl-col-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+.timeline-view .tl-col-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+}
+
+.timeline-view .tl-col-sizer {
+  position: relative;
+  width: 100%;
+}
+
+.timeline-view .tl-col-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  transition: background .1s ease;
+}
+
+.timeline-view .tl-col-row:hover {
+  background: rgb(var(--accent-rgb) / .08);
+}
+
+.timeline-view .tl-col-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  background: rgb(var(--accent-rgb) / .08);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.timeline-view .tl-col-row:hover .tl-col-bar {
+  background: rgb(var(--accent-rgb) / .16);
+}
+
+.timeline-view .tl-col-val {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: 'Fira Code', 'Consolas', monospace;
+}
+
+.timeline-view .tl-col-count {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
+}
+
+/* ── Empty / drop state ─────────────────────────────────────────────────
+   Timeline-mode analogue of the analyser `#drop-zone` (see core.css).
+   Every box-model property (padding, border, radius, max-width, width,
+   background, hover/drag-over transitions) and the inner typography
+   (icon 52px, title 17/500, body 12/.4) are kept in lock-step with the
+   `#drop-zone` rules so the two surfaces look identical in size and
+   position — only the inside text differs.
+
+   Placement mirrors the analyser too: `#viewer` is a top-aligned flex
+   column with 20 px padding, so `#drop-zone` naturally sits 20 px from
+   the toolbar. `#timeline-root` is also a flex column but has no
+   padding (a loaded `.timeline-view` fills it edge-to-edge), so we
+   reproduce the 20 px gap here with `margin-top: 20px` and pin the
+   card to the top with `align-self: center` instead of `margin: auto`
+   (which would vertically centre it and break parity).
+   ───────────────────────────────────────────────────────────────────── */
+.timeline-empty {
+  box-sizing: border-box;
+  align-self: center;
+  margin-top: 20px;
+  max-width: 520px;
+  width: 100%;
+
+  padding: 64px 40px;
+  border: 2px dashed var(--hairline-strong);
+  border-radius: 16px;
+  background: rgb(var(--accent-rgb) / .02);
+  color: var(--text-muted);
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .2s ease, background .2s ease,
+              color .2s ease, box-shadow .2s ease;
+}
+
+.timeline-empty:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgb(var(--accent-rgb) / .2);
+}
+
+.timeline-empty:hover,
+.timeline-empty.drag-over {
+  border-color: var(--accent);
+  background: rgb(var(--accent-rgb) / .06);
+  color: var(--accent);
+  box-shadow: 0 0 30px rgb(var(--accent-rgb) / .08);
+}
+
+.timeline-empty.drag-over {
+  border-style: solid;
+}
+
+/* Inner typography — kept 1:1 with `.dz-icon` / `.dz-text` / `.dz-sub`
+   in core.css so the cards are visually indistinguishable apart from
+   the wording and the <kbd>T</kbd> hint. */
+.timeline-empty-icon {
+  font-size: 52px;
+  display: block;
+  margin-bottom: 16px;
+  opacity: .8;
+}
+
+.timeline-empty-title {
+  font-size: 17px;
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.timeline-empty-body {
+  font-size: 12px;
+  line-height: 1.5;
+  opacity: .4;
+}
+
+.timeline-empty-body kbd {
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--panel-bg-raised);
+  color: var(--text);
+  /* Restore readable text inside the kbd regardless of the muted
+     `.timeline-empty-body` opacity. */
+  opacity: 1;
+}
+
+

@@ -43,7 +43,7 @@ SOC analysts, MDR responders, phishing teams, and DFIR practitioners need a way 
 
 - **Abuse mailbox:** a user-reported `.eml` / `.msg` lands in the queue — headers, SPF / DKIM / DMARC verdicts, tracking-pixel hosts, and every embedded URL are inspectable without a single click firing.
 - **ClickFix / `osascript` paste:** an EDR alert surfaces an obfuscated one-liner — Base64 PowerShell, `curl … | sh`, or `osascript -e …`. Paste it straight in with `Ctrl+V` and Loupe peels every nested Base64 / hex / gzip / zlib layer with the full decode lineage on screen, surfacing the C2 URL, hashes, and file paths as one-click MISP / STIX attributes.
-- **Host triage:** drop the `.evtx` from live response to auto-flag 4688 / 4624 / 1102 / 4104, or a browser `History.sqlite` to timeline a suspected compromise.
+- **Host triage:** drop the `.evtx` from live response to auto-flag 4688 / 4624 / 1102 / 4104, or a browser `History.sqlite` to timeline a suspected compromise. Large CSV / TSV / EVTX auto-switch into **📈 Timeline mode** — scrubber, stacked-bar histogram, virtual grid and per-column top-value cards on one page.
 - **Refang & pivot:** Just paste and Loupe will convert URL Defense / Safe links and refang `hxxp://` / `1[.]2[.]3[.]4` into live IOCs you can export without leaving the tab.
 - **Airgap / compliance:** single HTML file, zero network — usable on a SCIF / classified / locked-down analyst VM where VirusTotal and Any.Run are off-limits.
 - **Detection-content authoring:** drag a candidate `.yar` file onto Loupe to validate it against a corpus of samples before promoting to the production ruleset.
@@ -102,6 +102,7 @@ Every format gets risk assessment, IOC extraction, and YARA scanning on top of t
 - **Certificates & keys** — X.509 and OpenPGP with weak-key and expiry flagging.
 - **Recursive drill-down** — a macro inside a `.docm` inside a `.zip` inside a `.msi` — every layer gets its own full analysis with Back navigation and a breadcrumb trail.
 - **Exports** — one-click clipboard brief for tickets or LLMs, plus STIX 2.1, MISP, and IOC JSON/CSV.
+- **📈 Timeline mode** — a dedicated CSV / TSV / EVTX timeliner: scrubber, stacked-bar chart, virtual grid and per-column filter chips on one page, no sidebar.
 
 Six themes, a resizable sidebar, in-toolbar document search, and click-to-highlight for every IOC and YARA match.
 

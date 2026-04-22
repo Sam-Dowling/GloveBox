@@ -308,6 +308,14 @@ JS_FILES = [
     'src/renderer-registry.js',
     'src/app/app-core.js',
 
+    # app-timeline.js — dedicated perf-focused CSV/TSV/EVTX timeline mode.
+    # Must load AFTER app-core.js (defines `App`), and AFTER grid-viewer.js /
+    # csv-renderer.js / evtx-renderer.js (all under src/renderers/, already
+    # concatenated above) since TimelineView reuses them directly. Attaches
+    # _initTimelineMode / _toggleTimelineMode / _timelineTryHandle onto
+    # App.prototype via Object.assign, called from app-core.js::init().
+    'src/app/app-timeline.js',
+
     'src/app/app-load.js',
     'src/app/app-sidebar.js',
     # app-sidebar-focus.js holds the click-to-focus / highlighting engine:
@@ -453,6 +461,7 @@ HTML = f"""<!DOCTYPE html>
     <div class="tb-separator"></div>
     <button class="tb-btn tb-icon-btn" id="btn-security" title="Toggle security sidebar (S)">🛡</button>
     <div class="tb-separator"></div>
+    <button class="tb-btn tb-icon-btn" id="btn-timeline" title="Timeline mode (T)">📈</button>
     <button class="tb-btn tb-icon-btn" id="btn-yara" title="YARA rule editor (Y)">📐</button>
     <button class="tb-btn tb-icon-btn" id="btn-settings" title="Settings (,) · Help (?)">⚙</button>
     <input type="file" id="file-input" accept="{accept_attr}" style="display:none">
@@ -503,6 +512,11 @@ HTML = f"""<!DOCTYPE html>
       </div>
       <div id="sb-body"></div>
     </div>
+
+    <!-- Timeline mode root — sibling of #viewer. Shown only when
+         body[data-mode="timeline"]; otherwise hidden via CSS. Populated
+         lazily by src/app/app-timeline.js::_enterTimelineMode(). -->
+    <div id="timeline-root"></div>
 
   </div><!-- /#main-area -->
 

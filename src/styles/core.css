@@ -4695,5 +4695,43 @@ body.dark .nicelist-empty {
   color: rgba(255, 255, 255, .55);
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   Timeline mode — sibling layout toggled via body[data-mode="timeline"]
+   See src/app/app-timeline.js for the controller.
 
-</file_content_end>
+   When Timeline mode is active we hide the regular viewer / sidebar / resize
+   handle and let `#timeline-root` consume the flex row inside `#main-area`.
+   In analyser mode `#timeline-root` is display:none so it costs nothing.
+   ══════════════════════════════════════════════════════════════════════════ */
+#timeline-root {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body[data-mode="timeline"] #viewer,
+body[data-mode="timeline"] #sidebar,
+body[data-mode="timeline"] #sidebar-resize {
+  display: none !important;
+}
+
+body[data-mode="timeline"] #timeline-root {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Toolbar toggle — stays themed via --accent-rgb so Latte / Solarized /
+   Mocha all get a matching active-state tint. */
+#btn-timeline.tb-btn-active {
+  background: rgb(var(--accent-rgb) / .14) !important;
+  border-color: rgb(var(--accent-rgb) / .35) !important;
+  color: var(--accent) !important;
+  box-shadow: 0 0 10px rgb(var(--accent-rgb) / .15);
+}
+
+body.dark #btn-timeline.tb-btn-active {
+  background: rgb(var(--accent-rgb) / .18) !important;
+  border-color: rgb(var(--accent-rgb) / .4) !important;
+}

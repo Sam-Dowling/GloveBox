@@ -156,7 +156,23 @@ subtly misbehave.
   `app-settings.js` must load **after** both `app-ui.js` and
   `app-copy-analysis.js` because it reuses the `THEMES` array from
   `app-ui.js` and overrides the unbudgeted `_copyAnalysis` call path with
-  the configured Summary-budget step. Renderers load before
+  the configured Summary-budget step. `app-timeline.js` loads immediately
+  after `app-core.js` and introduces a second top-level app mode (📈
+  **Timeline**) alongside the default analyser: it owns its own toolbar
+  button (`#btn-timeline`), root container (`#timeline-root`), and
+  per-mode viewport. Mode is tracked via `document.body.dataset.mode`
+  (`"analyser"` / `"timeline"`) so CSS in `core.css` can swap between the
+  sidebar/viewer stack and the timeline stack without re-mounting either.
+  The timeline path is deliberately narrower than the generic viewer —
+  only CSV / TSV / EVTX are accepted, no YARA, no sidebar, no
+  EncodedContentDetector — and it reuses `GridViewer` with
+  `timeColumn: -1` so the grid never paints its own timeline strip (the
+  outer TimelineView owns the scrubber + stacked-bar chart). Drop dispatch
+  in `app-load.js::_loadFile()` begins with
+  `if (this._timelineTryHandle(file)) return;`, which routes qualifying
+  files to `_loadFileInTimeline()` when the user is already in timeline
+  mode, or auto-switches into timeline mode for large CSV/TSV/EVTX drops
+  when `loupe_timeline_autoswitch` is on. Renderers load before
   `renderer-registry.js`, which loads before `app-core.js`.
 
 ### CSP & runtime safety
@@ -703,6 +719,10 @@ state is (a) easy to grep for, (b) easy to clear with a single filter, and
 | `loupe_nicelists_user` | string (JSON) | `save()` / mutation helpers in `src/nicelist-user.js` (Settings → 🛡 Nicelists UI) | `{version:1, lists:[{id,name,enabled,createdAt,updatedAt,entries}]}` | User-defined nicelists (MDR customer domains, employee emails, on-network hostnames, …). Capped at 64 lists × 10 000 entries × 1 MB serialised to stay inside the localStorage quota; overflow writes are refused without corrupting the previous blob. Entries are normalised + deduplicated on save; matching uses the same label-boundary semantics as the built-in list. Exported / imported via the toolbar buttons in the Nicelists tab. |
 | `loupe_plaintext_highlight` | string | `PlainTextRenderer._writeHighlightPref()` in `src/renderers/plaintext-renderer.js` (info-bar "Highlight" button in the plaintext / catch-all viewer) | `"on"` (default) or `"off"` | Syntax-highlighting master switch for the plaintext / catch-all renderer. When `"off"`, hljs is never invoked regardless of file size or language. Independent of the automatic per-file gates (`HIGHLIGHT_SIZE_LIMIT`, `LONG_LINE_THRESHOLD`) which always disable highlighting on minified / pathological inputs. |
 | `loupe_grid_drawer_w` | string (integer) | `_saveDrawerWidth()` in `src/renderers/grid-viewer.js` (drag handle on the left edge of the detail drawer) | integer pixel width, clamped to `280`–`900` on read | Width of the right-hand row-details drawer used by every GridViewer-backed viewer. Default `420`. Persisted per-browser so analysts who prefer a wide drawer for deeply-nested EVTX events don't have to re-drag it on every file. |
+| `loupe_mode` | string | `_enterTimelineMode()` / `_exitTimelineMode()` in `src/app/app-timeline.js` | one of `analyser` (default) or `timeline` | Top-level app mode. Mirrored onto `document.body.dataset.mode` so the mode-switching CSS in `core.css` can hide the sidebar+viewer stack in timeline mode (and vice-versa) without re-mounting either. Unknown / missing value falls back to `analyser`. |
+| `loupe_timeline_autoswitch` | string | `_setTimelineAutoswitchEnabled()` in `src/app/app-timeline.js` (Settings ⚙ toggle row) | `"1"` (on — default) or `"0"` (off) | When on, dropping a large CSV / TSV or any EVTX auto-switches into Timeline mode; when off, those files open in the regular analyser. Missing / unparseable value is treated as on so first-time users get the timeline for forensic artefacts without configuration. |
+| `loupe_timeline_grid_h` | string (integer) | drag handle on the `.tl-splitter` between the timeline grid and the per-column cards | integer pixel height, clamped to a sensible min/max on read | Height of the virtual-grid pane inside Timeline mode. Persisted per-browser so analysts who prefer a tall grid (scrolling 10 k rows) or a tall column-cards pane don't have to re-drag it on every file. |
+| `loupe_timeline_bucket` | string | Timeline toolbar bucket picker | one of the supported bucket sizes (`1m` / `5m` / `1h` / `1d` / …) | Chart / scrubber bucket resolution for the stacked-bar histogram. Default is picked automatically from the file's time span on first load if the saved value is missing or invalid. |
 
 **Adding a new key**
 

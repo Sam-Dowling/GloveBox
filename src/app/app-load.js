@@ -83,6 +83,14 @@ function _refangString(str) {
 Object.assign(App.prototype, {
 
   async _loadFile(file) {
+    // ── Timeline-mode intercept ───────────────────────────────────────
+    // Handles the file here if (a) the user is already in Timeline mode,
+    // or (b) the file is a CSV/TSV/EVTX big enough to cross the Autoswitch
+    // threshold AND the "Autoswitch to Timeline" setting is enabled.
+    // Returns truthy on handle (success OR explicit refusal-with-toast);
+    // the legacy analyser pipeline only runs when it returns falsy.
+    if (this._timelineTryHandle && this._timelineTryHandle(file)) return;
+
     this._setLoading(true);
 
     // Reset the viewer + sidebar scroll position when a *fresh* file is
