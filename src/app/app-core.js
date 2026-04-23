@@ -11,7 +11,13 @@ class App {
   init() {
     this._initTheme();    // applies persisted theme (localStorage) or default
     this._initSettings(); // restores summary-budget step + paints ⚡ chip
+    // Subtle per-theme animated background on the landing surface.
+    // Lives in its own module (`app-bg.js`) and exposes a tiny
+    // `window.BgCanvas` singleton. Safe to no-op if the module failed to
+    // load for any reason (we never want a cosmetic effect to break init).
+    try { if (window.BgCanvas) window.BgCanvas.init(); } catch (_) { /* background is cosmetic */ }
     this._setupDrop();
+
 
     this._setupToolbar();
     this._setupSidebarResize();
@@ -19,6 +25,7 @@ class App {
     this._setupSearch();
     this._initTimelineState();
     this._checkVersionParam();
+    this._checkHostedMode();
     // Keyboard shortcuts: S=toggle sidebar, Y=YARA dialog, F=focus document search.
     // F (not Ctrl+F) is used because every major browser reserves Ctrl+F for its
     // own find-in-page bar and the hijack is brittle / user-hostile.
@@ -70,7 +77,26 @@ class App {
 
     // ── Window-level drag handlers ──────────────────────────────────────
     // Handles drags that enter over normal page elements (not iframes).
+    //
+    // These handlers are only for **external file drags from the OS**.
+    // Internal DOM drags (e.g. the Timeline "🏆 Top values" card reorder
+    // in app-timeline.js — `head.draggable = true` + `dragstart` on
+    // `.tl-col-head`) must be allowed to bubble to their own handlers.
+    // If we preventDefault on dragover here for every drag, the whole
+    // window "accepts drops" and `#drag-overlay` (z-index 99999) eclipses
+    // the cards so the in-page drop never fires. Gate on
+    // `DataTransfer.types` containing `'Files'` — which is only present
+    // for OS file drags — so internal drags pass through cleanly.
+    const isExternalFileDrag = (e) => {
+      const t = e && e.dataTransfer && e.dataTransfer.types;
+      if (!t) return false;
+      // DOMStringList in some browsers, array-like in others — use
+      // Array.from so `.includes` works uniformly.
+      return Array.from(t).indexOf('Files') !== -1;
+    };
+
     window.addEventListener('dragenter', e => {
+      if (!isExternalFileDrag(e)) return;
       e.preventDefault();
       _dragCounter++;
       // Skip overlay when YARA dialog is open — let its own drag handlers fire
@@ -78,12 +104,14 @@ class App {
     });
 
     window.addEventListener('dragover', e => {
+      if (!isExternalFileDrag(e)) return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
       if (!dz.classList.contains('has-document')) dz.classList.add('drag-over');
     });
 
-    window.addEventListener('dragleave', () => {
+    window.addEventListener('dragleave', e => {
+      if (!isExternalFileDrag(e)) return;
       _dragCounter--;
       if (_dragCounter <= 0) {
         hideOverlay();
@@ -92,6 +120,7 @@ class App {
     });
 
     window.addEventListener('drop', e => {
+      if (!isExternalFileDrag(e)) return;
       e.preventDefault();
       e.stopPropagation();
       hideOverlay();
@@ -188,7 +217,7 @@ class App {
         const ae = document.activeElement;
         const aeTag = ((ae && ae.tagName) || '').toLowerCase();
         const inEditable = aeTag === 'input' || aeTag === 'textarea' ||
-                           (ae && ae.isContentEditable);
+          (ae && ae.isContentEditable);
         if (inEditable) return;
         if (!this._fileBuffer || !this._isRawCopyable()) return;
         e.preventDefault();
@@ -245,7 +274,7 @@ class App {
       // confusing in a security tool where the hash is the identity.
       const cached = this._lastCopiedMeta;
       if (cached && cached.buffer && cached.normText &&
-          text.replace(/\r\n/g, '\n') === cached.normText) {
+        text.replace(/\r\n/g, '\n') === cached.normText) {
         const file = new File([cached.buffer], cached.name,
           { type: 'application/octet-stream' });
         this._loadFile(file);
@@ -265,6 +294,40 @@ class App {
     }
 
     this._toast('Nothing to paste', 'error');
+  }
+
+  // ── Hosted-mode privacy notice ──────────────────────────────────────
+  // Detects whether Loupe is served from a web server (http/https) vs.
+  // opened locally (file://). When hosted, two visual nudges appear:
+  //   1. The drop-zone gets a dismissable warning line.
+  //   2. A floating bar below the toolbar suggests downloading.
+  // The bar is dismissable and persists the dismissal to localStorage
+  // (`loupe_hosted_dismissed`) so it only appears once.
+  _checkHostedMode() {
+    const isHosted = location.protocol !== 'file:';
+    if (!isHosted) return;
+
+    const DL = 'https://github.com/Loupe-tools/Loupe/releases/latest/download/loupe.html';
+
+    // 2. Floating bar below toolbar (unless previously dismissed)
+    try { if (localStorage.getItem('loupe_hosted_dismissed')) return; } catch (_) { }
+
+    const bar = document.createElement('div');
+    bar.id = 'hosted-bar';
+    bar.innerHTML = '\u26A0 Hosted mode \u2014 your files never leave your browser, but for maximum privacy <a href="' + DL + '" target="_blank" rel="noopener">download Loupe</a> and run it offline';
+
+    const dismiss = document.createElement('button');
+    dismiss.className = 'hosted-bar-dismiss';
+    dismiss.textContent = '\u2715';
+    dismiss.title = 'Dismiss';
+    dismiss.addEventListener('click', () => {
+      bar.remove();
+      try { localStorage.setItem('loupe_hosted_dismissed', '1'); } catch (_) { }
+    });
+    bar.appendChild(dismiss);
+
+    const toolbar = document.getElementById('toolbar');
+    if (toolbar) toolbar.insertAdjacentElement('afterend', bar);
   }
 
   _handleFiles(files) {

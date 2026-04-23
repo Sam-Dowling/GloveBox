@@ -3744,8 +3744,48 @@ body.dark mark.evtx-ioc-highlight-flash {
   }
 }
 
+/* ── Landing-surface background canvas ─────────────────────────────────
+   `#bg-canvas` is a single full-viewport <canvas> injected as the first
+   body child by `src/app/app-bg.js`. It paints a subtle per-theme
+   ambient effect (plasma drift / cute hearts / cute kitties / golden-
+   ratio spiral, see app-bg.js for the full lineup) that reads as a
+   background wash on the landing surface and sits behind every opaque
+   chrome element.
+
+   Why z-index:-1 (and not a positive value with pointer-events:none)?
+     • body keeps its own `background` / gradient painted beneath the
+       canvas — the canvas layers on top for subtle colour, not as a
+       replacement for the palette.
+     • Every toolbar / sidebar / viewer / dialog in core.css + viewers.css
+       is already in-flow at z-index:auto, so sitting the canvas at -1
+       means we never have to touch any other stacking context.
+
+   Hidden entirely when:
+     • a file is loaded (`.has-document` on the drop zone)
+     • the Midnight theme is active (OLED pure-black must stay pure-black)
+     • the user has `prefers-reduced-motion: reduce`
+*/
+#bg-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: -1;
+  pointer-events: none;
+  display: block;
+}
+
+body.theme-midnight #bg-canvas { display: none; }
+body.has-document-loaded #bg-canvas,
+body:has(#drop-zone.has-document) #bg-canvas { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  #bg-canvas { display: none; }
+}
+
 /* ── Drop zone ── */
 #drop-zone {
+
   border: 2px dashed rgba(255, 255, 255, .18);
   border-radius: 16px;
   padding: 64px 40px;
@@ -3805,6 +3845,77 @@ body:not(.dark) #drop-zone.drag-over {
   border-color: #0ea5e9;
   background: rgba(14, 165, 233, .06);
   color: #0284c7;
+}
+
+.dz-hosted-warn {
+  margin-top: 14px;
+  font-size: 12px;
+  color: #f59e0b;
+  opacity: .85;
+  line-height: 1.5;
+}
+
+body:not(.dark) .dz-hosted-warn {
+  color: #b45309;
+}
+
+.dz-hosted-warn a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 600;
+}
+
+.dz-hosted-warn a:hover {
+  opacity: 1;
+}
+
+/* ── Hosted-mode floating bar ────────────────────────────────────────── */
+#hosted-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 6px 16px;
+  font-size: 12px;
+  font-weight: 500;
+  background: rgba(245, 158, 11, .1);
+  border-bottom: 1px solid rgba(245, 158, 11, .2);
+  color: #f59e0b;
+  animation: hosted-bar-slide .3s ease-out;
+}
+
+body:not(.dark) #hosted-bar {
+  background: #fffbeb;
+  border-bottom-color: #fde68a;
+  color: #92400e;
+}
+
+#hosted-bar a {
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  font-weight: 600;
+}
+
+#hosted-bar .hosted-bar-dismiss {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 4px;
+  opacity: .6;
+  transition: opacity .2s;
+}
+
+#hosted-bar .hosted-bar-dismiss:hover {
+  opacity: 1;
+}
+
+@keyframes hosted-bar-slide {
+  from { transform: translateY(-100%); opacity: 0; }
+  to   { transform: translateY(0);     opacity: 1; }
 }
 
 /* ── Drag overlay ─────────────────────────────────────────────────────────
