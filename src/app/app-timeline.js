@@ -54,10 +54,10 @@
 //   - loupe_timeline_chart_h           integer px — default 220 (histogram)
 //   - loupe_timeline_bucket            token      — default 'auto'
 //   - loupe_timeline_sections          JSON { id: bool } collapsed state
-//   - loupe_timeline_topvals_size      'S' | 'M' | 'L'
 //   - loupe_timeline_card_widths       JSON { fileKey: { colName: { span: N } } }
 //   - loupe_timeline_regex_extracts    JSON { fileKey: [{name,col,pattern,flags,group}] }
 //   - loupe_timeline_pivot             JSON { rows, cols, aggOp, aggCol }
+//   - loupe_timeline_card_order        JSON { fileKey: ["colName", …] }
 // ════════════════════════════════════════════════════════════════════════════
 
 const TIMELINE_KEYS = Object.freeze({
@@ -65,13 +65,13 @@ const TIMELINE_KEYS = Object.freeze({
   CHART_H: 'loupe_timeline_chart_h',
   BUCKET: 'loupe_timeline_bucket',
   SECTIONS: 'loupe_timeline_sections',
-  TOPVALS_SIZE: 'loupe_timeline_topvals_size',
   CARD_WIDTHS: 'loupe_timeline_card_widths',
   REGEX_EXTRACTS: 'loupe_timeline_regex_extracts',
   PIVOT: 'loupe_timeline_pivot',
   QUERY: 'loupe_timeline_query',
   QUERY_HISTORY: 'loupe_timeline_query_history',
   SUS_MARKS: 'loupe_timeline_sus_marks',
+  CARD_ORDER: 'loupe_timeline_card_order',
 });
 
 // Hard row cap.
@@ -1168,9 +1168,28 @@ function _tlFormatHighlightOne(t, esc) {
 }
 
 // Compute a suggestion context for the caret position within `text`.
-// Returns { kind: 'field'|'value'|'keyword'|'none', fieldName?, prefix, replaceStart, replaceEnd }.
+// Returns { kind: 'field'|'value'|'keyword'|'none', fieldName?, prefix, replaceStart, replaceEnd, tokenStart }.
+//
+// This is a pure function — it just describes what kind of completion
+// would make sense at the caret. The editor decides WHEN to actually
+// open the popover based on the user's last input (see
+// `TimelineQueryEditor._shouldOpenFromInput`). Keeping the "what" and
+// "when" separated is the single biggest simplification over the
+// previous implementation, which tried to bake dismissal state into
+// the context itself.
 function _tlSuggestContext(text, caret) {
-  // Walk back from caret to find the start of the current "word" token.
+  // Caret-inside-quoted-literal → no completion makes sense.
+  let inQuote = false;
+  for (let i = 0; i < caret; i++) {
+    const ch = text.charAt(i);
+    if (ch === '\\' && inQuote) { i++; continue; }
+    if (ch === '"') inQuote = !inQuote;
+  }
+  if (inQuote) {
+    return { kind: 'none', prefix: '', replaceStart: caret, replaceEnd: caret, tokenStart: caret };
+  }
+
+  // Walk back/forward over the current bareword.
   let start = caret;
   while (start > 0) {
     const ch = text.charAt(start - 1);
@@ -1183,21 +1202,18 @@ function _tlSuggestContext(text, caret) {
     if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '(' || ch === ')' || ch === '"') break;
     end++;
   }
-  // Raw prefix the user has typed.
-  let prefix = text.slice(start, caret);
-  // Operator suffix — if the user just typed `col:`, we land here with
-  // prefix ending in `:` etc. Treat as "value context" with empty prefix.
-  // Ordered longest-first.
+  const prefix = text.slice(start, caret);
+
+  // Operator inside the current word — `col:` / `col=foo` → value context.
   for (const op of _TL_QUERY_OPS) {
     const idx = prefix.lastIndexOf(op);
     if (idx !== -1 && idx + op.length === prefix.length) {
       const fieldRaw = prefix.slice(0, idx).trim();
       return {
         kind: 'value', fieldName: fieldRaw.replace(/^["[]|["\]]$/g, ''),
-        prefix: '', replaceStart: caret, replaceEnd: caret,
+        prefix: '', replaceStart: caret, replaceEnd: caret, tokenStart: start,
       };
     }
-    // Or op appears mid-prefix — the user is now typing the value.
     const idx2 = prefix.indexOf(op);
     if (idx2 !== -1 && /^[^\s()]/.test(prefix.charAt(idx2 + op.length) || '')) {
       const fieldRaw = prefix.slice(0, idx2).trim();
@@ -1205,25 +1221,57 @@ function _tlSuggestContext(text, caret) {
       return {
         kind: 'value', fieldName: fieldRaw.replace(/^["[]|["\]]$/g, ''),
         prefix: valRaw, replaceStart: start + idx2 + op.length, replaceEnd: end,
+        tokenStart: start,
       };
     }
   }
-  // No op in prefix — we're either at a field position (start of expression
-  // or after AND/OR/NOT/`(`) or typing a bareword.
-  // Look at the previous non-WS token to decide.
+
+  // No operator — decide field vs keyword by what sits to the left.
   const before = text.slice(0, start).trimEnd();
   const lastChar = before.charAt(before.length - 1);
-  const lastWord = /(AND|OR|NOT)$/i.test(before) ? 'kw' : null;
-  if (before === '' || lastChar === '(' || lastWord) {
-    return { kind: 'field', prefix, replaceStart: start, replaceEnd: end };
+  const afterKeyword = /(?:^|\s)(AND|OR|NOT)$/i.test(before);
+  if (before === '' || lastChar === '(' || afterKeyword) {
+    return { kind: 'field', prefix, replaceStart: start, replaceEnd: end, tokenStart: start };
   }
-  // In free text — suggest keywords.
-  return { kind: 'keyword', prefix, replaceStart: start, replaceEnd: end };
+  return { kind: 'keyword', prefix, replaceStart: start, replaceEnd: end, tokenStart: start };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 // TimelineQueryEditor — overlay `<textarea>` + syntax-highlighted `<pre>`
 // + suggestion dropdown. Owned by a TimelineView.
+//
+// Design note (see CONTRIBUTING / DSL query editor): the suggestion
+// popover is driven by a small, explicit state machine, NOT by
+// heuristics over every caret position. This replaces the old design
+// that reran `_updateSuggestions` on every `input` / `click`, invented
+// a `_suppressUntilSpace` guard to stop Enter hijacking after accept,
+// and rebuilt every row on every keystroke.
+//
+//   State:
+//     this._sugg = {
+//       el,               // the portalled dropdown element, created once
+//       items,            // current item list
+//       sel,              // selected index
+//       ctx,              // _tlSuggestContext() snapshot at last open
+//       anchorTokenStart, // ctx.tokenStart when opened
+//       itemsKey,         // cheap hash so re-renders reuse rows
+//     } | null
+//     this._dismissedTokenStart = integer | null   // Esc → set; leaving
+//                                                  // the token clears it.
+//
+//   Open triggers (explicit): user-initiated `input` events (except
+//     programmatic setValue), AND Ctrl/Cmd-Space (manual request). No
+//     `click` trigger — moving the caret through finished tokens does
+//     not spawn a popover.
+//
+//   Close triggers: Escape (also marks dismissed for this token),
+//     focus loss (blur with relatedTarget outside popover), outside
+//     pointerdown, window resize, view scroll, programmatic setValue.
+//
+//   The caret-in-quoted-string guard and token-boundary checks are all
+//   absorbed by `_tlSuggestContext` returning `kind: 'none'`; once the
+//   context is 'none' the popover just closes. No other "when to open"
+//   logic lives in this class.
 // ════════════════════════════════════════════════════════════════════════════
 class TimelineQueryEditor {
   constructor(opts) {
@@ -1233,9 +1281,16 @@ class TimelineQueryEditor {
     this.debounceMs = opts.debounceMs != null ? opts.debounceMs : 60;
 
     this._debounceTimer = 0;
-    this._suggest = null;
-    this._suggestSel = 0;
+    this._sugg = null;                   // suggestion state (see class header)
+    this._dismissedTokenStart = null;    // Esc → pinned to ctx.tokenStart; cleared on token change
     this._history = TimelineQueryEditor._loadHistory();
+
+    // Bound doc-level listeners, installed only while a popover is open.
+    // Kept as properties so we can remove the exact same references.
+    this._onDocPointerDown = (e) => this._handleOutsidePointer(e);
+    this._onWinResize = () => this._repositionSuggest();
+    this._onViewScroll = (e) => this._handleScroll(e);
+
     this._buildDom();
     this.setValue(opts.initialValue || '');
   }
@@ -1251,7 +1306,7 @@ class TimelineQueryEditor {
           <textarea class="tl-query-input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" rows="1" placeholder='Filter — e.g. User:admin AND (EventID=4624 OR EventID=4625) NOT "svc_backup"'></textarea>
         </div>
         <button class="tl-query-clear" type="button" title="Clear filter" tabindex="-1">✕</button>
-        <button class="tl-query-history" type="button" title="History" tabindex="-1">▾</button>
+        <button class="tl-query-history" type="button" title="History (Ctrl/⌘-↓)" tabindex="-1">▾</button>
         <button class="tl-query-help" type="button" title="Query language help" tabindex="-1">?</button>
       </div>
       <div class="tl-query-status" aria-live="polite"></div>
@@ -1264,28 +1319,53 @@ class TimelineQueryEditor {
     this.historyBtn = root.querySelector('.tl-query-history');
     this.helpBtn = root.querySelector('.tl-query-help');
 
-    // Mirror input events to the highlight layer + debounced parse.
-    this.input.addEventListener('input', () => {
+    // Input event = user typed / pasted / cut. This is the ONE place we
+    // consider opening the popover automatically. `e.isComposing` skips
+    // IME pre-edit events (we wait for compositionend).
+    this.input.addEventListener('input', (e) => {
+      if (e && e.isComposing) return;
+      // Any real input invalidates a prior "Escape-dismissed here": the
+      // user has moved on. Clear the dismissal if the caret left the
+      // pinned token, else leave it so Escape sticks while still typing.
+      this._maybeClearDismissal();
       this._refreshHighlight();
       this._scheduleCommit();
-      this._updateSuggestions();
+      this._refreshSuggest({ allowOpen: true });
     });
+    this.input.addEventListener('compositionend', () => {
+      this._refreshHighlight();
+      this._scheduleCommit();
+      this._refreshSuggest({ allowOpen: true });
+    });
+
     this.input.addEventListener('keydown', (e) => this._onKeyDown(e));
     this.input.addEventListener('scroll', () => {
       // Mirror scroll so the highlight layer stays aligned.
       this.hl.parentNode.scrollLeft = this.input.scrollLeft;
       this.hl.parentNode.scrollTop = this.input.scrollTop;
+      // And reposition the popover so it stays glued to the caret.
+      if (this._sugg) this._repositionSuggest();
     });
-    this.input.addEventListener('blur', () => {
-      // Delay close so click inside suggestion list still fires.
-      setTimeout(() => this._closeSuggest(), 120);
+
+    this.input.addEventListener('blur', (e) => {
+      // Only close if focus actually left both the input and the popover.
+      // The popover rows use `pointerdown.preventDefault()` so focus never
+      // moves to them, but we check relatedTarget as a belt-and-braces.
+      const next = e.relatedTarget;
+      if (this._sugg && this._sugg.el && next && this._sugg.el.contains(next)) return;
+      this._closeSuggest();
     });
-    this.input.addEventListener('click', () => this._updateSuggestions());
+
+    // Deliberately NO click handler — clicking between finished tokens
+    // should not spawn suggestions. If the user wants them, Ctrl/Cmd-Space
+    // is the manual trigger. Arrow keys still fire keydown → `_onKeyDown`
+    // which intercepts navigation when the popover is open.
 
     this.clearBtn.addEventListener('click', () => {
       if (this.input.value === '') return;
       this.setValue('');
       this._scheduleCommit(true);
+      this._closeSuggest();
       this.input.focus();
     });
     this.historyBtn.addEventListener('click', (e) => {
@@ -1298,16 +1378,19 @@ class TimelineQueryEditor {
     });
   }
 
+  // Public API — setValue is used on history-pick, query restore, and
+  // clear. It's a programmatic change, so it MUST NOT auto-open the
+  // popover (rule: open-on-user-input only).
   setValue(v) {
     this.input.value = v || '';
     this._refreshHighlight();
+    this._closeSuggest();
+    this._dismissedTokenStart = null;
   }
   getValue() { return this.input.value; }
 
   focus() { this.input.focus(); }
 
-  // Update the status line — called by the view after compile to report
-  // match counts / parse errors.
   setStatus(html, kind) {
     this.status.className = 'tl-query-status' + (kind ? ' tl-query-status-' + kind : '');
     this.status.innerHTML = html || '';
@@ -1323,79 +1406,156 @@ class TimelineQueryEditor {
     clearTimeout(this._debounceTimer);
     const run = () => {
       this._debounceTimer = 0;
-      try {
-        this.onChange(this.input.value);
-      } catch (e) { /* noop */ }
+      try { this.onChange(this.input.value); } catch (e) { /* noop */ }
     };
     if (immediate) run(); else this._debounceTimer = setTimeout(run, this.debounceMs);
   }
 
   _onKeyDown(e) {
-    if (this._suggest && this._suggest.visible) {
+    // Manual trigger — Ctrl/Cmd-Space forces suggestions to recompute + open,
+    // overriding any prior Esc dismissal for the current token. Mirrors
+    // VS Code, Chrome DevTools, most IDEs.
+    if (e.key === ' ' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      this._dismissedTokenStart = null;
+      this._refreshSuggest({ allowOpen: true, force: true });
+      return;
+    }
+    // Ctrl/Cmd+↓ toggles the history menu without leaving the keyboard.
+    // Alt+↓ is accepted as a fallback (matches older builds / docs), but
+    // Ctrl/⌘ is the canonical binding — it's what combo-boxes on every
+    // major platform use and doesn't collide with WM window shortcuts.
+    if (e.key === 'ArrowDown' && (e.ctrlKey || e.metaKey || e.altKey) && !this._isSuggestOpen()) {
+      e.preventDefault();
+      if (this._isHistoryOpen()) this._closeHistoryMenu();
+      else this._openHistoryMenu();
+      return;
+    }
+
+    // History menu open → arrow keys move selection, Enter/Tab applies,
+    // Escape dismisses. Focus stays on the <textarea> the whole time so
+    // the user never loses their caret.
+    if (this._isHistoryOpen()) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); this._moveHistorySel(1); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); this._moveHistorySel(-1); return; }
+      if (e.key === 'Home')      { e.preventDefault(); this._setHistorySel(0); return; }
+      if (e.key === 'End')       { e.preventDefault(); this._setHistorySel(this._history.length - 1); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); this._applyHistorySel(); return; }
+      if (e.key === 'Escape')    { e.preventDefault(); this._closeHistoryMenu(); return; }
+      // Any printable key closes the menu and falls through to the input
+      // — matches how <select> behaves when you start typing.
+      if (e.key.length === 1) { this._closeHistoryMenu(); /* fall through */ }
+    }
+
+    if (this._isSuggestOpen()) {
       if (e.key === 'ArrowDown') { e.preventDefault(); this._moveSuggest(1); return; }
-      if (e.key === 'ArrowUp') { e.preventDefault(); this._moveSuggest(-1); return; }
-      if (e.key === 'Tab') { e.preventDefault(); this._applySuggest(); return; }
-      if (e.key === 'Enter') { e.preventDefault(); this._applySuggest(); return; }
-      if (e.key === 'Escape') { e.preventDefault(); this._closeSuggest(); return; }
-    } else {
-      if (e.key === 'Enter') {
-        // Full commit + push to history.
+      if (e.key === 'ArrowUp')   { e.preventDefault(); this._moveSuggest(-1); return; }
+      if (e.key === 'Tab')       { e.preventDefault(); this._applySuggest(); return; }
+      if (e.key === 'Enter')     { e.preventDefault(); this._applySuggest(); return; }
+      if (e.key === 'Escape')    {
         e.preventDefault();
+        // Pin dismissal to the current token so the popover stays shut
+        // while the user keeps typing the same token. Any character that
+        // changes the token's start (crossing a boundary) clears it.
+        const ctx = this._sugg.ctx;
+        this._dismissedTokenStart = ctx ? ctx.tokenStart : null;
+        this._closeSuggest();
+        return;
+      }
+      // Any other key falls through — the ensuing `input` event will
+      // update the item list in-place (no re-creation of the dropdown).
+      return;
+    }
+
+    // Popover closed — Enter / Escape are the committed meanings.
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      this._scheduleCommit(true);
+      this._pushHistory(this.input.value);
+      try { this.onCommit(this.input.value); } catch (_) { /* noop */ }
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (this.input.value !== '') {
+        e.preventDefault();
+        this.setValue('');
         this._scheduleCommit(true);
-        this._pushHistory(this.input.value);
-        try { this.onCommit(this.input.value); } catch (_) { /* noop */ }
-        return;
       }
-      if (e.key === 'Escape') {
-        // Clear the filter.
-        if (this.input.value !== '') {
-          e.preventDefault();
-          this.setValue('');
-          this._scheduleCommit(true);
-        }
-        return;
-      }
-      // Keep single-line.
-      if (e.key === 'Enter' || e.key === 'NumpadEnter') e.preventDefault();
+      return;
+    }
+    // Keep single-line.
+    if (e.key === 'Enter' || e.key === 'NumpadEnter') e.preventDefault();
+  }
+
+  _isSuggestOpen() { return !!(this._sugg && this._sugg.items && this._sugg.items.length); }
+
+  // Clear the Esc-dismissal flag iff the caret has left the pinned token.
+  _maybeClearDismissal() {
+    if (this._dismissedTokenStart == null) return;
+    const caret = this.input.selectionStart || 0;
+    const ctx = _tlSuggestContext(this.input.value, caret);
+    if (ctx.tokenStart !== this._dismissedTokenStart) {
+      this._dismissedTokenStart = null;
     }
   }
 
   // ── Suggestions ────────────────────────────────────────────────────────
-  _updateSuggestions() {
-    const caret = this.input.selectionStart;
-    const text = this.input.value;
+  // Single entry point. `allowOpen` says whether this call is eligible to
+  // bring up a popover that's currently closed (true for input / manual
+  // trigger, false for programmatic refresh). `force` ignores the
+  // dismissal flag (manual trigger only).
+  _refreshSuggest(opts) {
+    const allowOpen = !!(opts && opts.allowOpen);
+    const force = !!(opts && opts.force);
+
+    const caret = this.input.selectionStart || 0;
+    const text = this.input.value || '';
     const ctx = _tlSuggestContext(text, caret);
-    let items = [];
-    if (ctx.kind === 'field') {
-      items = this._fieldSuggestions(ctx.prefix);
-    } else if (ctx.kind === 'value') {
-      items = this._valueSuggestions(ctx.fieldName, ctx.prefix);
-    } else if (ctx.kind === 'keyword') {
-      items = this._keywordSuggestions(ctx.prefix);
+
+    if (ctx.kind === 'none') { this._closeSuggest(); return; }
+
+    // Respect a live Esc dismissal pinned to the current token (unless
+    // the manual trigger forced through).
+    if (!force
+        && this._dismissedTokenStart != null
+        && this._dismissedTokenStart === ctx.tokenStart) {
+      this._closeSuggest();
+      return;
     }
+
+    const items = this._itemsFor(ctx);
     if (!items.length) { this._closeSuggest(); return; }
+
+    if (this._isSuggestOpen()) {
+      this._updateSuggestItems(items, ctx);
+      this._repositionSuggest();
+      return;
+    }
+    if (!allowOpen) return;
     this._openSuggest(items, ctx);
+  }
+
+  _itemsFor(ctx) {
+    if (ctx.kind === 'field')   return this._fieldSuggestions(ctx.prefix);
+    if (ctx.kind === 'value')   return this._valueSuggestions(ctx.fieldName, ctx.prefix);
+    if (ctx.kind === 'keyword') return this._keywordSuggestions(ctx.prefix);
+    return [];
   }
 
   _fieldSuggestions(prefix) {
     const lc = String(prefix || '').toLowerCase();
     const cols = this.view.columns;
     const out = [];
-    // Pseudo-field: any column
     if ('any'.startsWith(lc) || !lc) out.push({ label: 'any', text: 'any:', kind: 'field' });
-    // Virtual meta-field: is (is:sus, is:detection)
     if ('is'.startsWith(lc) || !lc) out.push({ label: 'is', text: 'is:', kind: 'field' });
     for (let i = 0; i < cols.length; i++) {
-      const name = String(cols[i] || '');
-      if (!name) continue;
+      const name = String(cols[i] || ''); if (!name) continue;
       const lcName = name.toLowerCase();
       if (!lc || lcName.includes(lc)) {
-        // Escape column names containing spaces / operators via brackets.
         const safe = /[\s=!:~<>()"]/.test(name) ? `[${name}]` : name;
         out.push({ label: name, text: safe + ':', kind: 'field', rank: lcName.startsWith(lc) ? 0 : 1 });
       }
     }
-    // Keywords allowed as connectors (if typed a word partially match).
     for (const kw of ['AND', 'OR', 'NOT']) {
       if (kw.toLowerCase().startsWith(lc) && lc) out.push({ label: kw, text: kw + ' ', kind: 'kw' });
     }
@@ -1407,19 +1567,14 @@ class TimelineQueryEditor {
     const lcPrefix = String(prefix || '').toLowerCase();
     const cols = this.view.columns;
     const cleanField = String(fieldName || '').trim();
-    // Virtual meta-field "is" — suggest known flag names.
     if (cleanField.toLowerCase() === 'is') {
-      const flags = ['sus', 'detection'];
       const out = [];
-      for (const f of flags) {
+      for (const f of ['sus', 'detection']) {
         if (!lcPrefix || f.startsWith(lcPrefix)) out.push({ label: f, text: f, kind: 'value' });
       }
       return out;
     }
-    if (!cleanField || cleanField.toLowerCase() === 'any' || cleanField === '*') {
-      // No distinct values for "any" — suggest operators to finish the term.
-      return [];
-    }
+    if (!cleanField || cleanField.toLowerCase() === 'any' || cleanField === '*') return [];
     const lcField = cleanField.toLowerCase();
     let colIdx = -1;
     for (let i = 0; i < cols.length; i++) {
@@ -1431,7 +1586,6 @@ class TimelineQueryEditor {
     for (const [val, count] of distinct) {
       const vs = String(val || '');
       if (lcPrefix && !vs.toLowerCase().includes(lcPrefix)) continue;
-      // Quote values that contain spaces or reserved characters.
       const needsQuote = /[\s=!:~<>()"]/.test(vs) || vs === '';
       const text = needsQuote ? `"${vs.replace(/"/g, '\\"')}"` : vs;
       out.push({ label: vs === '' ? '(empty)' : vs, text, kind: 'value', count });
@@ -1448,49 +1602,148 @@ class TimelineQueryEditor {
     return out;
   }
 
+  // Cheap stable hash of items (label+kind) so `_updateSuggestItems` can
+  // skip DOM rebuilds when only the active index changed.
+  _itemsKey(items) {
+    let s = '';
+    for (const it of items) s += it.kind + '\0' + it.label + '\x1f';
+    return s;
+  }
+
   _openSuggest(items, ctx) {
-    let el = this._suggest && this._suggest.el;
-    if (!el) {
-      el = document.createElement('div');
-      el.className = 'tl-query-suggest';
-      document.body.appendChild(el);
-    }
+    const el = document.createElement('div');
+    el.className = 'tl-query-suggest';
+    el.setAttribute('role', 'listbox');
+    document.body.appendChild(el);
+    this._sugg = { el, items: [], sel: 0, ctx, anchorTokenStart: ctx.tokenStart, itemsKey: '' };
+    this._updateSuggestItems(items, ctx);
+    this._repositionSuggest();
+    document.addEventListener('pointerdown', this._onDocPointerDown, true);
+    window.addEventListener('resize', this._onWinResize, true);
+    window.addEventListener('scroll', this._onViewScroll, true);
+  }
+
+  _updateSuggestItems(items, ctx) {
+    if (!this._sugg) return;
+    this._sugg.ctx = ctx;
+    const key = this._itemsKey(items);
+    if (key === this._sugg.itemsKey) return;   // same items, skip rebuild
+    this._sugg.itemsKey = key;
+    this._sugg.items = items;
+    // Clamp selection rather than resetting to 0 — keeps the user's
+    // arrow-key position stable while they continue typing.
+    if (this._sugg.sel >= items.length) this._sugg.sel = 0;
+    const el = this._sugg.el;
     el.innerHTML = '';
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       const row = document.createElement('div');
-      row.className = 'tl-query-suggest-item tl-query-suggest-' + it.kind + (i === 0 ? ' tl-query-suggest-active' : '');
+      row.className = 'tl-query-suggest-item tl-query-suggest-' + it.kind
+        + (i === this._sugg.sel ? ' tl-query-suggest-active' : '');
+      row.setAttribute('role', 'option');
       row.dataset.idx = String(i);
-      row.innerHTML = `<span class="tl-query-suggest-label">${_tlEsc(it.label)}</span>${it.count != null ? `<span class="tl-query-suggest-count">${it.count.toLocaleString()}</span>` : ''
-        }`;
-      row.addEventListener('mousedown', (e) => { e.preventDefault(); this._suggestSel = i; this._applySuggest(); });
+      const countHtml = it.count != null
+        ? `<span class="tl-query-suggest-count">${it.count.toLocaleString()}</span>` : '';
+      row.innerHTML = `<span class="tl-query-suggest-label">${_tlEsc(it.label)}</span>${countHtml}`;
+      // pointerdown.preventDefault — keep focus on the textarea so blur
+      // doesn't fire mid-accept.
+      row.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        this._sugg.sel = i;
+        this._applySuggest();
+      });
       el.appendChild(row);
     }
-    // Position near the caret.
-    const rect = this.input.getBoundingClientRect();
-    // Estimate caret x — use the character width of the mono font × caret col.
+  }
+
+  // Pixel-accurate caret positioning via a hidden mirror span in the
+  // existing highlight `<pre><code>` layer. The layer already occupies
+  // the exact same padding-box as the textarea (see core CSS comment on
+  // `.tl-query-hl, .tl-query-input`), so a `<span>` stuffed with the
+  // text-up-to-caret has its bounding rect exactly where the caret is.
+  // Survives zoom, font changes, proportional-looking monospace fonts,
+  // horizontal scroll of the textarea.
+  _caretScreenPos() {
     const caret = this.input.selectionStart || 0;
-    const before = this.input.value.slice(0, caret);
-    // 7.2 px per char is a reasonable default for the mono stack we use.
-    const approxChW = 7.2;
-    const x = rect.left + 28 + Math.min(rect.width - 60, before.length * approxChW - (this.input.scrollLeft || 0));
-    const y = rect.bottom + 2;
+    const text = this.input.value.slice(0, caret) || '';
+    // Build a mirror string: NBSP for leading spaces so the span actually
+    // renders them. The highlight layer uses `white-space: pre`, so we
+    // can put raw text including spaces.
+    const probe = document.createElement('span');
+    probe.textContent = text.length ? text : '\u200b'; // zero-width so rect is non-empty
+    // Park a zero-width anchor right after the text — its left edge is
+    // the caret column.
+    const anchor = document.createElement('span');
+    anchor.textContent = '\u200b';
+    // Park inside the code element, preserving its current children so
+    // we can restore on teardown. We don't actually want the probe to
+    // be visible — the user is looking at the tokenised highlight, not
+    // the raw text. Use `visibility: hidden` + `position: absolute` so
+    // it occupies space for layout measurement without painting.
+    probe.style.cssText = 'visibility:hidden;position:absolute;left:-99999px;top:-99999px;white-space:pre;font:inherit;padding:0;border:0;';
+    const hlParent = this.hl.parentNode;   // the <pre>
+    hlParent.appendChild(probe);
+    // Copy the mirror's computed font metrics from the textarea so the
+    // measured width matches the caret column 1:1.
+    const cs = getComputedStyle(this.input);
+    probe.style.font = cs.font;
+    probe.style.letterSpacing = cs.letterSpacing;
+    probe.appendChild(anchor);
+    const anchorRect = anchor.getBoundingClientRect();
+    const probeWidth = probe.getBoundingClientRect().width;
+    hlParent.removeChild(probe);
+    // The caret's client X is the textarea's content-box left (inside
+    // padding) + the measured width − scrollLeft. Use the input's rect
+    // since its layout box is the authoritative one.
+    const inRect = this.input.getBoundingClientRect();
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const x = inRect.left + padL + probeWidth - (this.input.scrollLeft || 0);
+    const y = inRect.bottom;
+    // Fall back to anchorRect only if the parent layout produced no
+    // useful width (e.g. display:none).
+    if (!Number.isFinite(x) || probeWidth <= 0) {
+      return { x: anchorRect.left, y: anchorRect.bottom, inputRect: inRect };
+    }
+    return { x, y, inputRect: inRect };
+  }
+
+  _repositionSuggest() {
+    if (!this._sugg) return;
+    const el = this._sugg.el;
+    const { x, y, inputRect } = this._caretScreenPos();
+    // Keep the popover visually inside the viewport with a small margin.
+    const margin = 6;
     el.style.position = 'fixed';
-    el.style.left = Math.max(8, Math.min(window.innerWidth - 260, x)) + 'px';
-    el.style.top = y + 'px';
+    el.style.visibility = 'hidden';      // measure first, then place
+    el.style.left = '0px';
+    el.style.top = '0px';
     el.style.zIndex = '10001';
     el.style.display = 'block';
-    this._suggest = { el, items, ctx, visible: true };
-    this._suggestSel = 0;
+    // Force layout read.
+    const w = el.offsetWidth || 240;
+    const h = el.offsetHeight || 200;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    // Default: below the caret.
+    let left = Math.max(margin, Math.min(vw - w - margin, x - 8));
+    let top = y + 2;
+    // Flip above if not enough room below and there's room above.
+    if (top + h > vh - margin && inputRect.top - h - 2 > margin) {
+      top = inputRect.top - h - 2;
+    }
+    el.style.left = left + 'px';
+    el.style.top = top + 'px';
+    el.style.visibility = '';
   }
 
   _moveSuggest(d) {
-    if (!this._suggest) return;
-    const items = this._suggest.items;
-    const prev = this._suggestSel;
+    if (!this._sugg) return;
+    const items = this._sugg.items;
+    if (!items.length) return;
+    const prev = this._sugg.sel;
     const next = (prev + d + items.length) % items.length;
-    this._suggestSel = next;
-    const rows = this._suggest.el.querySelectorAll('.tl-query-suggest-item');
+    this._sugg.sel = next;
+    const rows = this._sugg.el.querySelectorAll('.tl-query-suggest-item');
     if (rows[prev]) rows[prev].classList.remove('tl-query-suggest-active');
     if (rows[next]) {
       rows[next].classList.add('tl-query-suggest-active');
@@ -1499,10 +1752,10 @@ class TimelineQueryEditor {
   }
 
   _applySuggest() {
-    if (!this._suggest) return;
-    const item = this._suggest.items[this._suggestSel];
+    if (!this._sugg) return;
+    const item = this._sugg.items[this._sugg.sel];
     if (!item) { this._closeSuggest(); return; }
-    const ctx = this._suggest.ctx;
+    const ctx = this._sugg.ctx;
     const before = this.input.value.slice(0, ctx.replaceStart);
     const after = this.input.value.slice(ctx.replaceEnd);
     const inserted = item.text;
@@ -1511,16 +1764,50 @@ class TimelineQueryEditor {
     this.input.setSelectionRange(newCaret, newCaret);
     this._refreshHighlight();
     this._scheduleCommit();
-    // After picking a field, reopen suggestions for value context.
-    this._updateSuggestions();
+
+    // Accepting a FIELD (inserts "Name:") → caret is now in value context;
+    // we want to immediately show value suggestions so the analyst keeps
+    // flowing. Accepting a VALUE / KW / IS-flag → natural stop point;
+    // close and pin an Escape-equivalent dismissal to this token so the
+    // popover doesn't immediately pop back up. Typing whitespace after
+    // the accept will cross the token boundary and clear the pin.
+    if (item.kind === 'field') {
+      this._dismissedTokenStart = null;
+      this._refreshSuggest({ allowOpen: true, force: true });
+    } else {
+      const nextCtx = _tlSuggestContext(this.input.value, newCaret);
+      this._dismissedTokenStart = nextCtx.tokenStart;
+      this._closeSuggest();
+    }
   }
 
   _closeSuggest() {
-    if (!this._suggest) return;
-    if (this._suggest.el && this._suggest.el.parentNode) {
-      this._suggest.el.parentNode.removeChild(this._suggest.el);
+    if (!this._sugg) return;
+    if (this._sugg.el && this._sugg.el.parentNode) {
+      this._sugg.el.parentNode.removeChild(this._sugg.el);
     }
-    this._suggest = null;
+    this._sugg = null;
+    document.removeEventListener('pointerdown', this._onDocPointerDown, true);
+    window.removeEventListener('resize', this._onWinResize, true);
+    window.removeEventListener('scroll', this._onViewScroll, true);
+  }
+
+  _handleOutsidePointer(e) {
+    if (!this._sugg) return;
+    const t = e.target;
+    if (this._sugg.el.contains(t)) return;
+    if (this.input === t) return;
+    this._closeSuggest();
+  }
+
+  _handleScroll(e) {
+    if (!this._sugg) return;
+    // Ignore scrolls that originate inside the popover itself (it's
+    // internally scrollable).
+    if (e && e.target && this._sugg.el.contains(e.target)) return;
+    // Any ancestor scroll closes — the popover is position:fixed so it
+    // would otherwise detach visually from the caret.
+    this._closeSuggest();
   }
 
   // ── History ────────────────────────────────────────────────────────────
@@ -1534,47 +1821,87 @@ class TimelineQueryEditor {
     TimelineQueryEditor._saveHistory(this._history);
   }
 
+  // History menu is keyboard-first: a persistent `_hist` handle tracks
+  // the mounted menu + selected index so the editor's `_onKeyDown` can
+  // drive it without stealing focus from the <textarea>. Pointer hover
+  // mirrors keyboard selection so mouse + keys stay in sync.
+  _isHistoryOpen() { return !!(this._hist && this._hist.el && this._hist.el.parentNode); }
+
   _openHistoryMenu() {
-    const existing = document.querySelector('.tl-query-hist-menu');
-    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+    this._closeSuggest();
+    this._closeHistoryMenu();
     if (!this._history.length) {
       this._openTransientBubble(this.historyBtn, 'No history yet — press Enter to save a query.');
       return;
     }
     const menu = document.createElement('div');
     menu.className = 'tl-query-hist-menu';
-    for (const q of this._history) {
+    menu.setAttribute('role', 'listbox');
+    this._hist = { el: menu, sel: 0, items: this._history.slice() };
+    for (let i = 0; i < this._history.length; i++) {
+      const q = this._history[i];
       const row = document.createElement('div');
-      row.className = 'tl-query-hist-item';
+      row.className = 'tl-query-hist-item' + (i === 0 ? ' tl-query-hist-item-active' : '');
+      row.setAttribute('role', 'option');
+      row.dataset.idx = String(i);
       row.textContent = q;
       row.title = q;
-      row.addEventListener('mousedown', (e) => {
+      row.addEventListener('pointerdown', (e) => {
         e.preventDefault();
-        this.setValue(q);
-        this._scheduleCommit(true);
-        if (menu.parentNode) menu.parentNode.removeChild(menu);
-        this.input.focus();
+        if (!this._hist) return;
+        this._hist.sel = i;
+        this._applyHistorySel();
+      });
+      // Hover syncs keyboard selection so mouse + keys can't desync.
+      row.addEventListener('pointermove', () => {
+        if (!this._hist || this._hist.sel === i) return;
+        this._setHistorySel(i);
       });
       menu.appendChild(row);
     }
-    const rect = this.historyBtn.getBoundingClientRect();
-    menu.style.position = 'fixed';
-    menu.style.right = (window.innerWidth - rect.right) + 'px';
-    menu.style.top = (rect.bottom + 2) + 'px';
-    menu.style.zIndex = '10001';
-    document.body.appendChild(menu);
-    const onOutside = (e) => {
-      if (!menu.contains(e.target)) {
-        if (menu.parentNode) menu.parentNode.removeChild(menu);
-        document.removeEventListener('mousedown', onOutside, true);
-      }
-    };
-    setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+    this._mountFloatingMenu(menu, this.historyBtn, { onDismiss: () => { this._hist = null; } });
+    // Keep focus on the textarea so the editor's _onKeyDown keeps
+    // receiving arrow / Enter / Escape.
+    this.input.focus();
+  }
+
+  _setHistorySel(i) {
+    if (!this._hist) return;
+    const n = this._hist.items.length;
+    if (!n) return;
+    const next = ((i % n) + n) % n;
+    if (next === this._hist.sel) return;
+    const rows = this._hist.el.querySelectorAll('.tl-query-hist-item');
+    if (rows[this._hist.sel]) rows[this._hist.sel].classList.remove('tl-query-hist-item-active');
+    this._hist.sel = next;
+    if (rows[next]) {
+      rows[next].classList.add('tl-query-hist-item-active');
+      rows[next].scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  _moveHistorySel(d) { if (this._hist) this._setHistorySel(this._hist.sel + d); }
+
+  _applyHistorySel() {
+    if (!this._hist) return;
+    const q = this._hist.items[this._hist.sel];
+    this._closeHistoryMenu();
+    if (q == null) return;
+    this.setValue(q);
+    this._scheduleCommit(true);
+    this.input.focus();
+  }
+
+  _closeHistoryMenu() {
+    const existing = document.querySelector('.tl-query-hist-menu');
+    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+    this._hist = null;
   }
 
   _openHelpPopover() {
     const existing = document.querySelector('.tl-query-help-menu');
     if (existing) { existing.parentNode.removeChild(existing); return; }
+    this._closeSuggest();
     const menu = document.createElement('div');
     menu.className = 'tl-query-help-menu';
     menu.innerHTML = `
@@ -1591,21 +1918,10 @@ class TimelineQueryEditor {
         <div><code>[Event ID]:4624</code> — name with spaces</div>
         <div><code>is:sus</code> — rows matching a 🚩 suspicious mark</div>
         <div><code>is:detection</code> — rows matching a detection (EVTX)</div>
+        <div style="margin-top:4px;opacity:.7">Ctrl/⌘-Space to show suggestions · Esc to dismiss · Tab / Enter to accept · Ctrl/⌘-↓ to open history</div>
       </div>
     `;
-    const rect = this.helpBtn.getBoundingClientRect();
-    menu.style.position = 'fixed';
-    menu.style.right = (window.innerWidth - rect.right) + 'px';
-    menu.style.top = (rect.bottom + 2) + 'px';
-    menu.style.zIndex = '10001';
-    document.body.appendChild(menu);
-    const onOutside = (e) => {
-      if (!menu.contains(e.target) && e.target !== this.helpBtn) {
-        if (menu.parentNode) menu.parentNode.removeChild(menu);
-        document.removeEventListener('mousedown', onOutside, true);
-      }
-    };
-    setTimeout(() => document.addEventListener('mousedown', onOutside, true), 0);
+    this._mountFloatingMenu(menu, this.helpBtn);
   }
 
   _openTransientBubble(anchor, text) {
@@ -1619,6 +1935,32 @@ class TimelineQueryEditor {
     bub.style.zIndex = '10001';
     document.body.appendChild(bub);
     setTimeout(() => { if (bub.parentNode) bub.parentNode.removeChild(bub); }, 1800);
+  }
+
+  // Shared mount helper for history / help menus — same dismiss rules as
+  // the suggestion popover (outside pointerdown, Escape, window resize).
+  _mountFloatingMenu(menu, anchor) {
+    const rect = anchor.getBoundingClientRect();
+    menu.style.position = 'fixed';
+    menu.style.right = (window.innerWidth - rect.right) + 'px';
+    menu.style.top = (rect.bottom + 2) + 'px';
+    menu.style.zIndex = '10001';
+    document.body.appendChild(menu);
+    const dismiss = () => {
+      if (menu.parentNode) menu.parentNode.removeChild(menu);
+      document.removeEventListener('pointerdown', onPointer, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('resize', onResize, true);
+    };
+    const onPointer = (e) => { if (!menu.contains(e.target) && e.target !== anchor) dismiss(); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); dismiss(); } };
+    const onResize = () => dismiss();
+    // Defer binding so the click that opened us doesn't immediately close.
+    setTimeout(() => {
+      document.addEventListener('pointerdown', onPointer, true);
+      document.addEventListener('keydown', onKey, true);
+      window.addEventListener('resize', onResize, true);
+    }, 0);
   }
 
   destroy() {
@@ -1985,8 +2327,9 @@ class TimelineView {
     this._sections = TimelineView._loadSections();
 
     // Top-values card zoom (S / M / L) + per-card width overrides.
-    this._cardSize = TimelineView._loadCardSize();
+    this._cardSize = TIMELINE_CARD_SIZE_DEFAULT;
     this._cardWidths = TimelineView._loadCardWidthsFor(this._fileKey);
+    this._cardOrder = TimelineView._loadCardOrderFor(this._fileKey);
 
     // Load any persisted regex extractors for this file.
     const persistedRegex = TimelineView._loadRegexExtractsFor(this._fileKey);
@@ -2131,16 +2474,6 @@ class TimelineView {
   static _saveSections(obj) {
     try { localStorage.setItem(TIMELINE_KEYS.SECTIONS, JSON.stringify(obj)); } catch (_) { /* noop */ }
   }
-  static _loadCardSize() {
-    try {
-      const v = localStorage.getItem(TIMELINE_KEYS.TOPVALS_SIZE);
-      if (v && TIMELINE_CARD_SIZES[v]) return v;
-    } catch (_) { /* noop */ }
-    return TIMELINE_CARD_SIZE_DEFAULT;
-  }
-  static _saveCardSize(v) {
-    try { localStorage.setItem(TIMELINE_KEYS.TOPVALS_SIZE, v); } catch (_) { /* noop */ }
-  }
   static _loadCardWidthsFor(fileKey) {
     try {
       const raw = localStorage.getItem(TIMELINE_KEYS.CARD_WIDTHS);
@@ -2155,6 +2488,24 @@ class TimelineView {
       const all = raw ? JSON.parse(raw) : {};
       all[fileKey] = widths;
       localStorage.setItem(TIMELINE_KEYS.CARD_WIDTHS, JSON.stringify(all));
+    } catch (_) { /* noop */ }
+  }
+  static _loadCardOrderFor(fileKey) {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.CARD_ORDER);
+      if (!raw) return null;
+      const all = JSON.parse(raw);
+      const arr = all && all[fileKey];
+      return Array.isArray(arr) ? arr : null;
+    } catch (_) { return null; }
+  }
+  static _saveCardOrderFor(fileKey, order) {
+    try {
+      const raw = localStorage.getItem(TIMELINE_KEYS.CARD_ORDER);
+      const all = raw ? JSON.parse(raw) : {};
+      if (order && order.length) all[fileKey] = order;
+      else delete all[fileKey];
+      localStorage.setItem(TIMELINE_KEYS.CARD_ORDER, JSON.stringify(all));
     } catch (_) { /* noop */ }
   }
   static _loadRegexExtractsFor(fileKey) {
@@ -2545,6 +2896,12 @@ class TimelineView {
   }
 
   // Compute distinct values for a single column — used by column menu.
+  // Returns an `Array<[value, count]>` (ordered by descending count). When a
+  // `cap` is supplied and the true distinct set exceeds it, the returned
+  // array carries two extra properties on the instance: `truncated` (bool)
+  // and `totalDistinct` (number). Callers that need to reason about the
+  // full-vs-capped distinction (e.g. the column menu's IN/NOT IN picker)
+  // inspect those; destructuring callers keep working unchanged.
   _distinctValuesFor(colIdx, fromIdxArr, cap) {
     const m = new Map();
     const arr = fromIdxArr || this._filteredIdx || [];
@@ -2553,7 +2910,10 @@ class TimelineView {
       m.set(v, (m.get(v) || 0) + 1);
     }
     const list = Array.from(m.entries()).sort((a, b) => b[1] - a[1]);
-    return cap ? list.slice(0, cap) : list;
+    const out = cap ? list.slice(0, cap) : list;
+    out.totalDistinct = list.length;
+    out.truncated = cap != null && list.length > cap;
+    return out;
   }
 
   // Build an index of rows that would be visible if every filter EXCEPT the
@@ -2731,9 +3091,8 @@ class TimelineView {
       </label>
       <span class="tl-spacer"></span>
       <button class="tl-tb-btn" type="button" data-act="extract" title="Extract URLs / hostnames / regex into new columns">ƒx Extract</button>
-      <button class="tl-tb-btn" type="button" data-act="cardsize" title="Top-values card size">Cards: <span data-v="size">M</span></button>
       <span class="tl-row-stat"></span>
-      <button class="tl-reset-btn" type="button" title="Reset view: clear query, range window, column hides, 🚩 Suspicious marks, stack column, pivot, and extracted columns">↺ Reset</button>
+      <button class="tl-reset-btn" type="button" title="Reset view: clear query, range window, column hides, 🚩 Suspicious marks, stack column, pivot, extracted columns, AND every saved Timeline preference in localStorage (grid/chart heights, bucket, section collapse, card widths, query history, drawer width, grid column widths)">↺ Reset</button>
     `;
     host.appendChild(toolbar);
 
@@ -2774,10 +3133,27 @@ class TimelineView {
     });
     host.appendChild(chart.wrapper);
 
+    // Range banner — shown only when a time window is active (scrubber
+    // drag / chart rubber-band selection / query `range:`). Promoted out
+    // of the chips strip into a prominent full-width banner so the
+    // active window is always visible at a glance. Hidden via the
+    // `.hidden` class when `this._window == null`; see
+    // `_renderRangeBanner` for the render site and `_scheduleRender`
+    // (chips task) for the dispatch wiring.
+    const rangeBanner = document.createElement('div');
+    rangeBanner.className = 'tl-range-banner hidden';
+    rangeBanner.innerHTML = `
+      <span class="tl-range-banner-icon">🕒</span>
+      <span class="tl-range-banner-label">Showing</span>
+      <span class="tl-range-banner-text">—</span>
+      <button class="tl-range-banner-clear" type="button" title="Clear time window">✕ Clear</button>
+    `;
+    host.appendChild(rangeBanner);
+
     // Query bar — mount point for TimelineQueryEditor. The editor itself
     // is constructed in `_wireEvents` (after columns are known) and its
     // `.root` is appended into this container. Kept as a thin shell here
-    // so the layout ordering (scrubber → chart → query → chips → grid)
+    // so the layout ordering (scrubber → chart → range → query → chips → grid)
     // is visible from `_buildDOM`.
     const queryBar = document.createElement('div');
     queryBar.className = 'tl-query-mount';
@@ -2785,12 +3161,12 @@ class TimelineView {
 
     // Chips strip. The query bar above is the sole source of truth for
     // row filtering now (see `_applyQueryString`), so this strip only
-    // hosts: an optional range chip (scrubber / chart rubber-band
-    // window), zero-or-more 🚩 sus chips (from `_susMarks`, tint-only)
-    // and the "＋ Add Sus" affordance.
+    // hosts: the "＋ Add Suspicious Indicator" affordance (anchored
+    // left, never moves) and zero-or-more 🚩 sus chips flowing to its
+    // right (from `_susMarks`, tint-only). The active time window got
+    // promoted to the banner above.
     const chips = document.createElement('div');
     chips.className = 'tl-chips';
-    chips.innerHTML = `<span class="tl-chips-empty">Use the query bar above to filter rows; right-click a value → 🚩 to tint it suspicious.</span>`;
     host.appendChild(chips);
 
 
@@ -2913,6 +3289,9 @@ class TimelineView {
       chart: chart.body, chartSection: chart,
       queryBar,
       chips, gridSection: gridSec, gridWrap: gridSec.body,
+      rangeBanner,
+      rangeBannerText: rangeBanner.querySelector('.tl-range-banner-text'),
+      rangeBannerClear: rangeBanner.querySelector('.tl-range-banner-clear'),
       splitter,
       columnsSection: colsSec, cols: colsSec.body,
       detectionsSection: detectionsSec, detectionsBody: detectionsSec.body,
@@ -2926,8 +3305,6 @@ class TimelineView {
       bucketSelect: toolbar.querySelector('[data-field="bucket"]'),
       resetBtn: toolbar.querySelector('.tl-reset-btn'),
       extractBtn: toolbar.querySelector('[data-act="extract"]'),
-      cardSizeBtn: toolbar.querySelector('[data-act="cardsize"]'),
-      cardSizeLabel: toolbar.querySelector('[data-v="size"]'),
       chartCanvas: chart.body.querySelector('.tl-chart-canvas'),
       chartLegend: chart.body.querySelector('.tl-chart-legend'),
       chartEmpty: chart.body.querySelector('.tl-chart-empty'),
@@ -2949,7 +3326,6 @@ class TimelineView {
       pvReset: pivotSec.body.querySelector('[data-act="pv-reset"]'),
       pvResultBody: pivotSec.body.querySelector('.tl-pivot-body'),
     };
-    this._cardSizeLabelSync();
     this._populateToolbarSelects();
     this._populatePivotSelects();
     this._refreshFileChip();
@@ -3008,11 +3384,6 @@ class TimelineView {
     this._scheduleRender(['chart', 'grid']);
   }
 
-  _cardSizeLabelSync() {
-    if (this._els.cardSizeLabel) this._els.cardSizeLabel.textContent = this._cardSize;
-    if (this._root) this._root.style.setProperty('--tl-card-min-w',
-      (TIMELINE_CARD_SIZES[this._cardSize] || TIMELINE_CARD_SIZES.M) + 'px');
-  }
 
   _refreshFileChip() {
     const f = this.file;
@@ -3121,7 +3492,18 @@ class TimelineView {
     });
     els.resetBtn.addEventListener('click', () => this._reset());
     els.extractBtn.addEventListener('click', () => this._openExtractionDialog(null));
-    els.cardSizeBtn.addEventListener('click', () => this._cycleCardSize());
+
+    // Range-banner Clear button — matches the old range-chip ⊗ semantics:
+    // window-only change, no filter re-run, fast path via
+    // `_applyWindowOnly()`. Piggybacks chips/banner render on the same
+    // scheduleRender call.
+    if (els.rangeBannerClear) {
+      els.rangeBannerClear.addEventListener('click', () => {
+        this._window = null;
+        this._applyWindowOnly();
+        this._scheduleRender(['scrubber', 'chart', 'chips', 'grid', 'columns']);
+      });
+    }
 
     // Construct the query editor now that columns / stats are available
     // (suggestion lookups consult `this.columns` + `_distinctValuesFor`).
@@ -3196,8 +3578,16 @@ class TimelineView {
     // the click coordinates. Dismiss on any scroll, capture-phase so we
     // also catch scrolls inside the timeline's own sub-scrollers. The
     // grid-viewer drawer's JSON-tree menu already does the same.
-    this._onDocScroll = () => {
-      if (this._openPopover) this._closePopover();
+    this._onDocScroll = (e) => {
+      if (!this._openPopover) return;
+      // Don't dismiss when the scroll originates inside the popover
+      // itself — Top-Values / header-menu lists are internally
+      // scrollable, and bubbling their scroll up to this capture-phase
+      // listener would close the popover on the first wheel tick.
+      const t = e.target;
+      const node = t && t.nodeType === 1 ? t : (t && t.parentNode) || null;
+      if (node && this._openPopover.contains(node)) return;
+      this._closePopover();
     };
     document.addEventListener('mousedown', this._onDocClick, true);
     document.addEventListener('keydown', this._onDocKey, true);
@@ -3208,16 +3598,75 @@ class TimelineView {
   // analyst-authored filter / view state on this view: time window,
   // hidden columns, typed query, 🚩 Suspicious marks, stack column,
   // pivot spec, and every extracted (ƒx / regex / JSON-leaf) column.
-  // Pure layout preferences (`_gridH`, `_chartH`,
-  // `_sections`, `_cardSize`, `_bucketId`) and global cross-file state
-  // (query history) are intentionally preserved — those are
-  // workstation settings, not per-file filter state.
+  // Also wipes every Timeline-related `loupe_*` localStorage key and
+  // resets the in-memory layout prefs (`_gridH`, `_chartH`,
+  // `_sections`, `_bucketId`, `_cardWidths`, `_cardOrder`), plus the
+  // embedded GridViewer's saved column widths and drawer width, plus
+  // the global TimelineQueryEditor history ring. Reset is the single
+  // "scrub this workstation clean of Timeline state" button.
   //
   // Extracted columns are cleared inline (not via `_clearAllExtractedCols`)
   // because that helper pops a window.confirm dialog and emits a toast —
   // both inappropriate for an explicit one-click Reset.
   _reset() {
     const baseLen = this._baseColumns.length;
+
+    // ── Wipe every Timeline-related localStorage key ──────────────────
+    // This covers:
+    //   - every `loupe_timeline_*` key (per-file + global)
+    //   - the embedded GridViewer's saved column widths
+    //     (`loupe_grid_colW_tl-grid-inner_csv-view`)
+    //   - the shared drawer width (`loupe_grid_drawer_w`)
+    try {
+      const toRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        if (k.startsWith('loupe_timeline_')) { toRemove.push(k); continue; }
+        if (k === 'loupe_grid_drawer_w') { toRemove.push(k); continue; }
+        if (k.startsWith('loupe_grid_colW_tl-grid-inner')) { toRemove.push(k); continue; }
+      }
+      for (const k of toRemove) {
+        try { localStorage.removeItem(k); } catch (_) { /* noop */ }
+      }
+    } catch (_) { /* noop */ }
+
+    // ── Reset in-memory layout / workstation prefs ────────────────────
+    // Must happen before the grid is destroyed below so the CSS custom
+    // properties snap back on the still-mounted root.
+    this._gridH = TIMELINE_GRID_DEFAULT_H;
+    this._chartH = TIMELINE_CHART_DEFAULT_H;
+    this._bucketId = 'auto';
+    this._sections = {};
+    this._cardWidths = {};
+    this._cardOrder = null;
+    if (this._root && this._root.style) {
+      this._root.style.setProperty('--tl-grid-h', TIMELINE_GRID_DEFAULT_H + 'px');
+      this._root.style.setProperty('--tl-chart-h', TIMELINE_CHART_DEFAULT_H + 'px');
+    }
+    if (this._els && this._els.bucketSelect) this._els.bucketSelect.value = 'auto';
+
+    // Query history ring (cross-file workstation setting) — clear both
+    // the persisted copy (already removed above) and the live editor's
+    // in-memory array so the dropdown is empty immediately.
+    if (this._queryEditor) {
+      this._queryEditor._history = [];
+    }
+
+    // Embedded GridViewer — flush saved column widths + drawer width
+    // that live on the instance (the localStorage copies were removed
+    // above; this stops the destroy-path from re-persisting them).
+    if (this._grid) {
+      try {
+        if (this._grid._userColWidths && typeof this._grid._userColWidths.clear === 'function') {
+          this._grid._userColWidths.clear();
+        }
+        if (this._grid.state && this._grid.state.drawer) {
+          this._grid.state.drawer.width = null;
+        }
+      } catch (_) { /* noop */ }
+    }
+
 
     // Query must be torn down BEFORE extracted columns, so the AST
     // serializer can still resolve extracted colIdx → name while the
@@ -3314,14 +3763,6 @@ class TimelineView {
 
 
 
-  _cycleCardSize() {
-    const order = ['S', 'M', 'L'];
-    const i = order.indexOf(this._cardSize);
-    this._cardSize = order[(i + 1) % order.length];
-    TimelineView._saveCardSize(this._cardSize);
-    this._cardSizeLabelSync();
-    this._scheduleRender(['columns']);
-  }
 
   // ── Render scheduler ─────────────────────────────────────────────────────
   _scheduleRender(tasks) {
@@ -3338,6 +3779,7 @@ class TimelineView {
       }
       if (set.has('scrubber')) this._renderScrubber();
       if (set.has('chart')) this._renderChart();
+      if (set.has('chips')) this._renderRangeBanner();
       if (set.has('chips')) this._renderChips();
       if (set.has('grid')) this._renderGrid();
       if (set.has('columns')) this._renderColumns();
@@ -4039,20 +4481,38 @@ class TimelineView {
     this._openRowContextMenu(e, this._stackCol, key);
   }
 
+  // ── Range banner ────────────────────────────────────────────────────────
+  // Shown above the query bar whenever a time window is active. Hidden
+  // (`.hidden`) when `_window == null` so the analyst gets an empty,
+  // unobstructed view in the neutral state. Piggybacks on the 'chips'
+  // task in `_scheduleRender` since every site that mutates `_window`
+  // already schedules 'chips'.
+  _renderRangeBanner() {
+    const el = this._els && this._els.rangeBanner;
+    if (!el) return;
+    if (!this._window) { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    const lo = _tlFormatFullUtc(this._window.min, this._timeIsNumeric);
+    const hi = _tlFormatFullUtc(this._window.max, this._timeIsNumeric);
+    if (this._els.rangeBannerText) {
+      this._els.rangeBannerText.textContent = `${lo} → ${hi}`;
+    }
+  }
+
   // ── Chips ────────────────────────────────────────────────────────────────
-  // The chips strip is now a read-only display of side-band state that
-  // LIVES OUTSIDE the query DSL: the current time `range` (from
-  // `_window`) and the suspicious-value marks (from `_susMarks`,
-  // persisted by column name). Row-filtering chips were migrated to the
-  // query bar above — every Include / Exclude / Only / column-menu
-  // Apply action now mutates the query string, not a parallel chip list.
+  // The chips strip hosts the "＋ Add Suspicious Indicator" button —
+  // anchored on the left via flex-shrink:0 so it never moves — and zero-
+  // or-more 🚩 sus chips that flow to its right from `_susMarks`
+  // (persisted by column name, tint-only — never filter rows). The
+  // active time window got promoted to the banner above; row-filter
+  // chips live in the query bar. So this strip is pure sus state.
   _renderChips() {
     const el = this._els.chips;
     el.innerHTML = '';
 
-    // "＋ Add Sus" button — the only authorable chip from this strip.
-    // Everything else in the strip (range, existing sus marks) is
-    // derived from state and rendered with an ⊗ remove button.
+    // "＋ Add Sus" button — always rendered FIRST so sus chips flow to
+    // its right and the button's left position stays stable as chips
+    // are added / removed.
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
     addBtn.className = 'tl-chip tl-chip-add';
@@ -4062,28 +4522,8 @@ class TimelineView {
       e.stopPropagation();
       this._openAddSusPopover(addBtn);
     });
+    el.appendChild(addBtn);
 
-    const susResolved = this._susMarksResolved();
-    if (!susResolved.length && !this._window) {
-      const hint = document.createElement('span');
-      hint.className = 'tl-chips-empty';
-      hint.textContent = 'Use the query bar above to filter rows. Right-click a cell for quick actions.';
-      el.appendChild(hint);
-      el.appendChild(addBtn);
-      return;
-    }
-    if (this._window) {
-      const chip = document.createElement('span');
-      chip.className = 'tl-chip tl-chip-range';
-      chip.innerHTML = `<span class="tl-chip-col">range</span><span class="tl-chip-val">${_tlEsc(_tlFormatFullUtc(this._window.min, this._timeIsNumeric))} → ${_tlEsc(_tlFormatFullUtc(this._window.max, this._timeIsNumeric))}</span><button class="tl-chip-x" title="Clear range">⊗</button>`;
-      chip.querySelector('.tl-chip-x').addEventListener('click', () => {
-        // Window-only change → fast path (no filter re-run).
-        this._window = null;
-        this._applyWindowOnly();
-        this._scheduleRender(['scrubber', 'chart', 'chips', 'grid', 'columns']);
-      });
-      el.appendChild(chip);
-    }
     // Render sus marks from `_susMarks` (resolved to live colIdx). Note
     // that we iterate `_susMarks` directly (not the resolved list) so
     // the ⊗ handler can splice the PERSISTED index and keep the
@@ -4091,6 +4531,7 @@ class TimelineView {
     // missing (extracted col removed etc.) stay persisted but don't
     // render — `_susMarksResolved()` drops them.
     for (let i = 0; i < this._susMarks.length; i++) {
+
       const m = this._susMarks[i];
       // "Any column" marks render with a synthetic "Any" column label and
       // always bind to the persisted index (they don't resolve to a live
@@ -4116,11 +4557,10 @@ class TimelineView {
       });
       el.appendChild(chip);
     }
-
-    el.appendChild(addBtn);
   }
 
   // ── "＋ Add Sus" popover ─────────────────────────────────────────────────
+
   // Compact form anchored on the Add-Sus button. Pick a column + value
   // and push onto `_susMarks` (persisted by column name). Sus marks
   // tint rows but do NOT filter — use the query bar for row filtering.
@@ -4246,6 +4686,29 @@ class TimelineView {
       return null;
     };
 
+    // Drawer highlight: tint the specific key/val pairs that triggered a
+    // suspicious mark strongly, and dim-tint the rest of a sus row's
+    // fields so the viewer can locate the offending value at a glance.
+    // Resolved marks are captured at construction and rebuilt when sus
+    // state changes (grid is torn down + recreated).
+    const susResolved = this._susMarksResolved();
+    const susAny = susResolved.length > 0;
+    const detailCellClass = !susAny ? null : (dataIdx, colIdx, _val) => {
+      const orig = origIdx[dataIdx];
+      if (!sus || !sus[orig]) return null;
+      const cellLc = self._cellAt(orig, colIdx).toLowerCase();
+      for (let s = 0; s < susResolved.length; s++) {
+        const spec = susResolved[s];
+        if (spec.any) {
+          if (cellLc.includes(spec.val)) return 'tl-sus-cell';
+        } else if (spec.colIdx === colIdx) {
+          if (cellLc.includes(spec.val)) return 'tl-sus-cell';
+        }
+      }
+      return 'tl-sus-row-cell';
+    };
+
+
     // role is always 'main' now (the 🚩 Suspicious section is gone); the
     // parameter is kept on the method signature because `_tlRole` is still
     // stamped on the GridViewer instance further down — other callers
@@ -4261,6 +4724,8 @@ class TimelineView {
         timeColumn: -1,
         rowClass,
         cellClass,
+        detailCellClass,
+
         // In Timeline Mode the embedded grid's built-in "Use as timeline"
         // and "Stack timeline by this column" column-header actions must
         // drive the outer Timeline histogram + stack selects instead of
@@ -4418,12 +4883,30 @@ class TimelineView {
         // left-click handler above already uses.
         const curIdx = (viewer._tlRole === 'main') ? this._filteredIdx : this._susFilteredIdx;
         const origRow = curIdx ? curIdx[virtualIdx] : origIdx[virtualIdx];
-        // Determine which column was clicked by counting prior siblings,
-        // skipping the row-number cell.
-        const cells = Array.from(rowEl.querySelectorAll('.grid-cell'));
-        const cellIdx = cells.indexOf(cell);
-        if (cellIdx <= 0) return;
-        const colIdx = cellIdx - 1;   // row-num is 0
+        // Determine which column was clicked. GridViewer stamps `data-col`
+        // on every body cell with the REAL column index (survives hidden /
+        // pinned / reordered columns). Prefer that; fall back to positional
+        // math only if the attribute is missing on some legacy path.
+        //
+        // Positional math (`cells.indexOf(cell) - 1`) is fundamentally wrong
+        // whenever any column is hidden — GridViewer skips hidden columns in
+        // the DOM, so sibling position no longer maps to column index and
+        // the right-click menu ends up operating on the wrong column.
+        let colIdx = -1;
+        const colAttr = cell.dataset ? cell.dataset.col : null;
+        if (colAttr != null && colAttr !== '') {
+          const n = parseInt(colAttr, 10);
+          if (Number.isFinite(n)) colIdx = n;
+        }
+        if (colIdx < 0) {
+          // Defensive fallback — only hit if a non-GridViewer row somehow
+          // landed inside the timeline grid.
+          const cells = Array.from(rowEl.querySelectorAll('.grid-cell'));
+          const cellIdx = cells.indexOf(cell);
+          if (cellIdx <= 0) return;
+          colIdx = cellIdx - 1;   // row-num is 0
+        }
+        if (colIdx < 0 || colIdx >= this.columns.length) return;
         const val = this._cellAt(origRow, colIdx);
         e.preventDefault();
         this._openRowContextMenu(e, colIdx, val, { origRow });
@@ -4754,13 +5237,39 @@ class TimelineView {
     let rowHeight = 22;
     const cols = this.columns;
 
-    for (let c = 0; c < cols.length; c++) {
-      // Skip the column currently in use as the timestamp axis — its "top
-      // values" would be near-all-distinct and only serve to push the
-      // interesting columns off-screen. The card is re-added automatically
-      // when the analyst picks a different column via the "Use as Timestamp"
-      // action (which invalidates `_colStats` and re-renders this section).
-      if (c === this._timeCol) continue;
+    // Build column-index iteration order: if a saved drag-order exists,
+    // honour it; columns absent from the saved array (new columns added
+    // after the order was persisted) are appended at the end so they
+    // surface automatically.
+    const _indices = [];
+    const _savedOrder = this._cardOrder;
+    if (_savedOrder && _savedOrder.length) {
+      const _nameToIdx = new Map();
+      for (let i = 0; i < cols.length; i++) {
+        if (i === this._timeCol) continue;
+        _nameToIdx.set(cols[i] || `(col ${i + 1})`, i);
+      }
+      const _used = new Set();
+      for (const nm of _savedOrder) {
+        if (_nameToIdx.has(nm) && !_used.has(nm)) {
+          _indices.push(_nameToIdx.get(nm));
+          _used.add(nm);
+        }
+      }
+      for (let i = 0; i < cols.length; i++) {
+        if (i === this._timeCol) continue;
+        const n = cols[i] || `(col ${i + 1})`;
+        if (!_used.has(n)) _indices.push(i);
+      }
+    } else {
+      for (let i = 0; i < cols.length; i++) {
+        if (i === this._timeCol) continue;
+        _indices.push(i);
+      }
+    }
+
+    for (let _ci = 0; _ci < _indices.length; _ci++) {
+      const c = _indices[_ci];
       const s = (stats && stats[c]) || { total: 0, distinct: 0, values: [] };
 
       const card = document.createElement('div');
@@ -4992,8 +5501,51 @@ class TimelineView {
       });
       // Add the hint into the column-name tooltip so users can discover the gesture.
       const nameEl = head.querySelector('.tl-col-name');
-      if (nameEl) nameEl.title = `${colName} · Ctrl+Click card header to hide this column in the grid`;
+      if (nameEl) nameEl.title = `${colName} · Ctrl+Click card header to hide this column in the grid · Drag header to reorder`;
 
+      // --- Drag-to-reorder card headers ---
+      head.draggable = true;
+      head.addEventListener('dragstart', (e) => {
+        if (e.target.closest('button')) { e.preventDefault(); return; }
+        card.classList.add('tl-col-drag-source');
+        document.body.classList.add('tl-col-dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', colName);
+      });
+      head.addEventListener('dragend', () => {
+        card.classList.remove('tl-col-drag-source');
+        document.body.classList.remove('tl-col-dragging');
+        host.querySelectorAll('.tl-col-drag-over-before,.tl-col-drag-over-after').forEach(
+          el => el.classList.remove('tl-col-drag-over-before', 'tl-col-drag-over-after')
+        );
+      });
+      card.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        const rect = card.getBoundingClientRect();
+        const midX = rect.left + rect.width / 2;
+        card.classList.toggle('tl-col-drag-over-before', e.clientX < midX);
+        card.classList.toggle('tl-col-drag-over-after', e.clientX >= midX);
+      });
+      card.addEventListener('dragleave', () => {
+        card.classList.remove('tl-col-drag-over-before', 'tl-col-drag-over-after');
+      });
+      card.addEventListener('drop', (e) => {
+        e.preventDefault();
+        card.classList.remove('tl-col-drag-over-before', 'tl-col-drag-over-after');
+        const srcName = e.dataTransfer.getData('text/plain');
+        if (!srcName || srcName === colName) return;
+        const srcCard = [...host.children].find(el => {
+          const idx = el.dataset.colIdx;
+          return idx != null && (this.columns[+idx] || `(col ${+idx + 1})`) === srcName;
+        });
+        if (!srcCard) return;
+        const rect = card.getBoundingClientRect();
+        const midX = rect.left + rect.width / 2;
+        if (e.clientX < midX) host.insertBefore(srcCard, card);
+        else host.insertBefore(srcCard, card.nextSibling);
+        this._commitCardOrder(host);
+      });
 
       // Resize handles — left and right edges
       const resizerR = document.createElement('div');
@@ -5008,6 +5560,20 @@ class TimelineView {
 
       host.appendChild(card);
     }
+  }
+
+  // Read the current DOM order of cards in the host container and persist
+  // it so the next render honours the user's chosen arrangement.
+  _commitCardOrder(host) {
+    const order = [];
+    for (const el of host.children) {
+      const idx = el.dataset.colIdx;
+      if (idx == null) continue;
+      const name = this.columns[+idx] || `(col ${+idx + 1})`;
+      order.push(name);
+    }
+    this._cardOrder = order;
+    TimelineView._saveCardOrderFor(this._fileKey, order);
   }
 
   // Sus values keyed by column — for highlighting top-values cards.
@@ -5233,6 +5799,29 @@ class TimelineView {
       clauses.push({ k: 'pred', colIdx, op: 'eq', val: dedup[0] });
     } else if (dedup.length >= 2) {
       clauses.push({ k: 'in', colIdx, vals: dedup, neg: false });
+    }
+    this._queryCommitClauses(clauses);
+  }
+
+  // Column-menu companion: install a NEGATIVE set (`col != v` / `col NOT IN
+  // (…)`). 0 values → clears; 1 value → `col != v`; ≥ 2 → `col NOT IN (…)`.
+  // Strips the same family of eq/in/ne clauses as `_queryReplaceEqForCol`
+  // so the two helpers are interchangeable end-state producers and the
+  // Apply handler can pick whichever representation is shorter.
+  _queryReplaceNotInForCol(colIdx, values) {
+    const clauses = this._queryTopLevelClauses(this._queryCurrentAst())
+      .filter(c => !(
+        (c.k === 'pred' && (c.op === 'eq' || c.op === 'ne') && c.colIdx === colIdx) ||
+        (c.k === 'in' && c.colIdx === colIdx)
+      ));
+    const vals = (values || []).map(v => String(v));
+    const seen = new Set();
+    const dedup = [];
+    for (const v of vals) if (!seen.has(v)) { seen.add(v); dedup.push(v); }
+    if (dedup.length === 1) {
+      clauses.push({ k: 'pred', colIdx, op: 'ne', val: dedup[0] });
+    } else if (dedup.length >= 2) {
+      clauses.push({ k: 'in', colIdx, vals: dedup, neg: true });
     }
     this._queryCommitClauses(clauses);
   }
@@ -5499,14 +6088,26 @@ class TimelineView {
     const _astClauses = this._queryTopLevelClauses(this._queryCurrentAst());
     const _containsClause = _astClauses.find(c => c.k === 'pred' && c.op === 'contains' && c.colIdx === colIdx);
     const existingContains = _containsClause ? { val: _containsClause.val } : null;
+    // Positive membership: `col = v` or `col IN (…)` — these narrow to an
+    // explicit whitelist, so checkboxes are painted *unchecked* except for
+    // members of `eqSet`.
     const existingEqs = [];
+    // Negative membership: `col != v` or `col NOT IN (…)` — these narrow by
+    // exclusion, so the menu starts *all-checked* with members of `neSet`
+    // unchecked. This is the round-trip of the "shorter list wins" Apply
+    // handler below.
+    const existingNes = [];
     for (const c of _astClauses) {
       if (c.k === 'pred' && c.op === 'eq' && c.colIdx === colIdx) existingEqs.push(String(c.val));
+      else if (c.k === 'pred' && c.op === 'ne' && c.colIdx === colIdx) existingNes.push(String(c.val));
       else if (c.k === 'in' && !c.neg && c.colIdx === colIdx) {
         for (const v of c.vals) existingEqs.push(String(v));
+      } else if (c.k === 'in' && c.neg && c.colIdx === colIdx) {
+        for (const v of c.vals) existingNes.push(String(v));
       }
     }
     const eqSet = new Set(existingEqs);
+    const neSet = new Set(existingNes);
 
     // Only offer "Use as Timestamp" when the column's values actually parse
     // as timestamps (or bare numbers suitable for a numeric axis). Reuses the
@@ -5557,8 +6158,12 @@ class TimelineView {
     // first. Excel-parity — see `_indexIgnoringColumn` for semantics.
     const items = this._distinctValuesFor(colIdx, this._indexIgnoringColumn(colIdx), 200);
     const sel = new Set(eqSet);
-    // If no eq chips exist for this col, default to all-selected (no-op).
-    const initialAll = existingEqs.length === 0;
+    // Three round-trip modes:
+    //   (a) positive-eq present → start with only `eqSet` checked;
+    //   (b) negative-ne present (and no eq) → start all-checked, `neSet` off;
+    //   (c) nothing on this column → start all-checked.
+    const initialAll = existingEqs.length === 0 && existingNes.length === 0;
+    const initialAllMinusNe = existingEqs.length === 0 && existingNes.length > 0;
 
     const paint = (filterText) => {
       valsWrap.innerHTML = '';
@@ -5567,7 +6172,9 @@ class TimelineView {
         if (lo && !val.toLowerCase().includes(lo)) continue;
         const line = document.createElement('label');
         line.className = 'tl-colmenu-value';
-        const checked = initialAll ? true : sel.has(val);
+        const checked = initialAll ? true
+          : initialAllMinusNe ? !neSet.has(val)
+          : sel.has(val);
         line.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} data-val="${_tlEsc(val)}"> <span class="tl-colmenu-value-label" title="${_tlEsc(val)}">${_tlEsc(val === '' ? '(empty)' : val)}</span> <span class="tl-colmenu-value-count">${count.toLocaleString()}</span>`;
         valsWrap.appendChild(line);
       }
@@ -5636,7 +6243,11 @@ class TimelineView {
       // Contains
       const containsText = menu.querySelector('[data-f="contains"]').value.trim();
       this._addContainsChipsReplace(colIdx, containsText);
-      // Eq set
+      // Eq set — pick the shorter representation (`col IN (…)` vs
+      // `col NOT IN (…)`) so unchecking one value out of 200 doesn't
+      // emit a 199-value IN list. NOT IN is only safe when the distinct
+      // set wasn't truncated at the cap; otherwise values beyond the
+      // cap would silently pass the negation and leak into results.
       const checks = Array.from(valsWrap.querySelectorAll('input[type=checkbox]'));
       const all = checks.length && checks.every(cb => cb.checked);
       const none = checks.length && checks.every(cb => !cb.checked);
@@ -5648,8 +6259,14 @@ class TimelineView {
         // means clear + contains only.
         this._replaceEqChipsForCol(colIdx, []);
       } else {
-        const vals = checks.filter(cb => cb.checked).map(cb => cb.dataset.val);
-        this._replaceEqChipsForCol(colIdx, vals);
+        const checked = checks.filter(cb => cb.checked).map(cb => cb.dataset.val);
+        const unchecked = checks.filter(cb => !cb.checked).map(cb => cb.dataset.val);
+        const canNegate = !items.truncated;
+        if (canNegate && unchecked.length < checked.length) {
+          this._queryReplaceNotInForCol(colIdx, unchecked);
+        } else {
+          this._replaceEqChipsForCol(colIdx, checked);
+        }
       }
       this._closePopover();
     });

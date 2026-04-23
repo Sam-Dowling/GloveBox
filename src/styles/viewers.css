@@ -999,8 +999,15 @@ body.dark .grid-row {
   color: var(--text);
 }
 
-.grid-row:nth-child(even) { background: #fafafa; }
-body.dark .grid-row:nth-child(even) { background: var(--row-hover); }
+/* Zebra striping is driven by a class stamped in `grid-viewer.js::_buildRow`
+   from `dataIdx` parity (stable per source row) rather than positional
+   `:nth-child(even)`, which would re-shuffle on every scroll tick because
+   only the visible window of rows is materialised in the virtualised DOM
+   — the same data row would visibly flip between even/odd colours as it
+   moved through the scroll buffer. Keying on dataIdx pins each row to a
+   single banded colour for the lifetime of the dataset. */
+.grid-row.grid-row-even { background: #fafafa; }
+body.dark .grid-row.grid-row-even { background: var(--row-hover); }
 
 .grid-row:hover {
   background: rgb(var(--accent-rgb) / .08) !important;
@@ -11874,6 +11881,41 @@ body.tl-chart-resizing * {
   line-height: 1.4;
 }
 
+/* Timeline detail drawer — bump text size vs the default grid drawer and
+   tint cells whose values triggered a Suspicious match. Two tiers:
+   `.tl-sus-cell` = the exact cell that matched; `.tl-sus-row-cell` = the
+   rest of the row, so the offending column still visually dominates. */
+.timeline-view .grid-drawer-body .csv-detail-pane {
+  font-size: 13px;
+  line-height: 1.6;
+}
+.timeline-view .grid-drawer-body .csv-detail-key {
+  font-size: 12px;
+}
+.timeline-view .grid-drawer-body .csv-detail-val {
+  font-size: 13px;
+}
+.timeline-view .grid-drawer-body .csv-detail-key.tl-sus-cell,
+.timeline-view .grid-drawer-body .csv-detail-val.tl-sus-cell {
+  background: rgba(220, 38, 38, 0.18);
+  border-left: 3px solid #dc2626;
+  padding-left: 6px;
+  border-radius: 2px;
+}
+.timeline-view .grid-drawer-body .csv-detail-key.tl-sus-row-cell,
+.timeline-view .grid-drawer-body .csv-detail-val.tl-sus-row-cell {
+  background: rgba(220, 38, 38, 0.05);
+}
+body.dark .timeline-view .grid-drawer-body .csv-detail-key.tl-sus-cell,
+body.dark .timeline-view .grid-drawer-body .csv-detail-val.tl-sus-cell {
+  background: rgba(248, 113, 113, 0.22);
+  border-left-color: #f87171;
+}
+body.dark .timeline-view .grid-drawer-body .csv-detail-key.tl-sus-row-cell,
+body.dark .timeline-view .grid-drawer-body .csv-detail-val.tl-sus-row-cell {
+  background: rgba(248, 113, 113, 0.08);
+}
+
 .timeline-view .tl-query-hl,
 .timeline-view .tl-query-input {
   /* Both layers must occupy the same padding-box so caret / highlight
@@ -12054,7 +12096,8 @@ body.tl-chart-resizing * {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.tl-query-hist-item:hover { background: rgb(var(--accent-rgb, 79 140 255) / 0.15); }
+.tl-query-hist-item:hover,
+.tl-query-hist-item-active { background: rgb(var(--accent-rgb, 79 140 255) / 0.15); }
 
 .tl-query-help-menu { padding: 10px 12px; }
 .tl-query-help-title { font-weight: 700; margin-bottom: 6px; }
@@ -12119,16 +12162,66 @@ body.tl-chart-resizing * {
   overflow: hidden;
 }
 
-.timeline-view .tl-chip-range {
-  background: rgba(168, 85, 247, .12);
-  border-color: rgba(168, 85, 247, .3);
-  color: #7c3aed;
+/* Add-Sus button stays anchored on the left as sus chips flow to its
+   right — `flex-shrink: 0` keeps it from being squeezed even when
+   many sus chips wrap across multiple lines in the `.tl-chips` row. */
+.timeline-view .tl-chips .tl-chip-add {
+  flex-shrink: 0;
 }
 
-body.dark .timeline-view .tl-chip-range {
-  background: rgba(167, 139, 250, .14);
-  border-color: rgba(167, 139, 250, .3);
-  color: #a78bfa;
+/* ── Range banner ─────────────────────────────────────────────────────
+   Promoted out of the chips strip — shown above the query bar whenever
+   `_window` is non-null. Uses the accent palette with a thick left border
+   so the active time window reads at a glance; hidden via `.hidden`
+   (display: none) the rest of the time. */
+.timeline-view .tl-range-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--hairline);
+  border-left: 4px solid var(--accent);
+  background: rgb(var(--accent-rgb) / .10);
+  color: var(--text);
+  font-size: 12px;
+}
+.timeline-view .tl-range-banner.hidden {
+  display: none;
+}
+.timeline-view .tl-range-banner-icon {
+  font-size: 14px;
+}
+.timeline-view .tl-range-banner-label {
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+.timeline-view .tl-range-banner-text {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-weight: 600;
+  color: var(--accent);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.timeline-view .tl-range-banner-clear {
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid rgb(var(--accent-rgb) / .4);
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.timeline-view .tl-range-banner-clear:hover {
+  background: rgb(var(--accent-rgb) / .15);
+}
+body.dark .timeline-view .tl-range-banner {
+  background: rgb(var(--accent-rgb) / .15);
 }
 
 .timeline-view .tl-chip-col {
@@ -12337,6 +12430,24 @@ body.tl-col-resizing,
 body.tl-col-resizing * {
   cursor: col-resize !important;
   user-select: none !important;
+}
+
+/* Drag-to-reorder visual feedback */
+body.tl-col-dragging,
+body.tl-col-dragging * {
+  cursor: grabbing !important;
+}
+.timeline-view .tl-col-head[draggable="true"] {
+  cursor: grab;
+}
+.timeline-view .tl-col-drag-source {
+  opacity: .35;
+}
+.timeline-view .tl-col-drag-over-before {
+  box-shadow: -3px 0 0 0 var(--accent);
+}
+.timeline-view .tl-col-drag-over-after {
+  box-shadow: 3px 0 0 0 var(--accent);
 }
 
 .timeline-view .tl-col-row-sus {
