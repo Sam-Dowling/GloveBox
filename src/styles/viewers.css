@@ -3549,6 +3549,9 @@ mark.search-hl-current {
 .iso-view,
 .onenote-view {
   padding: 8px;
+  max-width: 100%;
+  overflow-x: auto;
+  box-sizing: border-box;
 }
 
 .zip-summary {
@@ -5406,6 +5409,24 @@ body.dark .update-btn-close:hover {
 }
 
 /* ══════════════════════════════════════════════════════
+   BINARY & ARCHIVE VIEWS — page-container width fix
+   ══════════════════════════════════════════════════════
+   Without an explicit width, #page-container shrink-wraps
+   to its child's intrinsic width. When a collapsible section
+   is expanded the content pushes the viewer wider. These
+   overrides pin the container to the full #viewer width so
+   layout never shifts.                                       */
+#page-container:has(.pe-view),
+#page-container:has(.elf-view),
+#page-container:has(.macho-view),
+#page-container:has(.zip-view) {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  align-items: stretch;
+}
+
+/* ══════════════════════════════════════════════════════
    PE EXECUTABLE VIEWER
    ══════════════════════════════════════════════════════ */
 .pe-view {
@@ -5414,6 +5435,9 @@ body.dark .update-btn-close:hover {
   font-size: 13px;
   color: #1a1a2e;
   min-width: 800px;
+  max-width: 100%;
+  overflow-x: auto;
+  box-sizing: border-box;
 }
 
 body.dark .pe-view {
@@ -5494,6 +5518,9 @@ body.dark .pe-table th {
   border-bottom: 1px solid rgba(0, 0, 0, .05);
   font-family: 'Fira Code', 'Consolas', monospace;
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 500px;
 }
 
 body.dark .pe-table td {
@@ -5838,6 +5865,9 @@ body.dark .bin-fallback-sub {
   line-height: 1.6;
   color: #2c3e50;
   min-width: 800px;
+  max-width: 100%;
+  overflow-x: auto;
+  box-sizing: border-box;
 }
 
 body.dark .elf-view {
@@ -5935,6 +5965,9 @@ body.dark .elf-table th {
   border-bottom: 1px solid rgba(0, 0, 0, .05);
   font-family: 'Fira Code', 'Consolas', monospace;
   vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 500px;
 }
 
 body.dark .elf-table td {
@@ -6126,6 +6159,9 @@ body.dark .elf-error {
   color: #333;
   line-height: 1.5;
   min-width: 800px;
+  max-width: 100%;
+  overflow-x: auto;
+  box-sizing: border-box;
 }
 
 body.dark .macho-view {
@@ -9896,6 +9932,7 @@ body.dark .arch-tree-hit > .arch-tree-row {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  table-layout: fixed;
 }
 
 .arch-flat-table th {
@@ -9953,22 +9990,30 @@ body.dark .arch-flat-table td {
 .arch-col-path {
   font-family: 'Consolas', 'Monaco', 'SF Mono', monospace;
   word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .arch-col-num {
+  width: 80px;
   white-space: nowrap;
   text-align: right;
   color: #888;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .arch-col-date {
+  width: 130px;
   white-space: nowrap;
   color: #888;
   font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .arch-col-action {
-  width: 1%;
+  width: 64px;
   white-space: nowrap;
   text-align: center;
 }

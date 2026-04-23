@@ -1093,6 +1093,17 @@ Object.assign(App.prototype, {
   // re-attaching the detached DOM node fails, fall back to re-rendering
   // from the stored buffer.
   _restoreNavFrame(state) {
+    // Tear down any active Timeline view — the frame being restored is a
+    // regular analyser view that renders into #page-container inside #viewer,
+    // which is hidden while body.has-timeline is set.
+    if (this._timelineCurrent) {
+      try { this._timelineCurrent.destroy(); } catch (_) { /* noop */ }
+      this._timelineCurrent = null;
+      const tlHost = document.getElementById('timeline-root');
+      if (tlHost) tlHost.innerHTML = '';
+      document.body.classList.remove('has-timeline');
+    }
+
     this.findings = state.findings;
     this.fileHashes = state.fileHashes;
     this._fileMeta = state.fileMeta;
@@ -1134,6 +1145,10 @@ Object.assign(App.prototype, {
 
     this._renderSidebar(state.parentName, null);
 
+    // Ensure the viewer toolbar is visible — it may have been hidden by a
+    // Timeline view that was active before this frame was restored.
+    const vt = document.getElementById('viewer-toolbar');
+    if (vt) vt.classList.remove('hidden');
 
     try {
       if (state.viewerScroll) {
