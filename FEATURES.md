@@ -13,6 +13,7 @@
 - [Supported Formats (full reference)](#-supported-formats-full-reference)
 - [Security Analysis Capabilities](#-security-analysis-capabilities)
 - [User Interface](#-user-interface)
+- [Timeline](#-timeline)
 - [Exports](#-exports)
 - [Example Files (guided tour)](#-example-files-guided-tour)
 
@@ -229,25 +230,29 @@ ZIP listings additionally surface per-entry risk signals classic archive viewers
 | **Tabular grid (CSV / TSV / EVTX / XLSX / SQLite / JSON-array)** | Fixed-row virtual scroller renders 150 000-row files without stutter. Streaming parse paints the first 1 000 rows in ~200 ms and fills the rest in the background with a progress chip. |
 | **Row-details drawer** | Click any row to open a resizable right-hand drawer with per-column key/value view; drawer width persists per-browser. JSON cells render as a first-class collapsible tree — every node has a ＋ pick button that promotes the leaf (or subtree) to a new virtual column in the grid. |
 | **Column header menu** | Click any column header for Sort asc / desc / clear, Copy column (tab-separated to clipboard), Hide column, **Show hidden columns…** (when any are hidden), and **Top values…** — a mini bar chart of the 50 most frequent values with one-click filter-to-value. **Ctrl+Click** (or ⌘-click) any header is a shortcut for Hide; a `⊘ N hidden` chip in the filter bar lets you re-reveal them one-by-one or all at once. |
-
 | **Malformed-row ribbon** | CSV / TSV parses flag rows with wrong cell counts or unbalanced quotes; the filter bar shows a ⚠ count chip with Next (jump to next malformed row) and Filter (show only malformed rows) buttons. |
-| **Timeline strip** | Density histogram above the filter bar for grids with a sniffed timestamp column; click or drag to filter, `[`/`]` pan, `Esc` clears. |
-| **📈 Timeline** | Every CSV / TSV / EVTX — including extensionless drops identified by magic bytes (`ElfFile`) or text sniffing — opens directly in a dedicated timeliner: scrubber, stacked-bar chart, virtual grid and per-column top-value cards on one page. No mode toggle, no threshold — CSV / TSV / EVTX always route to Timeline and never fall back to plaintext. |
-| **📈 Timeline — triage toolkit** | Right-click any value → Filter · Exclude · Only-this · 🚩 Mark suspicious. Flagged rows get a red tint, a second Suspicious section (chart + grid + top-values), **and a red overlay on the main histogram** so suspicious buckets stand out without losing the overall shape. Chart legend click = filter, dbl-click = only this, shift-click = exclude. Drag across either chart to rubber-band a time window (shift-drag unions, double-click clears); single-click still drills into one bucket. |
-| **📈 Timeline — event cursor** | Click any grid row to drop a red vertical cursor on the main histogram and scrubber at that event's timestamp, making it easy to see where the selected row sits within the overall timeline. `Esc` clears the cursor (after closing any open dialog / popover). |
-| **📈 Timeline — column menu** | Each column has a ▾ menu with Excel-style value checkboxes, a "contains" filter, and one-click "Use as Timestamp" / "Stack chart by this". Every section (chart, grid, top-values, suspicious, pivot) is collapsible and one-click CSV/PNG exportable. |
-| **📈 Timeline — query language** | A single textbox at the top of the view is the one source of truth for row filtering — a full boolean DSL with `AND` / `OR` / `NOT`, parentheses, per-column `User=alice`, `Cmd~powershell`, `Level>=3`, set membership `User IN (alice, bob)` / `Host NOT IN (…)`, and bare `foo` for "match any column". Right-click pivots (Filter · Exclude · Only-this) and column-menu checkboxes all write into this query rather than a parallel chip list. Syntax is highlighted as you type; `Tab` / arrow keys pick from context-aware autocomplete (column names, recent values, operators); `↑` / `↓` step through saved query history. 🚩 Sus marks are tracked separately and only tint matching rows — they never hide rows. |
-| **📈 Timeline — per-card search & sort** | Every top-value card (main and Suspicious sections alike) gets its own search box and a hover-revealed sort button that cycles count-desc → count-asc → A→Z → Z→A (Alt-click resets). Bar widths stay anchored to the global max so filtering never rescales the remaining bars. |
-| **📈 Timeline — ƒx Extract** | Turn URLs, hostnames, JSON leaves, pipe-delimited `Key=Value` fields, or custom regex captures into new virtual columns. The Auto tab flattens JSON-shaped columns into a CSV-like set of per-leaf columns (`Events[*].EventID`, `response.status`, …), detects pipe-delimited `Key=Value` cells (e.g. EVTX Event Data) and proposes one column per recurring field name, and surfaces URL / hostname paths with their own labels for plain-text columns; the Regex tab offers IPv4 / UUID / hash / email / path / PID presets with live preview. Any JSON cell opened in the row-details drawer is also a live picker — click ＋ next to any node to promote it to a column without leaving the drawer. Extractions persist per-file. |
-
-| **📈 Timeline — pivot table** | Ad-hoc Rows × Columns × Aggregate (count / count-distinct / sum-numeric) with heat colouring; double-click any cell to drill down; CSV export. Right-click any cell or column header → 🧮 **Auto pivot** to instantly pivot the clicked column against the current chart-stack column (or the best-scoring categorical neighbour) without manually setting Rows / Columns. |
-| **📈 Timeline — Detections (EVTX)** | Sigma-style detection rows surfaced directly inside Timeline: one row per hit with severity badge, rule description, matching Event ID and count. Click any row to filter the grid to that Event ID. Nicelisted rows stay demoted and the full detection set feeds the overall risk tier. |
-| **📈 Timeline — Entities (EVTX)** | Every host, user, filename, process, hash, IP, URL, UNC path, registry key, domain, email and command-line extracted from the log, grouped by IOC type with per-value hit counts. Mirrors the analyser's sidebar IOC pivots inside the timeline pane so click-to-pivot stays a single gesture. |
 | **Loading overlay** | Spinner with status message while parsing large files |
 | **Toast notifications** | Non-intrusive feedback for downloads, clipboard operations, and errors |
-
 | **Click-to-highlight** | Clicking any IOC or YARA match in the sidebar jumps to (and cycles through) matching occurrences in the viewer with yellow / blue `<mark>` highlights |
 | **Forensic-safe email links** | `<a href>` inside EML / MSG messages is rendered as an inert span — the visible anchor text and underlying URL (exposed as a hover tooltip) stay inspectable, but clicking does nothing. You can read and copy a phishing URL with zero risk of accidental navigation. |
+
+---
+
+## 📈 Timeline
+
+Every CSV / TSV / EVTX file — including extensionless drops identified by magic bytes or text sniffing — opens directly in Timeline: scrubber, stacked-bar chart, virtual grid, and per-column top-value cards on one page. No mode toggle, no threshold — these formats always route to Timeline.
+
+| Feature | What you get |
+|---|---|
+| **Triage toolkit** | Right-click any value → Filter · Exclude · Only-this · 🚩 Mark suspicious. Flagged rows get a red tint and a Suspicious section (chart + grid + top-values) with a red overlay on the main histogram. Chart legend: click = filter, dbl-click = only this, shift-click = exclude. Drag across charts to rubber-band a time window (shift-drag unions, double-click clears). |
+| **Query language** | Boolean DSL with `AND` / `OR` / `NOT`, parentheses, per-column filters (`User=alice`, `Cmd~powershell`, `Level>=3`), set membership (`User IN (alice, bob)` / `Host NOT IN (…)`), and bare terms for any-column match. Syntax highlighting, Tab/arrow autocomplete, `↑`/`↓` query history. 🚩 Sus marks are tracked separately and only tint rows — they never hide them. |
+| **Event cursor** | Click any grid row to drop a red vertical cursor on the histogram at that timestamp. `Esc` clears (after closing any open dialog). |
+| **Column menu** | Excel-style value checkboxes, "contains" filter, "Use as Timestamp", "Stack chart by this". Every section (chart, grid, top-values, suspicious, pivot) is collapsible and CSV/PNG exportable. |
+| **Per-card search & sort** | Each top-value card has its own search box and sort button (count-desc → count-asc → A→Z → Z→A; Alt-click resets). Bar widths stay anchored to global max so filtering never rescales. |
+| **ƒx Extract** | Create virtual columns from URLs, hostnames, JSON leaves, `Key=Value` fields, or regex captures. Auto tab flattens JSON and detects pipe-delimited fields (e.g. EVTX Event Data); Regex tab has IPv4 / UUID / hash / email / path / PID presets with live preview. JSON cells in the row-details drawer have a ＋ picker to promote nodes. Extractions persist per-file. |
+| **Pivot table** | Rows × Columns × Aggregate (count / count-distinct / sum) with heat colouring. Double-click any cell to drill down; CSV export. Right-click → 🧮 **Auto pivot** to instantly pivot against the chart-stack column. |
+| **Detections (EVTX)** | Sigma-style detection rows with severity badge, rule description, Event ID and count. Click to filter the grid. Nicelisted rows stay demoted; detections feed the overall risk tier. |
+| **Entities (EVTX)** | Extracted hosts, users, filenames, processes, hashes, IPs, URLs, UNC paths, registry keys, domains, emails, and command-lines — grouped by IOC type with hit counts. Click to pivot. |
 
 ---
 
