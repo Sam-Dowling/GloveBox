@@ -78,7 +78,7 @@ const TIMELINE_KEYS = Object.freeze({
 const TIMELINE_MAX_ROWS = RENDER_LIMITS.MAX_TIMELINE_ROWS;
 
 // File extensions that always open in the Timeline view.
-const TIMELINE_EXTS = new Set(['csv', 'tsv', 'evtx']);
+const TIMELINE_EXTS = new Set(['csv', 'tsv', 'evtx', 'sqlite', 'db']);
 
 
 // Bucket presets.
@@ -96,12 +96,19 @@ const TIMELINE_BUCKET_OPTIONS = [
   { id: '1w', label: '1 week', ms: 604_800_000 },
 ];
 
-// Stack palette.
+// Stack palette — 36 perceptually distinct colours that stay legible on both
+// light and dark backgrounds.  Every unique stack value gets its own colour;
+// when more values exist than palette entries the index wraps via modulo.
 const TIMELINE_STACK_PALETTE = [
   '#4f8cff', '#f59e0b', '#22c55e', '#ef4444', '#a855f7',
-  '#06b6d4', '#ec4899', '#84cc16', '#64748b',
+  '#06b6d4', '#ec4899', '#84cc16', '#64748b', '#f97316',
+  '#14b8a6', '#e11d48', '#8b5cf6', '#0ea5e9', '#d946ef',
+  '#65a30d', '#0891b2', '#db2777', '#7c3aed', '#059669',
+  '#ca8a04', '#dc2626', '#2563eb', '#c026d3', '#16a34a',
+  '#ea580c', '#0d9488', '#9333ea', '#0284c7', '#be185d',
+  '#4d7c0f', '#b45309', '#6d28d9', '#047857', '#a21caf',
+  '#9f1239',
 ];
-const TIMELINE_STACK_MAX = 8;
 const TIMELINE_COL_TOP_N = 500;
 const TIMELINE_GRID_DEFAULT_H = 320;
 const TIMELINE_GRID_MIN_H = 160;
@@ -141,7 +148,13 @@ function _tlParseTimestamp(s) {
   if (/^-?\d{13}$/.test(str)) return Number(str);
   // ISO datetime (with time component).
   if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(str)) {
-    const ms = Date.parse(str.replace(' ', 'T'));
+    // Normalise the separator to 'T' and common tz suffixes (" UTC",
+    // " GMT") to 'Z' so Date.parse sees a valid ISO 8601 string.
+    // Without this, inputs like "2022-11-20 22:42:44 UTC" (produced by
+    // the SQLite browser-history renderer) become "2022-11-20T22:42:44 UTC"
+    // after the first replace, which Date.parse rejects.
+    const norm = str.replace(' ', 'T').replace(/ ?(?:UTC|GMT)$/i, 'Z');
+    const ms = Date.parse(norm);
     return Number.isFinite(ms) ? ms : NaN;
   }
   // Microsoft .NET JSON dates: /Date(1234567890123)/
@@ -723,6 +736,19 @@ function _tlParseQuery(tokens, columnsResolver) {
         eat(); // IN
         return parseInList(fieldTok, true);
       }
+      // `is:sus`, `is:detection`, `is=sus`, `is=detection` — virtual meta-field.
+      // Intercept before `resolveField()` which would reject "is" as unknown.
+      if (next && next.kind === 'OP' && (next.text === ':' || next.text === '=')
+        && t.kind === 'WORD' && (t.value || t.text || '').toLowerCase() === 'is') {
+        eat(); // consume 'is' field token
+        eat(); // consume : or =
+        const val = parseValue();
+        const name = String(val.text || '').toLowerCase();
+        if (name !== 'sus' && name !== 'detection') {
+          err('is: accepts "sus" or "detection", got "' + (val.text || '') + '"', val.tok);
+        }
+        return { k: 'is', name };
+      }
       if (next && next.kind === 'OP') {
 
         const op = canonOp(next.text);
@@ -869,6 +895,16 @@ function _tlCompileAst(ast, view) {
         const needle = String(node.needle || '').toLowerCase();
         if (!needle) return () => true;
         return (di) => allColsJoin(di).indexOf(needle) !== -1;
+      }
+      case 'is': {
+        const name = node.name;
+        if (name === 'sus') {
+          return (di) => { const bm = view._susBitmap; return bm ? bm[di] === 1 : false; };
+        }
+        if (name === 'detection') {
+          return (di) => { const bm = view._detectionBitmap; return bm ? bm[di] === 1 : false; };
+        }
+        return () => false;
       }
       case 'in': {
         const ci = node.colIdx;
@@ -1052,12 +1088,14 @@ function _tlSerialize(node, cols, prec) {
       const list = (node.vals || []).map(_tlEscapeValue).join(', ');
       return `${field} ${kw} (${list})`;
     }
+    case 'is':
+      return `is:${node.name}`;
     case 'not': {
       // Atomic children don't need wrapping; composite children do. Bump
       // precedence to 3 so ANDs/ORs inside the NOT get parens.
       const inner = _tlSerialize(node.child, cols, 3);
       const kid = node.child;
-      const atomic = kid && (kid.k === 'pred' || kid.k === 'in' || kid.k === 'any' || kid.k === 'not');
+      const atomic = kid && (kid.k === 'pred' || kid.k === 'in' || kid.k === 'any' || kid.k === 'is' || kid.k === 'not');
       return 'NOT ' + (atomic ? inner : `(${inner})`);
     }
     case 'and': {
@@ -1345,6 +1383,8 @@ class TimelineQueryEditor {
     const out = [];
     // Pseudo-field: any column
     if ('any'.startsWith(lc) || !lc) out.push({ label: 'any', text: 'any:', kind: 'field' });
+    // Virtual meta-field: is (is:sus, is:detection)
+    if ('is'.startsWith(lc) || !lc) out.push({ label: 'is', text: 'is:', kind: 'field' });
     for (let i = 0; i < cols.length; i++) {
       const name = String(cols[i] || '');
       if (!name) continue;
@@ -1367,6 +1407,15 @@ class TimelineQueryEditor {
     const lcPrefix = String(prefix || '').toLowerCase();
     const cols = this.view.columns;
     const cleanField = String(fieldName || '').trim();
+    // Virtual meta-field "is" — suggest known flag names.
+    if (cleanField.toLowerCase() === 'is') {
+      const flags = ['sus', 'detection'];
+      const out = [];
+      for (const f of flags) {
+        if (!lcPrefix || f.startsWith(lcPrefix)) out.push({ label: f, text: f, kind: 'value' });
+      }
+      return out;
+    }
     if (!cleanField || cleanField.toLowerCase() === 'any' || cleanField === '*') {
       // No distinct values for "any" — suggest operators to finish the term.
       return [];
@@ -1540,6 +1589,8 @@ class TimelineQueryEditor {
         <div><code>-foo</code> — shorthand for <code>NOT foo</code></div>
         <div><code>"foo bar"</code> — phrase</div>
         <div><code>[Event ID]:4624</code> — name with spaces</div>
+        <div><code>is:sus</code> — rows matching a 🚩 suspicious mark</div>
+        <div><code>is:detection</code> — rows matching a detection (EVTX)</div>
       </div>
     `;
     const rect = this.helpBtn.getBoundingClientRect();
@@ -1742,6 +1793,78 @@ class TimelineView {
     });
   }
 
+  // ── SQLite browser history ──────────────────────────────────────────────
+  //
+  // Reuses SqliteRenderer._parseDb() to extract the browser-history rows,
+  // then projects them into the same { columns, rows } shape the
+  // TimelineView constructor expects.  Generic (non-browser) SQLite
+  // databases return a zero-row view so the fallback escape hatch in
+  // _loadFileInTimeline re-routes them to the regular SqliteRenderer
+  // tabbed-grid pipeline.
+
+  static fromSqlite(file, buffer) {
+    const r = new SqliteRenderer();
+    let db;
+    try {
+      db = r._parseDb(new Uint8Array(buffer));
+    } catch (e) {
+      console.warn('[timeline] SQLite parse failed:', e);
+      // Return zero-row view — triggers fallback to regular analyser.
+      return new TimelineView({
+        file, columns: [], rows: [],
+        formatLabel: 'SQLite', truncated: false, originalRowCount: 0,
+      });
+    }
+
+    // Only browser history databases get the Timeline treatment.
+    // Prefer per-event rows (historyEventRows) when available; fall
+    // back to the legacy URL-aggregated view (historyRows) otherwise.
+    const useEvents = db.historyEventRows && db.historyEventRows.length > 0;
+    const srcCols = useEvents ? db.historyEventColumns : db.historyColumns;
+    const srcRows = useEvents ? db.historyEventRows    : db.historyRows;
+
+    if (!db.browserType || !srcRows || srcRows.length === 0) {
+      return new TimelineView({
+        file, columns: [], rows: [],
+        formatLabel: 'SQLite', truncated: false, originalRowCount: 0,
+      });
+    }
+
+    const columns = srcCols;
+    const colCount = columns.length;
+    let truncated = false;
+    let list = srcRows;
+    if (list.length > TIMELINE_MAX_ROWS) {
+      list = list.slice(0, TIMELINE_MAX_ROWS);
+      truncated = true;
+    }
+
+    // Ensure every cell is a string (visit_count comes through as a number).
+    const rows = new Array(list.length);
+    for (let i = 0; i < list.length; i++) {
+      const src = list[i] || [];
+      const row = new Array(colCount);
+      for (let j = 0; j < colCount; j++) {
+        row[j] = src[j] != null ? String(src[j]) : '';
+      }
+      rows[i] = row;
+    }
+
+    const browserLabel = db.browserType === 'firefox' ? 'Firefox' : 'Chrome';
+    // Per-event: time is col 0 ("Timestamp"), stack-by col 1 ("Type").
+    // Legacy:    time is col 3 ("Last Visited"), no default stack.
+    const timeColIdx  = useEvents ? 0 : 3;
+    const stackColIdx = useEvents ? 1 : null;
+    return new TimelineView({
+      file, columns, rows,
+      formatLabel: 'SQLite \u2013 ' + browserLabel + ' History',
+      truncated,
+      originalRowCount: srcRows.length,
+      defaultTimeColIdx: timeColIdx,
+      defaultStackColIdx: stackColIdx,
+    });
+  }
+
 
   // ── Construction ─────────────────────────────────────────────────────────
   constructor(opts) {
@@ -1777,6 +1900,8 @@ class TimelineView {
       ? opts.defaultTimeColIdx
       : _tlAutoDetectTimestampCol(this._baseColumns, this.rows);
     this._stackCol = Number.isInteger(opts.defaultStackColIdx) ? opts.defaultStackColIdx : null;
+    this._stackColorMap = null;
+    this._buildStableStackColorMap();
     this._bucketId = TimelineView._loadBucketPref();
     this._timeMs = new Float64Array(this.rows.length);
     // `_timeIsNumeric` — switches the axis / bucket / tick formatters from
@@ -1824,10 +1949,18 @@ class TimelineView {
     // set changes.
     this._chipFilteredIdx = null;
     // Sus bitmap over rows[] (1 if row matches ≥ 1 sus chip, 0 otherwise).
+    // Built eagerly by `_rebuildSusBitmap()` so the query compiler can
+    // reference it for `is:sus`.
     this._susBitmap = null;
     this._susAny = false;      // true if ≥ 1 sus chip exists
     // Intersection of filteredIdx and susBitmap (rows visible AND sus).
     this._susFilteredIdx = null;
+    // Detection bitmap (EVTX-only) — 1 if the row's Event ID appears in at
+    // least one Sigma-style detection from `_evtxFindings.externalRefs`.
+    // Built once at construction via `_rebuildDetectionBitmap()` and never
+    // invalidated (detections are static for a given file). `null` for
+    // CSV/TSV (no findings) — `is:detection` simply matches nothing.
+    this._detectionBitmap = null;
     // Red-line cursor on the histogram / scrubber / sus chart — which row
     // is "currently focused" by the analyst (set on grid-row click). null =
     // no cursor. Cleared on Esc and Reset. Purely decorative: does not
@@ -1874,6 +2007,8 @@ class TimelineView {
 
     this._buildDOM();
     this._wireEvents();
+    this._rebuildSusBitmap();
+    this._rebuildDetectionBitmap();
     this._recomputeFilter();
     this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns', 'detections', 'entities', 'pivot', 'sections']);
   }
@@ -2253,33 +2388,9 @@ class TimelineView {
     }
     this._chipFilteredIdx = buf.subarray(0, w);
 
-    // Sus pass — resolve colName → live colIdx, then bitmap every row
-    // whose cell at that column equals the flagged value. Pure tint;
-    // visibility already decided above.
-    const susResolved = this._susMarksResolved();
-    this._susAny = susResolved.length > 0;
-    if (this._susAny) {
-      const bm = new Uint8Array(n);
-      const nCols = this.columns.length;
-      for (let i = 0; i < n; i++) {
-        for (let s = 0; s < susResolved.length; s++) {
-          const spec = susResolved[s];
-          if (spec.any) {
-            // "Any column" mark — match the value in any column.
-            let hit = false;
-            for (let c = 0; c < nCols; c++) {
-              if (this._cellAt(i, c) === spec.val) { hit = true; break; }
-            }
-            if (hit) { bm[i] = 1; break; }
-          } else {
-            if (this._cellAt(i, spec.colIdx) === spec.val) { bm[i] = 1; break; }
-          }
-        }
-      }
-      this._susBitmap = bm;
-    } else {
-      this._susBitmap = null;
-    }
+    // Sus bitmap is now maintained eagerly by `_rebuildSusBitmap()` (called
+    // whenever marks are toggled/cleared) so the query predicate's `is:sus`
+    // can reference it. No inline rebuild needed here.
 
     // Clip by window + materialise sus-visible index.
     this._applyWindowOnly();
@@ -2293,15 +2404,79 @@ class TimelineView {
     const out = [];
     const cols = this.columns;
     for (const m of this._susMarks) {
+      // Normalise to lower-case so the bitmap pass can do a
+      // case-insensitive substring check via `.includes()`.
+      const lc = String(m.val).toLowerCase();
       // "Any column" marks carry `any: true` + null colName — they fan
       // out over every column in the bitmap pass.
-      if (m.any) { out.push({ any: true, val: m.val }); continue; }
+      if (m.any) { out.push({ any: true, val: lc }); continue; }
       const ix = cols.indexOf(m.colName);
-      if (ix >= 0) out.push({ colIdx: ix, val: m.val });
+      if (ix >= 0) out.push({ colIdx: ix, val: lc });
     }
     return out;
   }
 
+  // (Re)build the `_susBitmap` eagerly from the current `_susMarks`.
+  // Called once at construction, and again whenever sus marks are
+  // added / removed / cleared. The bitmap must exist BEFORE the query
+  // compiler runs so that `is:sus` can reference it.
+  _rebuildSusBitmap() {
+    const n = this.rows.length;
+    const susResolved = this._susMarksResolved();
+    this._susAny = susResolved.length > 0;
+    if (this._susAny) {
+      const bm = new Uint8Array(n);
+      const nCols = this.columns.length;
+      for (let i = 0; i < n; i++) {
+        for (let s = 0; s < susResolved.length; s++) {
+          const spec = susResolved[s];
+          // Case-insensitive substring match: spec.val is already
+          // lower-cased by `_susMarksResolved()`.
+          if (spec.any) {
+            let hit = false;
+            for (let c = 0; c < nCols; c++) {
+              if (this._cellAt(i, c).toLowerCase().includes(spec.val)) { hit = true; break; }
+            }
+            if (hit) { bm[i] = 1; break; }
+          } else {
+            if (this._cellAt(i, spec.colIdx).toLowerCase().includes(spec.val)) { bm[i] = 1; break; }
+          }
+        }
+      }
+      this._susBitmap = bm;
+    } else {
+      this._susBitmap = null;
+    }
+  }
+
+  // Build `_detectionBitmap` from EVTX Sigma-style findings. Each row
+  // whose Event ID column matches at least one `IOC.PATTERN` detection
+  // gets flagged. CSV/TSV files have no findings → bitmap stays `null`
+  // and `is:detection` matches nothing. Called once at construction —
+  // detection results are static for the lifetime of a view.
+  _rebuildDetectionBitmap() {
+    if (!this._evtxFindings || !Array.isArray(this._evtxFindings.externalRefs)) {
+      this._detectionBitmap = null;
+      return;
+    }
+    const refs = this._evtxFindings.externalRefs;
+    const eids = new Set();
+    for (let i = 0; i < refs.length; i++) {
+      const r = refs[i];
+      if (r && r.type === IOC.PATTERN && r.eventId != null) {
+        eids.add(String(r.eventId));
+      }
+    }
+    if (!eids.size) { this._detectionBitmap = null; return; }
+    const eventIdCol = this._baseColumns.indexOf('Event ID');
+    if (eventIdCol < 0) { this._detectionBitmap = null; return; }
+    const n = this.rows.length;
+    const bm = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      if (eids.has(this._cellAt(i, eventIdCol))) bm[i] = 1;
+    }
+    this._detectionBitmap = bm;
+  }
 
   // Fast path — re-derives `_filteredIdx` + `_susFilteredIdx` from the cached
   // `_chipFilteredIdx` + `_susBitmap` using only the current `_window`.
@@ -2458,15 +2633,13 @@ class TimelineView {
         const v = this._cellAt(idx[i], stackCol);
         counts.set(v, (counts.get(v) || 0) + 1);
       }
+      // Every unique value gets its own stack key — no "Other" bucket.
       const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-      const top = sorted.slice(0, TIMELINE_STACK_MAX - 1);
-      const hasOther = sorted.length > top.length;
-      stackKeys = top.map(e => e[0]);
-      if (hasOther) stackKeys.push('__other__');
-      const topSet = new Set(stackKeys);
+      stackKeys = sorted.map(e => e[0]);
+      const keySet = new Set(stackKeys);
       stackKeyOf = (dataIdx) => {
         const v = this._cellAt(dataIdx, stackCol);
-        return topSet.has(v) ? v : '__other__';
+        return keySet.has(v) ? v : stackKeys[stackKeys.length - 1];
       };
     }
 
@@ -2582,7 +2755,7 @@ class TimelineView {
     host.appendChild(scrubber.wrapper);
 
     // Chart section
-    const chart = this._buildSection('chart', 'Timeline histogram', () => {
+    const chart = this._buildSection('chart', '📊 Timeline histogram', () => {
       const el = document.createElement('div');
       el.className = 'tl-chart';
       el.innerHTML = `
@@ -2622,7 +2795,7 @@ class TimelineView {
 
 
     // Grid section (collapsible)
-    const gridSec = this._buildSection('grid', 'Events', () => {
+    const gridSec = this._buildSection('grid', '📋 Events', () => {
       const el = document.createElement('div');
       el.className = 'tl-grid';
       return el;
@@ -2641,7 +2814,7 @@ class TimelineView {
     host.appendChild(splitter);
 
     // Columns section (collapsible)
-    const colsSec = this._buildSection('columns', 'Top values', () => {
+    const colsSec = this._buildSection('columns', '🏆 Top values', () => {
       const el = document.createElement('div');
       el.className = 'tl-columns';
       return el;
@@ -2699,7 +2872,7 @@ class TimelineView {
 
 
     // Pivot section
-    const pivotSec = this._buildSection('pivot', 'Pivot table', () => {
+    const pivotSec = this._buildSection('pivot', '🧮 Pivot table', () => {
       const el = document.createElement('div');
       el.className = 'tl-pivot';
       el.innerHTML = `
@@ -2938,7 +3111,8 @@ class TimelineView {
     els.stackColSelect.addEventListener('change', () => {
       const v = parseInt(els.stackColSelect.value, 10);
       this._stackCol = v >= 0 ? v : null;
-      this._scheduleRender(['chart']);
+      this._buildStableStackColorMap();
+      this._scheduleRender(['chart', 'grid', 'columns']);
     });
     els.bucketSelect.addEventListener('change', () => {
       this._bucketId = els.bucketSelect.value;
@@ -3062,6 +3236,7 @@ class TimelineView {
     if (this._susMarks && this._susMarks.length) {
       this._susMarks = [];
       TimelineView._saveSusMarksFor(this._fileKey, []);
+      this._rebuildSusBitmap();
     }
 
     // Stack column — blank both state + select widget.
@@ -3296,6 +3471,31 @@ class TimelineView {
       this._els.chartCanvas, this._els.chartLegend, this._els.chartEmpty,
       this._filteredIdx, 'main',
     );
+
+  }
+
+  // ── Stable stack-color assignment ────────────────────────────────────────
+  // Builds value → palette-index mapping from the FULL (unfiltered)
+  // dataset so that legend colors stay pinned to the same values
+  // regardless of what subset is currently visible after filtering.
+  // Called once when the stack column is chosen or changed — NOT on
+  // every filter / chart render.
+
+  _buildStableStackColorMap() {
+    const col = this._stackCol;
+    if (col == null) { this._stackColorMap = null; return; }
+    const counts = new Map();
+    for (let i = 0; i < this.rows.length; i++) {
+      const v = this._cellAt(i, col);
+      counts.set(v, (counts.get(v) || 0) + 1);
+    }
+    // Sort by descending frequency so the most common values claim the
+    // first (most visually distinctive) palette slots.  Every unique
+    // value gets its own colour — no "Other" bucket.
+    const sorted = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+    const m = new Map();
+    for (let i = 0; i < sorted.length; i++) m.set(sorted[i][0], i);
+    this._stackColorMap = m;
   }
 
   _renderChartInto(canvas, legendEl, emptyEl, idx, role) {
@@ -3354,6 +3554,18 @@ class TimelineView {
       ctx.fillText(_tlFormatTick(t, rangeMs, this._timeIsNumeric), x, padT + plotH + 4);
     }
 
+    // Resolve per-stack-key palette indices: prefer the stable color map
+    // (pinned to unfiltered frequencies) so colours don't shift on filter.
+    // Falls back to positional indexing when no stable map exists.
+    const stableMap = this._stackColorMap;
+    const paletteFor = (j) => {
+      if (stableMap && stackKeys) {
+        const ci = stableMap.get(stackKeys[j]);
+        if (ci !== undefined) return TIMELINE_STACK_PALETTE[ci % TIMELINE_STACK_PALETTE.length];
+      }
+      return TIMELINE_STACK_PALETTE[j % TIMELINE_STACK_PALETTE.length];
+    };
+
     const scale = maxTotal > 0 ? plotH / maxTotal : 0;
     for (let b = 0; b < bucketCount; b++) {
       let yAcc = padT + plotH;
@@ -3362,7 +3574,7 @@ class TimelineView {
         const c = buckets[b * k + j];
         if (!c) continue;
         const barH = c * scale;
-        ctx.fillStyle = TIMELINE_STACK_PALETTE[j % TIMELINE_STACK_PALETTE.length];
+        ctx.fillStyle = paletteFor(j);
         const bw = Math.max(1, barW - 1);
         ctx.fillRect(x, yAcc - barH, bw, barH);
         yAcc -= barH;
@@ -3437,7 +3649,7 @@ class TimelineView {
         chip.className = 'tl-legend-chip';
         chip.dataset.key = k2;
         chip.dataset.role = role;
-        chip.innerHTML = `<span class="tl-legend-swatch" style="background:${TIMELINE_STACK_PALETTE[i % TIMELINE_STACK_PALETTE.length]}"></span>${_tlEsc(k2 === '__other__' ? 'Other' : k2)}`;
+        chip.innerHTML = `<span class="tl-legend-swatch" style="background:${paletteFor(i)}"></span>${_tlEsc(k2)}`;
         chip.title = 'Click = filter · Dbl-click = only this · Shift-click = exclude · Right-click = more';
         legendEl.appendChild(chip);
       }
@@ -3775,8 +3987,14 @@ class TimelineView {
       const c = data.buckets[b * k + j];
       if (c) {
         total += c;
-        const label = data.stackKeys ? (data.stackKeys[j] === '__other__' ? 'Other' : data.stackKeys[j]) : 'Count';
-        parts.push(`<span class="tl-chart-tooltip-dot" style="background:${TIMELINE_STACK_PALETTE[j % TIMELINE_STACK_PALETTE.length]}"></span>${_tlEsc(label)}: <b>${c.toLocaleString()}</b>`);
+        const label = data.stackKeys ? data.stackKeys[j] : 'Count';
+        const sm = this._stackColorMap;
+        let dotColor = TIMELINE_STACK_PALETTE[j % TIMELINE_STACK_PALETTE.length];
+        if (sm && data.stackKeys) {
+          const ci = sm.get(data.stackKeys[j]);
+          if (ci !== undefined) dotColor = TIMELINE_STACK_PALETTE[ci % TIMELINE_STACK_PALETTE.length];
+        }
+        parts.push(`<span class="tl-chart-tooltip-dot" style="background:${dotColor}"></span>${_tlEsc(label)}: <b>${c.toLocaleString()}</b>`);
       }
     }
     // 🚩 Suspicious row — only present on the main chart (see the
@@ -3803,7 +4021,6 @@ class TimelineView {
     const chip = e.target.closest('.tl-legend-chip');
     if (!chip || this._stackCol == null) return;
     const key = chip.dataset.key;
-    if (key === '__other__') return; // "Other" isn't a real value
     const op = e.shiftKey ? 'ne' : 'eq';
     this._addOrToggleChip(this._stackCol, key, { op });
   }
@@ -3811,7 +4028,6 @@ class TimelineView {
     const chip = e.target.closest('.tl-legend-chip');
     if (!chip || this._stackCol == null) return;
     const key = chip.dataset.key;
-    if (key === '__other__') return;
     // "Only this" → replace all chips on this column with a single eq.
     this._addOrToggleChip(this._stackCol, key, { op: 'eq', replace: true });
   }
@@ -3820,7 +4036,6 @@ class TimelineView {
     if (!chip || this._stackCol == null) return;
     e.preventDefault();
     const key = chip.dataset.key;
-    if (key === '__other__') return;
     this._openRowContextMenu(e, this._stackCol, key);
   }
 
@@ -3895,6 +4110,7 @@ class TimelineView {
       chip.querySelector('.tl-chip-x').addEventListener('click', () => {
         this._susMarks.splice(persistIdx, 1);
         TimelineView._saveSusMarksFor(this._fileKey, this._susMarks);
+        this._rebuildSusBitmap();
         this._recomputeFilter();
         this._scheduleRender(['chart', 'chips', 'grid', 'columns']);
       });
@@ -3935,9 +4151,9 @@ class TimelineView {
         </label>
         <label class="tl-field tl-field-wide">
           <span class="tl-field-label">Value</span>
-          <input type="text" class="tl-field-select" data-f="val" spellcheck="false" placeholder="exact value to flag as suspicious">
+           <input type="text" class="tl-field-select" data-f="val" spellcheck="false" placeholder="text to flag (substring, case-insensitive)">
         </label>
-        <div class="tl-add-filter-hint">🚩 Sus marks tint rows but do NOT filter — use the query bar for row filtering.</div>
+        <div class="tl-add-filter-hint">🚩 Sus marks tint rows red. Use <code>is:sus</code> in the query bar to filter to only sus rows.</div>
         <div class="tl-add-filter-actions">
           <button class="tl-tb-btn" type="button" data-act="cancel">Cancel</button>
           <button class="tl-tb-btn tl-tb-btn-primary" type="button" data-act="add">Mark suspicious</button>
@@ -3957,11 +4173,13 @@ class TimelineView {
       if (colIdx === -1) {
         // Toggle an "Any column" mark. Keyed on { any:true, val } so
         // repeated adds of the same value de-dupe as a removal.
-        const valStr = String(val);
-        const ix = this._susMarks.findIndex(m => m.any === true && m.val === valStr);
+        // Values are lower-cased for case-insensitive substring matching.
+        const valStr = String(val).toLowerCase();
+        const ix = this._susMarks.findIndex(m => m.any === true && m.val.toLowerCase() === valStr);
         if (ix >= 0) this._susMarks.splice(ix, 1);
         else this._susMarks.push({ any: true, colName: null, val: valStr });
         TimelineView._saveSusMarksFor(this._fileKey, this._susMarks);
+        this._rebuildSusBitmap();
         this._recomputeFilter();
         this._scheduleRender(['chart', 'chips', 'grid', 'columns']);
         this._closePopover();
@@ -3998,9 +4216,34 @@ class TimelineView {
     const sus = this._susBitmap;
     const origIdx = idx;
 
+    // Capture stack-color state for the rowClass closure.  `colorMap`
+    // maps a cell value → palette index (0–8); when present, every grid
+    // row receives a `tl-stack-N` class that tints its background with
+    // the matching legend color.
+    const stackCol  = this._stackCol;
+    const colorMap  = this._stackColorMap;   // Map<value, paletteIdx> | null
+    const self      = this;
+
     const rowClass = (rowIdx) => {
       const orig = origIdx[rowIdx];
-      return (sus && sus[orig]) ? 'tl-row-sus' : '';
+      let cls = (sus && sus[orig]) ? 'tl-row-sus' : '';
+      if (colorMap && stackCol != null) {
+        const val = self._cellAt(orig, stackCol);
+        const ci = colorMap.get(val);
+        if (ci !== undefined) cls += (cls ? ' ' : '') + 'tl-stack-' + (ci % TIMELINE_STACK_PALETTE.length);
+      }
+      return cls;
+    };
+
+    // Color the text in the stack column's cells to match the legend.
+    const cellClass = (dataIdx, colIdx) => {
+      if (colorMap && colIdx === stackCol) {
+        const orig = origIdx[dataIdx];
+        const val = self._cellAt(orig, stackCol);
+        const ci = colorMap.get(val);
+        if (ci !== undefined) return 'tl-stack-text-' + (ci % TIMELINE_STACK_PALETTE.length);
+      }
+      return null;
     };
 
     // role is always 'main' now (the 🚩 Suspicious section is gone); the
@@ -4017,6 +4260,7 @@ class TimelineView {
         infoText: '',
         timeColumn: -1,
         rowClass,
+        cellClass,
         // In Timeline Mode the embedded grid's built-in "Use as timeline"
         // and "Stack timeline by this column" column-header actions must
         // drive the outer Timeline histogram + stack selects instead of
@@ -4189,6 +4433,7 @@ class TimelineView {
       // Preserve columns in case new extracted columns were added.
       existing.columns = this.columns;
       existing._rowClassFn = rowClass;
+      existing._cellClassFn = cellClass;
       existing.setRows(rowsConcat);
     }
   }
@@ -4592,6 +4837,10 @@ class TimelineView {
           sizer.appendChild(empty);
           return;
         }
+        // Stack-color state: when this card is the stack column, tint each
+        // value's bar and prepend a legend-colored swatch dot.
+        const isStackCard = (c === this._stackCol && this._stackColorMap);
+
         for (let i = start; i < end; i++) {
           const [val, count] = displayValues[i];
           const row = document.createElement('div');
@@ -4600,9 +4849,22 @@ class TimelineView {
           row.style.top = (i * rowHeight) + 'px';
           row.dataset.value = val;
           const pct = topVal > 0 ? Math.max(2, Math.round((count / topVal) * 100)) : 0;
+
+          // Resolve stack-palette color for this value (if applicable).
+          let barStyle = `width:${pct}%`;
+          let swatchHtml = '';
+          if (isStackCard) {
+            const ci = this._stackColorMap.get(val);
+            if (ci !== undefined) {
+              const hex = TIMELINE_STACK_PALETTE[ci % TIMELINE_STACK_PALETTE.length];
+              barStyle += `;background:${hex}20`;
+              swatchHtml = `<span class="tl-col-swatch" style="background:${hex}"></span>`;
+            }
+          }
+
           row.innerHTML = `
-            <span class="tl-col-bar" style="width:${pct}%"></span>
-            <span class="tl-col-val" title="${_tlEsc(val)}">${_tlEsc(val === '' ? '(empty)' : val)}</span>
+            <span class="tl-col-bar" style="${barStyle}"></span>
+            ${swatchHtml}<span class="tl-col-val" title="${_tlEsc(val)}">${_tlEsc(val === '' ? '(empty)' : val)}</span>
             <span class="tl-col-count">${count.toLocaleString()}</span>`;
           sizer.appendChild(row);
         }
@@ -4953,11 +5215,12 @@ class TimelineView {
     if (op === 'sus') {
       const colName = this.columns[colIdx];
       if (colName == null) return;
-      const valStr = String(val);
-      const ix = this._susMarks.findIndex(m => m.colName === colName && m.val === valStr);
+      const valStr = String(val).toLowerCase();
+      const ix = this._susMarks.findIndex(m => m.colName === colName && m.val.toLowerCase() === valStr);
       if (ix >= 0) this._susMarks.splice(ix, 1);
       else this._susMarks.push({ colName, val: valStr });
       TimelineView._saveSusMarksFor(this._fileKey, this._susMarks);
+      this._rebuildSusBitmap();
       this._recomputeFilter();
       this._scheduleRender(['chart', 'chips', 'grid', 'columns']);
       return;
@@ -5071,8 +5334,9 @@ class TimelineView {
   _setStackColFromGrid(colIdx) {
     if (!Number.isInteger(colIdx) || colIdx < 0 || colIdx >= this.columns.length) return true;
     this._stackCol = colIdx;
+    this._buildStableStackColorMap();
     if (this._els.stackColSelect) this._els.stackColSelect.value = String(colIdx);
-    this._scheduleRender(['chart']);
+    this._scheduleRender(['chart', 'grid', 'columns']);
     return true;
   }
 
@@ -5291,8 +5555,9 @@ class TimelineView {
     });
     menu.querySelector('[data-act="stackcol"]').addEventListener('click', () => {
       this._stackCol = colIdx;
+      this._buildStableStackColorMap();
       this._els.stackColSelect.value = String(colIdx);
-      this._scheduleRender(['chart']);
+      this._scheduleRender(['chart', 'grid', 'columns']);
       this._closePopover();
     });
     menu.querySelector('[data-act="extract"]').addEventListener('click', () => {
@@ -6481,7 +6746,7 @@ class TimelineView {
     const { buckets, bucketCount, stackKeys, viewLo, bucketMs } = data;
     const k = stackKeys ? stackKeys.length : 1;
     const header = ['Bucket start (UTC)', 'Bucket end (UTC)'];
-    if (stackKeys && stackKeys.length) for (const s of stackKeys) header.push(s === '__other__' ? 'Other' : s);
+    if (stackKeys && stackKeys.length) for (const s of stackKeys) header.push(s);
     else header.push('Count');
     const lines = [_tlCsvRow(header)];
     for (let b = 0; b < bucketCount; b++) {
@@ -6582,6 +6847,25 @@ Object.assign(App.prototype, {
       && bytes[3] === 0x46 && bytes[4] === 0x69 && bytes[5] === 0x6C
       && bytes[6] === 0x65 && bytes[7] === 0x00) return 'evtx';
 
+    // SQLite magic: "SQLite format 3\0" (first 16 bytes).
+    // Only route to Timeline if the database is a browser history file
+    // (Chrome / Edge / Firefox), otherwise fall through so the regular
+    // SqliteRenderer's tabbed-grid view handles generic databases.
+    if (bytes.length >= 16
+      && bytes[0] === 0x53 && bytes[1] === 0x51 && bytes[2] === 0x4C
+      && bytes[3] === 0x69 && bytes[4] === 0x74 && bytes[5] === 0x65
+      && bytes[6] === 0x20 && bytes[7] === 0x66 && bytes[8] === 0x6F
+      && bytes[9] === 0x72 && bytes[10] === 0x6D && bytes[11] === 0x61
+      && bytes[12] === 0x74 && bytes[13] === 0x20 && bytes[14] === 0x33
+      && bytes[15] === 0x00) {
+      try {
+        const r = new SqliteRenderer();
+        const db = r._parseDb(new Uint8Array(buffer));
+        if (db.browserType) return 'sqlite';
+      } catch (_) { /* parse failed — fall through */ }
+      return null;
+    }
+
     // Text sniff — decode only the first 4 KB, tolerate a leading BOM.
     let text;
     try {
@@ -6634,7 +6918,10 @@ Object.assign(App.prototype, {
   },
 
   // Attempt to route `file` into the Timeline view. Called from `_loadFile`.
-  //   - If the extension is one of csv / tsv / evtx → always load (no gate).
+  //   - If the extension is one of csv / tsv / evtx / sqlite / db → always
+  //     load (no gate). SQLite files that are NOT browser history databases
+  //     return zero rows from `fromSqlite()`, which triggers the fallback
+  //     escape hatch in `_loadFileInTimeline` back to the regular analyser.
   //   - Otherwise return `false` so the regular analyser pipeline runs.
   //
   // Extensionless files are handled separately inside `_loadFile` via the
@@ -6680,6 +6967,8 @@ Object.assign(App.prototype, {
           view = TimelineView.fromEvtx(file, buffer);
         } else if (ext === 'csv' || ext === 'tsv') {
           view = TimelineView.fromCsv(file, buffer, ext === 'tsv' ? '\t' : null);
+        } else if (ext === 'sqlite' || ext === 'db') {
+          view = TimelineView.fromSqlite(file, buffer);
         } else {
           throw new Error('Unsupported Timeline format: .' + ext);
         }
@@ -6699,6 +6988,14 @@ Object.assign(App.prototype, {
       if (rowCount === 0 && evtCount === 0) {
         if (view) { try { view.destroy(); } catch (_) { /* noop */ } }
         this._setLoading(false);
+        // The previous file may have set body.has-timeline (which hides
+        // #viewer via CSS).  The earlier `destroy()` already nulled
+        // `_timelineCurrent`, so the teardown guard in `_loadFile` won't
+        // fire.  Remove the class and restore toolbar visibility here
+        // before re-entering the regular loader.
+        document.body.classList.remove('has-timeline');
+        const vt = document.getElementById('viewer-toolbar');
+        if (vt) vt.classList.remove('hidden');
         // Re-enter the regular loader by calling `_loadFile` with a flag
         // that skips the timeline re-route.
         this._skipTimelineRoute = true;

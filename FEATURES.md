@@ -176,7 +176,7 @@ Accepts three input shapes — an `npm pack` gzip tarball (`.tgz`), a bare `pack
 | Capability | What you get |
 |---|---|
 | **EVTX analysis** | Parses Windows Event Log files; extracts Event ID, Level, Provider, Channel, Computer, timestamps, and EventData; flags suspicious events (4688, 4624 / 4625, 1102, 7045, 4104); extracts IOCs: usernames, hostnames, IPs, process paths, command lines, hashes, URLs, file / UNC paths. Copy / Download as CSV. |
-| **SQLite / browser history** | Auto-detects Chrome / Edge / Firefox history databases; extracts URLs, titles, visit counts, timestamps; generic table browser for non-history SQLite files. Copy / Download as CSV. |
+| **SQLite / browser history** | Auto-detects Chrome / Edge / Firefox history databases; extracts URLs, titles, visit counts, timestamps. Browser history files open in Timeline mode with histogram, scrubber, query bar, and stacking. Generic table browser for non-history SQLite files. Copy / Download as CSV. |
 
 ### Crypto
 
@@ -240,7 +240,7 @@ ZIP listings additionally surface per-entry risk signals classic archive viewers
 
 ## 📈 Timeline
 
-Every CSV / TSV / EVTX file — including extensionless drops identified by magic bytes or text sniffing — opens directly in Timeline: scrubber, stacked-bar chart, virtual grid, and per-column top-value cards on one page. No mode toggle, no threshold — these formats always route to Timeline.
+Every CSV / TSV / EVTX file — and SQLite browser history databases (Chrome / Edge / Firefox) — including extensionless drops identified by magic bytes or text sniffing — opens directly in Timeline: scrubber, stacked-bar chart, virtual grid, and per-column top-value cards on one page. No mode toggle, no threshold — these formats always route to Timeline. Generic (non-browser-history) SQLite databases continue to use the tabbed-grid viewer.
 
 | Feature | What you get |
 |---|---|

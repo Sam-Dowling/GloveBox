@@ -86,6 +86,7 @@ class SqliteRenderer {
       pageSize, pageCount, textEncoding, version: versionStr,
       tables: [], browserType: null,
       historyRows: null, historyColumns: null,
+      historyEventRows: null, historyEventColumns: null,
       allTableData: {},
     };
 
@@ -98,8 +99,10 @@ class SqliteRenderer {
     // Read history data based on browser type
     if (db.browserType === 'chrome' || db.browserType === 'edge') {
       this._readChromeHistory(bytes, dv, pageSize, db);
+      this._buildChromeEvents(bytes, dv, pageSize, db);
     } else if (db.browserType === 'firefox') {
       this._readFirefoxHistory(bytes, dv, pageSize, db);
+      this._buildFirefoxEvents(bytes, dv, pageSize, db);
     } else {
       // Generic: read first few tables
       this._readGenericTables(bytes, dv, pageSize, db);
@@ -235,6 +238,15 @@ class SqliteRenderer {
     for (const st of types) {
       if (ctx.pos >= bytes.length) { values.push(null); continue; }
       values.push(this._readValue(bytes, ctx, st));
+    }
+
+    // SQLite stores NULL in the payload for INTEGER PRIMARY KEY columns;
+    // the real value lives in the B-tree rowId.  Patch the leading NULL
+    // so callers see the actual primary key without tracking rowIds
+    // separately.  (sqlite_master's first column is always a non-null
+    // TEXT value, so this never fires for the schema table.)
+    if (values.length > 0 && values[0] === null) {
+      values[0] = rowId;
     }
 
     return values;
@@ -476,6 +488,317 @@ class SqliteRenderer {
     if (!n || n <= 0 || isNaN(n)) return '';
     const d = new Date(n / 1000);
     return isNaN(d.getTime()) ? '' : d.toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
+  }
+
+  // ── Transition type decoders ────────────────────────────────────────────
+
+  _chromeTransitionType(raw) {
+    // Chrome stores transition as a bitmask; lower 8 bits = core type.
+    const core = (typeof raw === 'number' ? raw : parseInt(raw, 10) || 0) & 0xFF;
+    switch (core) {
+      case 0: return 'link';
+      case 1: return 'typed';
+      case 2: return 'bookmark';
+      case 3: return 'subframe';
+      case 4: return 'manual_subframe';
+      case 5: return 'generated';
+      case 6: return 'auto_toplevel';
+      case 7: return 'form_submit';
+      case 8: return 'reload';
+      case 9: return 'search';
+      case 10: return 'search_generated';
+      default: return core ? String(core) : '';
+    }
+  }
+
+  _firefoxTransitionType(raw) {
+    const v = typeof raw === 'number' ? raw : parseInt(raw, 10) || 0;
+    switch (v) {
+      case 1: return 'link';
+      case 2: return 'typed';
+      case 3: return 'bookmark';
+      case 4: return 'embed';
+      case 5: return 'redirect_permanent';
+      case 6: return 'redirect_temporary';
+      case 7: return 'download';
+      case 8: return 'framed_link';
+      case 9: return 'reload';
+      default: return v ? String(v) : '';
+    }
+  }
+
+  // ── Helper: read a named table into { columns, rows } ──────────────────
+
+  _readNamedTable(bytes, dv, pageSize, db, tableName) {
+    const tbl = db.tables.find(t => t.name === tableName && t.type === 'table');
+    if (!tbl || !tbl.rootPage) return null;
+    try {
+      const columns = this._parseColumns(tbl.sql);
+      const rows = this._readBTreeTable(bytes, dv, tbl.rootPage, pageSize, 0);
+      return { columns, rows };
+    } catch (_) { return null; }
+  }
+
+  // ── Chrome per-event builder (visits + downloads + search terms) ────────
+  //
+  // Reads the `visits`, `downloads`, and `keyword_search_terms` tables,
+  // JOINs them against the `urls` table by id, and produces one row per
+  // discrete event (visit / search / download) sorted chronologically.
+  //
+  // Output columns (uniform across Chrome and Firefox so the timeline
+  // view does not need to branch):
+  //   Timestamp | Type | Title | URL | Visit Count | Transition |
+  //   Search Terms | Target Path | Referrer | MIME Type
+
+  _buildChromeEvents(bytes, dv, pageSize, db) {
+    // ── 1. urls table → Map<id, {url, title, visit_count}> ─────────────
+    const urlsTbl = this._readNamedTable(bytes, dv, pageSize, db, 'urls');
+    if (!urlsTbl) return;
+    const uCols = urlsTbl.columns.length
+      ? urlsTbl.columns
+      : ['id', 'url', 'title', 'visit_count', 'typed_count', 'last_visit_time', 'hidden'];
+    const uIdIdx   = uCols.indexOf('id');
+    const uUrlIdx  = uCols.indexOf('url');
+    const uTitIdx  = uCols.indexOf('title');
+    const uVcIdx   = uCols.indexOf('visit_count');
+
+    const urlMap = new Map(); // id → { url, title, visitCount }
+    for (const row of urlsTbl.rows) {
+      const id = uIdIdx >= 0 ? row[uIdIdx] : null;
+      if (id == null) continue;
+      urlMap.set(typeof id === 'number' ? id : parseInt(id, 10) || 0, {
+        url:   uUrlIdx >= 0 ? (row[uUrlIdx] || '') : '',
+        title: uTitIdx >= 0 ? (row[uTitIdx] || '') : '',
+        vc:    uVcIdx  >= 0 ? row[uVcIdx] : '',
+      });
+    }
+
+    // ── 2. keyword_search_terms → Map<url_id, term> ────────────────────
+    const searchMap = new Map();
+    const kstTbl = this._readNamedTable(bytes, dv, pageSize, db, 'keyword_search_terms');
+    if (kstTbl) {
+      const kCols = kstTbl.columns.length
+        ? kstTbl.columns
+        : ['keyword_id', 'url_id', 'term'];
+      const kUrlIdIdx = kCols.indexOf('url_id');
+      const kTermIdx  = kCols.indexOf('term');
+      if (kUrlIdIdx >= 0 && kTermIdx >= 0) {
+        for (const row of kstTbl.rows) {
+          const uid  = typeof row[kUrlIdIdx] === 'number' ? row[kUrlIdIdx] : parseInt(row[kUrlIdIdx], 10) || 0;
+          const term = row[kTermIdx] || '';
+          if (uid && term) searchMap.set(uid, term);
+        }
+      }
+    }
+
+    // ── 3. visits table → event rows ───────────────────────────────────
+    const visitsTbl = this._readNamedTable(bytes, dv, pageSize, db, 'visits');
+    // Build a visit-id → url_id lookup for referrer resolution.
+    const visitIdToUrlId = new Map();
+    const events = [];
+
+    if (visitsTbl) {
+      const vCols = visitsTbl.columns.length
+        ? visitsTbl.columns
+        : ['id', 'url', 'visit_time', 'from_visit', 'transition', 'segment_id', 'visit_duration', 'incremented_count', 'opener_visit'];
+      const vIdIdx   = vCols.indexOf('id');
+      const vUidIdx  = vCols.indexOf('url');      // column is actually url_id but named "url" in CREATE TABLE
+      const vTimeIdx = vCols.indexOf('visit_time');
+      const vFromIdx = vCols.indexOf('from_visit');
+      const vTrIdx   = vCols.indexOf('transition');
+
+      // First pass: build visit-id → url_id map for referrer lookups.
+      for (const row of visitsTbl.rows) {
+        const vid = vIdIdx >= 0 ? (typeof row[vIdIdx] === 'number' ? row[vIdIdx] : parseInt(row[vIdIdx], 10) || 0) : 0;
+        const uid = vUidIdx >= 0 ? (typeof row[vUidIdx] === 'number' ? row[vUidIdx] : parseInt(row[vUidIdx], 10) || 0) : 0;
+        if (vid) visitIdToUrlId.set(vid, uid);
+      }
+
+      // Second pass: emit event rows.
+      for (const row of visitsTbl.rows) {
+        const uid      = vUidIdx  >= 0 ? (typeof row[vUidIdx]  === 'number' ? row[vUidIdx]  : parseInt(row[vUidIdx],  10) || 0) : 0;
+        const timeRaw  = vTimeIdx >= 0 ? row[vTimeIdx] : 0;
+        const fromVid  = vFromIdx >= 0 ? (typeof row[vFromIdx] === 'number' ? row[vFromIdx] : parseInt(row[vFromIdx], 10) || 0) : 0;
+        const transRaw = vTrIdx   >= 0 ? row[vTrIdx] : 0;
+
+        const uEntry = urlMap.get(uid) || { url: '', title: '', vc: '' };
+        const ts     = this._chromeTimestamp(timeRaw);
+        const trans  = this._chromeTransitionType(transRaw);
+        const term   = searchMap.get(uid) || '';
+        const evType = term ? 'search' : 'visit';
+
+        // Resolve referrer: from_visit → url_id → url.
+        let referrer = '';
+        if (fromVid) {
+          const refUid = visitIdToUrlId.get(fromVid);
+          if (refUid != null) {
+            const refEntry = urlMap.get(refUid);
+            if (refEntry) referrer = refEntry.url;
+          }
+        }
+
+        events.push([
+          ts,                          // Timestamp
+          evType,                      // Type
+          uEntry.title,                // Title
+          uEntry.url,                  // URL
+          uEntry.vc,                   // Visit Count
+          trans,                       // Transition
+          term,                        // Search Terms
+          '',                          // Target Path  (visits have none)
+          referrer,                    // Referrer
+          '',                          // MIME Type     (visits have none)
+        ]);
+      }
+    }
+
+    // ── 4. downloads table → download event rows ───────────────────────
+    const dlTbl = this._readNamedTable(bytes, dv, pageSize, db, 'downloads');
+    if (dlTbl) {
+      const dCols = dlTbl.columns.length
+        ? dlTbl.columns
+        : ['id', 'guid', 'current_path', 'target_path', 'start_time', 'received_bytes',
+           'total_bytes', 'state', 'danger_type', 'interrupt_reason', 'hash', 'end_time',
+           'opened', 'last_access_time', 'transient', 'referrer', 'site_url',
+           'tab_url', 'tab_referrer_url', 'http_method', 'by_ext_id', 'by_ext_name',
+           'etag', 'last_modified', 'mime_type', 'original_mime_type'];
+      const dTargetIdx   = dCols.indexOf('target_path');
+      const dCurrentIdx  = dCols.indexOf('current_path');
+      const dStartIdx    = dCols.indexOf('start_time');
+      const dTabUrlIdx   = dCols.indexOf('tab_url');
+      const dRefIdx      = dCols.indexOf('referrer');
+      const dMimeIdx     = dCols.indexOf('mime_type');
+      const dTotalIdx    = dCols.indexOf('total_bytes');
+
+      for (const row of dlTbl.rows) {
+        const target   = dTargetIdx  >= 0 ? (row[dTargetIdx]  || '') : '';
+        const current  = dCurrentIdx >= 0 ? (row[dCurrentIdx] || '') : '';
+        const timeRaw  = dStartIdx   >= 0 ? row[dStartIdx]          : 0;
+        const tabUrl   = dTabUrlIdx  >= 0 ? (row[dTabUrlIdx]  || '') : '';
+        const referrer = dRefIdx     >= 0 ? (row[dRefIdx]     || '') : '';
+        const mime     = dMimeIdx    >= 0 ? (row[dMimeIdx]    || '') : '';
+        const total    = dTotalIdx   >= 0 ? row[dTotalIdx]           : '';
+
+        const ts   = this._chromeTimestamp(timeRaw);
+        const path = target || current || '';
+
+        // Derive a display title: file basename from target_path.
+        const title = path ? path.replace(/^.*[\\/]/, '') : '';
+
+        events.push([
+          ts,                          // Timestamp
+          'download',                  // Type
+          title,                       // Title (file name)
+          tabUrl,                      // URL (the page that triggered the download)
+          total,                       // Visit Count → reused as "Total Bytes" for downloads
+          '',                          // Transition  (not applicable)
+          '',                          // Search Terms
+          path,                        // Target Path
+          referrer,                    // Referrer
+          mime,                        // MIME Type
+        ]);
+      }
+    }
+
+    // ── 5. Sort by timestamp string (ISO-like, lexicographic = chrono) ─
+    events.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+
+    db.historyEventColumns = [
+      'Timestamp', 'Type', 'Title', 'URL', 'Visit Count',
+      'Transition', 'Search Terms', 'Target Path', 'Referrer', 'MIME Type',
+    ];
+    db.historyEventRows = events;
+  }
+
+  // ── Firefox per-event builder (moz_historyvisits JOIN moz_places) ──────
+
+  _buildFirefoxEvents(bytes, dv, pageSize, db) {
+    // ── 1. moz_places → Map<id, {url, title, visit_count}> ────────────
+    const placesTbl = this._readNamedTable(bytes, dv, pageSize, db, 'moz_places');
+    if (!placesTbl) return;
+    const pCols = placesTbl.columns.length
+      ? placesTbl.columns
+      : ['id', 'url', 'title', 'rev_host', 'visit_count', 'hidden', 'typed', 'frecency', 'last_visit_date'];
+    const pIdIdx  = pCols.indexOf('id');
+    const pUrlIdx = pCols.indexOf('url');
+    const pTitIdx = pCols.indexOf('title');
+    const pVcIdx  = pCols.indexOf('visit_count');
+
+    const placeMap = new Map();
+    for (const row of placesTbl.rows) {
+      const id = pIdIdx >= 0 ? row[pIdIdx] : null;
+      if (id == null) continue;
+      placeMap.set(typeof id === 'number' ? id : parseInt(id, 10) || 0, {
+        url:   pUrlIdx >= 0 ? (row[pUrlIdx] || '') : '',
+        title: pTitIdx >= 0 ? (row[pTitIdx] || '') : '',
+        vc:    pVcIdx  >= 0 ? row[pVcIdx] : '',
+      });
+    }
+
+    // ── 2. moz_historyvisits → event rows ──────────────────────────────
+    const hvTbl = this._readNamedTable(bytes, dv, pageSize, db, 'moz_historyvisits');
+    if (!hvTbl) return;
+    const hCols = hvTbl.columns.length
+      ? hvTbl.columns
+      : ['id', 'from_visit', 'place_id', 'visit_date', 'visit_type'];
+    const hIdIdx    = hCols.indexOf('id');
+    const hFromIdx  = hCols.indexOf('from_visit');
+    const hPlaceIdx = hCols.indexOf('place_id');
+    const hDateIdx  = hCols.indexOf('visit_date');
+    const hTypeIdx  = hCols.indexOf('visit_type');
+
+    // Build visit-id → place_id map for referrer resolution.
+    const visitIdToPlaceId = new Map();
+    for (const row of hvTbl.rows) {
+      const vid = hIdIdx >= 0 ? (typeof row[hIdIdx] === 'number' ? row[hIdIdx] : parseInt(row[hIdIdx], 10) || 0) : 0;
+      const pid = hPlaceIdx >= 0 ? (typeof row[hPlaceIdx] === 'number' ? row[hPlaceIdx] : parseInt(row[hPlaceIdx], 10) || 0) : 0;
+      if (vid) visitIdToPlaceId.set(vid, pid);
+    }
+
+    const events = [];
+    for (const row of hvTbl.rows) {
+      const pid     = hPlaceIdx >= 0 ? (typeof row[hPlaceIdx] === 'number' ? row[hPlaceIdx] : parseInt(row[hPlaceIdx], 10) || 0) : 0;
+      const dateRaw = hDateIdx  >= 0 ? row[hDateIdx] : 0;
+      const fromVid = hFromIdx  >= 0 ? (typeof row[hFromIdx]  === 'number' ? row[hFromIdx]  : parseInt(row[hFromIdx],  10) || 0) : 0;
+      const vType   = hTypeIdx  >= 0 ? row[hTypeIdx] : 0;
+
+      const pEntry = placeMap.get(pid) || { url: '', title: '', vc: '' };
+      const ts     = this._firefoxTimestamp(dateRaw);
+      const trans  = this._firefoxTransitionType(vType);
+      const evType = trans === 'download' ? 'download' : 'visit';
+
+      // Resolve referrer.
+      let referrer = '';
+      if (fromVid) {
+        const refPid = visitIdToPlaceId.get(fromVid);
+        if (refPid != null) {
+          const refEntry = placeMap.get(refPid);
+          if (refEntry) referrer = refEntry.url;
+        }
+      }
+
+      events.push([
+        ts,                          // Timestamp
+        evType,                      // Type
+        pEntry.title,                // Title
+        pEntry.url,                  // URL
+        pEntry.vc,                   // Visit Count
+        trans,                       // Transition
+        '',                          // Search Terms  (not in places.sqlite)
+        '',                          // Target Path   (not in places.sqlite)
+        referrer,                    // Referrer
+        '',                          // MIME Type      (not in places.sqlite)
+      ]);
+    }
+
+    // Sort chronologically.
+    events.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+
+    db.historyEventColumns = [
+      'Timestamp', 'Type', 'Title', 'URL', 'Visit Count',
+      'Transition', 'Search Terms', 'Target Path', 'Referrer', 'MIME Type',
+    ];
+    db.historyEventRows = events;
   }
 
   // ── View builder ────────────────────────────────────────────────────────
