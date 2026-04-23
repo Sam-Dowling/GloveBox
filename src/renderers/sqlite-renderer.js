@@ -374,7 +374,7 @@ class SqliteRenderer {
     const lastVisitIdx = colNames.findIndex(c => c === 'last_visit_time');
 
     // Transform rows for display
-    const displayCols = ['URL', 'Title', 'Visit Count', 'Last Visited'];
+    const displayCols = ['URL', 'Domain', 'Title', 'Visit Count', 'Last Visited'];
     const displayRows = [];
     for (const row of rows) {
       const url = urlIdx >= 0 && urlIdx < row.length ? row[urlIdx] : '';
@@ -382,7 +382,8 @@ class SqliteRenderer {
       const count = visitCountIdx >= 0 && visitCountIdx < row.length ? row[visitCountIdx] : '';
       const lastVisitRaw = lastVisitIdx >= 0 && lastVisitIdx < row.length ? row[lastVisitIdx] : 0;
       const lastVisit = this._chromeTimestamp(lastVisitRaw);
-      displayRows.push([url || '', title || '', count, lastVisit]);
+      const domain = this._extractDomain(url || '');
+      displayRows.push([url || '', domain, title || '', count, lastVisit]);
     }
 
     db.historyColumns = displayCols;
@@ -405,7 +406,7 @@ class SqliteRenderer {
     const visitCountIdx = colNames.findIndex(c => c === 'visit_count');
     const lastVisitIdx = colNames.findIndex(c => c === 'last_visit_date');
 
-    const displayCols = ['URL', 'Title', 'Visit Count', 'Last Visited'];
+    const displayCols = ['URL', 'Domain', 'Title', 'Visit Count', 'Last Visited'];
     const displayRows = [];
     for (const row of rows) {
       const url = urlIdx >= 0 && urlIdx < row.length ? row[urlIdx] : '';
@@ -413,7 +414,8 @@ class SqliteRenderer {
       const count = visitCountIdx >= 0 && visitCountIdx < row.length ? row[visitCountIdx] : '';
       const lastVisitRaw = lastVisitIdx >= 0 && lastVisitIdx < row.length ? row[lastVisitIdx] : 0;
       const lastVisit = this._firefoxTimestamp(lastVisitRaw);
-      displayRows.push([url || '', title || '', count, lastVisit]);
+      const domain = this._extractDomain(url || '');
+      displayRows.push([url || '', domain, title || '', count, lastVisit]);
     }
 
     db.historyColumns = displayCols;
@@ -490,6 +492,21 @@ class SqliteRenderer {
     return isNaN(d.getTime()) ? '' : d.toISOString().replace('T', ' ').replace(/\.\d+Z/, ' UTC');
   }
 
+  // ── Domain extractor (virtual column) ────────────────────────────────────
+  //
+  // Extracts the FQDN (hostname) from a URL string.  Prefers tldts via the
+  // shared _parseUrlHost() helper when available; falls back to the URL API.
+
+  _extractDomain(url) {
+    if (!url || typeof url !== 'string') return '';
+    try {
+      const h = _parseUrlHost(url);
+      if (h && h.hostname) return h.hostname;
+    } catch (_) { /* tldts unavailable or parse failure */ }
+    try { return new URL(url).hostname; } catch (_) { /* malformed URL */ }
+    return '';
+  }
+
   // ── Transition type decoders ────────────────────────────────────────────
 
   _chromeTransitionType(raw) {
@@ -547,7 +564,7 @@ class SqliteRenderer {
   //
   // Output columns (uniform across Chrome and Firefox so the timeline
   // view does not need to branch):
-  //   Timestamp | Type | Title | URL | Visit Count | Transition |
+  //   Timestamp | Type | Title | URL | Domain | Visit Count | Transition |
   //   Search Terms | Target Path | Referrer | MIME Type
 
   _buildChromeEvents(bytes, dv, pageSize, db) {
@@ -642,6 +659,7 @@ class SqliteRenderer {
           evType,                      // Type
           uEntry.title,                // Title
           uEntry.url,                  // URL
+          this._extractDomain(uEntry.url), // Domain (virtual)
           uEntry.vc,                   // Visit Count
           trans,                       // Transition
           term,                        // Search Terms
@@ -690,6 +708,7 @@ class SqliteRenderer {
           'download',                  // Type
           title,                       // Title (file name)
           tabUrl,                      // URL (the page that triggered the download)
+          this._extractDomain(tabUrl), // Domain (virtual)
           total,                       // Visit Count → reused as "Total Bytes" for downloads
           '',                          // Transition  (not applicable)
           '',                          // Search Terms
@@ -704,7 +723,7 @@ class SqliteRenderer {
     events.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 
     db.historyEventColumns = [
-      'Timestamp', 'Type', 'Title', 'URL', 'Visit Count',
+      'Timestamp', 'Type', 'Title', 'URL', 'Domain', 'Visit Count',
       'Transition', 'Search Terms', 'Target Path', 'Referrer', 'MIME Type',
     ];
     db.historyEventRows = events;
@@ -782,6 +801,7 @@ class SqliteRenderer {
         evType,                      // Type
         pEntry.title,                // Title
         pEntry.url,                  // URL
+        this._extractDomain(pEntry.url), // Domain (virtual)
         pEntry.vc,                   // Visit Count
         trans,                       // Transition
         '',                          // Search Terms  (not in places.sqlite)
@@ -795,7 +815,7 @@ class SqliteRenderer {
     events.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
 
     db.historyEventColumns = [
-      'Timestamp', 'Type', 'Title', 'URL', 'Visit Count',
+      'Timestamp', 'Type', 'Title', 'URL', 'Domain', 'Visit Count',
       'Transition', 'Search Terms', 'Target Path', 'Referrer', 'MIME Type',
     ];
     db.historyEventRows = events;
