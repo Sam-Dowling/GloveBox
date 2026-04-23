@@ -277,6 +277,40 @@ class PdfRenderer {
       if (f.risk === 'low') f.risk = 'medium';
     }
 
+    // ── T2.12: JBIG2 / CCITTFax filter chain flagging ──────────────────
+    const jbig2Count = (raw.match(/\/JBIG2Decode\b/g) || []).length;
+    if (jbig2Count) {
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `${jbig2Count} /JBIG2Decode filter(s) — historically associated with exploit chains (FORCEDENTRY class)`,
+        severity: 'medium',
+        note: 'CVE-2021-30860 and related pdfium vulnerabilities use JBIG2'
+      });
+      if (f.risk === 'low') f.risk = 'medium';
+    }
+    const ccittCount = (raw.match(/\/CCITTFaxDecode\b/g) || []).length;
+    if (ccittCount) {
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `${ccittCount} /CCITTFaxDecode filter(s) — historically associated with exploit chains`,
+        severity: 'medium',
+        note: 'CCITTFax combined with other filters has been used in PDF exploits'
+      });
+      if (f.risk === 'low') f.risk = 'medium';
+    }
+
+    // ── T3.10: Object stream density abuse ──────────────────────────────
+    const objStmCount = (raw.match(/\/ObjStm\b/g) || []).length;
+    if (objStmCount > 10) {
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `High object-stream density (${objStmCount} /ObjStm entries) — potential anti-analysis obfuscation`,
+        severity: 'medium',
+        note: 'Object streams compress multiple objects into single streams, making static analysis harder'
+      });
+      if (f.risk === 'low') f.risk = 'medium';
+    }
+
     // ── XMP metadata ──────────────────────────────────────────────────────
     const xmp = this._extractXmp(raw);
     if (xmp) {

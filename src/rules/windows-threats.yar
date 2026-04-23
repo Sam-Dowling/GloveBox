@@ -2412,3 +2412,23 @@ rule ISO_Disk_Image
     condition:
         $cd001 or ($el_torito and $iso)
 }
+
+rule HTA_Stealth_Window
+{
+    meta:
+        description = "HTA with multiple window-chrome suppression attributes — deliberately invisible execution"
+        severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1218.005"
+
+    strings:
+        $hta     = "<HTA:APPLICATION" nocase
+        $min     = "WINDOWSTATE=\"minimize\"" nocase
+        $notask  = "SHOWINTASKBAR=\"no\"" nocase
+        $nocap   = "CAPTION=\"no\"" nocase
+        $noscr   = "SCROLL=\"no\"" nocase
+        $noborder = "BORDER=\"none\"" nocase
+
+    condition:
+        $hta and 2 of ($min, $notask, $nocap, $noscr, $noborder)
+}

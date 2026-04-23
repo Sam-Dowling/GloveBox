@@ -213,6 +213,108 @@ class SecurityAnalyzer {
       // Pattern detection against VBA source is handled by YARA (auto-scan on file load)
     }
     f.externalRefs.push(...this._externalRefs(parsed));
+
+    // ── T3.4: docProps/custom.xml IOC scanning ──────────────────────────
+    if (parsed.customProps) {
+      try {
+        const props = parsed.customProps.getElementsByTagName('property');
+        for (const prop of Array.from(props)) {
+          const valEl = prop.querySelector('vt\\:lpwstr, lpwstr, vt\\:bstr, bstr');
+          const val = valEl ? (valEl.textContent || '').trim() : '';
+          if (!val || val.length < 8) continue;
+          // URL scan
+          const urls = val.match(/https?:\/\/[^\s"'<>]+/gi) || [];
+          for (const url of urls) {
+            f.externalRefs.push({
+              type: IOC.URL, url, severity: 'high',
+              note: `Hidden in docProps/custom.xml property "${prop.getAttribute('name') || '?'}"`
+            });
+            if (f.risk !== 'high') f.risk = 'high';
+          }
+          // IP scan
+          const ips = val.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
+          for (const ip of ips) {
+            if (!/^(0\.|127\.|255\.|10\.|192\.168\.)/.test(ip)) {
+              f.externalRefs.push({
+                type: IOC.IP, url: ip, severity: 'medium',
+                note: `In docProps/custom.xml property "${prop.getAttribute('name') || '?'}"`
+              });
+              if (f.risk === 'low') f.risk = 'medium';
+            }
+          }
+          // Base64 blob scan
+          if (/^[A-Za-z0-9+/=]{100,}$/.test(val)) {
+            f.externalRefs.push({
+              type: IOC.PATTERN,
+              url: `Base64 blob in custom property "${prop.getAttribute('name') || '?'}" (${val.length} chars)`,
+              severity: 'high',
+              note: 'Possible encoded payload in docProps/custom.xml'
+            });
+            if (f.risk !== 'high') f.risk = 'high';
+          }
+        }
+      } catch (_) { /* custom.xml parse failure — non-fatal */ }
+    }
+
+    // ── T3.5: Field code walking (w:instrText / w:fldSimple) ────────────
+    if (parsed.document) {
+      try {
+        const dangerousFields = [
+          { re: /\bDDEAUTO\b/i, label: 'DDEAUTO', sev: 'critical' },
+          { re: /\bDDE\s/i, label: 'DDE', sev: 'critical' },
+          { re: /\bINCLUDETEXT\b/i, label: 'INCLUDETEXT', sev: 'high' },
+          { re: /\bINCLUDEPICTURE\b/i, label: 'INCLUDEPICTURE', sev: 'high' },
+          { re: /\bIMPORT\s/i, label: 'IMPORT', sev: 'medium' },
+          { re: /\bQUOTE\s/i, label: 'QUOTE', sev: 'medium' },
+          { re: /\bMACROBUTTON\b/i, label: 'MACROBUTTON', sev: 'medium' },
+        ];
+        const seen = new Set();
+        // w:instrText elements
+        for (const instr of Array.from(parsed.document.getElementsByTagNameNS(W, 'instrText'))) {
+          const text = (instr.textContent || '').trim();
+          if (!text) continue;
+          for (const df of dangerousFields) {
+            if (df.re.test(text) && !seen.has(df.label + ':' + text.slice(0, 80))) {
+              seen.add(df.label + ':' + text.slice(0, 80));
+              f.externalRefs.push({
+                type: IOC.PATTERN,
+                url: `Field code: ${df.label} — "${text.slice(0, 120)}"`,
+                severity: df.sev
+              });
+              if (df.sev === 'critical') f.risk = 'high';
+              else if (f.risk === 'low') f.risk = 'medium';
+            }
+          }
+          // Extract URLs from field instructions
+          const urlM = text.match(/https?:\/\/[^\s"']+/gi) || [];
+          for (const url of urlM) {
+            if (!seen.has('url:' + url)) {
+              seen.add('url:' + url);
+              f.externalRefs.push({ type: IOC.URL, url, severity: 'high', note: 'URL in field instruction' });
+              if (f.risk !== 'high') f.risk = 'high';
+            }
+          }
+        }
+        // w:fldSimple attributes
+        for (const fld of Array.from(parsed.document.getElementsByTagNameNS(W, 'fldSimple'))) {
+          const instr = (fld.getAttribute('w:instr') || fld.getAttribute('instr') || '').trim();
+          if (!instr) continue;
+          for (const df of dangerousFields) {
+            if (df.re.test(instr) && !seen.has(df.label + ':' + instr.slice(0, 80))) {
+              seen.add(df.label + ':' + instr.slice(0, 80));
+              f.externalRefs.push({
+                type: IOC.PATTERN,
+                url: `Field code: ${df.label} — "${instr.slice(0, 120)}"`,
+                severity: df.sev
+              });
+              if (df.sev === 'critical') f.risk = 'high';
+              else if (f.risk === 'low') f.risk = 'medium';
+            }
+          }
+        }
+      } catch (_) { /* field-code walk failure — non-fatal */ }
+    }
+
     if (f.hasMacros && f.autoExec.length) f.risk = 'high';
     else if (f.hasMacros || f.externalRefs.length) if (f.risk === 'low') f.risk = 'medium';
     return f;

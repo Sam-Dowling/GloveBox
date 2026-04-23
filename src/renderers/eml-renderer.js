@@ -353,6 +353,71 @@ class EmlRenderer {
         }
       }
 
+      // ── 3a. Display-name spoofing (T2.4) ──────────────────────────────
+      if (email.from) {
+        const fromAddr = (email.from.match(EMAIL_RE) || [])[0] || '';
+        const fromDomain = fromAddr.split('@')[1] || '';
+        const displayName = email.from.replace(/<[^>]*>/, '').replace(/["']/g, '').trim().toLowerCase();
+        const authorityWords = /\b(ceo|cfo|cto|coo|ciso|director|president|vp|admin|administrator|support|helpdesk|hr|payroll|it department|security|finance|accounting|legal)\b/i;
+        const freemailDomains = /^(gmail\.com|yahoo\.com|outlook\.com|hotmail\.com|protonmail\.com|aol\.com|mail\.com|yandex\.com|gmx\.com|icloud\.com|zoho\.com|live\.com)$/i;
+        if (displayName && authorityWords.test(displayName) && fromDomain && freemailDomains.test(fromDomain)) {
+          f.externalRefs.push({
+            type: IOC.PATTERN,
+            url: `Display name impersonates authority role ("${displayName.slice(0, 60)}") but sender is freemail (${fromDomain})`,
+            severity: 'high'
+          });
+          if (f.risk !== 'high') f.risk = 'high';
+        }
+      }
+
+      // ── 3b. Return-Path / Message-ID domain mismatch (T2.5) ───────────
+      {
+        const fromAddr = (email.from || '').match(EMAIL_RE);
+        const fromDomain = fromAddr ? (fromAddr[0].split('@')[1] || '').toLowerCase() : '';
+        if (fromDomain) {
+          // Return-Path mismatch
+          const returnPath = (unfoldedHeaders.match(/^Return-Path:\s*<?([^>\s]+)/im) || [])[1] || '';
+          const rpAddr = (returnPath.match(EMAIL_RE) || [])[0] || '';
+          const rpDomain = rpAddr ? (rpAddr.split('@')[1] || '').toLowerCase() : '';
+          if (rpDomain && rpDomain !== fromDomain) {
+            f.externalRefs.push({
+              type: IOC.PATTERN,
+              url: `Return-Path domain (${rpDomain}) differs from From domain (${fromDomain})`,
+              severity: 'medium'
+            });
+            if (f.risk === 'low') f.risk = 'medium';
+          }
+          // Message-ID domain mismatch
+          const msgId = email.messageId || '';
+          const midDomain = (msgId.match(/@([A-Za-z0-9.-]+)/) || [])[1] || '';
+          if (midDomain && midDomain.toLowerCase() !== fromDomain) {
+            f.externalRefs.push({
+              type: IOC.PATTERN,
+              url: `Message-ID domain (${midDomain}) differs from From domain (${fromDomain})`,
+              severity: 'info'
+            });
+          }
+        }
+      }
+
+      // ── 3c. Thread-hijack markers (T2.6) ──────────────────────────────
+      {
+        const inReplyTo = unfoldedHeaders.match(/^In-Reply-To:/im);
+        const references = unfoldedHeaders.match(/^References:/im);
+        if (inReplyTo || references) {
+          // Count Received hops
+          const receivedCount = (unfoldedHeaders.match(/^Received:/gim) || []).length;
+          if (receivedCount <= 2) {
+            f.externalRefs.push({
+              type: IOC.PATTERN,
+              url: `Message claims to be a reply (In-Reply-To/References present) but has only ${receivedCount} Received hop(s) — possible thread hijack`,
+              severity: 'medium'
+            });
+            if (f.risk === 'low') f.risk = 'medium';
+          }
+        }
+      }
+
       // ── 4. URLs and emails in body (plain + HTML) ──────────────────────
       // matchAll so we can carry `m[0]` as _highlightText — necessary when
       // pushUrl's trailing-punctuation strip means the cleaned URL would
@@ -378,6 +443,29 @@ class EmlRenderer {
         }
       }
 
+
+      // ── 4a. RLO / bidi override in filenames and subject (T2.7) ────────
+      {
+        const bidiRE = /[\u202E\u202D\u200F\u200E\u2066\u2067\u2068\u2069\uFEFF]/;
+        if (email.subject && bidiRE.test(email.subject)) {
+          f.externalRefs.push({
+            type: IOC.PATTERN,
+            url: 'Bidirectional text override detected in Subject — possible extension spoofing (T1036.002)',
+            severity: 'critical'
+          });
+          f.risk = 'high';
+        }
+        for (const att of email.attachments) {
+          if (att.filename && bidiRE.test(att.filename)) {
+            f.externalRefs.push({
+              type: IOC.PATTERN,
+              url: `Bidirectional text override in attachment filename "${att.filename.slice(0, 80)}" — possible extension spoofing (T1036.002)`,
+              severity: 'critical'
+            });
+            f.risk = 'high';
+          }
+        }
+      }
 
       // ── 5. Dangerous attachments ───────────────────────────────────────
       const dangerExts = /\.(exe|scr|com|pif|bat|cmd|vbs|vbe|js|jse|wsf|wsh|ps1|hta|lnk|cpl|msi|dll|reg|inf|sct|gadget)$/i;

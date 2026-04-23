@@ -308,6 +308,16 @@ class MsiRenderer {
         severity: 'info'
       });
 
+      // ── T2.11: _Validation table absence flag ─────────────────────────
+      if (!tables.includes('_Validation')) {
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: 'MSI lacks _Validation table — common in repackaged/trojanized installers',
+          severity: 'medium'
+        });
+        bumpRisk('medium');
+      }
+
       // Check for dangerous tables
       const hasCustomAction = tables.includes('CustomAction');
       const hasBinary = tables.includes('Binary');

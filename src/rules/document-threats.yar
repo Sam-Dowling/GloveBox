@@ -752,3 +752,102 @@ rule HTML_Smuggling_Password_Hint
     condition:
         ($blob or $b64) and $dl and any of ($pw*) and $zip
 }
+
+rule RTF_ObjUpdate_AutoExec
+{
+    meta:
+        description = "RTF with \\objupdate auto-execution — highest-signal RTF dropper indicator"
+        severity    = "critical"
+        category    = "execution"
+        mitre       = "T1203"
+
+    strings:
+        $rtf       = "{\\rtf" nocase
+        $object    = "\\object" nocase
+        $objdata   = "\\objdata" nocase
+        $objupdate = "\\objupdate" nocase
+
+    condition:
+        $rtf and $object and $objdata and $objupdate
+}
+
+rule RTF_ObjClass_Exploit
+{
+    meta:
+        description = "RTF with high-risk OLE object class — maps to known exploit families or dropper techniques"
+        severity    = "critical"
+        category    = "execution"
+        mitre       = "T1203"
+
+    strings:
+        $rtf      = "{\\rtf" nocase
+        $objclass = "\\objclass" nocase
+        $eq3      = "Equation.3" nocase
+        $eq4      = "Equation.DSMT4" nocase
+        $ole2link = "OLE2Link" nocase
+        $package  = "\\objclass Package" nocase
+        $html1    = "htmlfile" nocase
+        $html2    = "MSForms.HTMLFile" nocase
+
+    condition:
+        $rtf and $objclass and ($eq3 or $eq4 or $ole2link or $package or $html1 or $html2)
+}
+
+rule OOXML_External_Template
+{
+    meta:
+        description = "OOXML document with external relationship target — template injection or remote OLE"
+        severity    = "high"
+        category    = "initial-access"
+        mitre       = "T1221"
+
+    strings:
+        $extmode   = "TargetMode=\"External\"" nocase
+        $template  = "attachedTemplate" nocase
+        $dotm      = ".dotm" nocase
+        $http      = "Target=\"http" nocase
+        $unc       = "Target=\"\\\\" nocase
+        $oleobj    = "oleObject" nocase
+
+    condition:
+        $extmode and ($template or $dotm or $http or $unc or $oleobj)
+}
+
+rule OOXML_DDE_Field_Code
+{
+    meta:
+        description = "OOXML document with DDE or dangerous field code in w:instrText — code execution without macros"
+        severity    = "high"
+        category    = "execution"
+        mitre       = "T1559.002"
+
+    strings:
+        $instr1 = "w:instrText" nocase
+        $instr2 = "w:fldSimple" nocase
+        $dde1   = "DDEAUTO" nocase
+        $dde2   = "DDE " nocase
+        $inc1   = "INCLUDETEXT" nocase
+        $inc2   = "INCLUDEPICTURE" nocase
+        $import = "IMPORT " nocase
+        $quote  = "QUOTE " nocase
+
+    condition:
+        ($instr1 or $instr2) and ($dde1 or $dde2 or $inc1 or $inc2 or $import or $quote)
+}
+
+rule RTF_Nested_Objects
+{
+    meta:
+        description = "RTF with multiple nested OLE objects or nested RTF — parser-confusion evasion technique"
+        severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
+
+    strings:
+        $rtf    = "{\\rtf" nocase
+        $obj    = "{\\object" nocase
+        $nested = "{\\rtf1" nocase
+
+    condition:
+        $rtf and (#obj > 2 or #nested > 1)
+}

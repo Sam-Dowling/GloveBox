@@ -564,6 +564,9 @@ class PeRenderer {
     // ── Import Table ───────────────────────────────────────────────────
     pe.imports = this._parseImports(bytes, pe.dataDirectories, pe.sections, is64);
 
+    // ── Delay Import Table (T3.9) ─────────────────────────────────────
+    pe.delayImports = this._parseDelayImports(bytes, pe.dataDirectories, pe.sections, is64);
+
     // ── Export Table ───────────────────────────────────────────────────
     pe.exports = this._parseExports(bytes, pe.dataDirectories, pe.sections);
 
@@ -1041,6 +1044,91 @@ class PeRenderer {
 
       imports.push({ dllName, functions });
       descOff += 20;
+    }
+
+    return imports;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  Delay Import Table parser (T3.9 — IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT = 13)
+  // ═══════════════════════════════════════════════════════════════════════
+  //
+  // ImgDelayDescr layout (32 bytes):
+  //   u32 grAttrs        — attributes (1 = RVA-based, 0 = VA-based)
+  //   u32 rvaDLLName     — RVA of DLL name
+  //   u32 rvaHmod        — RVA of module handle
+  //   u32 rvaIAT         — RVA of the delay-load IAT
+  //   u32 rvaINT         — RVA of the delay-load INT (name table)
+  //   u32 rvaBoundIAT    — RVA of optional bound IAT
+  //   u32 rvaUnloadIAT   — RVA of optional unload IAT
+  //   u32 dwTimeStamp    — timestamp (0 if not bound)
+  //
+  // The name table (INT) has the same format as regular imports: each
+  // entry is a pointer-sized value — ordinal flag in the high bit, else
+  // RVA to a hint/name pair. We reuse the same walk logic as _parseImports.
+
+  _parseDelayImports(bytes, dataDirs, sections, is64) {
+    if (!dataDirs[13] || dataDirs[13].rva === 0 || dataDirs[13].size === 0) return [];
+
+    const delayOff = this._rvaToOffset(dataDirs[13].rva, sections);
+    if (delayOff + 32 > bytes.length) return [];
+
+    const imports = [];
+    const maxDlls = 256;
+    let descOff = delayOff;
+
+    for (let d = 0; d < maxDlls; d++) {
+      if (descOff + 32 > bytes.length) break;
+
+      const grAttrs    = this._u32(bytes, descOff);
+      const nameRva    = this._u32(bytes, descOff + 4);
+      const intRva     = this._u32(bytes, descOff + 16);
+
+      // End of delay import descriptors (all zeros)
+      if (nameRva === 0 && intRva === 0) break;
+
+      // Read DLL name
+      const nameOff = this._rvaToOffset(nameRva, sections);
+      const dllName = (nameOff < bytes.length) ? this._str(bytes, nameOff, 256) : '(unknown)';
+
+      // Read imported functions from INT
+      const lookupOff = this._rvaToOffset(intRva, sections);
+      const functions = [];
+      const maxFuncs = 4096;
+
+      if (intRva > 0 && lookupOff < bytes.length) {
+        const entrySize = is64 ? 8 : 4;
+        const ordFlag = is64 ? 0x8000000000000000 : 0x80000000;
+
+        for (let f = 0; f < maxFuncs; f++) {
+          const fOff = lookupOff + f * entrySize;
+          if (fOff + entrySize > bytes.length) break;
+
+          let entry;
+          if (is64) {
+            entry = this._u64(bytes, fOff);
+          } else {
+            entry = this._u32(bytes, fOff);
+          }
+          if (entry === 0) break;
+
+          if (is64 ? (entry >= ordFlag) : (entry & ordFlag)) {
+            const ordinal = entry & 0xFFFF;
+            functions.push({ name: `Ordinal #${ordinal}`, ordinal, isSuspicious: false });
+          } else {
+            const hintRva = entry & 0x7FFFFFFF;
+            const hintOff = this._rvaToOffset(hintRva, sections);
+            if (hintOff + 2 < bytes.length) {
+              const funcName = this._str(bytes, hintOff + 2, 256);
+              const suspiciousInfo = PeRenderer.SUSPICIOUS_APIS[funcName] || null;
+              functions.push({ name: funcName, isSuspicious: !!suspiciousInfo, suspiciousInfo });
+            }
+          }
+        }
+      }
+
+      imports.push({ dllName, functions });
+      descOff += 32;
     }
 
     return imports;
@@ -2054,6 +2142,17 @@ class PeRenderer {
           this._renderImports(pe),
           0,
           { cardId: 'imports' }
+        ));
+      }
+
+      // ── Delay-Loaded Imports (T3.9) ────────────────────────────────
+      if (pe.delayImports && pe.delayImports.length > 0) {
+        const totalDelayFuncs = pe.delayImports.reduce((s, d) => s + d.functions.length, 0);
+        wrap.appendChild(this._renderSection(
+          '⏳ Delay-Loaded Imports (' + pe.delayImports.length + ' DLLs, ' + totalDelayFuncs + ' functions)',
+          this._renderImports({ imports: pe.delayImports }),
+          0,
+          { cardId: 'delay-imports' }
         ));
       }
 
@@ -3351,6 +3450,26 @@ class PeRenderer {
         if (hasAntiDebug) { issues.push('Imports anti-debugging / sandbox evasion APIs'); riskScore += 1; }
         if (hasNetworking) { issues.push('Imports networking APIs (C2 / download capability)'); riskScore += 1; }
         if (hasCrypto) { issues.push('Imports cryptographic APIs (potential ransomware)'); riskScore += 1.5; }
+      }
+
+      // ── T3.9: Suspicious delay-loaded imports ─────────────────────
+      if (pe.delayImports && pe.delayImports.length > 0) {
+        const totalDelayFuncs = pe.delayImports.reduce((s, d) => s + d.functions.length, 0);
+        findings.metadata['Delay-Loaded DLLs'] = String(pe.delayImports.length);
+        for (const imp of pe.delayImports) {
+          for (const fn of imp.functions) {
+            if (fn.isSuspicious) {
+              pushIOC(findings, {
+                type: IOC.PATTERN,
+                value: `Suspicious API ${fn.name} hidden in delay-loaded import from ${imp.dllName}`,
+                severity: 'medium',
+                note: fn.suspiciousInfo,
+                _noDomainSibling: true,
+              });
+              riskScore += 0.5;
+            }
+          }
+        }
       }
 
       // ── Extract IOCs from parsed Authenticode certificates ─────────

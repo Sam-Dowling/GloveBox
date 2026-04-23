@@ -784,6 +784,34 @@ class LnkRenderer {
       dangers.push({ label: 'Hidden/System file attributes', detail: info.attrStr, sev: 'medium' });
     }
 
+    // ShowCommand = SW_HIDE (value 0) — link runs its target with a hidden window
+    if (info.showCommand === 'SW_HIDE') {
+      dangers.push({ label: 'ShowCommand is SW_HIDE — link runs its target with a hidden window', detail: 'ShowCommand = 0', sev: 'medium' });
+    }
+
+    // Icon path vs target mismatch — icon masquerades as document but target is executable
+    if (info.iconLocation && info.targetPath) {
+      const iconExt = (info.iconLocation.match(/\.([a-z0-9]{1,6})$/i) || [])[1] || '';
+      const targetExt = (info.targetPath.match(/\.([a-z0-9]{1,6})$/i) || [])[1] || '';
+      const docExts = new Set(['pdf','doc','docx','xls','xlsx','ppt','jpg','png','jpeg','gif','bmp','txt','rtf','csv']);
+      const exeExts = new Set(['exe','cmd','bat','ps1','vbs','js','com','scr','hta','msi','pif','wsh','wsf']);
+      if (docExts.has(iconExt.toLowerCase()) && exeExts.has(targetExt.toLowerCase())) {
+        dangers.push({ label: `Icon masquerades as .${iconExt} but target is .${targetExt}`, detail: `icon="${info.iconLocation}" target="${info.targetPath}"`, sev: 'high' });
+      }
+    }
+
+    // Suspicious working directory — user-writable staging locations
+    if (info.workingDir) {
+      const wd = info.workingDir.toLowerCase();
+      const stagingPaths = ['%temp%', '%tmp%', '%appdata%', '%localappdata%', '%public%', 'c:\\users\\public'];
+      for (const sp of stagingPaths) {
+        if (wd.includes(sp)) {
+          dangers.push({ label: 'Working directory points to user-writable staging location', detail: info.workingDir, sev: 'medium' });
+          break;
+        }
+      }
+    }
+
     // Icon from UNC/URL — staging / credential theft
     for (const src of [info.iconLocation, info.iconEnvPath]) {
       if (!src) continue;
@@ -810,6 +838,7 @@ class LnkRenderer {
   }
 
   _showCmd(val) {
+    if (val === 0) return 'SW_HIDE';
     if (val === 3) return 'Maximized';
     if (val === 7) return 'Minimized';
     return 'Normal';

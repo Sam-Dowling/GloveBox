@@ -97,6 +97,51 @@ class RtfRenderer {
       else if (o.sev === 'medium' && f.risk !== 'high') f.risk = 'medium';
     }
 
+    // ── T2.8: objclass value extraction and classification ──────────────
+    const objclassRE = /\\objclass\s+([^}\s\\]+)/gi;
+    const exploitClasses = {
+      'equation.3':        { family: 'Equation Editor (CVE-2017-11882 family)', sev: 'critical' },
+      'equation.dsmt4':    { family: 'Equation Editor (CVE-2017-11882 family)', sev: 'critical' },
+      'ole2link':          { family: 'OLE2Link remote template (CVE-2017-0199)', sev: 'critical' },
+      'package':           { family: 'OLE Package — may contain embedded executable', sev: 'high' },
+      'htmlfile':          { family: 'HTML smuggling via OLE', sev: 'high' },
+      'msforms.htmlfile':  { family: 'HTML smuggling via OLE (MSForms)', sev: 'high' },
+    };
+    for (const m of text.matchAll(objclassRE)) {
+      const cls = m[1].toLowerCase();
+      const info = exploitClasses[cls];
+      if (info) {
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: `\\objclass "${m[1]}" — ${info.family}`,
+          severity: info.sev
+        });
+        if (info.sev === 'critical') f.risk = 'high';
+        else if (f.risk === 'low') f.risk = 'medium';
+      }
+    }
+
+    // ── T2.9: Nested object depth counting ──────────────────────────────
+    const objCount = (text.match(/\{\\object\b/gi) || []).length;
+    if (objCount > 2) {
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `Multiple nested OLE objects detected (${objCount} objects) — possible parser-confusion evasion`,
+        severity: 'high'
+      });
+      f.risk = 'high';
+    }
+    // Detect RTF-within-RTF (nested {\rtf1)
+    const rtfHeads = (text.match(/\{\\rtf1\b/gi) || []).length;
+    if (rtfHeads > 1) {
+      f.externalRefs.push({
+        type: IOC.PATTERN,
+        url: `Nested RTF document detected (${rtfHeads} \\rtf1 headers) — RTF-within-RTF evasion technique`,
+        severity: 'high'
+      });
+      f.risk = 'high';
+    }
+
     // Structural: hex obfuscation analysis
     const hexEscapes = (text.match(/\\'[0-9a-fA-F]{2}/g) || []).length;
     if (hexEscapes > 500) {

@@ -277,9 +277,64 @@ class HtmlRenderer {
     // ── 2. Form credential harvesting detection ─────────────────────────
     for (const form of domInfo.forms) {
       if (form.hasPassword) {
+        // T3.1: Cross-origin form with password field
+        const action = form.action || '';
+        let isCrossOrigin = false;
+        if (action && /^https?:\/\//i.test(action)) {
+          isCrossOrigin = true;
+        } else if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/.test(action)) {
+          isCrossOrigin = true;
+        }
         refs.push({
           type: IOC.PATTERN,
-          url: `Form with password field → action="${form.action || '(same page)'}"`,
+          url: isCrossOrigin
+            ? `Cross-origin form with password field → action="${action.slice(0, 120)}" — likely credential phishing`
+            : `Form with password field → action="${action || '(same page)'}"`,
+          severity: isCrossOrigin ? 'critical' : 'high'
+        });
+        risk = 'high';
+      }
+    }
+
+    // ── 2a. ClickFix / fake-captcha detection (T3.2) ────────────────────
+    {
+      const lower = text.toLowerCase();
+      const hasClipboard = /navigator\.clipboard\.writetext|document\.execcommand\s*\(\s*['"]copy|clipboarddata/i.test(text);
+      const hasPayload = /powershell|mshta|cmd\s*\/c|cmd\.exe|regsvr32|certutil|bitsadmin|wscript|cscript/i.test(text);
+      const hasInstruction = /press\s+win\s*\+\s*r|win\+r|ctrl\s*\+\s*v|paste|verify\s+you\s+are\s+human|captcha|i\s*'?\s*m\s+not\s+a\s+robot|click\s+to\s+verify/i.test(text);
+      if (hasClipboard && (hasPayload || hasInstruction)) {
+        refs.push({
+          type: IOC.PATTERN,
+          url: 'ClickFix / fake-captcha pattern — instructs user to paste malicious command (T1204.001)',
+          severity: 'critical'
+        });
+        risk = 'high';
+      } else if (hasClipboard && /base64|atob|fromcharcode/i.test(text)) {
+        refs.push({
+          type: IOC.PATTERN,
+          url: 'Clipboard write with encoded content — possible ClickFix variant',
+          severity: 'high'
+        });
+        risk = 'high';
+      }
+    }
+
+    // ── 2b. Data-URI iframe/embed smuggling (T3.3) ──────────────────────
+    {
+      const dataUriRE = /<(iframe|embed|object)\b[^>]+src\s*=\s*["']?\s*data:(?!image\/)/gi;
+      for (const m of text.matchAll(dataUriRE)) {
+        refs.push({
+          type: IOC.PATTERN,
+          url: `Data-URI <${m[1]}> — HTML smuggling technique`,
+          severity: 'high'
+        });
+        risk = 'high';
+      }
+      // Also flag <img src="data:text/html,..."> (non-image MIME in img tag)
+      for (const m of text.matchAll(/<img\b[^>]+src\s*=\s*["']?\s*data:text\/html/gi)) {
+        refs.push({
+          type: IOC.PATTERN,
+          url: 'Data-URI <img> with text/html MIME — HTML smuggling technique',
           severity: 'high'
         });
         risk = 'high';

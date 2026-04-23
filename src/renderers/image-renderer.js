@@ -171,6 +171,175 @@ class ImageRenderer {
       }
     }
 
+    // ── T3.6: GIF appended data past trailer ────────────────────────────
+    if (ext === 'gif') {
+      // GIF trailer is 0x3B; scan backwards for it
+      let trailerPos = -1;
+      for (let i = bytes.length - 1; i >= 6; i--) {
+        if (bytes[i] === 0x3B) { trailerPos = i; break; }
+      }
+      if (trailerPos >= 0 && trailerPos + 1 < bytes.length) {
+        const extra = bytes.length - trailerPos - 1;
+        if (extra > 0) {
+          f.externalRefs.push({
+            type: IOC.PATTERN,
+            url: `${this._fmtBytes(extra)} of data appended after GIF trailer — possible steganography or embedded payload`,
+            severity: 'medium'
+          });
+          if (f.risk === 'low') f.risk = 'medium';
+        }
+      }
+    }
+
+    // ── T3.8: PNG ancillary text chunk scanning ─────────────────────────
+    if ((ext === 'png' || ext === 'PNG') && bytes.length > 8) {
+      // PNG signature is 8 bytes, then chunks: [4-byte length][4-byte type][data][4-byte CRC]
+      const PNG_TEXT_TYPES = {
+        'tEXt': [0x74, 0x45, 0x58, 0x74],
+        'iTXt': [0x69, 0x54, 0x58, 0x74],
+        'zTXt': [0x7A, 0x54, 0x58, 0x74],
+      };
+      // Standard PNG tEXt keywords per spec
+      const STANDARD_KEYWORDS = new Set([
+        'Title', 'Author', 'Description', 'Copyright', 'Creation Time',
+        'Software', 'Disclaimer', 'Warning', 'Source', 'Comment',
+      ]);
+      let off = 8; // skip PNG signature
+      while (off + 12 <= bytes.length) {
+        const chunkLen = (bytes[off] << 24) | (bytes[off + 1] << 16) | (bytes[off + 2] << 8) | bytes[off + 3];
+        if (chunkLen < 0 || chunkLen > 0x7FFFFFFF || off + 12 + chunkLen > bytes.length) break;
+        const typeBytes = [bytes[off + 4], bytes[off + 5], bytes[off + 6], bytes[off + 7]];
+        const typeName = String.fromCharCode(...typeBytes);
+        const dataStart = off + 8;
+        const dataEnd = dataStart + chunkLen;
+
+        for (const [tName, tBytes] of Object.entries(PNG_TEXT_TYPES)) {
+          if (typeBytes[0] === tBytes[0] && typeBytes[1] === tBytes[1] &&
+              typeBytes[2] === tBytes[2] && typeBytes[3] === tBytes[3]) {
+            // Large chunk flag
+            if (chunkLen > 1024) {
+              f.externalRefs.push({
+                type: IOC.PATTERN,
+                url: `Large PNG ${tName} chunk (${this._fmtBytes(chunkLen)}) — potential data-hiding channel`,
+                severity: 'medium'
+              });
+              if (f.risk === 'low') f.risk = 'medium';
+            }
+            // Extract text content for payload scanning
+            if (chunkLen > 0 && chunkLen <= 65536) {
+              let textContent = '';
+              if (tName === 'tEXt') {
+                // tEXt: keyword\0text
+                let nullPos = dataStart;
+                while (nullPos < dataEnd && bytes[nullPos] !== 0) nullPos++;
+                const keyword = String.fromCharCode(...bytes.subarray(dataStart, nullPos));
+                textContent = String.fromCharCode(...bytes.subarray(nullPos + 1, dataEnd));
+                if (!STANDARD_KEYWORDS.has(keyword) && keyword.length > 0) {
+                  f.externalRefs.push({
+                    type: IOC.PATTERN,
+                    url: `Non-standard PNG tEXt keyword: "${keyword}" — may hide custom data`,
+                    severity: 'info'
+                  });
+                }
+              } else if (tName === 'iTXt') {
+                // iTXt: keyword\0 compressionFlag(1) compressionMethod(1) langTag\0 translatedKeyword\0 text
+                let nullPos = dataStart;
+                while (nullPos < dataEnd && bytes[nullPos] !== 0) nullPos++;
+                const keyword = String.fromCharCode(...bytes.subarray(dataStart, nullPos));
+                const compFlag = bytes[nullPos + 1] || 0;
+                // Skip past compressionMethod, langTag\0, translatedKeyword\0
+                let textStart = nullPos + 3;
+                let skips = 0;
+                while (textStart < dataEnd && skips < 2) {
+                  if (bytes[textStart] === 0) skips++;
+                  textStart++;
+                }
+                if (compFlag === 0 && textStart < dataEnd) {
+                  textContent = String.fromCharCode(...bytes.subarray(textStart, dataEnd));
+                }
+                if (!STANDARD_KEYWORDS.has(keyword) && keyword.length > 0) {
+                  f.externalRefs.push({
+                    type: IOC.PATTERN,
+                    url: `Non-standard PNG iTXt keyword: "${keyword}" — may hide custom data`,
+                    severity: 'info'
+                  });
+                }
+              } else if (tName === 'zTXt') {
+                // zTXt: keyword\0 compressionMethod(1) compressedText
+                let nullPos = dataStart;
+                while (nullPos < dataEnd && bytes[nullPos] !== 0) nullPos++;
+                const keyword = String.fromCharCode(...bytes.subarray(dataStart, nullPos));
+                if (!STANDARD_KEYWORDS.has(keyword) && keyword.length > 0) {
+                  f.externalRefs.push({
+                    type: IOC.PATTERN,
+                    url: `Non-standard PNG zTXt keyword: "${keyword}" — may hide custom data`,
+                    severity: 'info'
+                  });
+                }
+                // Try decompressing zTXt content
+                const compData = bytes.subarray(nullPos + 2, dataEnd);
+                if (compData.length > 20 && typeof pako !== 'undefined') {
+                  try {
+                    const inflated = pako.inflate(compData);
+                    textContent = String.fromCharCode(...inflated.subarray(0, Math.min(inflated.length, 65536)));
+                  } catch (_) { /* decompression failure is fine */ }
+                }
+              }
+              // Scan text content for payloads
+              if (textContent.length > 50) {
+                if (/^[A-Za-z0-9+/=]{100,}$/.test(textContent) || /[A-Za-z0-9+/=]{100,}/.test(textContent)) {
+                  f.externalRefs.push({
+                    type: IOC.PATTERN,
+                    url: `PNG ${tName} chunk contains Base64 blob (${textContent.length} chars) — possible encoded payload`,
+                    severity: 'high'
+                  });
+                  f.risk = 'high';
+                }
+                if (/TVqQ|TVpQ|TVoA|TVnA|\bMZ\b/.test(textContent)) {
+                  f.externalRefs.push({
+                    type: IOC.PATTERN,
+                    url: `PNG ${tName} chunk contains PE magic signature — hidden executable payload`,
+                    severity: 'high'
+                  });
+                  f.risk = 'high';
+                }
+                if (/powershell|cmd\s*\/c|<script|<\?php|eval\s*\(/i.test(textContent)) {
+                  f.externalRefs.push({
+                    type: IOC.PATTERN,
+                    url: `PNG ${tName} chunk contains script payload pattern`,
+                    severity: 'high'
+                  });
+                  f.risk = 'high';
+                }
+              }
+            }
+            break;
+          }
+        }
+
+        // IEND — stop walking
+        if (bytes[off + 4] === 0x49 && bytes[off + 5] === 0x45 &&
+            bytes[off + 6] === 0x4E && bytes[off + 7] === 0x44) break;
+        off = dataEnd + 4; // skip CRC
+      }
+    }
+
+    // ── T3.6: BMP file size vs actual size ──────────────────────────────
+    if (ext === 'bmp' && bytes.length >= 6) {
+      const declaredSize = bytes[2] | (bytes[3] << 8) | (bytes[4] << 16) | (bytes[5] << 24);
+      if (declaredSize > 0 && declaredSize < bytes.length) {
+        const extra = bytes.length - declaredSize;
+        if (extra > 16) {
+          f.externalRefs.push({
+            type: IOC.PATTERN,
+            url: `${this._fmtBytes(extra)} of data appended past declared BMP size (${this._fmtBytes(declaredSize)}) — possible embedded payload`,
+            severity: 'medium'
+          });
+          if (f.risk === 'low') f.risk = 'medium';
+        }
+      }
+    }
+
     // Check for embedded PE header inside image
     for (let i = 16; i < bytes.length - 4; i++) {
       if (bytes[i] === 0x4D && bytes[i + 1] === 0x5A && bytes[i + 2] === 0x90 && bytes[i + 3] === 0x00) {
@@ -483,6 +652,43 @@ class ImageRenderer {
     }
     if (data.Credit) {
       f.metadata.iptcCredit = String(data.Credit).trim();
+    }
+
+    // ── T3.7: EXIF field payload scanning ───────────────────────────────
+    const suspectFields = ['UserComment', 'ImageDescription', 'Artist', 'Copyright',
+      'XPComment', 'XPAuthor', 'XPKeywords', 'XPSubject'];
+    for (const field of suspectFields) {
+      const val = data[field];
+      if (!val) continue;
+      const str = String(val).trim();
+      if (str.length < 20) continue;
+      // Base64 blob check
+      if (/^[A-Za-z0-9+/=]{100,}$/.test(str) || /[A-Za-z0-9+/=]{100,}/.test(str)) {
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: `EXIF ${field} contains Base64 blob (${str.length} chars) — possible encoded payload`,
+          severity: 'high'
+        });
+        if (f.risk !== 'high') f.risk = 'high';
+      }
+      // PE magic in text
+      if (/TVqQ|TVpQ|TVoA|TVnA|\bMZ\b/.test(str)) {
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: `EXIF ${field} contains PE magic signature — hidden executable payload`,
+          severity: 'high'
+        });
+        f.risk = 'high';
+      }
+      // Script patterns
+      if (/powershell|cmd\s*\/c|<script|<\?php|<\?=|eval\s*\(|document\.write/i.test(str)) {
+        f.externalRefs.push({
+          type: IOC.PATTERN,
+          url: `EXIF ${field} contains script payload pattern`,
+          severity: 'high'
+        });
+        f.risk = 'high';
+      }
     }
   }
 
