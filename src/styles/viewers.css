@@ -12268,9 +12268,9 @@ body.tl-splitter-dragging * {
   color: var(--accent);
 }
 
-.timeline-view .tl-col-resize {
+.timeline-view .tl-col-resize,
+.timeline-view .tl-col-resize-left {
   position: absolute;
-  right: 0;
   top: 0;
   bottom: 0;
   width: 5px;
@@ -12278,9 +12278,13 @@ body.tl-splitter-dragging * {
   background: transparent;
   z-index: 3;
 }
+.timeline-view .tl-col-resize       { right: 0; }
+.timeline-view .tl-col-resize-left  { left: 0; }
 
 .timeline-view .tl-col-resize:hover,
-body.tl-col-resizing .timeline-view .tl-col-resize {
+.timeline-view .tl-col-resize-left:hover,
+body.tl-col-resizing .timeline-view .tl-col-resize,
+body.tl-col-resizing .timeline-view .tl-col-resize-left {
   background: rgb(var(--accent-rgb) / .4);
 }
 
@@ -13987,9 +13991,11 @@ body.dark .timeline-view .tl-det-row.tl-det-sev-medium .tl-det-sev-badge {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   gap: 10px;
+  padding: 12px;
 }
 
 .timeline-view .tl-entity-group {
+  position: relative;
   border: 1px solid var(--hairline);
   border-radius: 8px;
   background: var(--panel-bg);

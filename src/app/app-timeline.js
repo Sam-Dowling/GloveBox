@@ -4600,6 +4600,12 @@ class TimelineView {
       if (!entries || !entries.length) continue;
       const grp = document.createElement('div');
       grp.className = 'tl-entity-group tl-entity-group-' + String(t).toLowerCase();
+
+      // Restore persisted span for this entity card.
+      const entKey = 'entity:' + String(t);
+      const savedSpan = this._cardSpanFor(entKey);
+      if (savedSpan > 1) grp.style.gridColumn = `span ${savedSpan}`;
+
       const head = document.createElement('div');
       head.className = 'tl-entity-head';
       head.innerHTML = `<span class="tl-entity-title">${_tlEsc(typeLabels[t] || t)}</span>
@@ -4619,6 +4625,18 @@ class TimelineView {
         list.appendChild(row);
       }
       grp.appendChild(list);
+
+      // Resize handles — left and right edges
+      const rR = document.createElement('div');
+      rR.className = 'tl-col-resize';
+      grp.appendChild(rR);
+      rR.addEventListener('pointerdown', (ev) => this._installCardResize(ev, grp, entKey, 'right'));
+
+      const rL = document.createElement('div');
+      rL.className = 'tl-col-resize-left';
+      grp.appendChild(rL);
+      rL.addEventListener('pointerdown', (ev) => this._installCardResize(ev, grp, entKey, 'left'));
+
       wrap.appendChild(grp);
     }
     body.appendChild(wrap);
@@ -4733,8 +4751,7 @@ class TimelineView {
   _paintColumnCards(host, stats, role) {
 
     host.innerHTML = '';
-    const rowHeight = 22;
-    const visibleRows = 14;
+    let rowHeight = 22;
     const cols = this.columns;
 
     for (let c = 0; c < cols.length; c++) {
@@ -4822,8 +4839,10 @@ class TimelineView {
 
       const renderRows = () => {
         const scroll = viewport.scrollTop;
-        const start = Math.max(0, Math.floor(scroll / rowHeight) - 2);
-        const end = Math.min(displayValues.length, start + visibleRows + 6);
+        const vpH = viewport.clientHeight || 300;
+        const buffer = 4;
+        const start = Math.max(0, Math.floor(scroll / rowHeight) - buffer);
+        const end = Math.min(displayValues.length, Math.ceil((scroll + vpH) / rowHeight) + buffer);
         while (sizer.firstChild) sizer.removeChild(sizer.firstChild);
         // Top value is always derived from `s.values[0]` (the global
         // unfiltered max) so the bar widths stay comparable across cards
@@ -4870,6 +4889,19 @@ class TimelineView {
         }
       };
       renderRows();
+
+      // Measure actual row height after DOM insertion — the CSS `height: 22px`
+      // can render at a fractional pixel size depending on zoom / DPI / browser
+      // rounding, which accumulates into a visible spacer gap at the bottom of
+      // the list (the same bug fixed in csv-renderer.js commit 11b56aa).
+      requestAnimationFrame(() => {
+        const sample = sizer.querySelector('.tl-col-row');
+        if (sample && sample.offsetHeight > 0 && sample.offsetHeight !== rowHeight) {
+          rowHeight = sample.offsetHeight;
+          applySortAndFilter();
+          renderRows();
+        }
+      });
 
       // Wire per-card search — debounced input → re-sort + re-render.
       let searchTimer = 0;
@@ -4963,11 +4995,16 @@ class TimelineView {
       if (nameEl) nameEl.title = `${colName} · Ctrl+Click card header to hide this column in the grid`;
 
 
-      // Resize handle (right edge)
-      const resizer = document.createElement('div');
-      resizer.className = 'tl-col-resize';
-      card.appendChild(resizer);
-      resizer.addEventListener('pointerdown', (e) => this._installCardResize(e, card, colName));
+      // Resize handles — left and right edges
+      const resizerR = document.createElement('div');
+      resizerR.className = 'tl-col-resize';
+      card.appendChild(resizerR);
+      resizerR.addEventListener('pointerdown', (e) => this._installCardResize(e, card, colName, 'right'));
+
+      const resizerL = document.createElement('div');
+      resizerL.className = 'tl-col-resize-left';
+      card.appendChild(resizerL);
+      resizerL.addEventListener('pointerdown', (e) => this._installCardResize(e, card, colName, 'left'));
 
       host.appendChild(card);
     }
@@ -5006,13 +5043,27 @@ class TimelineView {
     return 1;
   }
 
-  _installCardResize(e, card, colName) {
+  // Persist a card's column-span override. Deletes the key when span
+  // falls back to the default (1) so localStorage stays tidy.
+  _cardSizeSave(colName, span) {
+    if (span <= 1) delete this._cardWidths[colName];
+    else this._cardWidths[colName] = { span };
+    TimelineView._saveCardWidthsFor(this._fileKey, this._cardWidths);
+  }
+
+  // Horizontal resize — `dir` is `'left'` or `'right'`. Both directions
+  // snap to the same integer grid-column span; the difference is only
+  // how the mouse delta maps to width growth.
+  _installCardResize(e, card, colName, dir) {
     e.preventDefault();
-    const host = card.parentElement;   // .tl-columns
+    document.body.classList.add('tl-col-resizing');
+    const host = card.parentElement;   // .tl-columns or .tl-entities-wrap
     const startX = e.clientX;
     const startSpan = this._cardSpanFor(colName);
-    const { trackW, cols, gap } = this._columnsGridGeometry(host);
+    const entityMinW = colName.startsWith('entity:') ? 260 : undefined;
+    const { trackW, cols, gap } = this._columnsGridGeometry(host, entityMinW);
     const startW = startSpan * trackW + (startSpan - 1) * gap;
+    const sign = dir === 'left' ? -1 : 1;
     const apply = (span) => {
       const clamped = Math.max(1, Math.min(cols, span));
       if (clamped <= 1) card.style.gridColumn = '';
@@ -5020,17 +5071,16 @@ class TimelineView {
       card.dataset.span = String(clamped);
     };
     const onMove = (ev) => {
-      const w = Math.max(trackW, Math.round(startW + (ev.clientX - startX)));
+      const w = Math.max(trackW, Math.round(startW + sign * (ev.clientX - startX)));
       const span = Math.round(w / (trackW + gap));
       apply(span);
     };
     const onUp = () => {
+      document.body.classList.remove('tl-col-resizing');
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       const span = parseInt(card.dataset.span || String(startSpan), 10);
-      if (span <= 1) delete this._cardWidths[colName];
-      else this._cardWidths[colName] = { span };
-      TimelineView._saveCardWidthsFor(this._fileKey, this._cardWidths);
+      this._cardSizeSave(colName, span);
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);
@@ -5039,12 +5089,14 @@ class TimelineView {
   // Resolve the `.tl-columns` grid geometry — how many tracks fit and each
   // track's effective pixel width. Mirrors the CSS
   //   grid-template-columns: repeat(auto-fill, minmax(var(--tl-card-min-w), 1fr));
-  _columnsGridGeometry(host) {
+  // `minWOverride` lets entity cards pass their own fixed min-width (260)
+  // instead of the S/M/L preset.
+  _columnsGridGeometry(host, minWOverride) {
     const style = getComputedStyle(host);
     const pad = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
     const gap = parseFloat(style.columnGap || style.gap) || 10;
     const hostW = host.getBoundingClientRect().width - pad;
-    const minW = TIMELINE_CARD_SIZES[this._cardSize] || TIMELINE_CARD_SIZES.M;
+    const minW = minWOverride || TIMELINE_CARD_SIZES[this._cardSize] || TIMELINE_CARD_SIZES.M;
     const cols = Math.max(1, Math.floor((hostW + gap) / (minW + gap)));
     const trackW = (hostW - gap * (cols - 1)) / cols;
     return { trackW, cols, gap };
