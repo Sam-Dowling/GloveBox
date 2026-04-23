@@ -251,6 +251,15 @@ subtly misbehave.
   renderer walks a large space and caps at (say) 500 entries, push exactly
   one `IOC.INFO` row after the cap explaining the reason and the cap count
   — the Summary / Share exporters read this row.
+- **Two limit constants, two different jobs.** `PARSER_LIMITS`
+  (`src/constants.js`) is the *safety* envelope (`MAX_DEPTH`,
+  `MAX_UNCOMPRESSED`, `MAX_RATIO`, `MAX_ENTRIES`, `TIMEOUT_MS`) — raising
+  it weakens zip-bomb / recursion / timeout defences. `RENDER_LIMITS`
+  (same file) caps how much **parsed data** the UI renders
+  (`MAX_TEXT_LINES`, `MAX_TEXT_LINES_SMALL`, `MAX_CSV_ROWS`,
+  `MAX_TIMELINE_ROWS`, `MAX_EVTX_EVENTS`) — raising it only affects
+  completeness / memory, not safety. New render caps should reference
+  `RENDER_LIMITS.*` rather than invent a fresh magic number.
 
 ### Determinism (for `scripts/build.py` and anything it runs)
 
@@ -982,7 +991,7 @@ state is (a) easy to grep for, (b) easy to clear with a single filter, and
 |---|---|---|---|---|
 | `loupe_theme` | string | `_setTheme()` in `src/app/app-ui.js` | one of `light` / `dark` / `midnight` / `solarized` / `mocha` / `latte` | Canonical list is the `THEMES` array at the top of `app-ui.js`. Applied before first paint by the inline `<head>` bootstrap in `scripts/build.py`; missing / invalid value falls back to OS `prefers-color-scheme`, then `dark`. |
 | `loupe_summary_target` | string | `_setSummaryTarget()` in `src/app/app-settings.js` | one of `default` / `large` / `unlimited` | Drives the build-full → measure → shrink-to-fit assembler in `_buildAnalysisText()`. Character budgets `64 000` / `200 000` / `Infinity` respectively. `unlimited` short-circuits truncation entirely. |
-| `loupe_yara_rules` | string | `app-yara.js` (YARA dialog "Save" action) | raw concatenated `.yar` rule text | User-uploaded rules are merged with the default ruleset at scan time. Cleared when the user clicks "Reset to defaults" in the YARA dialog. |
+| `loupe_uploaded_yara` | string | `setUploadedYara()` in `src/app/app-yara.js` (YARA dialog "Save" action) | raw concatenated `.yar` rule text | User-uploaded rules are merged with the default ruleset at scan time. Cleared when the user clicks "Reset to defaults" in the YARA dialog. |
 | `loupe_ioc_hide_nicelisted` | string | `_setHideNicelisted()` in `src/app/app-sidebar.js` | `"0"` (show, dimmed — default) or `"1"` (hide) | Controls the IOCs-section toggle that drops known-good global-infrastructure rows (`src/nicelist.js`) from the sidebar. Sort-to-bottom + dim is the default; hiding is opt-in and never affects the Detections section or the underlying `findings.externalRefs` array. |
 | `loupe_nicelist_builtin_enabled` | string | `setBuiltinEnabled()` in `src/nicelist-user.js` (toggled from Settings → 🛡 Nicelists) | `"1"` (on — default) or `"0"` (off) | Master switch for the Default Nicelist shipped in `src/nicelist.js`. When `"0"`, `isNicelisted()` short-circuits to `false` so every curated global-infrastructure entry stops demoting rows. Missing / unparseable value is treated as on so first-time users still get the noise reduction. |
 | `loupe_nicelists_user` | string (JSON) | `save()` / mutation helpers in `src/nicelist-user.js` (Settings → 🛡 Nicelists UI) | `{version:1, lists:[{id,name,enabled,createdAt,updatedAt,entries}]}` | User-defined nicelists (MDR customer domains, employee emails, on-network hostnames, …). Capped at 64 lists × 10 000 entries × 1 MB serialised to stay inside the localStorage quota; overflow writes are refused without corrupting the previous blob. Entries are normalised + deduplicated on save; matching uses the same label-boundary semantics as the built-in list. Exported / imported via the toolbar buttons in the Nicelists tab. |
