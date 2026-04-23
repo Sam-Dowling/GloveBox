@@ -629,7 +629,7 @@ class X509Renderer {
                 if (dpn.cls === 2 && dpn.tag === 0 && dpn.children) {
                   for (const gn of dpn.children) {
                     if (gn.cls === 2 && gn.tag === 6) { // uniformResourceIdentifier
-                      const uri = new TextDecoder('ascii').decode(gn.value);
+                      const uri = X509Renderer._cleanDerUri(new TextDecoder('ascii').decode(gn.value));
                       ext.crlPoints.push(uri);
                     }
                   }
@@ -650,7 +650,7 @@ class X509Renderer {
               const methodName = this._oidName(methodOid);
               let location = '';
               if (am.children[1].cls === 2 && am.children[1].tag === 6) {
-                location = new TextDecoder('ascii').decode(am.children[1].value);
+                location = X509Renderer._cleanDerUri(new TextDecoder('ascii').decode(am.children[1].value));
               }
               ext.accessMethods.push({ method: methodName, location });
             }
@@ -700,7 +700,7 @@ class X509Renderer {
             }
             break;
           case 6: // uniformResourceIdentifier
-            names.push({ type: 'URI', value: new TextDecoder('ascii').decode(gn.value) });
+            names.push({ type: 'URI', value: X509Renderer._cleanDerUri(new TextDecoder('ascii').decode(gn.value)) });
             break;
           case 7: // iPAddress
             if (gn.value.length === 4) {
@@ -1447,6 +1447,20 @@ class X509Renderer {
    * @param {Uint8Array} cmsBytes - Raw DER-encoded CMS ContentInfo
    * @returns {{ certs: Array, error: string|null }}
    */
+  /**
+   * Strip trailing DER tag/length bytes that sometimes leak into URIs
+   * decoded from ASN.1 IA5String fields.  The most common artifact is
+   * 0x30 (SEQUENCE, ASCII '0') followed by one or two length / tag
+   * bytes that happen to be printable ASCII.  Require a non-digit
+   * immediately before the spurious '0' so that legitimate paths
+   * ending in multi-digit numbers (e.g. /file20) are never shortened.
+   * @param {string} s  The raw decoded URI string
+   * @returns {string}  The cleaned URI
+   */
+  static _cleanDerUri(s) {
+    return s.replace(/([^0-9])0[\d]{0,2}[^a-zA-Z0-9]{0,3}$/, '$1');
+  }
+
   static parseCertificatesFromCMS(cmsBytes) {
     try {
       const r = new X509Renderer();

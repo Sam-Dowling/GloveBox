@@ -291,6 +291,8 @@ class EmlRenderer {
       };
       const pushIp = (ip, note, severity, raw) => {
         if (!ip || seenIps.has(ip)) return;
+        // Too few digits → likely version string (e.g. 6.0.0.0), not a real IP
+        if (ip.replace(/\D/g, '').length < 5) return;
         seenIps.add(ip);
         const ref = { type: IOC.IP, url: ip, severity: severity || 'medium', note };
         if (raw) ref._highlightText = raw;

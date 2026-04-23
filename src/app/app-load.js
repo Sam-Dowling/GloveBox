@@ -1600,7 +1600,7 @@ Object.assign(App.prototype, {
 
     // Helper to process a URL — checks for SafeLink wrappers and adds both
     const processUrl = (rawUrl, baseSeverity, matchOffset, matchLength) => {
-      const url = (rawUrl || '').trim().replace(/[.,;:!?)\]>]+$/, '');
+      const url = (rawUrl || '').trim().replace(/[.,;:!?)\]>]+$/, '').replace(/([^0-9])0[\d]{0,2}[^a-zA-Z0-9]{0,3}$/, '$1');
       if (!url || url.length < 6) return;
 
       const unwrapped = _unwrapSafeLink(url);
@@ -1683,6 +1683,7 @@ Object.assign(App.prototype, {
       const parts = ipPart.split('.').map(Number);
       if (!parts.every(p => p <= 255)) continue;
       if (_isReservedIp(parts)) continue;                // drop private / loopback / reserved
+      if (parts.join('').length < 5) continue;            // too few digits → likely version string (e.g. 6.0.0.0)
       const port = m[1] ? Number(m[1]) : null;
       if (port !== null && (port < 1 || port > 65535)) continue;
       const sev = port !== null ? 'medium' : 'info';

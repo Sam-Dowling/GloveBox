@@ -2508,7 +2508,12 @@ class MachoRenderer {
       const _urlRx = /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g;
       const _uncRx = /\\\\[\w.\-]{2,}(?:\\[\w.\-]+)+/g;
       const URL_CAP = 100, UNC_CAP = 40;
-      const urlMatches = [...new Set([...allStrings.matchAll(_urlRx)].map(m => m[0]))];
+      // DER SEQUENCE tag (0x30 = ASCII '0') and following length/tag bytes
+      // frequently fuse onto URLs extracted from binary string dumps.
+      const _derJunkRx = /([^0-9])0[\d]{0,2}[^a-zA-Z0-9]{0,3}$/;
+      const urlMatches = [...new Set(
+        [...allStrings.matchAll(_urlRx)].map(m => m[0].replace(_derJunkRx, '$1')),
+      )];
       for (const url of urlMatches.slice(0, URL_CAP)) {
         pushIOC(findings, {
           type: IOC.URL, value: url, severity: 'info', highlightText: url,

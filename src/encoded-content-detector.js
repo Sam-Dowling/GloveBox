@@ -1030,7 +1030,7 @@ class EncodedContentDetector {
       add(IOC.EMAIL, m[0], 'medium');
     for (const m of text.matchAll(/(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)(?![\d.])/g)) {
       const parts = m[0].split('.').map(Number);
-      if (parts.every(p => p <= 255) && !m[0].startsWith('0.')) add(IOC.IP, m[0], 'high');
+      if (parts.every(p => p <= 255) && !m[0].startsWith('0.') && parts.join('').length >= 5) add(IOC.IP, m[0], 'high');
     }
     for (const m of text.matchAll(/[A-Za-z]:\\(?:[\w\-. ]+\\)+[\w\-. ]{2,}/g))
       add(IOC.FILE_PATH, _trimPathExtGarbage(m[0]), 'medium');

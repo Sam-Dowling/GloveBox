@@ -392,7 +392,8 @@ class JarRenderer {
 
       // Extract IPs
       const ipMatch = v.match(/\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/);
-      if (ipMatch && !/^(127\.0\.0\.|0\.0\.0\.|255\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ipMatch[1])) {
+      if (ipMatch && !/^(127\.0\.0\.|0\.0\.0\.|255\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ipMatch[1])
+          && ipMatch[1].replace(/\D/g, '').length >= 5) {
         ips.push(ipMatch[1]);
       }
     }

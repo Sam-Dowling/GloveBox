@@ -3353,6 +3353,40 @@ class PeRenderer {
         if (hasCrypto) { issues.push('Imports cryptographic APIs (potential ransomware)'); riskScore += 1.5; }
       }
 
+      // ── Extract IOCs from parsed Authenticode certificates ─────────
+      // CRL Distribution Points and AIA (OCSP / CA Issuers) are extracted
+      // from DER-bounded ASN.1 fields via X509Renderer.parseCertificatesFromCMS,
+      // so the values are byte-accurate with no trailing binary junk.
+      // Raw-string URL extraction below skips any URL that is a prefix-match
+      // against these clean cert URLs to avoid duplicates with DER artifacts.
+      const certUrls = new Set();
+      for (const cert of pe.certificates) {
+        for (const ext of (cert.extensions || [])) {
+          if (ext.crlPoints) {
+            for (const uri of ext.crlPoints) {
+              if (!certUrls.has(uri)) {
+                certUrls.add(uri);
+                pushIOC(findings, {
+                  type: IOC.URL, value: uri, severity: 'info',
+                  note: 'CRL Distribution Point',
+                });
+              }
+            }
+          }
+          if (ext.accessMethods) {
+            for (const am of ext.accessMethods) {
+              if (am.location && !certUrls.has(am.location)) {
+                certUrls.add(am.location);
+                pushIOC(findings, {
+                  type: IOC.URL, value: am.location, severity: 'info',
+                  note: 'AIA (' + am.method + ')',
+                });
+              }
+            }
+          }
+        }
+      }
+
       // ── Extract IOCs from strings ──────────────────────────────────
       // IOCs extracted from ASCII + UTF-16LE string dumps. Offsets are into
       // the joined synthetic buffer, not PE file bytes — so we carry only
@@ -3362,8 +3396,21 @@ class PeRenderer {
       const _urlRx = /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g;
       const _uncRx = /\\\\[\w.\-]{2,}(?:\\[\w.\-]+)+/g;
       const URL_CAP = 50, UNC_CAP = 20;
-      const urlMatches = [...new Set([...allStrings.matchAll(_urlRx)].map(m => m[0]))];
+      // DER SEQUENCE tag (0x30 = ASCII '0') and following length/tag bytes
+      // frequently fuse onto URLs extracted from binary string dumps.
+      // Clean each match before dedup and before the cert-URL prefix guard.
+      const _derJunkRx = /([^0-9])0[\d]{0,2}[^a-zA-Z0-9]{0,3}$/;
+      const urlMatches = [...new Set(
+        [...allStrings.matchAll(_urlRx)].map(m => m[0].replace(_derJunkRx, '$1')),
+      )];
       for (const url of urlMatches.slice(0, URL_CAP)) {
+        // Skip URLs that match a cert URL already pushed from parsed
+        // certificates above (clean cert version has better metadata).
+        let isCertUrl = false;
+        for (const cu of certUrls) {
+          if (url.startsWith(cu)) { isCertUrl = true; break; }
+        }
+        if (isCertUrl) continue;
         pushIOC(findings, {
           type: IOC.URL, value: url, severity: 'info', highlightText: url,
         });
