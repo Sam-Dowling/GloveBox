@@ -193,20 +193,9 @@ const BinaryOverlay = (() => {
   }
 
   // ── UI helpers ───────────────────────────────────────────────────────────
-  function _fmtBytes(n) {
-    if (typeof fmtBytes === 'function') return fmtBytes(n);
-    // Minimal fallback (fmtBytes is in constants.js; shouldn't ever miss,
-    // but keeping the helper self-contained avoids a load-order surprise).
-    if (n < 1024) return n + ' B';
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-    if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(1) + ' MB';
-    return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
-  }
+  const _fmtBytes = fmtBytes;
 
-  function _esc(s) {
-    if (typeof escHtml === 'function') return escHtml(s);
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
+  const _esc = escHtml;
 
   /**
    * Build the overlay drill-down card DOM.

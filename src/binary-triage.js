@@ -22,10 +22,7 @@
 (function () {
   'use strict';
 
-  function _esc(s) {
-    if (typeof escHtml === 'function') return escHtml(s);
-    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
+  const _esc = escHtml;
 
   function _tierLabel(tier) {
     switch (tier) {

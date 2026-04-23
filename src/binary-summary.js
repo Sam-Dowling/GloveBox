@@ -152,17 +152,9 @@ const BinarySummary = (() => {
   }
 
   // ── Helpers ─────────────────────────────────────────────────────────────
-  function _esc(s) {
-    if (typeof escHtml === 'function') return escHtml(s);
-    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
+  const _esc = escHtml;
 
-  function _fmtBytes(n) {
-    if (typeof fmtBytes === 'function') return fmtBytes(n);
-    if (n < 1024) return n + ' B';
-    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
-    return (n / 1024 / 1024).toFixed(1) + ' MB';
-  }
+  const _fmtBytes = fmtBytes;
 
   function _row(label, valueHtml, badgeHtml) {
     const row = document.createElement('div');

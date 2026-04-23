@@ -3447,12 +3447,5 @@ class GridViewer {
   }
 }
 
-// Local HTML-escape helper — kept free of the class so class-internal `this`
-// references can't accidentally reach it. Same contract as the old inline
-// `_esc` in csv-renderer.js.
-function _esc(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
+// Local HTML-escape alias — delegates to the canonical escHtml() from constants.js.
+const _esc = escHtml;

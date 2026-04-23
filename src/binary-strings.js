@@ -248,10 +248,7 @@ const BinaryStrings = (() => {
   //
   // Pure presentation — the helper does NOT touch `findings` (emit()
   // already pushed each entry as the correct IOC.* type).
-  function _esc(s) {
-    if (typeof escHtml === 'function') return escHtml(s);
-    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
+  const _esc = escHtml;
 
   function renderCategorisedStringsTable(strings, _opts) {
     const cats = classify(strings);

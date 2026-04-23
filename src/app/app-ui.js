@@ -497,7 +497,7 @@ Object.assign(App.prototype, {
   // MachServices, EML Received: chains, SQLite per-table columns, etc.)
   // reach the report. At MAX the caps are all Infinity.
   _formatMetadataValue(v, depth) {
-    depth = depth | 0;
+    depth = depth || 0;
     if (v == null) return '';
     const t = typeof v;
     // Resolve caps from the cap set stashed by _buildAnalysisText. If a
@@ -656,6 +656,7 @@ Object.assign(App.prototype, {
   },
 
   _copyFallback(text) {
+    console.warn('Loupe: _copyFallback is deprecated — execCommand("copy") is removed in modern browsers');
     const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0;';
     document.body.appendChild(ta); ta.focus(); ta.select();
     try { document.execCommand('copy'); this._toast('Copied!'); } catch (e) { this._toast('Copy failed', 'error'); }
@@ -961,11 +962,7 @@ Object.assign(App.prototype, {
     setTimeout(() => t.classList.add('hidden'), 3000);
   },
 
-  _fmtBytes(b) {
-    if (!b || b < 1024) return (b || 0) + ' B';
-    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
-    return (b / 1048576).toFixed(1) + ' MB';
-  },
+  _fmtBytes(b) { return fmtBytes(b || 0); },
 
   // ── Document content search ───────────────────────────────────────────────
   _setupSearch() {
