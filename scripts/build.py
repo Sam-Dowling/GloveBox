@@ -231,6 +231,11 @@ JS_FILES = [
     'src/yara-engine.js',
 
     'src/decompressor.js',
+    # tar-parser.js — shared TAR archive parser with PAX extended header,
+    # GNU long-name/link, GNU sparse, and base-256 numeric support.
+    # Consumed by ZipRenderer (tar/tar.gz) and NpmRenderer (tgz tarballs).
+    # Must load AFTER constants.js (PARSER_LIMITS) and BEFORE both renderers.
+    'src/tar-parser.js',
     'src/encoded-content-detector.js',
     'src/qr-decoder.js',
     'src/docx-parser.js',

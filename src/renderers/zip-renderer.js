@@ -266,24 +266,7 @@ class ZipRenderer {
   // ── TAR handling ──────────────────────────────────────────────────────────
 
   _isTar(bytes) {
-    // Check for "ustar" magic at offset 257 (POSIX tar)
-    if (bytes.length > 262) {
-      const magic = String.fromCharCode(bytes[257], bytes[258], bytes[259], bytes[260], bytes[261]);
-      if (magic === 'ustar') return true;
-    }
-    // Also check for older GNU tar format
-    if (bytes.length > 512) {
-      // Check if first block looks like a tar header (filename at 0, null padding, size at 124)
-      // Tar headers have specific structure: 100 bytes filename, then mode/uid/gid/size fields
-      const nameEnd = bytes.indexOf(0);
-      if (nameEnd > 0 && nameEnd < 100) {
-        // Check if there's a valid octal size at offset 124
-        const sizeBytes = bytes.subarray(124, 135);
-        const sizeStr = String.fromCharCode(...sizeBytes).replace(/\0/g, '').trim();
-        if (/^[0-7]+$/.test(sizeStr)) return true;
-      }
-    }
-    return false;
+    return TarParser.isTar(bytes);
   }
 
   _handleTar(wrap, bytes, fileName) {
@@ -296,7 +279,7 @@ class ZipRenderer {
   }
 
   _renderTarContents(wrap, bytes, fileName) {
-    const entries = this._parseTar(bytes);
+    const entries = TarParser.parse(bytes);
 
     if (!entries.length) {
       const p = document.createElement('p'); p.style.cssText = 'color:#888;padding:20px;text-align:center';
@@ -352,69 +335,14 @@ class ZipRenderer {
 
 
   _parseTar(bytes) {
-    const entries = [];
-    let offset = 0;
-
-    while (offset + 512 <= bytes.length && entries.length < PARSER_LIMITS.MAX_ENTRIES) {
-      // Each tar entry starts with a 512-byte header
-      const header = bytes.subarray(offset, offset + 512);
-
-      // Check if this is a null block (end of archive)
-      if (header.every(b => b === 0)) break;
-
-      // Parse header fields
-      const name = this._tarString(header, 0, 100);
-      if (!name) break;
-
-      const mode = this._tarString(header, 100, 8);
-      const uid = this._tarOctal(header, 108, 8);
-      const gid = this._tarOctal(header, 116, 8);
-      const size = this._tarOctal(header, 124, 12);
-      const mtime = this._tarOctal(header, 136, 12);
-      const typeFlag = header[156];
-      const linkName = this._tarString(header, 157, 100);
-      const prefix = this._tarString(header, 345, 155);
-
-      // Combine prefix and name for full path
-      const fullPath = prefix ? prefix + '/' + name : name;
-
-      // Type: '0' or 0 = regular file, '5' = directory, '2' = symlink
-      const isDir = typeFlag === 53 || typeFlag === 0x35 || fullPath.endsWith('/');
-
-      entries.push({
-        path: fullPath.replace(/\/$/, ''),
-        name: fullPath.split('/').pop(),
-        dir: isDir,
-        size: isDir ? 0 : size,
-        mtime: mtime > 0 ? new Date(mtime * 1000) : null,
-        offset: offset + 512, // Data starts after header
-        linkName: linkName || null,
-      });
-
-      // Move to next entry: header (512) + data (rounded up to 512-byte blocks)
-      const dataBlocks = Math.ceil(size / 512);
-      offset += 512 + dataBlocks * 512;
-    }
-
-    return entries;
-  }
-
-  _tarString(header, offset, length) {
-    let end = offset;
-    while (end < offset + length && header[end] !== 0) end++;
-    if (end === offset) return '';
-    return new TextDecoder('utf-8', { fatal: false }).decode(header.subarray(offset, end));
-  }
-
-  _tarOctal(header, offset, length) {
-    const str = this._tarString(header, offset, length).trim();
-    return str ? parseInt(str, 8) || 0 : 0;
+    return TarParser.parse(bytes);
   }
 
   _extractTarEntry(bytes, entry, wrap) {
     if (entry.dir || !entry.size) return;
 
-    const data = bytes.subarray(entry.offset, entry.offset + entry.size);
+    const data = TarParser.extractEntry(bytes, entry);
+    if (!data) return;
     const name = entry.path.split('/').pop();
     const file = new File([data], name, { type: 'application/octet-stream' });
     wrap.dispatchEvent(new CustomEvent('open-inner-file', { bubbles: true, detail: file }));

@@ -952,7 +952,7 @@ class NpmRenderer {
     // header. We sniff it so `npm pack --dry-run` output / already-unpacked
     // tarballs still route here instead of ZipRenderer's generic tar branch.
     if (bytes.length >= 512) {
-      const firstName = this._readCString(bytes, 0, 100);
+      const firstName = TarParser._readString(bytes, 0, 100);
       if (firstName.startsWith('package/') && this._looksLikeTar(bytes)) {
         parsed.kind = 'tarball';
         await this._parseTarBytes(bytes, parsed);
@@ -1054,7 +1054,7 @@ class NpmRenderer {
   }
 
   async _parseTarBytes(tarBytes, parsed) {
-    const entries = this._parseTar(tarBytes);
+    const entries = TarParser.parse(tarBytes);
     parsed.tarEntries = entries;
     parsed.unpackedSize = entries.reduce((s, e) => s + (e.dir ? 0 : (e.size || 0)), 0);
 
@@ -1064,8 +1064,8 @@ class NpmRenderer {
     const preferred = entries.find(e => !e.dir && e.path === 'package/package.json');
     const fallback = preferred || entries.find(e => !e.dir && /(?:^|\/)package\.json$/.test(e.path));
     if (fallback) {
-      const data = tarBytes.subarray(fallback.offset, fallback.offset + fallback.size);
-      const text = new TextDecoder('utf-8', { fatal: false }).decode(data);
+      const data = TarParser.extractEntry(tarBytes, fallback);
+      const text = data ? new TextDecoder('utf-8', { fatal: false }).decode(data) : '';
       const normalised = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
       parsed.manifestText = normalised;
       try { parsed.manifest = JSON.parse(normalised); }
@@ -1093,58 +1093,20 @@ class NpmRenderer {
       const size = entry.size || 0;
       if (used + size > HOOK_CAP_BYTES) break;
       try {
-        const data = tarBytes.subarray(entry.offset, entry.offset + size);
-        const text = new TextDecoder('utf-8', { fatal: false }).decode(data);
+        const data = TarParser.extractEntry(tarBytes, entry);
+        const text = data ? new TextDecoder('utf-8', { fatal: false }).decode(data) : '';
         parsed.hookScriptContents.push({ path: entry.path, text });
         used += size;
       } catch (_) { /* skip unreadable */ }
     }
   }
 
-  // ── Minimal POSIX TAR walker — same shape as zip-renderer's _parseTar,
-  //    but kept local so we can hand out entry offsets for drill-down.
   _parseTar(bytes) {
-    const out = [];
-    let off = 0;
-    const cap = PARSER_LIMITS.MAX_ENTRIES;
-    while (off + 512 <= bytes.length && out.length < cap) {
-      const header = bytes.subarray(off, off + 512);
-      if (header.every(b => b === 0)) break;
-      const name = this._readCString(header, 0, 100);
-      if (!name) break;
-      const size = this._tarOctal(header, 124, 12);
-      const mtime = this._tarOctal(header, 136, 12);
-      const typeFlag = header[156];
-      const prefix = this._readCString(header, 345, 155);
-      const full = prefix ? prefix + '/' + name : name;
-      const isDir = typeFlag === 0x35 /* '5' */ || full.endsWith('/');
-      out.push({
-        path: full.replace(/\/$/, ''),
-        dir: isDir,
-        size: isDir ? 0 : size,
-        mtime: mtime > 0 ? new Date(mtime * 1000) : null,
-        offset: off + 512,
-      });
-      const dataBlocks = Math.ceil(size / 512);
-      off += 512 + dataBlocks * 512;
-    }
-    return out;
+    return TarParser.parse(bytes);
   }
 
   _looksLikeTar(bytes) {
-    if (bytes.length > 262) {
-      const magic = String.fromCharCode(bytes[257], bytes[258], bytes[259], bytes[260], bytes[261]);
-      if (magic === 'ustar') return true;
-    }
-    // GNU tar / legacy: fall back to a reasonable header sanity check.
-    if (bytes.length > 512) {
-      const nameEnd = bytes.indexOf(0);
-      if (nameEnd > 0 && nameEnd < 100) {
-        const sizeStr = this._readCString(bytes, 124, 12).trim();
-        if (/^[0-7]+$/.test(sizeStr)) return true;
-      }
-    }
-    return false;
+    return TarParser.isTar(bytes);
   }
 
   _extractTarEntry(tarBytes, entry, parsed, wrap) {
@@ -1154,7 +1116,8 @@ class NpmRenderer {
     // copies of large tarballs in memory.
     const doExtract = (inflated) => {
       if (entry.dir || !entry.size) return;
-      const data = inflated.subarray(entry.offset, entry.offset + entry.size);
+      const data = TarParser.extractEntry(inflated, entry);
+      if (!data) return;
       const name = entry.path.split('/').pop();
       const file = new File([data], name, { type: 'application/octet-stream' });
       wrap.dispatchEvent(new CustomEvent('open-inner-file', { bubbles: true, detail: file }));
@@ -1312,17 +1275,7 @@ class NpmRenderer {
     return rows;
   }
 
-  _readCString(bytes, offset, length) {
-    let end = offset;
-    while (end < offset + length && bytes[end] !== 0) end++;
-    if (end === offset) return '';
-    return new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(offset, end));
-  }
 
-  _tarOctal(header, offset, length) {
-    const str = this._readCString(header, offset, length).trim();
-    return str ? (parseInt(str, 8) || 0) : 0;
-  }
 
   _arrayBufferToBase64(buffer) {
     const bytes = new Uint8Array(buffer);
