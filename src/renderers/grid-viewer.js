@@ -1482,7 +1482,11 @@ class GridViewer {
           : null;
         const tree = TreeHelper.render(parsed, {
           onPick,
-          autoOpenDepth: 1,
+          // Expand every nested object/array by default — the drawer is a
+          // detail view, so the user has already opted into seeing the
+          // whole row. Hard caps (MAX_DEPTH=16, maxChildren=200) inside
+          // JsonTree still bound the work.
+          autoOpenDepth: Infinity,
           maxChildren: 200
         });
         vEl.appendChild(tree);

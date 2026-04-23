@@ -19,7 +19,9 @@
 //                                     'exclude' — extract + filter ≠ value
 //                                   (Composite object/array keys have no
 //                                    context menu — only scalar leaves do.)
-//     opts.autoOpenDepth         — defaults to 1 (top level auto-expanded)
+//     opts.autoOpenDepth         — defaults to 1 (top level auto-expanded).
+//                                   Pass `Infinity` to auto-expand every
+//                                   level (still capped by MAX_DEPTH=16).
 //     opts.maxChildren           — per-level render cap (default 200)
 //
 //   JsonTree.pathGet(value, path)        — resolve a path-array against a
@@ -143,14 +145,19 @@ class JsonTree {
    * Render a parsed JSON value as a collapsible tree.
    *   value               — any JSON-shaped value (object/array/scalar)
    *   opts.onPick         — optional (path, value) callback
-   *   opts.autoOpenDepth  — default 1
+   *   opts.autoOpenDepth  — default 1; `Infinity` auto-expands all levels
    *   opts.maxChildren    — default 200
    *   opts.className      — override wrapper class (default 'json-tree')
    */
   static render(value, opts) {
     opts = opts || {};
     const onPick = typeof opts.onPick === 'function' ? opts.onPick : null;
-    const autoOpenDepth = Number.isFinite(opts.autoOpenDepth) ? opts.autoOpenDepth : 1;
+    // Accept any non-NaN number — including `Infinity` for "expand every
+    // level up to MAX_DEPTH". `Number.isFinite` would silently reject
+    // Infinity and fall back to 1, which bit the grid drawer.
+    const autoOpenDepth = (typeof opts.autoOpenDepth === 'number' && !Number.isNaN(opts.autoOpenDepth))
+      ? opts.autoOpenDepth
+      : 1;
     const maxChildren   = Number.isFinite(opts.maxChildren)   ? opts.maxChildren   : 200;
     const MAX_DEPTH     = 16;
 
