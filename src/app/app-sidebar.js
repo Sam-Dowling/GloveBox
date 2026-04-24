@@ -433,7 +433,6 @@ Object.assign(App.prototype, {
     body.appendChild(dl);
 
     // Per-script blocks: trigger + suspicious-hint badges + source pre
-    const baseName = (fileName || 'pdf').replace(/\.[^.]+$/, '');
     scripts.forEach((s, idx) => {
       const modDet = document.createElement('details');
       modDet.open = (scripts.length === 1);
@@ -964,14 +963,12 @@ Object.assign(App.prototype, {
         // on the wrapper. Show first 3 + last 2, with a "…" pill in between.
         const MAX_HOPS = 6;
         let displayHops;
-        let ellipsised = false;
         if (_fullChain.length > MAX_HOPS) {
           displayHops = [
             ..._fullChain.slice(0, 3).map((l, i) => ({ label: l, idx: i })),
             { label: '…', idx: -1, ellipsis: true },
             ..._fullChain.slice(-2).map((l, i) => ({ label: l, idx: _fullChain.length - 2 + i })),
           ];
-          ellipsised = true;
           chainWrap.title = `Full chain:\n${_fullChain.join(' → ')}`;
         } else {
           displayHops = _fullChain.map((l, i) => ({ label: l, idx: i }));
