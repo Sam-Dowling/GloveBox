@@ -213,6 +213,130 @@ function _tlParseTimestamp(s) {
   return Number.isFinite(ms) ? ms : NaN;
 }
 
+// ── Fast-path timestamp parsing ────────────────────────────────────────────
+// `_tlParseTimestamp` tests up to 10+ regex patterns per call. For bulk
+// parsing (500K rows), we sample a handful of rows to identify the
+// dominant format, then use a specialised parser that jumps directly to
+// the correct branch — eliminating the regex waterfall.
+//
+// Format tags returned by `_tlDetectTimestampFormat`:
+//   'epoch-s'      10-digit epoch seconds
+//   'epoch-ms'     13-digit epoch milliseconds
+//   'iso'          ISO 8601 datetime with time component
+//   'dotnet'       .NET JSON /Date(…)/
+//   'date-ymd'     YYYY-MM-DD / YYYY/MM/DD / YYYY.MM.DD (date only)
+//   'year-month'   YYYY-MM / YYYY/MM / YYYY.MM (2-digit month)
+//   'compact8'     YYYYMMDD
+//   'year-only'    YYYY
+//   'generic'      mixed / unrecognised — use full _tlParseTimestamp
+
+const _TL_RE_EPOCH_S    = /^-?\d{10}$/;
+const _TL_RE_EPOCH_MS   = /^-?\d{13}$/;
+const _TL_RE_ISO        = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/;
+const _TL_RE_DOTNET     = /^\/Date\((-?\d+)\)\/$/;
+const _TL_RE_DATE_YMD   = /^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/;
+const _TL_RE_YEAR_MONTH = /^(\d{4})[-./](\d{2})$/;
+const _TL_RE_COMPACT8   = /^\d{8}$/;
+const _TL_RE_YEAR_ONLY  = /^\d{4}$/;
+
+function _tlDetectTimestampFormat(rows, colIdx, sampleSize) {
+  const n = Math.min(rows.length, sampleSize || 30);
+  const votes = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = rows[i]; if (!r) continue;
+    const c = r[colIdx];
+    if (c == null || c === '') continue;
+    const str = String(c).trim();
+    if (!str) continue;
+    let tag = 'generic';
+    if (_TL_RE_EPOCH_S.test(str))         tag = 'epoch-s';
+    else if (_TL_RE_EPOCH_MS.test(str))   tag = 'epoch-ms';
+    else if (_TL_RE_ISO.test(str))        tag = 'iso';
+    else if (_TL_RE_DOTNET.test(str))     tag = 'dotnet';
+    else if (_TL_RE_DATE_YMD.test(str))   tag = 'date-ymd';
+    else if (_TL_RE_YEAR_MONTH.test(str)) tag = 'year-month';
+    else if (_TL_RE_COMPACT8.test(str))   tag = 'compact8';
+    else if (_TL_RE_YEAR_ONLY.test(str))  tag = 'year-only';
+    votes.set(tag, (votes.get(tag) || 0) + 1);
+  }
+  if (!votes.size) return 'generic';
+  // Pick the format with the most votes.
+  let best = 'generic', bestN = 0;
+  for (const [tag, cnt] of votes) {
+    if (cnt > bestN) { bestN = cnt; best = tag; }
+  }
+  return best;
+}
+
+// Specialised parser that skips the regex waterfall. Falls back to the
+// full `_tlParseTimestamp` for any cell that doesn't match the expected
+// format, so mixed-format columns degrade gracefully rather than producing
+// NaN for outlier rows.
+function _tlParseTimestampFast(s, fmt) {
+  if (s == null) return NaN;
+  if (typeof s === 'number') return s;
+  const str = String(s).trim();
+  if (!str) return NaN;
+  switch (fmt) {
+    case 'epoch-s':
+      if (_TL_RE_EPOCH_S.test(str)) return Number(str) * 1000;
+      break;
+    case 'epoch-ms':
+      if (_TL_RE_EPOCH_MS.test(str)) return Number(str);
+      break;
+    case 'iso': {
+      if (_TL_RE_ISO.test(str)) {
+        const norm = str.replace(' ', 'T').replace(/ ?(?:UTC|GMT)$/i, 'Z');
+        const ms = Date.parse(norm);
+        return Number.isFinite(ms) ? ms : NaN;
+      }
+      break;
+    }
+    case 'dotnet': {
+      const m = _TL_RE_DOTNET.exec(str);
+      if (m) return Number(m[1]);
+      break;
+    }
+    case 'date-ymd': {
+      const m = _TL_RE_DATE_YMD.exec(str);
+      if (m) {
+        const y = +m[1], mo = +m[2], d = +m[3];
+        if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+          const ms = Date.UTC(y, mo - 1, d);
+          if (Number.isFinite(ms)) return ms;
+        }
+      }
+      break;
+    }
+    case 'year-month': {
+      const m = _TL_RE_YEAR_MONTH.exec(str);
+      if (m) {
+        const y = +m[1], mo = +m[2];
+        if (mo >= 1 && mo <= 12) return Date.UTC(y, mo - 1, 1);
+      }
+      break;
+    }
+    case 'compact8':
+      if (_TL_RE_COMPACT8.test(str)) {
+        const y = +str.slice(0, 4), mo = +str.slice(4, 6), d = +str.slice(6, 8);
+        if (y >= 1000 && mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
+          return Date.UTC(y, mo - 1, d);
+        }
+      }
+      break;
+    case 'year-only':
+      if (_TL_RE_YEAR_ONLY.test(str)) {
+        const y = +str;
+        if (y >= 1000 && y <= 9999) return Date.UTC(y, 0, 1);
+      }
+      break;
+    default:
+      return _tlParseTimestamp(s);
+  }
+  // Format didn't match this particular cell — fall back to full parser.
+  return _tlParseTimestamp(s);
+}
+
 // Score a column as "mostly plain numbers" (independent of timestamp
 // parsing). Used by the auto-detect fallback so that columns like
 // `id`, `index`, `period` can drive the timeline axis in numeric mode.
@@ -1450,8 +1574,8 @@ class TimelineQueryEditor {
     if (this._isSuggestOpen()) {
       if (e.key === 'ArrowDown') { e.preventDefault(); this._moveSuggest(1); return; }
       if (e.key === 'ArrowUp')   { e.preventDefault(); this._moveSuggest(-1); return; }
-      if (e.key === 'Tab')       { e.preventDefault(); this._applySuggest(); return; }
-      if (e.key === 'Enter')     { e.preventDefault(); this._applySuggest(); return; }
+      if (e.key === 'Tab')       { e.preventDefault(); this._applySuggest(false); return; }
+      if (e.key === 'Enter')     { e.preventDefault(); this._applySuggest(true); return; }
       if (e.key === 'Escape')    {
         e.preventDefault();
         // Pin dismissal to the current token so the popover stays shut
@@ -1751,7 +1875,7 @@ class TimelineQueryEditor {
     }
   }
 
-  _applySuggest() {
+  _applySuggest(commit) {
     if (!this._sugg) return;
     const item = this._sugg.items[this._sugg.sel];
     if (!item) { this._closeSuggest(); return; }
@@ -1763,7 +1887,6 @@ class TimelineQueryEditor {
     const newCaret = (before + inserted).length;
     this.input.setSelectionRange(newCaret, newCaret);
     this._refreshHighlight();
-    this._scheduleCommit();
 
     // Accepting a FIELD (inserts "Name:") → caret is now in value context;
     // we want to immediately show value suggestions so the analyst keeps
@@ -1772,12 +1895,23 @@ class TimelineQueryEditor {
     // popover doesn't immediately pop back up. Typing whitespace after
     // the accept will cross the token boundary and clear the pin.
     if (item.kind === 'field') {
+      // Still composing (need a value next) — debounced commit, no history.
+      this._scheduleCommit();
       this._dismissedTokenStart = null;
       this._refreshSuggest({ allowOpen: true, force: true });
     } else {
+      // Natural stop point — if triggered by Enter, treat as a full commit
+      // so the query is saved to history immediately (the user expects
+      // Enter-accept to behave like Enter-submit). Tab keeps the old
+      // debounced behaviour so the analyst can keep composing.
+      this._scheduleCommit(!!commit);
       const nextCtx = _tlSuggestContext(this.input.value, newCaret);
       this._dismissedTokenStart = nextCtx.tokenStart;
       this._closeSuggest();
+      if (commit) {
+        this._pushHistory(this.input.value);
+        try { this.onCommit(this.input.value); } catch (_) { /* noop */ }
+      }
     }
   }
 
@@ -1967,6 +2101,11 @@ class TimelineQueryEditor {
     this._closeSuggest();
     clearTimeout(this._debounceTimer);
     if (this.root && this.root.parentNode) this.root.parentNode.removeChild(this.root);
+    // Drop back-references so the parent TimelineView (and its row data)
+    // can be collected even if the editor instance lingers in a closure.
+    this.view = null;
+    this.onChange = null;
+    this.onCommit = null;
   }
 
   static _loadHistory() {
@@ -1999,7 +2138,11 @@ class TimelineView {
   // "nothing at all". The header row is tolerated with 0 columns so that
   // headerless inputs (no named columns at all) still render as col-1,
   // col-2, … and the view stays usable.
-  static fromCsv(file, buffer, explicitDelim) {
+  // Async CSV factory — parses in chunks of CHUNK_ROWS lines, yielding to
+  // the event loop between chunks so the browser stays responsive for large
+  // files. TextDecoder + CRLF normalisation are synchronous (fast native
+  // ops); only the line-by-line parse + row-width normalisation is chunked.
+  static async fromCsvAsync(file, buffer, explicitDelim) {
     const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
     // Strip a leading UTF-8 BOM (common in Excel-exported CSV). Without this
     // the first column name would start with U+FEFF, which quietly breaks
@@ -2031,41 +2174,88 @@ class TimelineView {
     // Trim and de-noise column names — whitespace / stray quotes from
     // hand-edited exports throw off `_tlAutoDetectTimestampCol` otherwise.
     columns = columns.map(c => String(c == null ? '' : c).trim());
-    let rows = [];
+
+    // ── Chunked parse ─────────────────────────────────────────────────
+    // Parse CHUNK_ROWS lines at a time, yielding to the event loop
+    // between chunks via MessageChannel (zero-delay, matches the
+    // existing _parseStreaming pattern in CsvRenderer).
+    const CHUNK_ROWS = 50000;
+    const len = norm.length;
+    let offset = firstNl === -1 ? len : firstNl + 1;
+    const rows = [];
+    const colLen = columns.length;
+
+    // Zero-delay yield helper — returns a Promise that resolves on the
+    // next microtask boundary via MessageChannel (or setTimeout
+    // fallback), giving the browser a chance to paint / handle input.
+    const yieldTick = () => new Promise(resolve => {
+      if (typeof MessageChannel !== 'undefined') {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => { ch.port1.close(); resolve(); };
+        ch.port2.postMessage(null);
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+
     try {
-      const parsed = r._parse(norm, delim, firstNl + 1);
-      rows = parsed && parsed.rows ? parsed.rows : [];
+      while (offset < len && rows.length < TIMELINE_MAX_ROWS) {
+        const chunkEnd = Math.min(rows.length + CHUNK_ROWS, TIMELINE_MAX_ROWS);
+        while (offset < len && rows.length < chunkEnd) {
+          let lineEnd = norm.indexOf('\n', offset);
+          if (lineEnd === -1) lineEnd = len;
+          if (lineEnd > offset) {
+            const line = norm.substring(offset, lineEnd);
+            const cells = line.indexOf('"') === -1
+              ? line.split(delim)
+              : r._splitQuoted(line, delim);
+            // Inline row-width normalisation (avoids a second full-array pass).
+            if (colLen) {
+              if (cells.length < colLen) {
+                while (cells.length < colLen) cells.push('');
+              } else if (cells.length > colLen) {
+                const tail = cells.slice(colLen - 1).join(delim);
+                cells.length = colLen;
+                cells[colLen - 1] = tail;
+              }
+            }
+            rows.push(cells);
+          }
+          offset = lineEnd + 1;
+        }
+        // Yield to the event loop so the browser can paint / stay responsive.
+        if (offset < len && rows.length < TIMELINE_MAX_ROWS) {
+          await yieldTick();
+        }
+      }
     } catch (e) {
       // Parser blew up on a pathological chunk. Fall back to a very
       // forgiving line-by-line split — loses quoted-newline handling,
       // but keeps the analyst looking at real data instead of hex.
       console.warn('[timeline] CSV parser failed, using fallback split:', e);
-      rows = [];
+      rows.length = 0;
       const lines = norm.split('\n');
-      for (let i = 1; i < lines.length; i++) {
+      for (let i = 1; i < lines.length && rows.length < TIMELINE_MAX_ROWS; i++) {
         const ln = lines[i];
         if (!ln) continue;
-        rows.push(ln.indexOf('"') === -1 ? ln.split(delim) : r._splitQuoted(ln, delim));
+        const cells = ln.indexOf('"') === -1 ? ln.split(delim) : r._splitQuoted(ln, delim);
+        if (colLen) {
+          if (cells.length < colLen) {
+            while (cells.length < colLen) cells.push('');
+          } else if (cells.length > colLen) {
+            const tail = cells.slice(colLen - 1).join(delim);
+            cells.length = colLen;
+            cells[colLen - 1] = tail;
+          }
+        }
+        rows.push(cells);
       }
     }
-    // Normalise row width to `columns.length` so downstream code (chip
-    // predicates, pivot, stats) never blows up on ragged rows. Extra cells
-    // are joined back into the final column (common for unescaped JSON
-    // tails); missing cells become ''.
-    if (columns.length) {
+
+    // Null-row normalisation (for rows that somehow ended up null).
+    if (colLen) {
       for (let i = 0; i < rows.length; i++) {
-        const row = rows[i];
-        if (!row) { rows[i] = new Array(columns.length).fill(''); continue; }
-        if (row.length === columns.length) continue;
-        if (row.length < columns.length) {
-          while (row.length < columns.length) row.push('');
-        } else {
-          // Squash trailing overflow into the last column so an
-          // unescaped-comma payload stays with the message it came with.
-          const tail = row.slice(columns.length - 1).join(delim);
-          row.length = columns.length;
-          row[columns.length - 1] = tail;
-        }
+        if (!rows[i]) rows[i] = new Array(colLen).fill('');
       }
     } else if (rows.length) {
       // Headerless input — synthesise generic column names.
@@ -2073,16 +2263,17 @@ class TimelineView {
       columns = [];
       for (let i = 0; i < n; i++) columns.push(`col ${i + 1}`);
     }
-    let truncated = false;
-    let rowSet = rows;
-    if (rows.length > TIMELINE_MAX_ROWS) {
-      rowSet = rows.slice(0, TIMELINE_MAX_ROWS);
-      truncated = true;
-    }
+    const truncated = rows.length >= TIMELINE_MAX_ROWS && offset < len;
+    // `originalRowCount` should reflect the true file row count. For
+    // non-truncated files, rows.length is exact. For truncated files, we
+    // can estimate from the fraction of the file consumed.
+    const originalRowCount = truncated
+      ? Math.round(rows.length * (len / Math.max(1, offset)))
+      : rows.length;
     return new TimelineView({
-      file, columns, rows: rowSet,
+      file, columns, rows,
       formatLabel: delim === '\t' ? 'TSV' : 'CSV',
-      truncated, originalRowCount: rows.length,
+      truncated, originalRowCount,
     });
   }
 
@@ -2308,6 +2499,10 @@ class TimelineView {
     // no cursor. Cleared on Esc and Reset. Purely decorative: does not
     // affect filtering, bucketing, or the filteredIdx pipeline.
     this._cursorDataIdx = null;
+    // True while the analyst is click+dragging the cursor handle on the
+    // chart histogram.  While set, `_updateCursorFromGridScroll` is
+    // suppressed so the scroll-driven anchor doesn't fight the drag.
+    this._cursorDragging = false;
     // Live-drag state — when true, `_scheduleRender` runs only lightweight
     // tasks (scrubber + chart) and skips grid / columns / sus. Committed on
     // pointer-up via `_commitWindowDrag()`.
@@ -2344,6 +2539,7 @@ class TimelineView {
     this._destroyed = false;
     this._resizeObs = null;
     this._rafPending = false;
+    this._colStatsRaf = 0;
     this._pendingTasks = new Set();
     this._openPopover = null;
     this._openDialog = null;
@@ -2361,6 +2557,8 @@ class TimelineView {
   destroy() {
     if (this._destroyed) return;
     this._destroyed = true;
+    cancelAnimationFrame(this._colStatsRaf);
+    this._colStatsRaf = 0;
     if (this._grid && typeof this._grid.destroy === 'function') {
       try { this._grid.destroy(); } catch (_) { /* noop */ }
     }
@@ -2384,6 +2582,24 @@ class TimelineView {
     this._els = {};
     if (this._root && this._root.parentNode) this._root.parentNode.removeChild(this._root);
     this._root = null;
+
+    // ── Release heavy data arrays ────────────────────────────────────────
+    // Without explicit nulling, any transient reference to this view
+    // (pending RAF callback, closure in a setTimeout, back-reference from
+    // the query editor) keeps the entire parsed dataset alive until that
+    // reference is collected. For an 80 MB CSV with 500 k rows this is
+    // easily 300+ MB of JS heap — repeated load/clear cycles OOM the tab.
+    this.rows = null;
+    this._baseColumns = null;
+    this._extractedCols = null;
+    this._colStats = null;
+    this._filteredIdx = null;
+    this._susBitmap = null;
+    this._detectionBitmap = null;
+    this.file = null;
+    this._evtxEvents = null;
+    this._evtxFindings = null;
+    this._app = null;
   }
 
   // ── Columns accessor (base + extracted) ─────────────────────────────────
@@ -2627,9 +2843,20 @@ class TimelineView {
         out[i] = Number.isFinite(n) ? n : NaN;
       }
     } else {
-      for (let i = 0; i < rows.length; i++) {
-        const r = rows[i];
-        out[i] = r ? _tlParseTimestamp(r[col]) : NaN;
+      // Detect the dominant timestamp format from a small sample and use
+      // the specialised fast-path parser that skips the full regex
+      // waterfall. Falls back to `_tlParseTimestamp` for outlier cells.
+      const fmt = _tlDetectTimestampFormat(rows, col, 30);
+      if (fmt === 'generic') {
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i];
+          out[i] = r ? _tlParseTimestamp(r[col]) : NaN;
+        }
+      } else {
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i];
+          out[i] = r ? _tlParseTimestampFast(r[col], fmt) : NaN;
+        }
       }
     }
   }
@@ -3071,11 +3298,7 @@ class TimelineView {
     const toolbar = document.createElement('div');
     toolbar.className = 'tl-toolbar';
     toolbar.innerHTML = `
-      <span class="tl-file-chip" title="Source file">
-        <span class="tl-file-icon">📈</span>
-        <span class="tl-file-name"></span>
-        <span class="tl-file-meta"></span>
-      </span>
+      <span class="tl-row-stat"></span>
       <span class="tl-sep"></span>
       <label class="tl-field">
         <span class="tl-field-label">Timestamp</span>
@@ -3091,7 +3314,6 @@ class TimelineView {
       </label>
       <span class="tl-spacer"></span>
       <button class="tl-tb-btn" type="button" data-act="extract" title="Extract URLs / hostnames / regex into new columns">ƒx Extract</button>
-      <span class="tl-row-stat"></span>
       <button class="tl-reset-btn" type="button" title="Reset view: clear query, range window, column hides, 🚩 Suspicious marks, stack column, pivot, extracted columns, AND every saved Timeline preference in localStorage (grid/chart heights, bucket, section collapse, card widths, query history, drawer width, grid column widths)">↺ Reset</button>
     `;
     host.appendChild(toolbar);
@@ -3297,8 +3519,6 @@ class TimelineView {
       detectionsSection: detectionsSec, detectionsBody: detectionsSec.body,
       entitiesSection: entitiesSec, entitiesBody: entitiesSec.body,
       pivotSection: pivotSec, pivotBody: pivotSec.body,
-      fileName: toolbar.querySelector('.tl-file-name'),
-      fileMeta: toolbar.querySelector('.tl-file-meta'),
       rowStat: toolbar.querySelector('.tl-row-stat'),
       timeColSelect: toolbar.querySelector('[data-field="time-col"]'),
       stackColSelect: toolbar.querySelector('[data-field="stack-col"]'),
@@ -3328,7 +3548,6 @@ class TimelineView {
     };
     this._populateToolbarSelects();
     this._populatePivotSelects();
-    this._refreshFileChip();
   }
 
   // Factory for a collapsible, optionally-exportable section wrapper.
@@ -3378,23 +3597,17 @@ class TimelineView {
     const wrap = this._root.querySelector(`.tl-section-${id}`);
     if (!wrap) return;
     wrap.classList.toggle('collapsed');
-    this._sections[id] = wrap.classList.contains('collapsed');
+    const collapsed = wrap.classList.contains('collapsed');
+    this._sections[id] = collapsed;
     TimelineView._saveSections(this._sections);
     // Chart + grid canvases/virtuals may need a repaint on expand.
-    this._scheduleRender(['chart', 'grid']);
+    // When the columns (Top Values) section is expanded, schedule a
+    // 'columns' render so deferred _colStats are computed on demand.
+    const tasks = ['chart', 'grid'];
+    if (id === 'columns' && !collapsed) tasks.push('columns');
+    this._scheduleRender(tasks);
   }
 
-
-  _refreshFileChip() {
-    const f = this.file;
-    const label = f && f.name ? f.name : '(no file)';
-    const sizeText = f ? _tlFormatBytes(f.size || 0) : '';
-    const rowText = this.truncated
-      ? `${this.rows.length.toLocaleString()} of ${this.originalRowCount.toLocaleString()} rows (capped)`
-      : `${this.rows.length.toLocaleString()} rows`;
-    this._els.fileName.textContent = label;
-    this._els.fileMeta.textContent = ` · ${this.formatLabel}${sizeText ? ' · ' + sizeText : ''} · ${rowText}`;
-  }
 
   _populateToolbarSelects() {
     const { timeColSelect, stackColSelect, bucketSelect } = this._els;
@@ -3560,9 +3773,15 @@ class TimelineView {
     });
     this._resizeObs.observe(els.chart);
 
-    // Close any popover on ESC or outside click.
+    // Close any popover on ESC or outside click. Header cells are exempt
+    // so the click handler (which fires after mousedown) can apply toggle
+    // logic — close if the same column's menu is already open, otherwise
+    // close-then-reopen for a different column.
     this._onDocClick = (e) => {
-      if (this._openPopover && !this._openPopover.contains(e.target)) this._closePopover();
+      if (!this._openPopover) return;
+      if (this._openPopover.contains(e.target)) return;
+      if (e.target.closest && e.target.closest('.grid-header-cell')) return;
+      this._closePopover();
     };
     this._onDocKey = (e) => {
       if (e.key === 'Escape') {
@@ -3774,20 +3993,36 @@ class TimelineView {
       if (this._destroyed) return;
       const set = new Set(this._pendingTasks);
       this._pendingTasks.clear();
-      if ((set.has('grid') || set.has('columns')) && !this._colStats) {
-        this._colStats = this._computeColumnStats(this._filteredIdx || new Uint32Array(0));
-      }
+      // Chart, grid, scrubber, chips render first — these are the primary
+      // visual feedback surfaces and must update in the same frame as the
+      // user's keystroke / click so the UI feels responsive.
       if (set.has('scrubber')) this._renderScrubber();
       if (set.has('chart')) this._renderChart();
       if (set.has('chips')) this._renderRangeBanner();
       if (set.has('chips')) this._renderChips();
       if (set.has('grid')) this._renderGrid();
-      if (set.has('columns')) this._renderColumns();
       if (set.has('detections')) this._renderDetections();
       if (set.has('entities')) this._renderEntities();
       if (set.has('pivot')) {/* lazy; built on demand via Build button */ }
       this._refreshRowStat();
 
+      // Column stats are O(rows × cols) — the single most expensive
+      // synchronous computation in the render pipeline. Defer them to a
+      // follow-up animation frame so the chart + grid paint first and the
+      // user sees immediate visual feedback. The column cards update one
+      // frame later (≈16 ms), which is imperceptible but unblocks the
+      // critical path that was causing stutter on clear / type-ahead.
+      if (set.has('columns')) {
+        cancelAnimationFrame(this._colStatsRaf);
+        this._colStatsRaf = requestAnimationFrame(() => {
+          this._colStatsRaf = 0;
+          if (this._destroyed) return;
+          if (!this._colStats) {
+            this._colStats = this._computeColumnStats(this._filteredIdx || new Uint32Array(0));
+          }
+          this._renderColumns();
+        });
+      }
     });
   }
 
@@ -4136,7 +4371,13 @@ class TimelineView {
     if (!cur) {
       cur = document.createElement('div');
       cur.className = 'tl-chart-cursor';
+      // Top handle — a real DOM element (not ::before) so it can receive
+      // pointer events for click+drag scrubbing through the events grid.
+      const handle = document.createElement('div');
+      handle.className = 'tl-chart-cursor-handle';
+      cur.appendChild(handle);
       wrap.appendChild(cur);
+      this._installCursorDrag(handle, cur, canvas);
     }
     // Offset by the canvas's position within `.tl-chart` so the cursor
     // lines up with the plot area. `.tl-chart` has padding (see
@@ -4172,6 +4413,120 @@ class TimelineView {
     cur.style.left = (pct * 100) + '%';
   }
 
+  // ── Cursor drag (click+drag the red-line handle to scrub) ──────────────
+  // Given a target timestamp, find the row in `_filteredIdx` whose time
+  // is closest. The filtered index is in original-row order (which is
+  // the file's native row order — usually chronological for CSV/EVTX),
+  // so a linear scan is acceptable at interactive rates (rAF-throttled).
+  // Returns a dataIdx suitable for `_setCursorDataIdx`, or null.
+  _findNearestDataIdxForTime(targetMs) {
+    const idx = this._filteredIdx;
+    const times = this._timeMs;
+    if (!idx || !idx.length || !times) return null;
+    let bestDi = null;
+    let bestDist = Infinity;
+    for (let i = 0; i < idx.length; i++) {
+      const di = idx[i];
+      const t = times[di];
+      if (!Number.isFinite(t)) continue;
+      const d = Math.abs(t - targetMs);
+      if (d < bestDist) { bestDist = d; bestDi = di; }
+    }
+    return bestDi;
+  }
+
+  // Scroll the main grid so the row for `dataIdx` is roughly centred in
+  // the viewport. Uses instant (non-smooth) scrolling so the grid tracks
+  // the cursor position during a drag without animation lag. Skips the
+  // GridViewer `_scrollToRow` path which opens the drawer and does
+  // highlight flash — here we just want a lightweight viewport reposition.
+  _scrollGridToCursorIdx(dataIdx) {
+    const viewer = this._grid;
+    if (!viewer || !viewer._scr) return;
+    // Map original dataIdx → virtual row index in the grid. The grid's
+    // rows are in `_filteredIdx` order, so we need the position of
+    // `dataIdx` within `_filteredIdx`.
+    const fi = this._filteredIdx;
+    if (!fi) return;
+    let vIdx = -1;
+    for (let i = 0; i < fi.length; i++) {
+      if (fi[i] === dataIdx) { vIdx = i; break; }
+    }
+    if (vIdx < 0) return;
+    const rowH = viewer.ROW_HEIGHT || 28;
+    const viewportH = viewer._scr.clientHeight || 400;
+    const target = Math.max(0, vIdx * rowH - (viewportH - rowH) / 2);
+    viewer._scr.scrollTop = target;
+  }
+
+  // Wire pointer events on the cursor handle so the analyst can click+drag
+  // the red line to scrub through the events grid. Captures the pointer on
+  // the handle element, converts each pointermove into a timestamp via the
+  // cached chart layout, finds the nearest filtered row, moves the cursor,
+  // and scrolls the grid. Stops propagation so the chart's own rubber-band
+  // / bucket-drill handler does not fire.
+  _installCursorDrag(handle, cursorEl, canvas) {
+    let dragging = false;
+    let scrollRaf = 0;
+
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0) return;
+      e.stopPropagation();  // don't trigger chart rubber-band / drill
+      e.preventDefault();
+      const data = this._lastChartData;
+      if (!data || !data.layout) return;
+      dragging = true;
+      this._cursorDragging = true;
+      cursorEl.classList.add('dragging');
+      // Also kill the scrubber cursor transition so both stay in sync.
+      const scrubCur = this._els && this._els.scrubTrack
+        ? this._els.scrubTrack.querySelector('.tl-scrubber-cursor') : null;
+      if (scrubCur) scrubCur.classList.add('dragging');
+      try { handle.setPointerCapture(e.pointerId); } catch (_) { /* noop */ }
+
+      const onMove = (ev) => {
+        if (!dragging) return;
+        const cd = this._lastChartData;
+        if (!cd || !cd.layout) return;
+        const rect = canvas.getBoundingClientRect();
+        const x = ev.clientX - rect.left;
+        const { padL, plotW } = cd.layout;
+        const clamped = Math.max(padL, Math.min(padL + plotW, x));
+        const rel = (clamped - padL) / plotW;
+        const targetMs = cd.viewLo + rel * cd.rangeMs;
+        const di = this._findNearestDataIdxForTime(targetMs);
+        if (di != null) {
+          this._setCursorDataIdx(di);
+          // Throttle grid scrolling to rAF so we don't overwhelm
+          // the virtual-scroll grid with synchronous reflows.
+          if (!scrollRaf) {
+            const scrollDi = di;
+            scrollRaf = requestAnimationFrame(() => {
+              scrollRaf = 0;
+              this._scrollGridToCursorIdx(scrollDi);
+            });
+          }
+        }
+      };
+
+      const onUp = () => {
+        dragging = false;
+        this._cursorDragging = false;
+        cursorEl.classList.remove('dragging');
+        if (scrubCur) scrubCur.classList.remove('dragging');
+        handle.removeEventListener('pointermove', onMove);
+        handle.removeEventListener('pointerup', onUp);
+        handle.removeEventListener('pointercancel', onUp);
+        try { handle.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ }
+        if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = 0; }
+      };
+
+      handle.addEventListener('pointermove', onMove);
+      handle.addEventListener('pointerup', onUp);
+      handle.addEventListener('pointercancel', onUp);
+    });
+  }
+
   // Anchor the "you are here" cursor to the row currently nearest the
   // vertical middle of a grid's viewport (or the row opened in the
   // drawer, if any — that wins because it's a stable fixed reference).
@@ -4183,17 +4538,13 @@ class TimelineView {
   // anchor logic in `grid-viewer.js` `_updateTimelineCursor`.
   _updateCursorFromGridScroll(viewer) {
     if (!viewer || !viewer._scr || !this._timeMs) return;
+    // During a cursor drag the analyst is driving the cursor position
+    // via the chart — the grid scrolls to follow.  If we let the
+    // scroll-driven anchor run it would fight the drag and teleport
+    // the cursor back to the viewport midpoint.
+    if (this._cursorDragging) return;
 
-    // 1. Drawer-pin: if the user has a row open in the detail drawer
-    //    that's a stable reference — don't let scroll wander the cursor
-    //    off it. Mirrors grid-viewer's anchor priority.
-    const drw = viewer.state && viewer.state.drawer;
-    if (drw && drw.open && drw.dataIdx >= 0) {
-      this._setCursorDataIdx(drw.dataIdx);
-      return;
-    }
-
-    // 2. Scroll-anchored: row nearest the vertical middle of the
+    // Scroll-anchored: row nearest the vertical middle of the
     //    viewport. Middle (not top-edge) to avoid twitch on fine
     //    trackpad scroll.
     const visible = viewer._visibleCount ? viewer._visibleCount() : 0;
@@ -4202,7 +4553,7 @@ class TimelineView {
     const midPx = (viewer._scr.scrollTop || 0) + ((viewer._scr.clientHeight || 0) / 2);
     const midV = Math.max(0, Math.min(visible - 1, Math.floor(midPx / rowH)));
 
-    // 3. ±8-row scan to tolerate rows with no parseable time — prevents
+    // ±8-row scan to tolerate rows with no parseable time — prevents
     //    the cursor from hiding / snapping when the user scrolls through
     //    a stretch of blank-timestamp rows.
     const WIN = 8;
@@ -4651,8 +5002,17 @@ class TimelineView {
   }
 
   _renderGridInto(wrap, idx, role) {
+    // When no extracted columns exist, reference the base row arrays
+    // directly instead of calling _buildRowConcat per row. For 500K rows
+    // this eliminates 500K function calls + the per-row length check.
+    const hasExtracted = this._extractedCols.length > 0;
     const rowsConcat = new Array(idx.length);
-    for (let i = 0; i < idx.length; i++) rowsConcat[i] = this._buildRowConcat(idx[i]);
+    if (hasExtracted) {
+      for (let i = 0; i < idx.length; i++) rowsConcat[i] = this._buildRowConcat(idx[i]);
+    } else {
+      const rows = this.rows;
+      for (let i = 0; i < idx.length; i++) rowsConcat[i] = rows[idx[i]] || [];
+    }
     const sus = this._susBitmap;
     const origIdx = idx;
 
@@ -4732,6 +5092,10 @@ class TimelineView {
         // promoting GridViewer's internal `.grid-timeline` strip.
         onUseAsTimeline: role === 'main' ? (colIdx) => this._setTimeColFromGrid(colIdx) : null,
         onStackTimelineBy: role === 'main' ? (colIdx) => this._setStackColFromGrid(colIdx) : null,
+        // Left-click on a grid header → open the Excel-style filter
+        // popover (same as the Top-Lists ▾ button). Right-click is
+        // wired separately via `contextmenu` to open the sort/hide menu.
+        onHeaderClick: role === 'main' ? (colIdx, anchor) => this._openColumnMenu(colIdx, anchor) : null,
         // Drawer → key right-click menu → promote the JSON leaf to a
         // virtual (extracted) column and optionally chain a filter chip.
         // `colIdx` is the column index in the GridViewer's column array,
@@ -4846,20 +5210,18 @@ class TimelineView {
 
       // Wire right-click on rows.
       viewer.root().addEventListener('contextmenu', (e) => {
-        // Right-click on a header cell → open the Excel-style column menu
-        // (same surface as the ▾ affordance on Top-Values cards). Gives
-        // the analyst Contains + checkbox filtering directly from the
-        // column header without having to scroll down to the matching
-        // top-values card. Header left-click remains GridViewer's own
-        // sort / hide / pin menu — only the right-click gesture is
-        // claimed here. Checked before the body-row branch so the native
-        // browser menu is suppressed either way.
+        // Right-click on a header cell → open GridViewer's sort / hide /
+        // copy menu (the same surface that left-click used to open before
+        // the gesture swap). Left-click now opens the Excel-style filter
+        // popover via the `onHeaderClick` callback above. Close any
+        // Timeline popover first so two menus can't overlap.
         const headCell = e.target.closest('.grid-header-cell.grid-header-clickable');
         if (headCell) {
           const colAttr = parseInt(headCell.dataset.col || '-1', 10);
           if (Number.isFinite(colAttr) && colAttr >= 0) {
             e.preventDefault();
-            this._openColumnMenu(colAttr, headCell);
+            this._closePopover();
+            viewer._openHeaderMenu(colAttr, headCell);
           }
           return;
         }
@@ -4911,7 +5273,14 @@ class TimelineView {
         e.preventDefault();
         this._openRowContextMenu(e, colIdx, val, { origRow });
       });
-      if (role === 'main') this._grid = viewer;
+      if (role === 'main') {
+        this._grid = viewer;
+        // Default-sort by the timestamp column ascending so the earliest
+        // event is row 1 and the grid reads chronologically top-to-bottom.
+        if (this._timeCol != null) {
+          viewer._sortByColumn(this._timeCol, 'asc');
+        }
+      }
     } else {
       // Preserve columns in case new extracted columns were added.
       existing.columns = this.columns;
@@ -6073,8 +6442,14 @@ class TimelineView {
 
   // ── Column menu (Excel-style) ────────────────────────────────────────────
   _openColumnMenu(colIdx, anchor) {
+    // Toggle: if the menu is already open for this exact column, close it.
+    if (this._openPopover && this._openPopover.dataset.colIdx === String(colIdx)) {
+      this._closePopover();
+      return;
+    }
     this._closePopover();
     const menu = document.createElement('div');
+    menu.dataset.colIdx = colIdx;
     menu.className = 'tl-popover tl-colmenu';
     const name = this.columns[colIdx] || `(col ${colIdx + 1})`;
     // Pre-fill the Contains input + Values checkboxes from the current
@@ -6157,13 +6532,24 @@ class TimelineView {
     // the user can broaden a narrowed selection without hitting Reset
     // first. Excel-parity — see `_indexIgnoringColumn` for semantics.
     const items = this._distinctValuesFor(colIdx, this._indexIgnoringColumn(colIdx), 200);
-    const sel = new Set(eqSet);
     // Three round-trip modes:
     //   (a) positive-eq present → start with only `eqSet` checked;
     //   (b) negative-ne present (and no eq) → start all-checked, `neSet` off;
     //   (c) nothing on this column → start all-checked.
     const initialAll = existingEqs.length === 0 && existingNes.length === 0;
     const initialAllMinusNe = existingEqs.length === 0 && existingNes.length > 0;
+
+    // Live checkbox state — survives paint() re-renders when the user
+    // types in Search Values. Keyed by value string → boolean (checked).
+    // Seeded from the initial round-trip mode so the first paint is
+    // correct, then updated by individual checkbox toggles and All/None.
+    const liveState = new Map();
+    for (const [val] of items) {
+      const checked = initialAll ? true
+        : initialAllMinusNe ? !neSet.has(val)
+        : eqSet.has(val);
+      liveState.set(val, checked);
+    }
 
     const paint = (filterText) => {
       valsWrap.innerHTML = '';
@@ -6172,9 +6558,7 @@ class TimelineView {
         if (lo && !val.toLowerCase().includes(lo)) continue;
         const line = document.createElement('label');
         line.className = 'tl-colmenu-value';
-        const checked = initialAll ? true
-          : initialAllMinusNe ? !neSet.has(val)
-          : sel.has(val);
+        const checked = liveState.get(val) !== false;
         line.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} data-val="${_tlEsc(val)}"> <span class="tl-colmenu-value-label" title="${_tlEsc(val)}">${_tlEsc(val === '' ? '(empty)' : val)}</span> <span class="tl-colmenu-value-count">${count.toLocaleString()}</span>`;
         valsWrap.appendChild(line);
       }
@@ -6188,11 +6572,43 @@ class TimelineView {
     paint('');
 
     menu.querySelector('[data-f="valsearch"]').addEventListener('input', (e) => paint(e.target.value));
+
+    // Keep liveState in sync when the user toggles individual checkboxes.
+    // Delegated on the wrapper so dynamically-created checkboxes after
+    // paint() re-renders are covered without per-element listeners.
+    valsWrap.addEventListener('change', (e) => {
+      const cb = e.target;
+      if (cb.type === 'checkbox' && cb.dataset.val != null) {
+        liveState.set(cb.dataset.val, cb.checked);
+      }
+    });
+
+    // Enter in either text input → Apply and close (mirrors the pattern
+    // in _openAddSusPopover). Gives keyboard-driven analysts the
+    // expected submit-on-Enter UX without reaching for the button.
+    const applyBtn = menu.querySelector('[data-act="apply"]');
+    menu.querySelector('[data-f="contains"]').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); applyBtn.click(); }
+    });
+    menu.querySelector('[data-f="valsearch"]').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); applyBtn.click(); }
+    });
+
+    // All / None affect only the currently visible (search-filtered)
+    // checkboxes — so the user can search for "bob", click None to
+    // deselect just the bob values, then search for something else and
+    // those deselections persist in liveState across paint() calls.
     menu.querySelector('[data-act="selall"]').addEventListener('click', () => {
-      valsWrap.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = true; });
+      valsWrap.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        cb.checked = true;
+        liveState.set(cb.dataset.val, true);
+      });
     });
     menu.querySelector('[data-act="selnone"]').addEventListener('click', () => {
-      valsWrap.querySelectorAll('input[type=checkbox]').forEach(cb => { cb.checked = false; });
+      valsWrap.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        cb.checked = false;
+        liveState.set(cb.dataset.val, false);
+      });
     });
     // The `Use as Timestamp` button is now conditional (see `showTimeBtn`
     // above — hidden when the column doesn't parse as timestamps / numbers,
@@ -6243,24 +6659,27 @@ class TimelineView {
       // Contains
       const containsText = menu.querySelector('[data-f="contains"]').value.trim();
       this._addContainsChipsReplace(colIdx, containsText);
-      // Eq set — pick the shorter representation (`col IN (…)` vs
-      // `col NOT IN (…)`) so unchecking one value out of 200 doesn't
-      // emit a 199-value IN list. NOT IN is only safe when the distinct
-      // set wasn't truncated at the cap; otherwise values beyond the
-      // cap would silently pass the negation and leak into results.
-      const checks = Array.from(valsWrap.querySelectorAll('input[type=checkbox]'));
-      const all = checks.length && checks.every(cb => cb.checked);
-      const none = checks.length && checks.every(cb => !cb.checked);
-      if (all) {
+      // Eq set — read from `liveState` (all items, not just the
+      // currently visible DOM) so values hidden by Search Values
+      // aren't silently dropped. Pick the shorter representation
+      // (`col IN (…)` vs `col NOT IN (…)`) so unchecking one value
+      // out of 200 doesn't emit a 199-value IN list. NOT IN is only
+      // safe when the distinct set wasn't truncated at the cap;
+      // otherwise values beyond the cap would silently pass the
+      // negation and leak into results.
+      const entries = Array.from(liveState.entries());
+      const allChecked = entries.length > 0 && entries.every(([, v]) => v);
+      const noneChecked = entries.length > 0 && entries.every(([, v]) => !v);
+      if (allChecked) {
         // "All selected" → no eq chip narrowing needed.
         this._replaceEqChipsForCol(colIdx, []);
-      } else if (none) {
+      } else if (noneChecked) {
         // "None" → rarely useful, but treat as excluding all — user probably
         // means clear + contains only.
         this._replaceEqChipsForCol(colIdx, []);
       } else {
-        const checked = checks.filter(cb => cb.checked).map(cb => cb.dataset.val);
-        const unchecked = checks.filter(cb => !cb.checked).map(cb => cb.dataset.val);
+        const checked = entries.filter(([, v]) => v).map(([k]) => k);
+        const unchecked = entries.filter(([, v]) => !v).map(([k]) => k);
         const canNegate = !items.truncated;
         if (canNegate && unchecked.length < checked.length) {
           this._queryReplaceNotInForCol(colIdx, unchecked);
@@ -6996,7 +7415,7 @@ class TimelineView {
   _clearAllExtractedCols() {
     if (!this._extractedCols.length) return false;
     const n = this._extractedCols.length;
-    // eslint-disable-next-line no-alert
+     
     if (!window.confirm(`Remove ${n} extracted column${n === 1 ? '' : 's'}? This cannot be undone.`)) return false;
     const baseLen = this._baseColumns.length;
 
@@ -7634,7 +8053,7 @@ Object.assign(App.prototype, {
       if (ext === 'evtx') {
         view = TimelineView.fromEvtx(file, buffer);
       } else if (ext === 'csv' || ext === 'tsv') {
-        view = TimelineView.fromCsv(file, buffer, ext === 'tsv' ? '\t' : null);
+        view = await TimelineView.fromCsvAsync(file, buffer, ext === 'tsv' ? '\t' : null);
       } else if (ext === 'sqlite' || ext === 'db') {
         view = TimelineView.fromSqlite(file, buffer);
       } else {
@@ -7695,16 +8114,15 @@ Object.assign(App.prototype, {
       console.error('[timeline] load failed:', e);
       this._toast(`Failed to open in Timeline: ${e && e.message ? e.message : e}`,
         'error');
+      // Clean up any partial Timeline state so the user lands back on
+      // the drop-zone instead of a half-mounted surface with stale
+      // breadcrumbs and no close button.  `_clearFile()` restores the
+      // canonical empty state (drop-zone, hidden toolbar, nulled
+      // _fileMeta) and is safe to call even when no view was mounted.
       const host = document.getElementById('timeline-root');
-      if (host) {
-        host.innerHTML = '';
-        const err = document.createElement('div');
-        err.className = 'timeline-empty';
-        err.innerHTML = `<div class="timeline-empty-icon">⚠</div>`
-          + `<div class="timeline-empty-title">Failed to open</div>`
-          + `<div class="timeline-empty-body">${_tlEsc(e && e.message ? e.message : String(e))}</div>`;
-        host.appendChild(err);
-      }
+      if (host) host.innerHTML = '';
+      document.body.classList.remove('has-timeline');
+      this._clearFile();
     } finally {
       this._setLoading(false);
     }
