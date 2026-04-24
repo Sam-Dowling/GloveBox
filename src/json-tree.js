@@ -299,7 +299,7 @@ class JsonTree {
     JsonTree._closeKeyMenu();
 
     const items = [];
-    items.push({ label: 'ƒx Extract column', action: 'extract' });
+    items.push({ label: 'ƒx Extract value', action: 'extract' });
     items.push({ sep: true });
     items.push({ label: '✓ Include value',   action: 'include' });
     items.push({ label: '✕ Exclude value',   action: 'exclude' });
