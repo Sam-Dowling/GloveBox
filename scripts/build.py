@@ -176,6 +176,7 @@ JS_FILES = [
     # three native-binary renderers) so every emit site can cite a
     # canonical technique id instead of rolling its own table.
     'src/mitre.js',
+    'src/evtx-event-ids.js',
     # capabilities.js — static capability tagging (capa-lite). Consumed by
     # PE / ELF / Mach-O renderers via `Capabilities.detect({imports,strings,dylibs})`
     # to turn a wall of suspicious APIs into named behaviours with MITRE
@@ -584,6 +585,27 @@ HTML = f"""<!DOCTYPE html>
         <span class="lm" style="--i:34">Building a psychological profile</span>
         <span class="lm" style="--i:35">Taking careful measurements</span>
         <span class="lm" style="--i:36">Weighing it on the scale</span>
+        <span class="lm" style="--i:37">Checking under the cushions</span>
+        <span class="lm" style="--i:38">Interrogating the metadata</span>
+        <span class="lm" style="--i:39">Consulting the magic 8-ball</span>
+        <span class="lm" style="--i:40">Shaking it like a snow globe</span>
+        <span class="lm" style="--i:41">Holding it up to the light</span>
+        <span class="lm" style="--i:42">Sniffing for anomalies</span>
+        <span class="lm" style="--i:43">Polishing the magnifying glass</span>
+        <span class="lm" style="--i:44">Unfolding the treasure map</span>
+        <span class="lm" style="--i:45">Asking the rubber duck</span>
+        <span class="lm" style="--i:46">Lifting the carpet</span>
+        <span class="lm" style="--i:47">Peeling back the layers</span>
+        <span class="lm" style="--i:48">Tuning the antenna</span>
+        <span class="lm" style="--i:49">Deciphering the runes</span>
+        <span class="lm" style="--i:50">Counting the breadcrumbs</span>
+        <span class="lm" style="--i:51">Putting on the detective hat</span>
+        <span class="lm" style="--i:52">Adjusting the monocle</span>
+        <span class="lm" style="--i:53">Leafing through the evidence</span>
+        <span class="lm" style="--i:54">Shining the UV light</span>
+        <span class="lm" style="--i:55">Pulling the thread</span>
+        <span class="lm" style="--i:56">Turning over every stone</span>
+        <span class="lm" style="--i:57">Recalibrating the flux capacitor</span>
       </div>
     </div>
   </div>
