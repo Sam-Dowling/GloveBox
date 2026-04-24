@@ -197,6 +197,16 @@ class App {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea') return;
       e.preventDefault();
+      // Timeline mode gates paste behind a confirmation dialog: clipboards
+      // frequently contain sensitive material (credentials, customer data),
+      // and silently swapping out a loaded EVTX / CSV with whatever happens
+      // to be on the clipboard is a foot-gun. The dialog previews the first
+      // few hundred chars / reports non-text payload type so the analyst
+      // can make an informed choice.
+      if (this._timelineCurrent) {
+        this._confirmTimelinePaste(e.clipboardData);
+        return;
+      }
       this._handlePasteEvent(e);
     });
 
@@ -238,6 +248,18 @@ class App {
 
   _handlePasteEvent(e) {
     const dt = e.clipboardData;
+    if (!dt) return;
+    this._loadPastePayload(dt);
+  }
+
+  // Extracts whatever is on the clipboard and feeds it to `_loadFile` using
+  // the same priority order as the historical paste handler: OS files →
+  // clipboard images → plain text (with same-session copy round-trip
+  // preservation) → HTML fallback. Split out of `_handlePasteEvent` so the
+  // timeline confirmation dialog can reuse the loading path without
+  // re-reading the clipboard (which would be empty by the time the user
+  // clicks "Load for analysis").
+  _loadPastePayload(dt) {
     if (!dt) return;
 
     // Check for files (e.g., copied file from explorer, screenshot)
@@ -294,6 +316,135 @@ class App {
     }
 
     this._toast('Nothing to paste', 'error');
+  }
+
+  // Build a short, human-readable description + preview of whatever is
+  // on the clipboard so the timeline paste-confirm dialog can tell the
+  // user what they're about to load. Returns { kind, preview } where
+  // `preview` is already truncated for display.
+  _describePasteClipboard(dt) {
+    if (!dt) return { kind: 'empty', preview: '' };
+
+    if (dt.files && dt.files.length) {
+      const f = dt.files[0];
+      const kb = Math.max(1, Math.round((f.size || 0) / 1024));
+      return { kind: 'file', preview: `[file: ${f.name || 'clipboard'} — ${kb} KB]` };
+    }
+
+    for (const item of (dt.items || [])) {
+      if (item.type && item.type.startsWith('image/')) {
+        return { kind: 'image', preview: `[image: ${item.type}]` };
+      }
+    }
+
+    const text = dt.getData('text/plain');
+    if (text && text.trim()) {
+      const MAX = 400;
+      const trimmed = text.length > MAX ? text.slice(0, MAX) + '…' : text;
+      return { kind: 'text', preview: trimmed };
+    }
+
+    const html = dt.getData('text/html');
+    if (html && html.trim()) {
+      const MAX = 400;
+      const trimmed = html.length > MAX ? html.slice(0, MAX) + '…' : html;
+      return { kind: 'html', preview: trimmed };
+    }
+
+    return { kind: 'empty', preview: '' };
+  }
+
+  // Timeline paste gate: frost-overlay confirmation before replacing the
+  // currently-loaded timeline with clipboard content. Reuses the
+  // `.help-overlay` / `.help-dialog` / `.update-btn` classes so the look
+  // matches the existing version-check modal and picks up every theme for
+  // free. All user-controlled data (the clipboard preview) is set via
+  // `textContent` — never `innerHTML` — so the strict CSP stays intact.
+  _confirmTimelinePaste(dt) {
+    const info = this._describePasteClipboard(dt);
+    if (info.kind === 'empty') {
+      this._toast('Nothing to paste', 'error');
+      return;
+    }
+
+    const overlay = document.createElement('div');
+    overlay.className = 'help-overlay timeline-paste-overlay';
+
+    const dialog = document.createElement('div');
+    dialog.className = 'help-dialog';
+
+    const header = document.createElement('div');
+    header.className = 'help-header';
+    const title = document.createElement('div');
+    title.className = 'help-title';
+    title.textContent = 'Replace timeline with pasted content?';
+    header.appendChild(title);
+    const closeX = document.createElement('button');
+    closeX.className = 'help-close';
+    closeX.type = 'button';
+    closeX.title = 'Cancel';
+    closeX.textContent = '✕';
+    header.appendChild(closeX);
+    dialog.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'help-body';
+
+    const p1 = document.createElement('p');
+    p1.textContent = 'You pasted while a timeline was open. Loading clipboard content will close the current timeline and analyse the pasted data as a new file.';
+    body.appendChild(p1);
+
+    const p2 = document.createElement('p');
+    const kindLabel = {
+      file: 'a file from the clipboard',
+      image: 'an image from the clipboard',
+      text: 'plain text',
+      html: 'HTML',
+    }[info.kind] || 'clipboard content';
+    p2.textContent = `Detected: ${kindLabel}. Preview:`;
+    body.appendChild(p2);
+
+    const pre = document.createElement('pre');
+    pre.className = 'help-preview';
+    pre.textContent = info.preview;
+    body.appendChild(pre);
+
+    const actions = document.createElement('div');
+    actions.className = 'update-actions';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'update-btn update-btn-close';
+    cancelBtn.type = 'button';
+    cancelBtn.textContent = 'Cancel';
+    const loadBtn = document.createElement('button');
+    loadBtn.className = 'update-btn update-btn-download';
+    loadBtn.type = 'button';
+    loadBtn.textContent = 'Load for analysis';
+    actions.appendChild(loadBtn);
+    actions.appendChild(cancelBtn);
+    body.appendChild(actions);
+
+    dialog.appendChild(body);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    const close = () => {
+      if (overlay.parentNode) overlay.remove();
+      document.removeEventListener('keydown', escHandler);
+    };
+    const escHandler = e => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+    document.addEventListener('keydown', escHandler);
+
+    closeX.addEventListener('click', close);
+    cancelBtn.addEventListener('click', close);
+    overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+    loadBtn.addEventListener('click', () => {
+      close();
+      this._loadPastePayload(dt);
+    });
+
+    // Autofocus the safer action (Cancel) so Enter doesn't accidentally
+    // replace the timeline.
+    try { cancelBtn.focus(); } catch (_) { /* non-fatal */ }
   }
 
   // ── Hosted-mode privacy notice ──────────────────────────────────────
