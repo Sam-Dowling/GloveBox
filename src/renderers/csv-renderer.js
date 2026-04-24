@@ -312,6 +312,44 @@ class CsvRenderer {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
+  //  Decode an ArrayBuffer to a UTF-8 string with inline CRLF → LF
+  //  normalisation and BOM stripping.  For buffers larger than
+  //  DECODE_CHUNK_BYTES (16 MB) the decode runs in 16 MB slices via the
+  //  streaming TextDecoder API so each intermediate string stays well
+  //  under V8's ~512 M-character limit.  This replaces the previous
+  //  `file.text()` call in the Route-B CSV handler, which could silently
+  //  return an empty string for very large files under memory pressure.
+  // ═══════════════════════════════════════════════════════════════════════
+  static decodeBuffer(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const CHUNK = RENDER_LIMITS.DECODE_CHUNK_BYTES; // 16 MB
+
+    if (bytes.length <= CHUNK) {
+      // Fast path — small buffer, single-shot decode.
+      const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      const noBom = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+      return noBom.indexOf('\r') !== -1 ? noBom.replace(/\r\n?/g, '\n') : noBom;
+    }
+
+    // Chunked path — large buffer.
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    const parts = [];
+    let first = true;
+    for (let pos = 0; pos < bytes.length; pos += CHUNK) {
+      const end = Math.min(pos + CHUNK, bytes.length);
+      const stream = end < bytes.length;
+      let chunk = decoder.decode(bytes.subarray(pos, end), { stream });
+      if (first) {
+        if (chunk.charCodeAt(0) === 0xFEFF) chunk = chunk.slice(1);
+        first = false;
+      }
+      if (chunk.indexOf('\r') !== -1) chunk = chunk.replace(/\r\n?/g, '\n');
+      parts.push(chunk);
+    }
+    return parts.join('');
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
   //  Security analysis — formula-injection (CWE-1236) detection.
   //  A bare leading =/+/-/@ is the baseline indicator (medium). When the
   //  formula also references a known dangerous function — DDE (`cmd|/C`,

@@ -2147,16 +2147,51 @@ class TimelineView {
   // col-2, … and the view stays usable.
   // Async CSV factory — parses in chunks of CHUNK_ROWS lines, yielding to
   // the event loop between chunks so the browser stays responsive for large
-  // files. TextDecoder + CRLF normalisation are synchronous (fast native
-  // ops); only the line-by-line parse + row-width normalisation is chunked.
+  // files.
+  //
+  // For files above DECODE_CHUNK_BYTES (16 MB) the text is decoded in
+  // slices via `TextDecoder({ stream: true })` with inline CRLF
+  // normalisation so we never allocate a single string anywhere near
+  // V8's ~512 M-character limit. For smaller files the whole buffer is
+  // decoded in one shot (fast path — no overhead).
   static async fromCsvAsync(file, buffer, explicitDelim) {
-    const text = new TextDecoder('utf-8', { fatal: false }).decode(buffer);
-    // Strip a leading UTF-8 BOM (common in Excel-exported CSV). Without this
-    // the first column name would start with U+FEFF, which quietly breaks
-    // header-based timestamp detection on files like
-    // `\uFEFFtimestamp,source,message`.
-    const noBom = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
-    const norm = noBom.indexOf('\r') !== -1 ? noBom.replace(/\r\n?/g, '\n') : noBom;
+    const bytes = new Uint8Array(buffer);
+    const DECODE_CHUNK = RENDER_LIMITS.DECODE_CHUNK_BYTES; // 16 MB
+
+    // ── Chunked UTF-8 decode with inline CRLF strip ───────────────────
+    // Decodes `bytes` into a single LF-normalised string. For buffers
+    // larger than DECODE_CHUNK we slice into 16 MB pieces and use the
+    // streaming TextDecoder mode so each intermediate string is small.
+    // CRLF → LF replacement happens per-chunk to avoid a second full-
+    // string regex pass.
+    let norm;
+    if (bytes.length <= DECODE_CHUNK) {
+      // Fast path — small file, decode in one shot.
+      const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      const noBom = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+      norm = noBom.indexOf('\r') !== -1 ? noBom.replace(/\r\n?/g, '\n') : noBom;
+    } else {
+      // Chunked path — large file.  Decode 16 MB at a time, strip BOM
+      // from the very first chunk, normalise CRLF per-chunk, and
+      // concatenate.  Each intermediate string is ≤ 16 M chars, well
+      // within V8's limit.
+      const decoder = new TextDecoder('utf-8', { fatal: false });
+      const parts = [];
+      let first = true;
+      for (let pos = 0; pos < bytes.length; pos += DECODE_CHUNK) {
+        const end = Math.min(pos + DECODE_CHUNK, bytes.length);
+        const stream = end < bytes.length; // keep state if more data follows
+        let chunk = decoder.decode(bytes.subarray(pos, end), { stream });
+        if (first) {
+          if (chunk.charCodeAt(0) === 0xFEFF) chunk = chunk.slice(1);
+          first = false;
+        }
+        if (chunk.indexOf('\r') !== -1) chunk = chunk.replace(/\r\n?/g, '\n');
+        parts.push(chunk);
+      }
+      norm = parts.join('');
+    }
+
     if (!norm || !norm.trim()) {
       return new TimelineView({
         file, columns: [], rows: [],
@@ -2284,17 +2319,20 @@ class TimelineView {
     });
   }
 
-  // Parse an EVTX buffer resiliently. `EvtxRenderer._parse` already skips
-  // truncated chunks and malformed BinXml templates, but a hard failure on
-  // the file header would otherwise bubble up and abort the load. We
-  // attach the parsed events + an `EvtxRenderer.analyzeForSecurity` result
-  // to the view so Detections / Entities sections can read them without a
-  // second parse pass.
-  static fromEvtx(file, buffer) {
+  // Parse an EVTX buffer resiliently. `EvtxRenderer._parseAsync` already
+  // skips truncated chunks and malformed BinXml templates, but a hard
+  // failure on the file header would otherwise bubble up and abort the
+  // load. We attach the parsed events + an `EvtxRenderer.analyzeForSecurity`
+  // result to the view so Detections / Entities sections can read them
+  // without a second parse pass.
+  //
+  // Uses the async parser with cooperative yielding so the browser stays
+  // responsive during large EVTX files (10–30+ seconds of parse time).
+  static async fromEvtx(file, buffer) {
     const r = new EvtxRenderer();
     let events = [];
     try {
-      events = r._parse(new Uint8Array(buffer)) || [];
+      events = await r._parseAsync(new Uint8Array(buffer)) || [];
     } catch (e) {
       console.warn('[timeline] EVTX parse failed:', e);
       events = [];
@@ -2517,6 +2555,14 @@ class TimelineView {
 
     // Column stats — invalidated on any filter change.
     this._colStats = null;
+    this._colStatsGen = 0;   // generation counter for async cancellation
+
+    // Grid sort + rowsConcat caches — invalidated by _invalidateGridCache()
+    // whenever _timeMs content changes. Avoids the O(n log n) re-sort and
+    // O(n) rowsConcat rebuild on filter-clear for 1M-row datasets.
+    this._sortedFullIdx = null;
+    this._cachedRowsConcat = null;
+    this._cachedRowsConcatExtLen = -1;
 
     // Grid
     this._grid = null;
@@ -2600,6 +2646,8 @@ class TimelineView {
     this._baseColumns = null;
     this._extractedCols = null;
     this._colStats = null;
+    this._sortedFullIdx = null;
+    this._cachedRowsConcat = null;
     this._filteredIdx = null;
     this._susBitmap = null;
     this._detectionBitmap = null;
@@ -2826,6 +2874,9 @@ class TimelineView {
   // directly and every downstream bucket / tick / label path consults
   // `_timeIsNumeric` to format as numbers rather than UTC dates.
   _parseAllTimestamps() {
+    // The sorted index cache depends on _timeMs — invalidate it whenever
+    // timestamps are re-parsed (time-column change, reset, etc.).
+    this._invalidateGridCache();
     const col = this._timeCol;
     const rows = this.rows;
     const out = this._timeMs;
@@ -2966,16 +3017,25 @@ class TimelineView {
     const n = this.rows.length;
     const queryPred = this._queryPred;
 
-    const buf = new Uint32Array(n);
-    let w = 0;
     if (!queryPred) {
-      for (let i = 0; i < n; i++) buf[w++] = i;
+      // Fast path — no active query. Reuse a cached identity index
+      // (0, 1, 2, …, n-1) instead of allocating + filling a fresh
+      // Uint32Array every time. Saves ~4MB allocation + O(n) fill for
+      // 1M rows on every filter-clear.
+      if (!this._identityIdx || this._identityIdx.length !== n) {
+        const id = new Uint32Array(n);
+        for (let i = 0; i < n; i++) id[i] = i;
+        this._identityIdx = id;
+      }
+      this._chipFilteredIdx = this._identityIdx;
     } else {
+      const buf = new Uint32Array(n);
+      let w = 0;
       for (let i = 0; i < n; i++) {
         if (queryPred(i)) buf[w++] = i;
       }
+      this._chipFilteredIdx = buf.subarray(0, w);
     }
-    this._chipFilteredIdx = buf.subarray(0, w);
 
     // Sus bitmap is now maintained eagerly by `_rebuildSusBitmap()` (called
     // whenever marks are toggled/cleared) so the query predicate's `is:sus`
@@ -3110,9 +3170,13 @@ class TimelineView {
     }
 
     this._colStats = null;
+    // Bump the generation counter so any in-flight async column-stats
+    // computation detects it has been superseded and bails early.
+    this._colStatsGen++;
   }
 
-  _computeColumnStats(idx) {
+  /** Synchronous fallback for small datasets (< 50 K rows). */
+  _computeColumnStatsSync(idx) {
     const cols = this.columns.length;
     const stats = new Array(cols);
     for (let c = 0; c < cols; c++) stats[c] = new Map();
@@ -3131,6 +3195,60 @@ class TimelineView {
       out[c] = { total, distinct: arr.length, values: arr.slice(0, TIMELINE_COL_TOP_N) };
     }
     return out;
+  }
+
+  /** Cooperative-yielding column stats — processes `idx` in chunks of
+   *  ~50 K rows, yielding between chunks via MessageChannel so the
+   *  browser can process events and repaint. For 1 M rows × 7 cols this
+   *  turns a 1-3 s main-thread freeze into many short ≈30 ms bursts.
+   *
+   *  Callers pass a `generation` counter; if `this._colStatsGen` has
+   *  moved on by the time a chunk resumes, the computation bails early
+   *  (superseded by a newer filter change). Returns `null` on cancel. */
+  _computeColumnStatsAsync(idx, generation) {
+    const CHUNK = 50000;
+    const cols = this.columns.length;
+    const stats = new Array(cols);
+    for (let c = 0; c < cols; c++) stats[c] = new Map();
+    const total = idx.length;
+    const self = this;
+
+    const yieldTick = () => new Promise(resolve => {
+      if (typeof MessageChannel !== 'undefined') {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => { ch.port1.close(); resolve(); };
+        ch.port2.postMessage(null);
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+
+    return (async () => {
+      let i = 0;
+      while (i < total) {
+        const end = Math.min(i + CHUNK, total);
+        for (; i < end; i++) {
+          const di = idx[i];
+          for (let c = 0; c < cols; c++) {
+            const v = self._cellAt(di, c);
+            stats[c].set(v, (stats[c].get(v) || 0) + 1);
+          }
+        }
+        // Yield between chunks so the browser stays responsive.
+        if (i < total) {
+          await yieldTick();
+          // Stale check — bail if a newer computation was requested.
+          if (self._colStatsGen !== generation || self._destroyed) return null;
+        }
+      }
+      const out = new Array(cols);
+      for (let c = 0; c < cols; c++) {
+        const arr = Array.from(stats[c].entries());
+        arr.sort((a, b) => b[1] - a[1]);
+        out[c] = { total, distinct: arr.length, values: arr.slice(0, TIMELINE_COL_TOP_N) };
+      }
+      return out;
+    })();
   }
 
   // Compute distinct values for a single column — used by column menu.
@@ -3974,6 +4092,7 @@ class TimelineView {
     // Invalidate every derived / cached render product so the next
     // scheduleRender starts from scratch.
     this._colStats = null;
+    this._colStatsGen++;
     this._lastChartData = null;
     // Column count may have changed (extracted columns dropped) — kill
     // the grid so it rebuilds with the correct column set. Mirrors
@@ -4025,16 +4144,43 @@ class TimelineView {
       // user sees immediate visual feedback. The column cards update one
       // frame later (≈16 ms), which is imperceptible but unblocks the
       // critical path that was causing stutter on clear / type-ahead.
+      //
+      // When the Top Values section is collapsed, skip the computation
+      // entirely — `_colStats` remains null (the "dirty" flag). The
+      // computation will run when the section is expanded, which already
+      // schedules a 'columns' render via _toggleSection. This saves
+      // 1-3 seconds on filter clear / type-ahead for 1M-row datasets.
       if (set.has('columns')) {
+        const colsCollapsed = !!this._sections.columns;
         cancelAnimationFrame(this._colStatsRaf);
-        this._colStatsRaf = requestAnimationFrame(() => {
+        if (colsCollapsed) {
           this._colStatsRaf = 0;
-          if (this._destroyed) return;
-          if (!this._colStats) {
-            this._colStats = this._computeColumnStats(this._filteredIdx || new Uint32Array(0));
-          }
-          this._renderColumns();
-        });
+        } else {
+          this._colStatsRaf = requestAnimationFrame(() => {
+            this._colStatsRaf = 0;
+            if (this._destroyed) return;
+            if (!this._colStats) {
+              const idx = this._filteredIdx || new Uint32Array(0);
+              // Small datasets: synchronous (no perceptible delay).
+              // Large datasets: cooperative-yielding so the main thread
+              // stays responsive during the O(rows × cols) pass.
+              if (idx.length < 50000) {
+                this._colStats = this._computeColumnStatsSync(idx);
+                this._renderColumns();
+              } else {
+                const gen = ++this._colStatsGen;
+                this._computeColumnStatsAsync(idx, gen).then(result => {
+                  if (this._destroyed) return;
+                  if (result === null) return; // superseded
+                  this._colStats = result;
+                  this._renderColumns();
+                });
+              }
+              return; // large-dataset path renders after the promise resolves
+            }
+            this._renderColumns();
+          });
+        }
       }
     });
   }
@@ -5018,17 +5164,86 @@ class TimelineView {
     this._renderGridInto(this._els.gridWrap, this._filteredIdx || new Uint32Array(0), 'main');
   }
 
+  /** Invalidate the cached sorted-index and rowsConcat arrays. Called
+   *  whenever `_timeMs` content changes (via `_parseAllTimestamps`) so
+   *  the next `_renderGridInto` re-sorts from scratch. */
+  _invalidateGridCache() {
+    this._sortedFullIdx = null;
+    this._cachedRowsConcat = null;
+    this._cachedRowsConcatExtLen = -1;
+  }
+
   _renderGridInto(wrap, idx, role) {
+    // ── Pre-sort idx by timestamp ──────────────────────────────────────
+    // Sort the filtered index array by the pre-parsed _timeMs values so
+    // rowsConcat is handed to GridViewer in chronological order. This
+    // avoids GridViewer's _sortByColumn temporal path which would re-parse
+    // every cell via Date.parse() inside the sort comparator — O(n log n)
+    // Date.parse calls that cost 2-4s for 1M rows. The numerical sort
+    // below is O(n log n) float comparisons on an already-parsed
+    // Float64Array, which completes in ~200ms for 1M rows.
+    //
+    // When the index covers the full dataset (no query active) and the
+    // time column hasn't changed, reuse the previously sorted index and
+    // the pre-built rowsConcat array. This turns filter-clear from
+    // O(n log n) re-sort + O(n) array build into O(1) cache hits.
+    const timeCol = this._timeCol;
+    const timeMs = this._timeMs;
+    const isFullDataset = idx.length === this.rows.length;
+    if (timeCol != null && timeMs && idx.length > 1) {
+      if (isFullDataset && this._sortedFullIdx &&
+          this._sortedFullIdx.length === idx.length) {
+        // Cache hit — reuse the previously sorted full-dataset index.
+        idx = this._sortedFullIdx;
+      } else {
+        // Work on a mutable copy so we don't disturb _chipFilteredIdx.
+        const sorted = new Uint32Array(idx);
+        sorted.sort((a, b) => {
+          const ta = timeMs[a], tb = timeMs[b];
+          const af = Number.isFinite(ta), bf = Number.isFinite(tb);
+          if (!af && !bf) return a - b;
+          if (!af) return 1;
+          if (!bf) return -1;
+          return (ta - tb) || (a - b);
+        });
+        idx = sorted;
+        // Cache the sorted order for the full (unfiltered) dataset so
+        // subsequent filter-clears skip the O(n log n) re-sort.
+        if (isFullDataset) this._sortedFullIdx = sorted;
+      }
+      // Update _filteredIdx so click-handlers, scroll-cursor and
+      // right-click menus resolve virtual → original-row correctly.
+      if (role === 'main') this._filteredIdx = idx;
+    }
+
     // When no extracted columns exist, reference the base row arrays
     // directly instead of calling _buildRowConcat per row. For 500K rows
     // this eliminates 500K function calls + the per-row length check.
+    //
+    // For the full-dataset case, cache the result so filter-clears skip
+    // the O(n) rebuild. Invalidated when extracted columns change (the
+    // grid is destroyed and recreated in that case anyway) or when
+    // _invalidateGridCache() is called.
     const hasExtracted = this._extractedCols.length > 0;
-    const rowsConcat = new Array(idx.length);
-    if (hasExtracted) {
-      for (let i = 0; i < idx.length; i++) rowsConcat[i] = this._buildRowConcat(idx[i]);
+    const extLen = this._extractedCols.length;
+    const cacheHit = isFullDataset && this._cachedRowsConcat &&
+        this._cachedRowsConcat.length === idx.length &&
+        this._cachedRowsConcatExtLen === extLen;
+    let rowsConcat;
+    if (cacheHit) {
+      rowsConcat = this._cachedRowsConcat;
     } else {
-      const rows = this.rows;
-      for (let i = 0; i < idx.length; i++) rowsConcat[i] = rows[idx[i]] || [];
+      rowsConcat = new Array(idx.length);
+      if (hasExtracted) {
+        for (let i = 0; i < idx.length; i++) rowsConcat[i] = this._buildRowConcat(idx[i]);
+      } else {
+        const rows = this.rows;
+        for (let i = 0; i < idx.length; i++) rowsConcat[i] = rows[idx[i]] || [];
+      }
+      if (isFullDataset) {
+        this._cachedRowsConcat = rowsConcat;
+        this._cachedRowsConcatExtLen = extLen;
+      }
     }
     const sus = this._susBitmap;
     const origIdx = idx;
@@ -5292,10 +5507,18 @@ class TimelineView {
       });
       if (role === 'main') {
         this._grid = viewer;
-        // Default-sort by the timestamp column ascending so the earliest
-        // event is row 1 and the grid reads chronologically top-to-bottom.
+        // Rows are already pre-sorted by _timeMs above — stamp the sort
+        // spec + identity order directly instead of calling _sortByColumn
+        // which would re-parse every cell via Date.parse(). This saves
+        // 2-4s for 1M rows.
         if (this._timeCol != null) {
-          viewer._sortByColumn(this._timeCol, 'asc');
+          const n = rowsConcat.length;
+          const idxs = new Array(n);
+          for (let i = 0; i < n; i++) idxs[i] = i;
+          viewer._sortSpec = { colIdx: this._timeCol, dir: 'asc' };
+          viewer._sortOrder = idxs;
+          viewer._buildHeaderCells();
+          viewer._forceFullRender();
         }
       }
     } else {
@@ -5303,7 +5526,9 @@ class TimelineView {
       existing.columns = this.columns;
       existing._rowClassFn = rowClass;
       existing._cellClassFn = cellClass;
-      existing.setRows(rowsConcat);
+      // Rows are pre-sorted by _timeMs — skip the expensive re-sort in
+      // setRows that would call _sortByColumn → Date.parse per comparison.
+      existing.setRows(rowsConcat, null, null, { preSorted: true });
     }
   }
 
@@ -6682,10 +6907,13 @@ class TimelineView {
       // currently visible DOM) so values hidden by Search Values
       // aren't silently dropped. Pick the shorter representation
       // (`col IN (…)` vs `col NOT IN (…)`) so unchecking one value
-      // out of 200 doesn't emit a 199-value IN list. NOT IN is only
-      // safe when the distinct set wasn't truncated at the cap;
-      // otherwise values beyond the cap would silently pass the
-      // negation and leak into results.
+      // out of 200 doesn't emit a 199-value IN list. NOT IN is
+      // safe when the distinct set is complete, or when the user
+      // started from an all-pass / NOT IN baseline (unchecking
+      // means "exclude these" and hidden values should pass). NOT
+      // IN is blocked only when a positive IN whitelist was active
+      // — the user explicitly chose a subset and values beyond the
+      // cap were never included.
       const entries = Array.from(liveState.entries());
       const allChecked = entries.length > 0 && entries.every(([, v]) => v);
       const noneChecked = entries.length > 0 && entries.every(([, v]) => !v);
@@ -6699,7 +6927,16 @@ class TimelineView {
       } else {
         const checked = entries.filter(([, v]) => v).map(([k]) => k);
         const unchecked = entries.filter(([, v]) => !v).map(([k]) => k);
-        const canNegate = !items.truncated;
+        // NOT IN is always safe when the full distinct set is known.
+        // When the set was truncated (cap exceeded), NOT IN is still
+        // correct if the user started from an all-pass or NOT IN
+        // baseline — unchecked items are exclusions and hidden values
+        // beyond the cap should continue to pass through, matching the
+        // prior "no filter" / "NOT IN" semantic.  Only when the
+        // baseline was a positive IN whitelist do we stick with IN,
+        // because the user explicitly selected a subset and values
+        // beyond the cap were never included.
+        const canNegate = !items.truncated || initialAll || initialAllMinusNe;
         if (canNegate && unchecked.length < checked.length) {
           this._queryReplaceNotInForCol(colIdx, unchecked);
         } else {
@@ -8040,6 +8277,13 @@ Object.assign(App.prototype, {
   },
 
   async _loadFileInTimeline(file, prefetchedBuffer /* optional */) {
+    // Warn (non-blocking) for very large files so the analyst knows to
+    // expect a longer load. The toast auto-dismisses after 5 s.
+    if (file.size >= RENDER_LIMITS.HUGE_FILE_WARN) {
+      const mb = (file.size / (1024 * 1024)).toFixed(0);
+      this._toast(
+        `Large file (${mb} MB) — loading may take a moment.`, 'info');
+    }
     this._setLoading(true);
     try {
       if (this._timelineCurrent) {
@@ -8070,7 +8314,7 @@ Object.assign(App.prototype, {
       // this by only calling us after `_shouldRouteToTimeline` confirms it.
       let view = null;
       if (ext === 'evtx') {
-        view = TimelineView.fromEvtx(file, buffer);
+        view = await TimelineView.fromEvtx(file, buffer);
       } else if (ext === 'csv' || ext === 'tsv') {
         view = await TimelineView.fromCsvAsync(file, buffer, ext === 'tsv' ? '\t' : null);
       } else if (ext === 'sqlite' || ext === 'db') {
@@ -8083,6 +8327,11 @@ Object.assign(App.prototype, {
       // with an unreadable header, empty CSV) fall back to the analyser
       // pipeline so the file isn't a dead-end. The analyser can still
       // render a hex dump + strings.
+      //
+      // Pass the already-read `buffer` through to `_loadFile` so it
+      // doesn't re-read the file from scratch. For very large files the
+      // double-read was the primary cause of OOM / silent empty-string
+      // returns from `file.text()`.
       const rowCount = view && view.rows ? view.rows.length : 0;
       const evtCount = view && view._evtxEvents ? view._evtxEvents.length : 0;
       if (rowCount === 0 && evtCount === 0) {
@@ -8097,9 +8346,10 @@ Object.assign(App.prototype, {
         const vt = document.getElementById('viewer-toolbar');
         if (vt) vt.classList.remove('hidden');
         // Re-enter the regular loader by calling `_loadFile` with a flag
-        // that skips the timeline re-route.
+        // that skips the timeline re-route.  Pass the buffer we already
+        // have so the file isn't read a second time.
         this._skipTimelineRoute = true;
-        try { await this._loadFile(file); } finally { this._skipTimelineRoute = false; }
+        try { await this._loadFile(file, buffer); } finally { this._skipTimelineRoute = false; }
         return;
       }
 

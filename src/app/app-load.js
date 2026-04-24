@@ -69,7 +69,7 @@ function _refangString(str) {
 // ════════════════════════════════════════════════════════════════════════════
 Object.assign(App.prototype, {
 
-  async _loadFile(file) {
+  async _loadFile(file, prefetchedBuffer /* optional – passed by Timeline fallback */) {
     // ── Timeline intercept ────────────────────────────────────────────
     // Every CSV / TSV / EVTX file opens in the Timeline view
     // unconditionally. `_timelineTryHandle` returns truthy when it
@@ -112,6 +112,16 @@ Object.assign(App.prototype, {
       document.body.classList.remove('has-timeline');
     }
 
+    // Warn (non-blocking) for very large files so the analyst knows to
+    // expect a longer load. Only show when this is a fresh load (not a
+    // Timeline zero-row fallback, which already toasted).
+    if (!prefetchedBuffer
+        && file.size >= RENDER_LIMITS.HUGE_FILE_WARN) {
+      const mb = (file.size / (1024 * 1024)).toFixed(0);
+      this._toast(
+        `Large file (${mb} MB) — loading may take a moment.`, 'info');
+    }
+
     this._setLoading(true);
 
     // Reset the viewer + sidebar scroll position when a *fresh* file is
@@ -136,7 +146,8 @@ Object.assign(App.prototype, {
     const ext = file.name.split('.').pop().toLowerCase();
 
     try {
-      const buffer = await ParserWatchdog.run(() => file.arrayBuffer());
+      const buffer = prefetchedBuffer
+        || await ParserWatchdog.run(() => file.arrayBuffer());
       // ── Extensionless Timeline re-route ──────────────────────────────
       // If the file's extension wasn't a Timeline one (and we didn't set
       // `_skipTimelineRoute` to escape the loop), sniff the buffer for
@@ -548,9 +559,14 @@ Object.assign(App.prototype, {
       return { docEl: r.render(buffer) };
     },
 
-    // ── CSV / TSV (decoded via FileReader, not the ArrayBuffer) ─────────
-    async csv(file) {
-      const text = await file.text();
+    // ── CSV / TSV ─────────────────────────────────────────────────────────
+    // Decode from the ArrayBuffer we already have rather than calling
+    // `file.text()` (which would read the file a second time and, for
+    // files near V8's string-length limit, can silently return '').
+    // For buffers > DECODE_CHUNK_BYTES (16 MB) the decode is chunked
+    // so each intermediate string stays well under the ~512 M-char limit.
+    async csv(file, buffer) {
+      const text = CsvRenderer.decodeBuffer(buffer);
       const r = new CsvRenderer();
       this.findings = r.analyzeForSecurity(text);
       return { docEl: r.render(text, file.name) };
@@ -572,7 +588,7 @@ Object.assign(App.prototype, {
     },
 
     // ── Forensic / structured-binary formats ────────────────────────────
-    evtx(file, buffer) {
+    async evtx(file, buffer) {
       const r = new EvtxRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
       return { docEl: r.render(buffer, file.name) };

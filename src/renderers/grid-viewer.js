@@ -1880,7 +1880,17 @@ class GridViewer {
     this._rebuildTimeline();
   }
 
-  setRows(rows, rowSearchText, rowOffsets) {
+  /**
+   * Replace the grid's row data. When `opts.preSorted` is truthy, the
+   * caller guarantees rows are already in the correct sort order — the
+   * expensive `_sortByColumn` pass (O(n log n) with `Date.parse` for
+   * temporal columns) is skipped entirely, saving seconds on 1M-row
+   * datasets. The previous `_sortSpec` is preserved so column-header
+   * sort indicators still render and subsequent user-initiated sorts
+   * work as before. Timeline Mode uses this path because it pre-sorts
+   * `rowsConcat` via the already-parsed `_timeMs` Float64Array.
+   */
+  setRows(rows, rowSearchText, rowOffsets, opts) {
     this.rows = rows;
     this.rowSearchText = rowSearchText || this.rowSearchText;
     this.rowOffsets = rowOffsets || this.rowOffsets;
@@ -1903,7 +1913,20 @@ class GridViewer {
     this._sortSpec = null;
     this._sortOrder = null;
 
-    if (prevSort) {
+    if (opts && opts.preSorted && prevSort) {
+      // Caller pre-sorted — stamp an identity sort order and restore the
+      // spec so header arrows render correctly. No re-parse needed.
+      const n = rows.length;
+      const idxs = new Array(n);
+      for (let i = 0; i < n; i++) idxs[i] = i;
+      this._sortSpec = prevSort;
+      this._sortOrder = idxs;
+      if (this._filterInput.value && this._filterInput.value.trim()) {
+        this._applyFilter();
+      } else {
+        this._forceFullRender();
+      }
+    } else if (prevSort) {
       // Re-sort on the fresh rows — _sortByColumn also re-applies the
       // live filter-input query when it intersects with filteredIndices,
       // so this single call correctly handles sort+filter combos.
@@ -2113,7 +2136,11 @@ class GridViewer {
     // Hidden for columns that look like bare numeric IDs so it doesn't
     // clutter menus on non-temporal data; still shown whenever at least
     // ~50% of sampled cells parse as a real timestamp.
-    if (this._columnLooksTemporal(colIdx)) {
+    // In Timeline Mode the outer view's left-click column menu already
+    // provides "Use as Timestamp" and "Stack chart by this" — suppress
+    // the duplicates here so the right-click menu stays focused on
+    // sort / hide / copy.
+    if (!this._onUseAsTimeline && this._columnLooksTemporal(colIdx)) {
       const active = this._timeColumn === colIdx && this._timeMs;
       pop.appendChild(mkItem(
         active ? '✓ Use as timeline' : 'Use as timeline',
@@ -2123,7 +2150,7 @@ class GridViewer {
     // Stack the timeline histogram by this column. Shown whenever
     // the timeline is active and the column has a reasonable number of
     // distinct values on the visible row set (≥2, ≤ STACK_MAX_GROUPS).
-    if (this._timeMs && this._columnLooksStackable(colIdx)) {
+    if (!this._onStackTimelineBy && this._timeMs && this._columnLooksStackable(colIdx)) {
       const active = this._timeStackColumn === colIdx;
       pop.appendChild(mkItem(
         active ? '✓ Stack timeline by this column' : 'Stack timeline by this column',
@@ -2354,6 +2381,13 @@ class GridViewer {
       return r ? (r[colIdx] == null ? '' : r[colIdx]) : '';
     };
 
+    // ── Decorate-sort-undecorate ──────────────────────────────────────
+    // Pre-extract sort keys once O(n), then compare pre-computed keys in
+    // the sort comparator. This eliminates repeated per-comparison parsing
+    // (Date.parse / parseFloat / toLowerCase are each called O(n log n)
+    // times in the naïve approach — for 1M rows that's ~20M calls).
+    // With pre-extraction each value is parsed exactly once: O(n).
+
     // Temporal probe FIRST — if the column parses as timestamps, sort by
     // ms-since-epoch. Without this branch the subsequent numeric-sniff
     // matches ISO strings like "2024-05-20T08:10:01Z" (parseFloat → 2024),
@@ -2362,9 +2396,11 @@ class GridViewer {
     // (EVTX's Excel-serial math, XLSX) sort identically to the timeline strip.
     const temporal = this._columnLooksTemporal(colIdx);
     if (temporal) {
+      // Pre-compute all timestamp keys in one O(n) pass.
+      const keys = new Float64Array(n);
+      for (let i = 0; i < n; i++) keys[i] = this._parseTimeCell(getCell(i), i);
       idxs.sort((a, b) => {
-        const av = this._parseTimeCell(getCell(a), a);
-        const bv = this._parseTimeCell(getCell(b), b);
+        const av = keys[a], bv = keys[b];
         const aFin = Number.isFinite(av);
         const bFin = Number.isFinite(bv);
         if (!aFin && !bFin) return a - b;
@@ -2390,9 +2426,15 @@ class GridViewer {
     if (temporal) {
       // already sorted above
     } else if (numeric) {
+      // Pre-compute numeric keys in one O(n) pass.
+      const keys = new Float64Array(n);
+      for (let i = 0; i < n; i++) {
+        const v = getCell(i);
+        const f = parseFloat(v);
+        keys[i] = (Number.isFinite(f) && (v !== '' || false)) ? f : NaN;
+      }
       idxs.sort((a, b) => {
-        const av = parseFloat(getCell(a));
-        const bv = parseFloat(getCell(b));
+        const av = keys[a], bv = keys[b];
         const aFin = Number.isFinite(av);
         const bFin = Number.isFinite(bv);
         if (!aFin && !bFin) return (a - b); // stable
@@ -2401,9 +2443,11 @@ class GridViewer {
         return (av - bv) * mul || (a - b);
       });
     } else {
+      // Pre-compute lowercased string keys in one O(n) pass.
+      const keys = new Array(n);
+      for (let i = 0; i < n; i++) keys[i] = String(getCell(i)).toLowerCase();
       idxs.sort((a, b) => {
-        const av = String(getCell(a)).toLowerCase();
-        const bv = String(getCell(b)).toLowerCase();
+        const av = keys[a], bv = keys[b];
         if (av < bv) return -1 * mul;
         if (av > bv) return 1 * mul;
         return a - b;

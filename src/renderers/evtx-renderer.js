@@ -141,7 +141,13 @@ class EvtxRenderer {
         const binXmlOff = recOff + 24;
         const binXmlLen = recSize - 24 - 4; // minus header and trailing copy of size
 
-        let ev = { recordId, timestamp: timestamp ? timestamp.toISOString() : '', eventId: '', level: '', channel: '', provider: '', computer: '', eventData: '', rawRecord: bytes.subarray(recOff, recOff + recSize) };
+        // Use .slice() instead of .subarray() so each event owns an
+        // independent copy.  With .subarray() every event's rawRecord
+        // shares the original multi-hundred-MB ArrayBuffer, preventing GC
+        // even after the main buffer reference is released.  The copies
+        // are small (typically < 10 KB each) and collectively smaller
+        // than the file (chunks + headers aren't duplicated).
+        let ev = { recordId, timestamp: timestamp ? timestamp.toISOString() : '', eventId: '', level: '', channel: '', provider: '', computer: '', eventData: '', rawRecord: bytes.slice(recOff, recOff + recSize) };
         try {
           const xml = this._decodeBinXml(bytes, dv, binXmlOff, binXmlLen, stringTable, chunkOff);
           Object.assign(ev, xml);
@@ -151,6 +157,83 @@ class EvtxRenderer {
         recOff += recSize;
       }
     }
+    return events;
+  }
+
+  // ── Async EVTX parse with cooperative yielding ──────────────────────────
+  //
+  // Identical logic to `_parse()` but yields to the event loop every
+  // `YIELD_INTERVAL` chunks (≈ 6.4 MB of data).  This prevents the
+  // browser from showing "page unresponsive" on large EVTX files where
+  // the synchronous parse would block the main thread for 10–30+ seconds.
+  //
+  // Accepts an optional `onProgress(parsedEvents, totalChunks)` callback
+  // so callers can wire up a progress indicator.
+  async _parseAsync(bytes, onProgress) {
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const magic = String.fromCharCode(...bytes.subarray(0, 8));
+    if (magic !== 'ElfFile\0') throw new Error('Not a valid EVTX file (bad magic)');
+
+    const chunkCount = dv.getUint16(0x28, true);
+    const headerSize = 4096;
+    const chunkSize = 65536;
+    const YIELD_INTERVAL = 100; // yield every 100 chunks (~6.4 MB)
+
+    const events = [];
+    const maxEvents = RENDER_LIMITS.MAX_EVTX_EVENTS;
+
+    const yieldTick = () => new Promise(resolve => {
+      if (typeof MessageChannel !== 'undefined') {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => { ch.port1.close(); resolve(); };
+        ch.port2.postMessage(null);
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+
+    for (let ci = 0; ci < chunkCount && events.length < maxEvents; ci++) {
+      const chunkOff = headerSize + ci * chunkSize;
+      if (chunkOff + chunkSize > bytes.length) break;
+
+      const cMagic = String.fromCharCode(...bytes.subarray(chunkOff, chunkOff + 8));
+      if (cMagic !== 'ElfChnk\0') continue;
+
+      const stringTable = this._parseChunkStringTable(bytes, dv, chunkOff);
+
+      let recOff = chunkOff + 0x200;
+      const chunkEnd = chunkOff + chunkSize;
+
+      while (recOff + 24 < chunkEnd && events.length < maxEvents) {
+        const recMagic = dv.getUint32(recOff, true);
+        if (recMagic !== 0x00002a2a) break;
+
+        const recSize = dv.getUint32(recOff + 4, true);
+        if (recSize < 24 || recOff + recSize > chunkEnd) break;
+
+        const recordId = this._getUint64(dv, recOff + 8, true);
+        const timestamp = this._fileTimeToDate(dv, recOff + 16);
+
+        const binXmlOff = recOff + 24;
+        const binXmlLen = recSize - 24 - 4;
+
+        let ev = { recordId, timestamp: timestamp ? timestamp.toISOString() : '', eventId: '', level: '', channel: '', provider: '', computer: '', eventData: '', rawRecord: bytes.slice(recOff, recOff + recSize) };
+        try {
+          const xml = this._decodeBinXml(bytes, dv, binXmlOff, binXmlLen, stringTable, chunkOff);
+          Object.assign(ev, xml);
+        } catch (_) { /* best-effort */ }
+
+        events.push(ev);
+        recOff += recSize;
+      }
+
+      // Yield to the event loop periodically so the UI stays responsive.
+      if ((ci + 1) % YIELD_INTERVAL === 0 && ci + 1 < chunkCount) {
+        if (onProgress) onProgress(events.length, chunkCount);
+        await yieldTick();
+      }
+    }
+    if (onProgress) onProgress(events.length, chunkCount);
     return events;
   }
 

@@ -22,9 +22,12 @@ const PARSER_LIMITS = Object.freeze({
 const RENDER_LIMITS = Object.freeze({
   MAX_TEXT_LINES:       100_000,   // Primary text viewers (plaintext/html/hta/inf/reg/rtf)
   MAX_TEXT_LINES_SMALL:  10_000,   // Config/manifest viewers (browserext/clickonce/url/iqy/msix/npm/wsf/plist-fallback/pe-strings)
-  MAX_CSV_ROWS:         500_000,   // CSV/TSV grid
-  MAX_TIMELINE_ROWS:    500_000,   // Timeline dashboard
-  MAX_EVTX_EVENTS:      500_000,   // EVTX parser + viewer
+  MAX_CSV_ROWS:       1_000_000,   // CSV/TSV grid
+  MAX_TIMELINE_ROWS:  1_000_000,   // Timeline dashboard (CSV/TSV/EVTX/browser history)
+  MAX_EVTX_EVENTS:    1_000_000,   // EVTX parser + viewer
+  LARGE_FILE_THRESHOLD: 200 * 1024 * 1024,  // 200 MB — use chunked decode unconditionally
+  HUGE_FILE_WARN:       500 * 1024 * 1024,  // 500 MB — show warning toast before loading
+  DECODE_CHUNK_BYTES:   16 * 1024 * 1024,   // 16 MB — TextDecoder chunk size for large files
 });
 
 // ── XML namespace constants ───────────────────────────────────────────────────
