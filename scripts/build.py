@@ -544,8 +544,48 @@ HTML = f"""<!DOCTYPE html>
 
   <!-- ── Loading overlay ─────────────────────────────────────────────── -->
   <div id="loading" class="hidden">
-    <span class="spinner"></span>
-    <span>Parsing document…</span>
+    <div class="loading-content">
+      <span class="spinner"></span>
+      <div class="loading-msg">
+        <span class="lm" style="--i:0">Bonking it with a stick</span>
+        <span class="lm" style="--i:1">Dusting for fingerprints</span>
+        <span class="lm" style="--i:2">Connecting the dots</span>
+        <span class="lm" style="--i:3">Putting it under the microscope</span>
+        <span class="lm" style="--i:4">Running it through the centrifuge</span>
+        <span class="lm" style="--i:5">Calibrating the instruments</span>
+        <span class="lm" style="--i:6">Giving it a firm talking-to</span>
+        <span class="lm" style="--i:7">Asking it nicely to explain itself</span>
+        <span class="lm" style="--i:8">Staring at it until it blinks</span>
+        <span class="lm" style="--i:9">Reading its diary</span>
+        <span class="lm" style="--i:10">Asking it about its feelings</span>
+        <span class="lm" style="--i:11">Casting a revealing spell</span>
+        <span class="lm" style="--i:12">Whispering to the bytes</span>
+        <span class="lm" style="--i:13">Waving the wand</span>
+        <span class="lm" style="--i:14">Letting it simmer</span>
+        <span class="lm" style="--i:15">Marinating the sample</span>
+        <span class="lm" style="--i:16">Slow-roasting the results</span>
+        <span class="lm" style="--i:17">Letting it breathe</span>
+        <span class="lm" style="--i:18">Warming up the engines</span>
+        <span class="lm" style="--i:19">Smoothing the edges</span>
+        <span class="lm" style="--i:20">Piecing it together</span>
+        <span class="lm" style="--i:21">Nearly there</span>
+        <span class="lm" style="--i:22">Hang tight</span>
+        <span class="lm" style="--i:23">On the case</span>
+        <span class="lm" style="--i:24">Prodding it with a longer stick</span>
+        <span class="lm" style="--i:25">Tapping it to see if it's hollow</span>
+        <span class="lm" style="--i:26">Flipping it over to check underneath</span>
+        <span class="lm" style="--i:27">Knocking to see if anyone's home</span>
+        <span class="lm" style="--i:28">Squeezing it gently</span>
+        <span class="lm" style="--i:29">Pinching it to see if it's real</span>
+        <span class="lm" style="--i:30">Rattling the container</span>
+        <span class="lm" style="--i:31">Pressing all the buttons</span>
+        <span class="lm" style="--i:32">Following the money</span>
+        <span class="lm" style="--i:33">Bringing it in for questioning</span>
+        <span class="lm" style="--i:34">Building a psychological profile</span>
+        <span class="lm" style="--i:35">Taking careful measurements</span>
+        <span class="lm" style="--i:36">Weighing it on the scale</span>
+      </div>
+    </div>
   </div>
 
   <!-- ── Toast ───────────────────────────────────────────────────────── -->

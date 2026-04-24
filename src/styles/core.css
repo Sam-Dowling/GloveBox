@@ -3935,13 +3935,12 @@ body:not(.dark) #hosted-bar {
 /* ── Spinner / Loading ── */
 .spinner {
   display: inline-block;
-  width: 20px;
-  height: 20px;
-  border: 2px solid rgb(var(--accent-rgb) / .25);
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgb(var(--accent-rgb) / .25);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin .7s linear infinite;
-  vertical-align: middle;
 }
 
 @keyframes spin {
@@ -3962,11 +3961,46 @@ body:not(.dark) #hosted-bar {
   z-index: 1000;
   color: white;
   font-size: 15px;
-  gap: 12px;
 }
 
 #loading.hidden {
   display: none;
+}
+
+.loading-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+.loading-msg {
+  position: relative;
+  height: 1.4em;
+  width: 320px;
+  text-align: center;
+}
+
+/* 37 phrases × 1.5 s = 55.5 s total cycle.
+   Each phrase is visible for 1/37 of the cycle ≈ 2.703 %.
+   Crossfade: ~0.28 s fade-in, ~0.94 s hold, ~0.28 s fade-out. */
+.loading-msg .lm {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  animation: lm-cycle 55.5s ease infinite;
+  animation-delay: calc(var(--i) * 1.5s);
+}
+
+@keyframes lm-cycle {
+  0%     { opacity: 0; }
+  0.5%   { opacity: 1; }
+  2.2%   { opacity: 1; }
+  2.7%   { opacity: 0; }
+  100%   { opacity: 0; }
 }
 
 /* ── Toast ── */
