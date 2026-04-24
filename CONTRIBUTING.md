@@ -1275,16 +1275,16 @@ renderer-chrome surface. Spot-check:
 5. **(Optional) pick a backdrop engine** — `src/app/app-bg.js` paints a
    subtle per-theme animated backdrop on the landing drop-zone. Map your
    new id in the top-of-file `THEME_ENGINES` constant to one of the
-   built-in engines — `moire` (two slowly-rotating families of thin
-   parallel lines producing a drifting interference pattern, the Light
-   baseline), `truchet` (quarter-circle Truchet tile grid with occasional
-   eased per-tile flips, the Dark baseline), `cuteHearts` (floating
-   hearts, Mocha), `cuteKitties` (floating kitten silhouettes, Latte),
-   `penrose` (aperiodic P3 rhombic tiling built by recursive subdivision,
-   with slow global rotation and per-tile alpha breathing, the Solarized
-   baseline) — or to `null` to render nothing at all (Midnight's OLED-
-   black stays OLED-black). Any id not listed in `THEME_ENGINES` falls
-   through to the `moire` baseline at runtime.
+   built-in engines — `penroseLight` (aperiodic P3 rhombic tiling in
+   soft blue / warm lavender with larger tiles and faster breathing, the
+   Light baseline), `penroseDark` (P3 tiling in cool white / accent cyan
+   with lower alpha and slower breathing, the Dark baseline),
+   `cuteHearts` (floating hearts, Latte), `cuteKitties` (floating kitten
+   silhouettes, Mocha), `penrose` (P3 tiling in Solarized yellow / cyan
+   with mid-range alpha and breathing, the Solarized baseline) — or to
+   `null` to render nothing at all (Midnight's OLED-black stays OLED-
+   black). Any id not listed in `THEME_ENGINES` falls through to the
+   `penroseLight` baseline at runtime.
    If you also add a new engine, extend the `PALETTES` map with a
    hard-coded RGB tuple per theme so the animation never reads
    computed-style vars mid-frame. The backdrop is always suppressed by
