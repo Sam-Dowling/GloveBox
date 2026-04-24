@@ -3981,9 +3981,9 @@ body:not(.dark) #hosted-bar {
   text-align: center;
 }
 
-/* 37 phrases × 1.5 s = 55.5 s total cycle.
-   Each phrase is visible for 1/37 of the cycle ≈ 2.703 %.
-   Crossfade: ~0.28 s fade-in, ~0.94 s hold, ~0.28 s fade-out. */
+/* 58 phrases × 2.5 s = 145 s total cycle.
+   Each phrase is visible for 1/58 of the cycle ≈ 1.724 %.
+   Crossfade: ~0.46 s fade-in, ~1.58 s hold, ~0.46 s fade-out. */
 .loading-msg .lm {
   position: absolute;
   inset: 0;
@@ -3991,16 +3991,16 @@ body:not(.dark) #hosted-bar {
   align-items: center;
   justify-content: center;
   opacity: 0;
-  animation: lm-cycle 55.5s ease infinite;
-  animation-delay: calc(var(--i) * 1.5s);
+  animation: lm-cycle 145s ease infinite;
+  animation-delay: calc(var(--i) * 2.5s);
 }
 
 @keyframes lm-cycle {
-  0%     { opacity: 0; }
-  0.5%   { opacity: 1; }
-  2.2%   { opacity: 1; }
-  2.7%   { opacity: 0; }
-  100%   { opacity: 0; }
+  0%      { opacity: 0; }
+  0.32%   { opacity: 1; }
+  1.41%   { opacity: 1; }
+  1.72%   { opacity: 0; }
+  100%    { opacity: 0; }
 }
 
 /* ── Toast ── */
