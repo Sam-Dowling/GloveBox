@@ -270,7 +270,7 @@ class App {
 
     // Check for images in clipboard items
     for (const item of (dt.items || [])) {
-      if (item.type.startsWith('image/')) {
+      if (item.type && item.type.startsWith('image/')) {
         const blob = item.getAsFile();
         if (blob) {
           const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : item.type.split('/')[1];

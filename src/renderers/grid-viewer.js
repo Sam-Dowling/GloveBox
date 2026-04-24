@@ -1763,6 +1763,7 @@ class GridViewer {
       }
     }
     this._drawerBody.replaceChildren(pane);
+    this._reapplyDrawerSearch();
   }
 
   _buildDetailPaneElement(cols, row, dataIdx) {

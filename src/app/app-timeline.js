@@ -1964,7 +1964,7 @@ class TimelineQueryEditor {
     // Ctrl-Y redo. The actual apply sets `_isUndoing` so the resulting
     // `input` event doesn't re-snapshot the frame we just restored.
     const isUndoKey = (e.key === 'z' || e.key === 'Z')
-      && (e.ctrlKey || e.metaKey) && !e.altKey;
+      && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey;
     const isRedoKey = ((e.key === 'z' || e.key === 'Z') && (e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey)
       || ((e.key === 'y' || e.key === 'Y') && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey);
     if (isRedoKey) { e.preventDefault(); this._redo(); return; }

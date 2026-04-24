@@ -4308,14 +4308,14 @@ body.grid-resizing .grid-col-resize-handle {
   box-shadow: 0 8px 24px rgba(0, 0, 0, .18);
   padding: 4px 0;
   font-size: 12px;
-  color: var(--text-color, #222);
+  color: var(--text, #222);
 }
 
 body.dark .grid-popover {
   background: var(--panel-bg);
   border-color: var(--hairline);
   box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
-  color: var(--text-color);
+  color: var(--text);
 }
 
 .grid-popover-item {
@@ -13263,9 +13263,9 @@ body.dark .timeline-view .tl-autoextract-nudge {
 .timeline-view .tl-autoextract-nudge__never {
   padding: 2px 8px;
   border-radius: 4px;
-  border: 1px solid var(--border-color);
+  border: 1px solid var(--hairline-strong);
   background: transparent;
-  color: var(--text-color);
+  color: var(--text);
   font-size: 11px;
   cursor: pointer;
 }

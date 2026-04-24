@@ -131,6 +131,14 @@
     'T1558.003': { name: 'Kerberoasting',                         tactic: 'credential-access', parent: 'T1558' },
     'T1558.004': { name: 'AS-REP Roasting',                       tactic: 'credential-access', parent: 'T1558' },
 
+    // ── Lateral Movement ──────────────────────────────────────────────
+    'T1021':     { name: 'Remote Services',                       tactic: 'lateral-movement' },
+    'T1021.001': { name: 'Remote Desktop Protocol',               tactic: 'lateral-movement', parent: 'T1021' },
+    'T1021.002': { name: 'SMB/Windows Admin Shares',              tactic: 'lateral-movement', parent: 'T1021' },
+
+    // ── Defense Evasion (additional) ──────────────────────────────────
+    'T1014':     { name: 'Rootkit',                               tactic: 'defense-evasion' },
+
     // ── Discovery ─────────────────────────────────────────────────────
     'T1057':     { name: 'Process Discovery',                     tactic: 'discovery' },
     'T1082':     { name: 'System Information Discovery',          tactic: 'discovery' },
