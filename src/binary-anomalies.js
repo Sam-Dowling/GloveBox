@@ -109,13 +109,13 @@
 
     // Embedded resource payloads surfaced by the PE resource-section walk.
     if (Number(md['Embedded Resource Payloads'] || 0) > 0) {
-      ribbon.push(_chip(md['Embedded Resource Payloads'] + ' embedded resource payload' + (md['Embedded Resource Payloads'] === 1 ? '' : 's'), 'high', 'pe-resources', 'T1027.009'));
+      ribbon.push(_chip(md['Embedded Resource Payloads'] + ' embedded resource payload' + (Number(md['Embedded Resource Payloads']) === 1 ? '' : 's'), 'high', 'pe-resources', 'T1027.009'));
       _openAll(open, ['resources']);
     }
 
     // Forwarded / ordinal-only exports.
     if (Number(md['Forwarded Exports'] || 0) > 0) {
-      ribbon.push(_chip(md['Forwarded Exports'] + ' forwarded exports', 'medium', 'pe-exports', 'T1574.002'));
+      ribbon.push(_chip(md['Forwarded Exports'] + ' forwarded export' + (Number(md['Forwarded Exports']) === 1 ? '' : 's'), 'medium', 'pe-exports', 'T1574.002'));
       _openAll(open, ['exports']);
     }
     if (md['DLL Side-Load Host']) {
@@ -123,7 +123,7 @@
       _openAll(open, ['exports']);
     }
     if (Number(md['Ordinal-Only Exports'] || 0) > 0) {
-      ribbon.push(_chip(md['Ordinal-Only Exports'] + ' ordinal-only exports', 'medium', 'pe-exports', 'T1027'));
+      ribbon.push(_chip(md['Ordinal-Only Exports'] + ' ordinal-only export' + (Number(md['Ordinal-Only Exports']) === 1 ? '' : 's'), 'medium', 'pe-exports', 'T1027'));
       _openAll(open, ['exports']);
     }
 
@@ -206,7 +206,9 @@
     if (!mo) return { ribbon, open };
 
     if (Array.isArray(mo.sections)) {
-      const rwx = mo.sections.find(s => s && (s.flags !== undefined) && ((s.initProt | s.maxProt) && ((s.initProt || 0) & 0x1) && ((s.initProt || 0) & 0x4)));
+      // Mach-O VM_PROT flags: READ=0x1, WRITE=0x2, EXECUTE=0x4.
+      // Flag only sections where *all three* bits are set on initProt.
+      const rwx = mo.sections.find(s => s && (s.initProt !== undefined) && ((s.initProt & 0x7) === 0x7));
       if (rwx) {
         ribbon.push(_chip('RWX section ' + (rwx.sectname || ''), 'high', 'macho-segments', 'T1027.002'));
         _openAll(open, ['segments']);

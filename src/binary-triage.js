@@ -140,11 +140,13 @@
       for (const tech of t.techniques) {
         const row = document.createElement('div');
         row.className = 'bin-triage-tech bin-triage-tech-' + (tech.severity || 'medium');
-        const a = document.createElement('a');
+        const a = document.createElement(tech.url ? 'a' : 'span');
         a.className = 'bin-triage-tech-id';
-        a.href = tech.url;
-        a.target = '_blank';
-        a.rel = 'noopener noreferrer';
+        if (tech.url) {
+          a.href = tech.url;
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+        }
         a.textContent = tech.id;
         row.appendChild(a);
         const nm = document.createElement('span');

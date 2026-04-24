@@ -391,7 +391,18 @@ class XlsxRenderer {
         });
         if (f.risk === 'low') f.risk = 'medium';
       }
-    } catch (e) { }
+    } catch (e) {
+      f.metadata.parseError = e.message || 'Unknown parse error';
+      if (typeof pushIOC === 'function') {
+        pushIOC(f, {
+          type: (typeof IOC !== 'undefined' && IOC.INFO) || 'info',
+          value: 'Failed to parse: ' + (e.message || 'unknown error'),
+          severity: 'medium',
+          note: 'The spreadsheet could not be fully parsed — results may be incomplete',
+          bucket: 'externalRefs',
+        });
+      }
+    }
     return f;
   }
 

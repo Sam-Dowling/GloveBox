@@ -37,139 +37,9 @@ class EvtxRenderer {
       if (channels.size) f.metadata.channels = [...channels].join(', ');
       if (providers.size) f.metadata.providers = [...providers].slice(0, 20).join(', ');
 
-      // Flag suspicious event IDs — comprehensive threat-hunting patterns
-      // Each entry: [eventId, description, severity, riskEscalation]
-      // riskEscalation: null = no change, 'high'/'medium' = escalate if currently lower
-      const suspiciousPatterns = [
-        // ── Security log tampering ───────────────────────────────────────
-        [1100, 'Event 1100: Event logging service shut down', 'high', 'high'],
-        [1102, 'Event 1102: Security audit log was cleared', 'high', 'high'],
-        [104, 'Event 104: System log was cleared', 'high', 'high'],
-
-        // ── Authentication & logon ───────────────────────────────────────
-        [4624, 'Event 4624: Successful logon events present', 'info', null],
-        [4625, 'Event 4625: Failed logon attempts present', 'medium', null],
-        [4634, 'Event 4634: Account logoff events present', 'info', null],
-        [4648, 'Event 4648: Logon using explicit credentials (pass-the-hash indicator)', 'high', 'medium'],
-        [4672, 'Event 4672: Special privilege logon events', 'medium', null],
-
-        // ── Kerberos & NTLM ─────────────────────────────────────────────
-        [4768, 'Event 4768: Kerberos TGT requested', 'info', null],
-        [4769, 'Event 4769: Kerberos service ticket requested', 'info', null],
-        [4771, 'Event 4771: Kerberos pre-authentication failed', 'medium', null],
-        [4776, 'Event 4776: NTLM credential validation', 'info', null],
-
-        // ── Process creation & execution ─────────────────────────────────
-        [4688, 'Event 4688: Process creation events present', 'medium', null],
-        [4689, 'Event 4689: Process termination events present', 'info', null],
-
-        // ── Account & group management ───────────────────────────────────
-        [4720, 'Event 4720: User account created', 'medium', null],
-        [4722, 'Event 4722: User account enabled', 'medium', null],
-        [4723, 'Event 4723: Password change attempt', 'info', null],
-        [4724, 'Event 4724: Password reset attempt', 'medium', null],
-        [4725, 'Event 4725: User account disabled', 'medium', null],
-        [4726, 'Event 4726: User account deleted', 'medium', null],
-        [4728, 'Event 4728: Member added to security-enabled global group', 'medium', null],
-        [4732, 'Event 4732: Member added to security-enabled local group', 'medium', null],
-        [4733, 'Event 4733: Member removed from security-enabled local group', 'medium', null],
-        [4735, 'Event 4735: Security-enabled local group changed', 'medium', null],
-        [4738, 'Event 4738: User account changed', 'medium', null],
-        [4740, 'Event 4740: User account locked out', 'medium', null],
-        [4756, 'Event 4756: Member added to universal security group', 'medium', null],
-
-        // ── Object access & registry ─────────────────────────────────────
-        [4656, 'Event 4656: Handle to an object was requested', 'info', null],
-        [4657, 'Event 4657: Registry value was modified', 'medium', null],
-        [4663, 'Event 4663: Attempt to access an object', 'info', null],
-
-        // ── Services & scheduled tasks ───────────────────────────────────
-        [4697, 'Event 4697: Service installed in the system', 'medium', 'medium'],
-        [4698, 'Event 4698: Scheduled task created', 'medium', 'medium'],
-        [4699, 'Event 4699: Scheduled task deleted', 'medium', null],
-        [4700, 'Event 4700: Scheduled task enabled', 'medium', null],
-        [4701, 'Event 4701: Scheduled task disabled', 'info', null],
-        [4702, 'Event 4702: Scheduled task updated', 'medium', null],
-        [7034, 'Event 7034: Service crashed unexpectedly', 'medium', null],
-        [7036, 'Event 7036: Service entered running/stopped state', 'info', null],
-        [7040, 'Event 7040: Service start type changed (persistence indicator)', 'medium', 'medium'],
-        [7045, 'Event 7045: New service installed in the system', 'medium', 'medium'],
-
-        // ── Network share access ─────────────────────────────────────────
-        [5140, 'Event 5140: Network share object was accessed', 'medium', null],
-        [5145, 'Event 5145: Network share object access checked', 'info', null],
-        [5156, 'Event 5156: Windows Filtering Platform allowed a connection', 'info', null],
-
-        // ── PowerShell ───────────────────────────────────────────────────
-        [4103, 'Event 4103: PowerShell module logging', 'medium', 'medium'],
-        [4104, 'Event 4104: PowerShell script block logging', 'medium', 'medium'],
-        [40961, 'Event 40961: PowerShell console started', 'info', null],
-        [40962, 'Event 40962: PowerShell console ready', 'info', null],
-        [53504, 'Event 53504: PowerShell ISE session started', 'info', null],
-
-        // ── Sysmon ───────────────────────────────────────────────────────
-        [1, 'Sysmon Event 1: Process created', 'medium', null],
-        [2, 'Sysmon Event 2: File creation time changed (timestomping)', 'high', 'medium'],
-        [3, 'Sysmon Event 3: Network connection detected', 'medium', null],
-        [5, 'Sysmon Event 5: Process terminated', 'info', null],
-        [6, 'Sysmon Event 6: Driver loaded', 'medium', null],
-        [7, 'Sysmon Event 7: Image loaded (DLL)', 'info', null],
-        [8, 'Sysmon Event 8: CreateRemoteThread (process injection indicator)', 'high', 'high'],
-        [9, 'Sysmon Event 9: RawAccessRead (direct disk access)', 'high', 'medium'],
-        [10, 'Sysmon Event 10: Process accessed (credential dumping indicator)', 'high', 'high'],
-        [11, 'Sysmon Event 11: File created', 'info', null],
-        [12, 'Sysmon Event 12: Registry object added or deleted', 'medium', null],
-        [13, 'Sysmon Event 13: Registry value set', 'medium', null],
-        [14, 'Sysmon Event 14: Registry object renamed', 'medium', null],
-        [15, 'Sysmon Event 15: File stream created (Alternate Data Streams)', 'medium', 'medium'],
-        [17, 'Sysmon Event 17: Pipe created', 'medium', null],
-        [18, 'Sysmon Event 18: Pipe connected', 'medium', null],
-        [19, 'Sysmon Event 19: WMI EventFilter activity detected', 'high', 'medium'],
-        [20, 'Sysmon Event 20: WMI EventConsumer activity detected', 'high', 'medium'],
-        [21, 'Sysmon Event 21: WMI EventConsumerToFilter activity detected', 'high', 'medium'],
-        [22, 'Sysmon Event 22: DNS query', 'info', null],
-        [23, 'Sysmon Event 23: File deleted', 'info', null],
-        [24, 'Sysmon Event 24: Clipboard change', 'medium', null],
-        [25, 'Sysmon Event 25: Process tampering (hollowing/herpaderping)', 'high', 'high'],
-        [26, 'Sysmon Event 26: File delete logged', 'info', null],
-        [27, 'Sysmon Event 27: File block executable', 'medium', null],
-        [28, 'Sysmon Event 28: File block shredding', 'medium', null],
-        [29, 'Sysmon Event 29: File executable detected', 'medium', null],
-
-        // ── Windows Defender ─────────────────────────────────────────────
-        [1006, 'Defender Event 1006: Malware or unwanted software detected', 'high', 'high'],
-        [1007, 'Defender Event 1007: Action to protect system from malware', 'high', 'high'],
-        [1008, 'Defender Event 1008: Failed to take action on malware', 'high', 'high'],
-        [1009, 'Defender Event 1009: Item restored from quarantine', 'medium', null],
-        [1116, 'Defender Event 1116: Detected malware or unwanted software', 'high', 'high'],
-        [1117, 'Defender Event 1117: Performed action to protect from malware', 'high', 'high'],
-        [5001, 'Defender Event 5001: Real-time protection disabled', 'high', 'high'],
-        [5004, 'Defender Event 5004: Real-time protection config changed', 'medium', null],
-        [5007, 'Defender Event 5007: Antimalware platform config changed', 'medium', null],
-        [5010, 'Defender Event 5010: Scanning for malware disabled', 'high', 'medium'],
-        [5012, 'Defender Event 5012: Scanning for viruses disabled', 'high', 'medium'],
-
-        // ── WMI ──────────────────────────────────────────────────────────
-        [5857, 'WMI Event 5857: Provider started', 'info', null],
-        [5858, 'WMI Event 5858: Provider error', 'medium', null],
-        [5859, 'WMI Event 5859: Subscription operation', 'medium', 'medium'],
-        [5860, 'WMI Event 5860: Temporary event created', 'medium', null],
-        [5861, 'WMI Event 5861: Permanent event subscription (persistence)', 'high', 'medium'],
-
-        // ── AppLocker ────────────────────────────────────────────────────
-        [8003, 'AppLocker Event 8003: Executable was allowed', 'info', null],
-        [8004, 'AppLocker Event 8004: Executable was blocked', 'medium', null],
-        [8006, 'AppLocker Event 8006: Script/MSI was allowed', 'info', null],
-        [8007, 'AppLocker Event 8007: Script/MSI was blocked', 'medium', null],
-
-        // ── Remote Desktop ───────────────────────────────────────────────
-        [1149, 'RDP Event 1149: User authentication succeeded (remote logon)', 'medium', null],
-        [4778, 'Event 4778: Session reconnected to a window station', 'info', null],
-        [4779, 'Event 4779: Session disconnected from a window station', 'info', null],
-
-        // ── Bits / SMB ───────────────────────────────────────────────────
-        [60, 'BITS Event 60: BITS transfer started (possible data exfil)', 'medium', null],
-      ];
+      // Flag suspicious event IDs — comprehensive threat-hunting patterns.
+      // Static array hoisted to class-level to avoid re-creating 130 entries per call.
+      const suspiciousPatterns = EvtxRenderer._SUSPICIOUS_PATTERNS;
 
       // Build lookup of IDs to detect
       const suspiciousIds = new Set(suspiciousPatterns.map(p => p[0]));
@@ -1213,186 +1083,12 @@ class EvtxRenderer {
 
     // Sysmon events (provider-specific — low EIDs overlap with other providers)
     if (isSysmon) {
-      const sysmonDescs = {
-        1: 'Process Created — A new process was started on the system.',
-        2: 'File Creation Time Changed — A process modified the creation timestamp of a file (possible timestomping).',
-        3: 'Network Connection Detected — A TCP/UDP network connection was initiated by a process.',
-        4: 'Sysmon Service State Changed — The Sysmon service started or stopped.',
-        5: 'Process Terminated — A process exited.',
-        6: 'Driver Loaded — A kernel driver was loaded into the system.',
-        7: 'Image Loaded — A DLL or executable image was loaded into a process.',
-        8: 'CreateRemoteThread — A thread was created in another process (possible process injection).',
-        9: 'RawAccessRead — A process performed a raw disk read bypassing the filesystem.',
-        10: 'Process Accessed — A process opened a handle to another process (possible credential dumping via LSASS).',
-        11: 'File Created — A new file was created or overwritten.',
-        12: 'Registry Object Added or Deleted — A registry key or value was created or deleted.',
-        13: 'Registry Value Set — A registry value was modified.',
-        14: 'Registry Object Renamed — A registry key or value was renamed.',
-        15: 'File Stream Created — An Alternate Data Stream (ADS) was written to a file.',
-        16: 'Sysmon Configuration Changed — The Sysmon configuration was updated.',
-        17: 'Named Pipe Created — A named pipe was created for inter-process communication.',
-        18: 'Named Pipe Connected — A client connected to a named pipe.',
-        19: 'WMI EventFilter Activity — A WMI event filter was registered (possible persistence).',
-        20: 'WMI EventConsumer Activity — A WMI event consumer was registered (possible persistence).',
-        21: 'WMI EventConsumerToFilter — A WMI consumer was bound to a filter (possible persistence).',
-        22: 'DNS Query — A process performed a DNS lookup.',
-        23: 'File Deleted — A file was deleted and archived by Sysmon.',
-        24: 'Clipboard Changed — The clipboard contents were modified by a process.',
-        25: 'Process Tampering — A process image was replaced or hollowed (process hollowing/herpaderping).',
-        26: 'File Delete Logged — A file deletion was detected and logged.',
-        27: 'File Block Executable — An executable file write was blocked by Sysmon.',
-        28: 'File Block Shredding — A file shredding operation was blocked by Sysmon.',
-        29: 'File Executable Detected — An executable file was detected being written to disk.',
-        255: 'Sysmon Error — An error occurred within the Sysmon service.',
-      };
+      const sysmonDescs = EvtxRenderer._SYSMON_DESCS;
       if (sysmonDescs[eid]) return sysmonDescs[eid];
     }
 
     // General / Security / System event IDs
-    const descriptions = {
-      // ── Security log management ──────────────────────────────────────
-      1100: 'Event Logging Service Shut Down — The Windows Event Log service was stopped.',
-      1102: 'Security Audit Log Cleared — The Security event log was cleared (possible anti-forensics).',
-      104: 'System Log Cleared — A system event log was cleared.',
-
-      // ── Authentication & Logon ───────────────────────────────────────
-      4624: 'Successful Logon — A user account successfully logged on to the computer.',
-      4625: 'Failed Logon — A logon attempt failed (wrong password, locked account, expired, etc.).',
-      4634: 'Account Logoff — A user account logged off.',
-      4647: 'User-Initiated Logoff — A user initiated a logoff.',
-      4648: 'Explicit Credential Logon — A logon was attempted using explicit credentials (pass-the-hash indicator).',
-      4672: 'Special Privileges Assigned — Administrative or special privileges were assigned to a new logon session.',
-      4675: 'SIDs Filtered — SIDs were filtered during logon.',
-
-      // ── Kerberos & NTLM ─────────────────────────────────────────────
-      4768: 'Kerberos TGT Requested — A Kerberos Ticket Granting Ticket (TGT) was requested.',
-      4769: 'Kerberos Service Ticket Requested — A Kerberos service ticket (TGS) was requested.',
-      4770: 'Kerberos Service Ticket Renewed — A Kerberos service ticket was renewed.',
-      4771: 'Kerberos Pre-Authentication Failed — Kerberos pre-auth failed (possible password spray/brute-force).',
-      4776: 'NTLM Credential Validation — The domain controller validated credentials via NTLM.',
-
-      // ── Process creation & execution ─────────────────────────────────
-      4688: 'Process Created — A new process was created on the system.',
-      4689: 'Process Exited — A process was terminated.',
-
-      // ── Account management ───────────────────────────────────────────
-      4720: 'User Account Created — A new user account was created.',
-      4722: 'User Account Enabled — A user account was enabled.',
-      4723: 'Password Change Attempted — An attempt was made to change an account\'s password.',
-      4724: 'Password Reset Attempted — An attempt was made to reset an account\'s password.',
-      4725: 'User Account Disabled — A user account was disabled.',
-      4726: 'User Account Deleted — A user account was deleted.',
-      4728: 'Member Added to Global Security Group — A member was added to a security-enabled global group.',
-      4729: 'Member Removed from Global Security Group — A member was removed from a security-enabled global group.',
-      4732: 'Member Added to Local Security Group — A member was added to a security-enabled local group.',
-      4733: 'Member Removed from Local Security Group — A member was removed from a security-enabled local group.',
-      4735: 'Local Security Group Changed — A security-enabled local group was modified.',
-      4737: 'Global Security Group Changed — A security-enabled global group was modified.',
-      4738: 'User Account Changed — A user account was modified.',
-      4740: 'Account Locked Out — A user account was locked out due to failed logon attempts.',
-      4741: 'Computer Account Created — A computer account was created in Active Directory.',
-      4742: 'Computer Account Changed — A computer account was modified.',
-      4743: 'Computer Account Deleted — A computer account was deleted.',
-      4756: 'Member Added to Universal Security Group — A member was added to a security-enabled universal group.',
-      4757: 'Member Removed from Universal Security Group — A member was removed from a security-enabled universal group.',
-
-      // ── Object access & audit ────────────────────────────────────────
-      4656: 'Handle Requested — A handle to an object (file, key, etc.) was requested.',
-      4657: 'Registry Value Modified — A registry value was changed.',
-      4658: 'Handle Closed — A handle to an object was closed.',
-      4660: 'Object Deleted — An object was deleted.',
-      4663: 'Object Access Attempted — An attempt was made to access an object.',
-      4670: 'Object Permissions Changed — Permissions on an object were changed.',
-
-      // ── Services & scheduled tasks ───────────────────────────────────
-      4697: 'Service Installed — A new service was installed in the system.',
-      4698: 'Scheduled Task Created — A new scheduled task was created.',
-      4699: 'Scheduled Task Deleted — A scheduled task was deleted.',
-      4700: 'Scheduled Task Enabled — A scheduled task was enabled.',
-      4701: 'Scheduled Task Disabled — A scheduled task was disabled.',
-      4702: 'Scheduled Task Updated — A scheduled task was updated.',
-      7034: 'Service Crashed — A service terminated unexpectedly.',
-      7036: 'Service State Changed — A service entered the running or stopped state.',
-      7040: 'Service Start Type Changed — The start type of a service was changed (possible persistence).',
-      7045: 'New Service Installed — A new service was installed in the system.',
-
-      // ── Network share access ─────────────────────────────────────────
-      5140: 'Network Share Accessed — A network share object was accessed.',
-      5142: 'Network Share Added — A network share object was added.',
-      5144: 'Network Share Deleted — A network share object was deleted.',
-      5145: 'Network Share Access Checked — Access to a network share object was checked.',
-      5156: 'WFP Connection Allowed — Windows Filtering Platform allowed a network connection.',
-      5157: 'WFP Connection Blocked — Windows Filtering Platform blocked a network connection.',
-
-      // ── PowerShell ───────────────────────────────────────────────────
-      4103: 'PowerShell Module Logging — A PowerShell module was loaded and logged.',
-      4104: 'PowerShell Script Block Logged — A PowerShell script block was captured for analysis.',
-      40961: 'PowerShell Console Started — A PowerShell console host session was started.',
-      40962: 'PowerShell Console Ready — A PowerShell console host session is ready for input.',
-      53504: 'PowerShell ISE Session — A Windows PowerShell ISE session was started.',
-
-      // ── Windows Defender ─────────────────────────────────────────────
-      1006: 'Defender: Malware Detected — Windows Defender detected malware or potentially unwanted software.',
-      1007: 'Defender: Protection Action — Windows Defender took action to protect the system from malware.',
-      1008: 'Defender: Action Failed — Windows Defender failed to take action on detected malware.',
-      1009: 'Defender: Item Restored — An item was restored from Windows Defender quarantine.',
-      1116: 'Defender: Threat Detected — Windows Defender detected a threat.',
-      1117: 'Defender: Protection Action Taken — Windows Defender performed an action against a threat.',
-      5001: 'Defender: Real-Time Protection Disabled — Windows Defender real-time protection was disabled.',
-      5004: 'Defender: Configuration Changed — Windows Defender real-time protection config was changed.',
-      5007: 'Defender: Platform Configuration Changed — The antimalware platform configuration was changed.',
-      5010: 'Defender: Malware Scanning Disabled — Scanning for malware and spyware was disabled.',
-      5012: 'Defender: Virus Scanning Disabled — Scanning for viruses was disabled.',
-
-      // ── WMI ──────────────────────────────────────────────────────────
-      5857: 'WMI Provider Started — A WMI provider was loaded and started.',
-      5858: 'WMI Provider Error — A WMI provider encountered an error.',
-      5859: 'WMI Subscription Operation — A WMI event subscription operation was performed.',
-      5860: 'WMI Temporary Event Created — A temporary WMI event subscription was created.',
-      5861: 'WMI Permanent Event Subscription — A permanent WMI event subscription was created (possible persistence).',
-
-      // ── AppLocker ────────────────────────────────────────────────────
-      8003: 'AppLocker: Executable Allowed — An executable file was allowed to run by AppLocker.',
-      8004: 'AppLocker: Executable Blocked — An executable file was blocked by AppLocker policy.',
-      8006: 'AppLocker: Script/MSI Allowed — A script or MSI file was allowed by AppLocker.',
-      8007: 'AppLocker: Script/MSI Blocked — A script or MSI file was blocked by AppLocker.',
-
-      // ── Remote Desktop ───────────────────────────────────────────────
-      1149: 'RDP Authentication Succeeded — A user was successfully authenticated via Remote Desktop.',
-      4778: 'Session Reconnected — A session was reconnected to a Window Station.',
-      4779: 'Session Disconnected — A session was disconnected from a Window Station.',
-
-      // ── BITS ─────────────────────────────────────────────────────────
-      60: 'BITS Transfer Started — A Background Intelligent Transfer Service job was started.',
-
-      // ── System events ────────────────────────────────────────────────
-      6005: 'Event Log Service Started — The Event Log service was started (system boot).',
-      6006: 'Event Log Service Stopped — The Event Log service was stopped (clean shutdown).',
-      6008: 'Unexpected Shutdown — The previous system shutdown was unexpected.',
-      6009: 'OS Information Logged — Operating system version information logged at boot.',
-      6013: 'System Uptime — System uptime information.',
-
-      // ── Group Policy ─────────────────────────────────────────────────
-      1501: 'Group Policy Applied — Group Policy settings were applied successfully.',
-      1502: 'Group Policy Failed — Group Policy processing failed.',
-
-      // ── Task Scheduler ───────────────────────────────────────────────
-      106: 'Task Registered — A new task was registered in Task Scheduler.',
-      140: 'Task Updated — A task was updated in Task Scheduler.',
-      141: 'Task Removed — A task was removed from Task Scheduler.',
-      200: 'Task Action Started — A scheduled task action was started.',
-      201: 'Task Action Completed — A scheduled task action completed.',
-
-      // ── Firewall ─────────────────────────────────────────────────────
-      2003: 'Firewall Rule Added — A Windows Firewall rule was added.',
-      2004: 'Firewall Rule Modified — A Windows Firewall rule was modified.',
-      2005: 'Firewall Rule Deleted — A Windows Firewall rule was deleted.',
-      2006: 'Firewall Rules Deleted — Windows Firewall rules were deleted (batch).',
-
-      // ── Audit policy ─────────────────────────────────────────────────
-      4719: 'Audit Policy Changed — System audit policy was changed.',
-      4907: 'Auditing Settings Changed — Auditing settings on an object were changed.',
-    };
+    const descriptions = EvtxRenderer._EVENT_DESCS;
 
     if (descriptions[eid]) return descriptions[eid];
     return '';
@@ -1401,12 +1097,7 @@ class EvtxRenderer {
   // ── Notable Event IDs for SOC triage ────────────────────────────────────
   _isNotableEventId(eid) {
     const n = parseInt(eid, 10);
-    const notable = new Set([
-      1102, 4624, 4625, 4648, 4672, 4688, 4720, 4726, 4728, 4732, 4733, 4735,
-      7045, 4104, 4103, 4697, 4698, 4699, 4700, 4701, 4702,
-      1, 3, 7, 8, 10, 11, 12, 13, 14, 15, 17, 18, 22, 23, 25
-    ]);
-    return notable.has(n);
+    return EvtxRenderer._NOTABLE_EIDS.has(n);
   }
 
   // ── Level badge HTML ────────────────────────────────────────────────────
@@ -1806,10 +1497,16 @@ class EvtxRenderer {
     filterBar.appendChild(levelLabel);
 
     const levelSelect = document.createElement('select');
-    levelSelect.innerHTML = '<option value="">All Levels</option>';
+    const defaultOpt = document.createElement('option');
+    defaultOpt.value = '';
+    defaultOpt.textContent = 'All Levels';
+    levelSelect.appendChild(defaultOpt);
     for (const lv of levelOrder) {
       if (!levelCounts[lv]) continue;
-      levelSelect.innerHTML += `<option value="${lv}">${lv} (${levelCounts[lv]})</option>`;
+      const opt = document.createElement('option');
+      opt.value = lv;
+      opt.textContent = lv + ' (' + levelCounts[lv] + ')';
+      levelSelect.appendChild(opt);
     }
     filterBar.appendChild(levelSelect);
 
@@ -2316,6 +2013,8 @@ class EvtxRenderer {
     }
 
     // Also try extracting ASCII strings (some records contain ASCII-encoded data)
+    // Build a Set of lowercased UTF-16 strings for O(1) dedup instead of O(n²).
+    const utf16Lower = new Set(strings.map(s => s.toLowerCase()));
     i = 0;
     while (i < raw.length) {
       if (raw[i] >= 0x20 && raw[i] < 0x7F) {
@@ -2326,7 +2025,7 @@ class EvtxRenderer {
           const str = String.fromCharCode(...raw.subarray(strStart, strStart + len));
           const lower = str.trim().toLowerCase();
           if (!knownValues.has(lower) && !structuralNames.has(lower) &&
-            !strings.some(s => s.toLowerCase() === lower) && // deduplicate with UTF-16 results
+            !utf16Lower.has(lower) && // deduplicate with UTF-16 results (O(1))
             !/^[\s.]+$/.test(str) && // skip dots/spaces
             !/^https?:\/\/schemas\./i.test(str) &&
             str.trim().length >= 8) {
@@ -2402,3 +2101,258 @@ class EvtxRenderer {
     if (t) { t.textContent = msg; t.className = ''; setTimeout(() => t.classList.add('hidden'), 2000); }
   }
 }
+
+// Static constants — hoisted out of method bodies to avoid re-allocating
+// large arrays/objects on every analyzeForSecurity / _getEventDescription /
+// _isNotableEventId call. Especially important for EVTX files with 100k+
+// events where _isNotableEventId is called per-row.
+
+EvtxRenderer._NOTABLE_EIDS = new Set([
+  1102, 4624, 4625, 4648, 4672, 4688, 4720, 4726, 4728, 4732, 4733, 4735,
+  7045, 4104, 4103, 4697, 4698, 4699, 4700, 4701, 4702,
+  1, 3, 7, 8, 10, 11, 12, 13, 14, 15, 17, 18, 22, 23, 25
+]);
+
+// Each entry: [eventId, description, severity, riskEscalation]
+EvtxRenderer._SUSPICIOUS_PATTERNS = [
+  [1100, 'Event 1100: Event logging service shut down', 'high', 'high'],
+  [1102, 'Event 1102: Security audit log was cleared', 'high', 'high'],
+  [104, 'Event 104: System log was cleared', 'high', 'high'],
+  [4624, 'Event 4624: Successful logon events present', 'info', null],
+  [4625, 'Event 4625: Failed logon attempts present', 'medium', null],
+  [4634, 'Event 4634: Account logoff events present', 'info', null],
+  [4648, 'Event 4648: Logon using explicit credentials (pass-the-hash indicator)', 'high', 'medium'],
+  [4672, 'Event 4672: Special privilege logon events', 'medium', null],
+  [4768, 'Event 4768: Kerberos TGT requested', 'info', null],
+  [4769, 'Event 4769: Kerberos service ticket requested', 'info', null],
+  [4771, 'Event 4771: Kerberos pre-authentication failed', 'medium', null],
+  [4776, 'Event 4776: NTLM credential validation', 'info', null],
+  [4688, 'Event 4688: Process creation events present', 'medium', null],
+  [4689, 'Event 4689: Process termination events present', 'info', null],
+  [4720, 'Event 4720: User account created', 'medium', null],
+  [4722, 'Event 4722: User account enabled', 'medium', null],
+  [4723, 'Event 4723: Password change attempt', 'info', null],
+  [4724, 'Event 4724: Password reset attempt', 'medium', null],
+  [4725, 'Event 4725: User account disabled', 'medium', null],
+  [4726, 'Event 4726: User account deleted', 'medium', null],
+  [4728, 'Event 4728: Member added to security-enabled global group', 'medium', null],
+  [4732, 'Event 4732: Member added to security-enabled local group', 'medium', null],
+  [4733, 'Event 4733: Member removed from security-enabled local group', 'medium', null],
+  [4735, 'Event 4735: Security-enabled local group changed', 'medium', null],
+  [4738, 'Event 4738: User account changed', 'medium', null],
+  [4740, 'Event 4740: User account locked out', 'medium', null],
+  [4756, 'Event 4756: Member added to universal security group', 'medium', null],
+  [4656, 'Event 4656: Handle to an object was requested', 'info', null],
+  [4657, 'Event 4657: Registry value was modified', 'medium', null],
+  [4663, 'Event 4663: Attempt to access an object', 'info', null],
+  [4697, 'Event 4697: Service installed in the system', 'medium', 'medium'],
+  [4698, 'Event 4698: Scheduled task created', 'medium', 'medium'],
+  [4699, 'Event 4699: Scheduled task deleted', 'medium', null],
+  [4700, 'Event 4700: Scheduled task enabled', 'medium', null],
+  [4701, 'Event 4701: Scheduled task disabled', 'info', null],
+  [4702, 'Event 4702: Scheduled task updated', 'medium', null],
+  [7034, 'Event 7034: Service crashed unexpectedly', 'medium', null],
+  [7036, 'Event 7036: Service entered running/stopped state', 'info', null],
+  [7040, 'Event 7040: Service start type changed (persistence indicator)', 'medium', 'medium'],
+  [7045, 'Event 7045: New service installed in the system', 'medium', 'medium'],
+  [5140, 'Event 5140: Network share object was accessed', 'medium', null],
+  [5145, 'Event 5145: Network share object access checked', 'info', null],
+  [5156, 'Event 5156: Windows Filtering Platform allowed a connection', 'info', null],
+  [4103, 'Event 4103: PowerShell module logging', 'medium', 'medium'],
+  [4104, 'Event 4104: PowerShell script block logging', 'medium', 'medium'],
+  [40961, 'Event 40961: PowerShell console started', 'info', null],
+  [40962, 'Event 40962: PowerShell console ready', 'info', null],
+  [53504, 'Event 53504: PowerShell ISE session started', 'info', null],
+  [1, 'Sysmon Event 1: Process created', 'medium', null],
+  [2, 'Sysmon Event 2: File creation time changed (timestomping)', 'high', 'medium'],
+  [3, 'Sysmon Event 3: Network connection detected', 'medium', null],
+  [5, 'Sysmon Event 5: Process terminated', 'info', null],
+  [6, 'Sysmon Event 6: Driver loaded', 'medium', null],
+  [7, 'Sysmon Event 7: Image loaded (DLL)', 'info', null],
+  [8, 'Sysmon Event 8: CreateRemoteThread (process injection indicator)', 'high', 'high'],
+  [9, 'Sysmon Event 9: RawAccessRead (direct disk access)', 'high', 'medium'],
+  [10, 'Sysmon Event 10: Process accessed (credential dumping indicator)', 'high', 'high'],
+  [11, 'Sysmon Event 11: File created', 'info', null],
+  [12, 'Sysmon Event 12: Registry object added or deleted', 'medium', null],
+  [13, 'Sysmon Event 13: Registry value set', 'medium', null],
+  [14, 'Sysmon Event 14: Registry object renamed', 'medium', null],
+  [15, 'Sysmon Event 15: File stream created (Alternate Data Streams)', 'medium', 'medium'],
+  [17, 'Sysmon Event 17: Pipe created', 'medium', null],
+  [18, 'Sysmon Event 18: Pipe connected', 'medium', null],
+  [19, 'Sysmon Event 19: WMI EventFilter activity detected', 'high', 'medium'],
+  [20, 'Sysmon Event 20: WMI EventConsumer activity detected', 'high', 'medium'],
+  [21, 'Sysmon Event 21: WMI EventConsumerToFilter activity detected', 'high', 'medium'],
+  [22, 'Sysmon Event 22: DNS query', 'info', null],
+  [23, 'Sysmon Event 23: File deleted', 'info', null],
+  [24, 'Sysmon Event 24: Clipboard change', 'medium', null],
+  [25, 'Sysmon Event 25: Process tampering (hollowing/herpaderping)', 'high', 'high'],
+  [26, 'Sysmon Event 26: File delete logged', 'info', null],
+  [27, 'Sysmon Event 27: File block executable', 'medium', null],
+  [28, 'Sysmon Event 28: File block shredding', 'medium', null],
+  [29, 'Sysmon Event 29: File executable detected', 'medium', null],
+  [1006, 'Defender Event 1006: Malware or unwanted software detected', 'high', 'high'],
+  [1007, 'Defender Event 1007: Action to protect system from malware', 'high', 'high'],
+  [1008, 'Defender Event 1008: Failed to take action on malware', 'high', 'high'],
+  [1009, 'Defender Event 1009: Item restored from quarantine', 'medium', null],
+  [1116, 'Defender Event 1116: Detected malware or unwanted software', 'high', 'high'],
+  [1117, 'Defender Event 1117: Performed action to protect from malware', 'high', 'high'],
+  [5001, 'Defender Event 5001: Real-time protection disabled', 'high', 'high'],
+  [5004, 'Defender Event 5004: Real-time protection config changed', 'medium', null],
+  [5007, 'Defender Event 5007: Antimalware platform config changed', 'medium', null],
+  [5010, 'Defender Event 5010: Scanning for malware disabled', 'high', 'medium'],
+  [5012, 'Defender Event 5012: Scanning for viruses disabled', 'high', 'medium'],
+  [5857, 'WMI Event 5857: Provider started', 'info', null],
+  [5858, 'WMI Event 5858: Provider error', 'medium', null],
+  [5859, 'WMI Event 5859: Subscription operation', 'medium', 'medium'],
+  [5860, 'WMI Event 5860: Temporary event created', 'medium', null],
+  [5861, 'WMI Event 5861: Permanent event subscription (persistence)', 'high', 'medium'],
+  [8003, 'AppLocker Event 8003: Executable was allowed', 'info', null],
+  [8004, 'AppLocker Event 8004: Executable was blocked', 'medium', null],
+  [8006, 'AppLocker Event 8006: Script/MSI was allowed', 'info', null],
+  [8007, 'AppLocker Event 8007: Script/MSI was blocked', 'medium', null],
+  [1149, 'RDP Event 1149: User authentication succeeded (remote logon)', 'medium', null],
+  [4778, 'Event 4778: Session reconnected to a window station', 'info', null],
+  [4779, 'Event 4779: Session disconnected from a window station', 'info', null],
+  [60, 'BITS Event 60: BITS transfer started (possible data exfil)', 'medium', null],
+];
+
+EvtxRenderer._SYSMON_DESCS = {
+  1: 'Process Created \u2014 A new process was started on the system.',
+  2: 'File Creation Time Changed \u2014 A process modified the creation timestamp of a file (possible timestomping).',
+  3: 'Network Connection Detected \u2014 A TCP/UDP network connection was initiated by a process.',
+  4: 'Sysmon Service State Changed \u2014 The Sysmon service started or stopped.',
+  5: 'Process Terminated \u2014 A process exited.',
+  6: 'Driver Loaded \u2014 A kernel driver was loaded into the system.',
+  7: 'Image Loaded \u2014 A DLL or executable image was loaded into a process.',
+  8: 'CreateRemoteThread \u2014 A thread was created in another process (possible process injection).',
+  9: 'RawAccessRead \u2014 A process performed a raw disk read bypassing the filesystem.',
+  10: 'Process Accessed \u2014 A process opened a handle to another process (possible credential dumping via LSASS).',
+  11: 'File Created \u2014 A new file was created or overwritten.',
+  12: 'Registry Object Added or Deleted \u2014 A registry key or value was created or deleted.',
+  13: 'Registry Value Set \u2014 A registry value was modified.',
+  14: 'Registry Object Renamed \u2014 A registry key or value was renamed.',
+  15: 'File Stream Created \u2014 An Alternate Data Stream (ADS) was written to a file.',
+  16: 'Sysmon Configuration Changed \u2014 The Sysmon configuration was updated.',
+  17: 'Named Pipe Created \u2014 A named pipe was created for inter-process communication.',
+  18: 'Named Pipe Connected \u2014 A client connected to a named pipe.',
+  19: 'WMI EventFilter Activity \u2014 A WMI event filter was registered (possible persistence).',
+  20: 'WMI EventConsumer Activity \u2014 A WMI event consumer was registered (possible persistence).',
+  21: 'WMI EventConsumerToFilter \u2014 A WMI consumer was bound to a filter (possible persistence).',
+  22: 'DNS Query \u2014 A process performed a DNS lookup.',
+  23: 'File Deleted \u2014 A file was deleted and archived by Sysmon.',
+  24: 'Clipboard Changed \u2014 The clipboard contents were modified by a process.',
+  25: 'Process Tampering \u2014 A process image was replaced or hollowed (process hollowing/herpaderping).',
+  26: 'File Delete Logged \u2014 A file deletion was detected and logged.',
+  27: 'File Block Executable \u2014 An executable file write was blocked by Sysmon.',
+  28: 'File Block Shredding \u2014 A file shredding operation was blocked by Sysmon.',
+  29: 'File Executable Detected \u2014 An executable file was detected being written to disk.',
+  255: 'Sysmon Error \u2014 An error occurred within the Sysmon service.',
+};
+
+EvtxRenderer._EVENT_DESCS = {
+  1100: 'Event Logging Service Shut Down \u2014 The Windows Event Log service was stopped.',
+  1102: 'Security Audit Log Cleared \u2014 The Security event log was cleared (possible anti-forensics).',
+  104: 'System Log Cleared \u2014 A system event log was cleared.',
+  4624: 'Successful Logon \u2014 A user account successfully logged on to the computer.',
+  4625: 'Failed Logon \u2014 A logon attempt failed (wrong password, locked account, expired, etc.).',
+  4634: 'Account Logoff \u2014 A user account logged off.',
+  4647: 'User-Initiated Logoff \u2014 A user initiated a logoff.',
+  4648: 'Explicit Credential Logon \u2014 A logon was attempted using explicit credentials (pass-the-hash indicator).',
+  4672: 'Special Privileges Assigned \u2014 Administrative or special privileges were assigned to a new logon session.',
+  4675: 'SIDs Filtered \u2014 SIDs were filtered during logon.',
+  4768: 'Kerberos TGT Requested \u2014 A Kerberos Ticket Granting Ticket (TGT) was requested.',
+  4769: 'Kerberos Service Ticket Requested \u2014 A Kerberos service ticket (TGS) was requested.',
+  4770: 'Kerberos Service Ticket Renewed \u2014 A Kerberos service ticket was renewed.',
+  4771: 'Kerberos Pre-Authentication Failed \u2014 Kerberos pre-auth failed (possible password spray/brute-force).',
+  4776: 'NTLM Credential Validation \u2014 The domain controller validated credentials via NTLM.',
+  4688: 'Process Created \u2014 A new process was created on the system.',
+  4689: 'Process Exited \u2014 A process was terminated.',
+  4720: 'User Account Created \u2014 A new user account was created.',
+  4722: 'User Account Enabled \u2014 A user account was enabled.',
+  4723: 'Password Change Attempted \u2014 An attempt was made to change an account\'s password.',
+  4724: 'Password Reset Attempted \u2014 An attempt was made to reset an account\'s password.',
+  4725: 'User Account Disabled \u2014 A user account was disabled.',
+  4726: 'User Account Deleted \u2014 A user account was deleted.',
+  4728: 'Member Added to Global Security Group \u2014 A member was added to a security-enabled global group.',
+  4729: 'Member Removed from Global Security Group \u2014 A member was removed from a security-enabled global group.',
+  4732: 'Member Added to Local Security Group \u2014 A member was added to a security-enabled local group.',
+  4733: 'Member Removed from Local Security Group \u2014 A member was removed from a security-enabled local group.',
+  4735: 'Local Security Group Changed \u2014 A security-enabled local group was modified.',
+  4737: 'Global Security Group Changed \u2014 A security-enabled global group was modified.',
+  4738: 'User Account Changed \u2014 A user account was modified.',
+  4740: 'Account Locked Out \u2014 A user account was locked out due to failed logon attempts.',
+  4741: 'Computer Account Created \u2014 A computer account was created in Active Directory.',
+  4742: 'Computer Account Changed \u2014 A computer account was modified.',
+  4743: 'Computer Account Deleted \u2014 A computer account was deleted.',
+  4756: 'Member Added to Universal Security Group \u2014 A member was added to a security-enabled universal group.',
+  4757: 'Member Removed from Universal Security Group \u2014 A member was removed from a security-enabled universal group.',
+  4656: 'Handle Requested \u2014 A handle to an object (file, key, etc.) was requested.',
+  4657: 'Registry Value Modified \u2014 A registry value was changed.',
+  4658: 'Handle Closed \u2014 A handle to an object was closed.',
+  4660: 'Object Deleted \u2014 An object was deleted.',
+  4663: 'Object Access Attempted \u2014 An attempt was made to access an object.',
+  4670: 'Object Permissions Changed \u2014 Permissions on an object were changed.',
+  4697: 'Service Installed \u2014 A new service was installed in the system.',
+  4698: 'Scheduled Task Created \u2014 A new scheduled task was created.',
+  4699: 'Scheduled Task Deleted \u2014 A scheduled task was deleted.',
+  4700: 'Scheduled Task Enabled \u2014 A scheduled task was enabled.',
+  4701: 'Scheduled Task Disabled \u2014 A scheduled task was disabled.',
+  4702: 'Scheduled Task Updated \u2014 A scheduled task was updated.',
+  7034: 'Service Crashed \u2014 A service terminated unexpectedly.',
+  7036: 'Service State Changed \u2014 A service entered the running or stopped state.',
+  7040: 'Service Start Type Changed \u2014 The start type of a service was changed (possible persistence).',
+  7045: 'New Service Installed \u2014 A new service was installed in the system.',
+  5140: 'Network Share Accessed \u2014 A network share object was accessed.',
+  5142: 'Network Share Added \u2014 A network share object was added.',
+  5144: 'Network Share Deleted \u2014 A network share object was deleted.',
+  5145: 'Network Share Access Checked \u2014 Access to a network share object was checked.',
+  5156: 'WFP Connection Allowed \u2014 Windows Filtering Platform allowed a network connection.',
+  5157: 'WFP Connection Blocked \u2014 Windows Filtering Platform blocked a network connection.',
+  4103: 'PowerShell Module Logging \u2014 A PowerShell module was loaded and logged.',
+  4104: 'PowerShell Script Block Logged \u2014 A PowerShell script block was captured for analysis.',
+  40961: 'PowerShell Console Started \u2014 A PowerShell console host session was started.',
+  40962: 'PowerShell Console Ready \u2014 A PowerShell console host session is ready for input.',
+  53504: 'PowerShell ISE Session \u2014 A Windows PowerShell ISE session was started.',
+  1006: 'Defender: Malware Detected \u2014 Windows Defender detected malware or potentially unwanted software.',
+  1007: 'Defender: Protection Action \u2014 Windows Defender took action to protect the system from malware.',
+  1008: 'Defender: Action Failed \u2014 Windows Defender failed to take action on detected malware.',
+  1009: 'Defender: Item Restored \u2014 An item was restored from Windows Defender quarantine.',
+  1116: 'Defender: Threat Detected \u2014 Windows Defender detected a threat.',
+  1117: 'Defender: Protection Action Taken \u2014 Windows Defender performed an action against a threat.',
+  5001: 'Defender: Real-Time Protection Disabled \u2014 Windows Defender real-time protection was disabled.',
+  5004: 'Defender: Configuration Changed \u2014 Windows Defender real-time protection config was changed.',
+  5007: 'Defender: Platform Configuration Changed \u2014 The antimalware platform configuration was changed.',
+  5010: 'Defender: Malware Scanning Disabled \u2014 Scanning for malware and spyware was disabled.',
+  5012: 'Defender: Virus Scanning Disabled \u2014 Scanning for viruses was disabled.',
+  5857: 'WMI Provider Started \u2014 A WMI provider was loaded and started.',
+  5858: 'WMI Provider Error \u2014 A WMI provider encountered an error.',
+  5859: 'WMI Subscription Operation \u2014 A WMI event subscription operation was performed.',
+  5860: 'WMI Temporary Event Created \u2014 A temporary WMI event subscription was created.',
+  5861: 'WMI Permanent Event Subscription \u2014 A permanent WMI event subscription was created (possible persistence).',
+  8003: 'AppLocker: Executable Allowed \u2014 An executable file was allowed to run by AppLocker.',
+  8004: 'AppLocker: Executable Blocked \u2014 An executable file was blocked by AppLocker policy.',
+  8006: 'AppLocker: Script/MSI Allowed \u2014 A script or MSI file was allowed by AppLocker.',
+  8007: 'AppLocker: Script/MSI Blocked \u2014 A script or MSI file was blocked by AppLocker.',
+  1149: 'RDP Authentication Succeeded \u2014 A user was successfully authenticated via Remote Desktop.',
+  4778: 'Session Reconnected \u2014 A session was reconnected to a Window Station.',
+  4779: 'Session Disconnected \u2014 A session was disconnected from a Window Station.',
+  60: 'BITS Transfer Started \u2014 A Background Intelligent Transfer Service job was started.',
+  6005: 'Event Log Service Started \u2014 The Event Log service was started (system boot).',
+  6006: 'Event Log Service Stopped \u2014 The Event Log service was stopped (clean shutdown).',
+  6008: 'Unexpected Shutdown \u2014 The previous system shutdown was unexpected.',
+  6009: 'OS Information Logged \u2014 Operating system version information logged at boot.',
+  6013: 'System Uptime \u2014 System uptime information.',
+  1501: 'Group Policy Applied \u2014 Group Policy settings were applied successfully.',
+  1502: 'Group Policy Failed \u2014 Group Policy processing failed.',
+  106: 'Task Registered \u2014 A new task was registered in Task Scheduler.',
+  140: 'Task Updated \u2014 A task was updated in Task Scheduler.',
+  141: 'Task Removed \u2014 A task was removed from Task Scheduler.',
+  200: 'Task Action Started \u2014 A scheduled task action was started.',
+  201: 'Task Action Completed \u2014 A scheduled task action completed.',
+  2003: 'Firewall Rule Added \u2014 A Windows Firewall rule was added.',
+  2004: 'Firewall Rule Modified \u2014 A Windows Firewall rule was modified.',
+  2005: 'Firewall Rule Deleted \u2014 A Windows Firewall rule was deleted.',
+  2006: 'Firewall Rules Deleted \u2014 Windows Firewall rules were deleted (batch).',
+  4719: 'Audit Policy Changed \u2014 System audit policy was changed.',
+  4907: 'Auditing Settings Changed \u2014 Auditing settings on an object were changed.',
+};

@@ -255,15 +255,18 @@ class SqliteRenderer {
   // ── Varint reader ───────────────────────────────────────────────────────
 
   _readVarint(bytes, ctx) {
+    // Use multiplication instead of bitwise shift to avoid 32-bit overflow.
+    // JavaScript's << operates on signed 32-bit ints, which corrupts values
+    // above 2^31 (common for SQLite rowids in large databases).
     let result = 0;
     for (let i = 0; i < 9; i++) {
       if (ctx.pos >= bytes.length) return result;
       const b = bytes[ctx.pos++];
       if (i < 8) {
-        result = (result << 7) | (b & 0x7F);
+        result = result * 128 + (b & 0x7F);
         if ((b & 0x80) === 0) return result;
       } else {
-        result = (result << 8) | b;
+        result = result * 256 + b;
         return result;
       }
     }
@@ -346,7 +349,7 @@ class SqliteRenderer {
     const names = new Set(tables.filter(t => t.type === 'table').map(t => t.name));
     // Chrome / Edge: urls, visits, downloads, keyword_search_terms
     if (names.has('urls') && names.has('visits')) {
-      return names.has('downloads') ? 'chrome' : 'chrome'; // Edge uses same schema
+      return 'chrome'; // Edge uses the same schema
     }
     // Firefox: moz_places, moz_historyvisits, moz_bookmarks
     if (names.has('moz_places') && names.has('moz_historyvisits')) {

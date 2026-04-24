@@ -342,6 +342,10 @@ Object.assign(App.prototype, {
     } catch (e) {
       console.error(e);
       this._toast(`Failed to open: ${e.message}`, 'error');
+      // Clear stale binary-triage state so the sidebar doesn't render
+      // PE/ELF/Mach-O sections from a previous successful load.
+      this._binaryParsed = null;
+      this._binaryFormat = null;
       const pc = document.getElementById('page-container'); pc.innerHTML = '';
       const eb = document.createElement('div'); eb.className = 'error-box';
       const h3 = document.createElement('h3'); h3.textContent = 'Failed to open file'; eb.appendChild(h3);

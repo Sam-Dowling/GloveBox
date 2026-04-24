@@ -56,7 +56,7 @@
   }
 
   // ── Per-format signal extraction ─────────────────────────────────────────
-  function _peSignals(pe, fileSize) {
+  function _peSignals(pe, fileSize, findings) {
     const s = {
       kind: 'Executable',
       archLabel: '',
@@ -105,8 +105,9 @@
       if (pe.isAutoHotkey) s.isAutoHotkey = true;
       if (pe.isXll) s.isXll = true;
       if (pe.installerType) s.installerType = pe.installerType;
-      // Rust heuristic — panic paths surfaced by BinaryStrings.
-      const rustCount = Number((pe._findingsMetadata && pe._findingsMetadata['Rust Panic Paths']) || 0);
+      // Rust heuristic — panic paths surfaced by BinaryStrings into findings.metadata.
+      const fmd = (findings && findings.metadata) || {};
+      const rustCount = Number(fmd['Rust Panic Paths'] || 0);
       if (rustCount > 0) s.isRust = true;
     } catch (_) { /* best-effort */ }
     return s;
@@ -234,7 +235,7 @@
 
     // ── Per-format signal block ───────────────────────────────────────────
     let sig = null;
-    if (format === 'PE') sig = _peSignals(parsed, fileSize);
+    if (format === 'PE') sig = _peSignals(parsed, fileSize, findings);
     else if (format === 'ELF') sig = _elfSignals(parsed, fileSize);
     else if (format === 'Mach-O') sig = _machoSignals(parsed, fileSize);
     sig = sig || {};

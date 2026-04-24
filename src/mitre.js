@@ -153,7 +153,8 @@
     'collection':            { label: 'Collection',            icon: '📦', order: 8 },
     'command-and-control':   { label: 'Command & Control',     icon: '📡', order: 9 },
     'exfiltration':          { label: 'Exfiltration',          icon: '📤', order: 10 },
-    'impact':                { label: 'Impact',                icon: '💥', order: 11 }
+    'impact':                { label: 'Impact',                icon: '💥', order: 11 },
+    'unknown':               { label: 'Unknown Tactic',        icon: '?',  order: 99 }
   };
 
   // ── Lookup helpers ─────────────────────────────────────────────────────
@@ -195,14 +196,14 @@
   //         sorted by severity desc then id asc.
   function rollupByTactic(items) {
     if (!Array.isArray(items) || !items.length) return [];
-    const SEV_RANK = { critical: 3, high: 2, medium: 1, low: 0, info: -1 };
+    const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
     const byTactic = new Map();
     for (const raw of items) {
       const entry = typeof raw === 'string' ? { id: raw } : (raw || {});
       if (!entry.id) continue;
       const info = lookup(entry.id);
       if (!info) continue;
-      const tactic = primaryTactic(entry.id) || 'defense-evasion';
+      const tactic = primaryTactic(entry.id) || 'unknown';
       if (!byTactic.has(tactic)) byTactic.set(tactic, []);
       byTactic.get(tactic).push({
         id: info.id,

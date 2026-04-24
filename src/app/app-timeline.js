@@ -2028,7 +2028,12 @@ class TimelineQueryEditor {
 
   _closeHistoryMenu() {
     const existing = document.querySelector('.tl-query-hist-menu');
-    if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+    // Trigger the dismiss handler (which removes DOM + cleans up document
+    // listeners) rather than just ripping the element out of the DOM.
+    if (existing) {
+      if (typeof existing._dismiss === 'function') existing._dismiss();
+      else if (existing.parentNode) existing.parentNode.removeChild(existing);
+    }
     this._hist = null;
   }
 
@@ -2086,6 +2091,8 @@ class TimelineQueryEditor {
       document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', onResize, true);
     };
+    // Expose dismiss so _closeHistoryMenu can invoke it cleanly.
+    menu._dismiss = dismiss;
     const onPointer = (e) => { if (!menu.contains(e.target) && e.target !== anchor) dismiss(); };
     const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); dismiss(); } };
     const onResize = () => dismiss();
@@ -2846,11 +2853,15 @@ class TimelineView {
       // Detect the dominant timestamp format from a small sample and use
       // the specialised fast-path parser that skips the full regex
       // waterfall. Falls back to `_tlParseTimestamp` for outlier cells.
-      const fmt = _tlDetectTimestampFormat(rows, col, 30);
+      // Use `_cellAt` so extracted (virtual) columns resolve correctly —
+      // `rows[i][col]` would be undefined for extracted columns since the
+      // row arrays only hold `_baseColumns.length` cells.
+      const isExtracted = col >= this._baseColumns.length;
+      const fmt = isExtracted ? 'generic' : _tlDetectTimestampFormat(rows, col, 30);
       if (fmt === 'generic') {
         for (let i = 0; i < rows.length; i++) {
-          const r = rows[i];
-          out[i] = r ? _tlParseTimestamp(r[col]) : NaN;
+          const v = isExtracted ? this._cellAt(i, col) : (rows[i] ? rows[i][col] : null);
+          out[i] = (v == null || v === '') ? NaN : _tlParseTimestamp(v);
         }
       } else {
         for (let i = 0; i < rows.length; i++) {
@@ -3231,6 +3242,8 @@ class TimelineView {
     }
 
     const k = stackKeys ? stackKeys.length : 1;
+    // Build a Map for O(1) stack-key → index lookup instead of O(n) indexOf.
+    const stackKeyIdx = stackKeys ? new Map(stackKeys.map((sk, si) => [sk, si])) : null;
     const buckets = new Int32Array(bucketCount * k);
     for (let i = 0; i < idx.length; i++) {
       const di = idx[i];
@@ -3242,8 +3255,8 @@ class TimelineView {
       if (b >= bucketCount) b = bucketCount - 1;
       if (stackKeyOf) {
         const key = stackKeyOf(di);
-        const ki = stackKeys.indexOf(key);
-        buckets[b * k + (ki < 0 ? 0 : ki)]++;
+        const ki = stackKeyIdx.get(key);
+        buckets[b * k + (ki !== undefined ? ki : 0)]++;
       } else {
         buckets[b]++;
       }
@@ -4898,9 +4911,13 @@ class TimelineView {
       chip.className = 'tl-chip tl-chip-sus' + (isAny ? ' tl-chip-sus-any' : '');
       const label = isAny ? '＊ Any' : m.colName;
       chip.innerHTML = `<span class="tl-chip-col">${_tlEsc(label)}</span><span class="tl-chip-op">🚩</span><span class="tl-chip-val">${_tlEsc(m.val)}</span><button class="tl-chip-x" title="Remove">⊗</button>`;
-      const persistIdx = i;
+      // Capture the mark *object* (not its index) so rapid double-removal
+      // can't splice the wrong entry after an earlier splice shifted indices.
+      const markRef = m;
       chip.querySelector('.tl-chip-x').addEventListener('click', () => {
-        this._susMarks.splice(persistIdx, 1);
+        const idx = this._susMarks.indexOf(markRef);
+        if (idx < 0) return;
+        this._susMarks.splice(idx, 1);
         TimelineView._saveSusMarksFor(this._fileKey, this._susMarks);
         this._rebuildSusBitmap();
         this._recomputeFilter();
@@ -5953,7 +5970,9 @@ class TimelineView {
     const m = new Set();
     const resolved = this._susMarksResolved();
     for (const r of resolved) {
-      if (r.colIdx === colIdx) m.add(String(r.val));
+      // `any`-type marks apply to every column; column-scoped marks
+      // match only their own colIdx.
+      if (r.any === true || r.colIdx === colIdx) m.add(String(r.val));
     }
     return m;
   }

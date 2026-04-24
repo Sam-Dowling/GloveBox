@@ -1022,15 +1022,16 @@ Object.assign(App.prototype, {
   },
 
   // ── Get deepest decoded finding in innerFindings tree ───────────────────
-  _getDeepestFinding(finding) {
-
+  _getDeepestFinding(finding, _depth) {
+    if (_depth === undefined) _depth = 0;
+    if (_depth > 20) return finding; // safety cap — prevent infinite recursion on cyclic graphs
     if (!finding.innerFindings || !finding.innerFindings.length) return finding;
-    const sevRank = { critical: 4, high: 3, medium: 2, info: 1 };
+    const sevRank = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
     const best = finding.innerFindings.reduce((a, b) =>
-      (sevRank[b.severity] || 0) > (sevRank[a.severity] || 0) ? b : a
+      (sevRank[b.severity] ?? 0) > (sevRank[a.severity] ?? 0) ? b : a
     );
     if (best.decodedBytes || best.rawCandidate || (best.innerFindings && best.innerFindings.length)) {
-      return this._getDeepestFinding(best);
+      return this._getDeepestFinding(best, _depth + 1);
     }
     return (best.decodedBytes || best.rawCandidate) ? best : finding;
   },

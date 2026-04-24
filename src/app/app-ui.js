@@ -1105,10 +1105,14 @@ Object.assign(App.prototype, {
     const cleanUrl = window.location.pathname + window.location.hash;
     window.history.replaceState(null, '', cleanUrl);
 
-    // Compare versions (YYYYMMDD.HHMM format — numeric comparison works)
-    const remoteNum = parseFloat(remoteVersion) || 0;
-    const localNum = parseFloat(localVersion) || 0;
-    const isUpToDate = localVersion !== 'dev' && remoteNum >= localNum;
+    // Compare versions (YYYYMMDD.HHMM format). Split on '.' to compare
+    // the date and time parts independently as integers, avoiding float
+    // precision issues where parseFloat('20260424.1400') silently drops
+    // the trailing zero, producing wrong comparisons for certain HHMM values.
+    const _vparts = (v) => { const p = String(v).split('.'); return [parseInt(p[0], 10) || 0, parseInt(p[1], 10) || 0]; };
+    const [rDate, rTime] = _vparts(remoteVersion);
+    const [lDate, lTime] = _vparts(localVersion);
+    const isUpToDate = localVersion !== 'dev' && (rDate > lDate || (rDate === lDate && rTime >= lTime));
 
     // Build popup using createElement/textContent so the `?v=` query param
     // (attacker-controlled) can never reach the DOM as HTML. CodeQL flags the
@@ -1255,9 +1259,14 @@ Object.assign(App.prototype, {
       btn.className = 'tb-menu-item';
       btn.dataset.exportId = item.id;
       btn.setAttribute('role', 'menuitem');
-      btn.innerHTML =
-        `<span class="tb-menu-icon">${item.icon}</span>` +
-        `<span class="tb-menu-label">${item.label}</span>`;
+      const iconSpan = document.createElement('span');
+      iconSpan.className = 'tb-menu-icon';
+      iconSpan.textContent = item.icon;
+      btn.appendChild(iconSpan);
+      const labelSpan = document.createElement('span');
+      labelSpan.className = 'tb-menu-label';
+      labelSpan.textContent = item.label;
+      btn.appendChild(labelSpan);
       const isEnabled = item.enabled ? !!item.enabled() : true;
       if (!isEnabled) {
         btn.disabled = true;

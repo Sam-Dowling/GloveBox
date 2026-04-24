@@ -100,7 +100,7 @@
   let _canvas = null;
   let _ctx = null;
   let _theme = null;
-  let _engineId = null;
+
   let _raf = null;
   let _dpr = 1;
   let _w = 0, _h = 0;
@@ -523,6 +523,7 @@
     const draw = (variant === 'kitties') ? _drawKitty : _drawHeart;
 
     return {
+      usesCursor: true,
       draw(t, dt) {
         const ctx = _ctx;
         ctx.clearRect(0, 0, _w, _h);
@@ -672,13 +673,13 @@
     _theme = themeId;
     _stop();
     _state = null;
-    _engineId = null;
+
     if (!_canvas) _ensureCanvas();
     if (_ctx) _ctx.clearRect(0, 0, _w, _h);
     if (_reducedMotion()) return;
     const engineId = THEME_ENGINES.hasOwnProperty(themeId) ? THEME_ENGINES[themeId] : 'penroseLight';
     if (!engineId) return; // e.g. midnight — canvas stays cleared
-    _engineId = engineId;
+
     if (engineId === 'penroseLight')       _state = _initPenroseLight();
     else if (engineId === 'networkDark')   _state = _initNetworkDark();
     else if (engineId === 'penrose')       _state = _initPenrose();
