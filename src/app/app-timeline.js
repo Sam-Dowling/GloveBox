@@ -9847,19 +9847,52 @@ Object.assign(App.prototype, {
       };
       this._renderBreadcrumbs();
 
-      // If the sniffed / declared format still isn't a Timeline one, fall
-      // back to the regular analyser pipeline. Callers (`_loadFile`) handle
-      // this by only calling us after `_shouldRouteToTimeline` confirms it.
+      // ── Worker-first parse (PLAN C2) ───────────────────────────────
+      // Try `WorkerManager.runTimeline(...)` first. The worker bundle is
+      // parse-only — EVTX threat-detection and CSV obvious-malware
+      // sweeps stay on the main thread (this method runs them after
+      // the worker `done`). On `Error('workers-unavailable')` (Firefox
+      // file:// or any spawn refusal) or any other failure we fall
+      // through to the legacy synchronous TimelineView factories so
+      // every load path stays usable. See `src/workers/timeline.worker.js`.
       let view = null;
-      if (ext === 'evtx') {
-        view = await TimelineView.fromEvtx(file, buffer);
-      } else if (ext === 'csv' || ext === 'tsv') {
-        view = await TimelineView.fromCsvAsync(file, buffer, ext === 'tsv' ? '\t' : null);
-      } else if (ext === 'sqlite' || ext === 'db') {
-        view = TimelineView.fromSqlite(file, buffer);
-      } else {
-        throw new Error('Unsupported Timeline format: .' + ext);
+      let workerKind = null;
+      if (ext === 'evtx') workerKind = 'evtx';
+      else if (ext === 'csv' || ext === 'tsv') workerKind = 'csv';
+      else if (ext === 'sqlite' || ext === 'db') workerKind = 'sqlite';
+
+      if (workerKind && window.WorkerManager
+          && typeof window.WorkerManager.runTimeline === 'function'
+          && window.WorkerManager.workersAvailable && window.WorkerManager.workersAvailable()) {
+        try {
+          // Transfer a copy — the original `buffer` is still needed for
+          // (a) the EVTX analyzer below and (b) the fallback re-route
+          // to `_loadFile` when the parse returns zero rows.
+          const transfer = buffer.slice(0);
+          const opts = (workerKind === 'csv') ? { explicitDelim: ext === 'tsv' ? '\t' : null } : undefined;
+          const msg = await window.WorkerManager.runTimeline(transfer, workerKind, opts);
+          view = this._buildTimelineViewFromWorker(file, workerKind, msg, buffer);
+        } catch (e) {
+          if (!e || e.message !== 'workers-unavailable') {
+            console.warn('[timeline] worker parse failed; falling back to main-thread parse:', e);
+          }
+          view = null; // fall through to sync path
+        }
       }
+
+      // ── Synchronous fallback (legacy path) ─────────────────────────
+      if (!view) {
+        if (ext === 'evtx') {
+          view = await TimelineView.fromEvtx(file, buffer);
+        } else if (ext === 'csv' || ext === 'tsv') {
+          view = await TimelineView.fromCsvAsync(file, buffer, ext === 'tsv' ? '\t' : null);
+        } else if (ext === 'sqlite' || ext === 'db') {
+          view = TimelineView.fromSqlite(file, buffer);
+        } else {
+          throw new Error('Unsupported Timeline format: .' + ext);
+        }
+      }
+
 
       // If the factory returned zero rows AND no pre-parsed events (EVTX
       // with an unreadable header, empty CSV) fall back to the analyser
@@ -9935,8 +9968,72 @@ Object.assign(App.prototype, {
     }
   },
 
+  // Construct a TimelineView from a parse-only worker `done` payload.
+  // The worker (PLAN C2) ships back `{ columns, rows, formatLabel,
+  // truncated, originalRowCount, defaultTimeColIdx?, defaultStackColIdx?,
+  // evtxEvents?, browserType? }` — i.e. the same shape the legacy
+  // `TimelineView.from{Csv,Evtx,Sqlite}` factories pass into the
+  // `TimelineView` constructor, minus the analyzer side-channel for
+  // EVTX. We run `EvtxDetector.analyzeForSecurity` on the main thread
+  // here (with the worker-pre-parsed events to skip a re-parse) so the
+  // Detections / Entities sections stay populated. CSV / TSV / SQLite
+  // have no analyzer side-channel — the worker output drops straight
+  // into the constructor.
+  //
+  // `originalBuffer` is the live ArrayBuffer the caller still holds
+  // (the worker received a `buffer.slice(0)` copy that was transferred
+  // and consumed). EvtxDetector only needs it as a fallback parse target
+  // when `prebuiltEvents` is missing — passing it keeps the contract
+  // intact even if the worker ever started omitting `evtxEvents`.
+  _buildTimelineViewFromWorker(file, kind, msg, originalBuffer) {
+    if (!msg) return null;
+    const columns = msg.columns || [];
+    const rows = msg.rows || [];
+    if (kind === 'evtx') {
+      let securityFindings = null;
+      try {
+        securityFindings = EvtxDetector.analyzeForSecurity(
+          originalBuffer, file && file.name, msg.evtxEvents || []);
+      } catch (e) {
+        console.warn('[timeline] EVTX analyzeForSecurity failed (worker path):', e);
+      }
+      return new TimelineView({
+        file, columns, rows,
+        formatLabel: msg.formatLabel || 'EVTX',
+        truncated: !!msg.truncated,
+        originalRowCount: msg.originalRowCount || rows.length,
+        defaultTimeColIdx: Number.isInteger(msg.defaultTimeColIdx) ? msg.defaultTimeColIdx : 0,
+        defaultStackColIdx: Number.isInteger(msg.defaultStackColIdx) ? msg.defaultStackColIdx : 1,
+        evtxEvents: msg.evtxEvents || [],
+        evtxFindings: securityFindings,
+      });
+    }
+    if (kind === 'sqlite') {
+      // Generic SQLite (non-browser-history) returns zero rows from the
+      // worker — caller's zero-row fallback re-routes to the regular
+      // analyser. Only the browser-history path emits `defaultTimeColIdx`.
+      const out = {
+        file, columns, rows,
+        formatLabel: msg.formatLabel || 'SQLite',
+        truncated: !!msg.truncated,
+        originalRowCount: msg.originalRowCount || rows.length,
+      };
+      if (Number.isInteger(msg.defaultTimeColIdx)) out.defaultTimeColIdx = msg.defaultTimeColIdx;
+      if (Number.isInteger(msg.defaultStackColIdx)) out.defaultStackColIdx = msg.defaultStackColIdx;
+      return new TimelineView(out);
+    }
+    // csv / tsv — no analyzer side-channel.
+    return new TimelineView({
+      file, columns, rows,
+      formatLabel: msg.formatLabel || (kind === 'csv' ? 'CSV' : 'TSV'),
+      truncated: !!msg.truncated,
+      originalRowCount: msg.originalRowCount || rows.length,
+    });
+  },
+
   _clearTimelineFile() {
     // Tear down the Timeline surface itself. The drop-zone is Loupe's
+
     // canonical empty state, so we don't render a Timeline-specific
     // placeholder here.
     if (this._timelineCurrent) {

@@ -87,6 +87,54 @@ Object.assign(App.prototype, {
       && this._timelineTryHandle
       && this._timelineTryHandle(file)) return;
 
+    // ── YARA worker cancellation (PLAN C1) ────────────────────────────
+    // A YARA scan from the *previous* file may still be running in a
+    // worker. Terminate it now so the upcoming auto-scan isn't racing
+    // against a superseded result, and so a 100 MiB scan abandoned by
+    // a quick Back-then-forward navigation doesn't keep a worker alive
+    // for tens of seconds. Cheap no-op when nothing is in flight or
+    // when the WorkerManager probe has already failed.
+    if (window.WorkerManager && WorkerManager.cancelYara) {
+      WorkerManager.cancelYara();
+    }
+
+    // ── Timeline worker cancellation (PLAN C2) ────────────────────────
+    // Same rationale as the YARA cancellation above — a Timeline parse
+    // (CSV / TSV / EVTX / SQLite browser-history) from the previous
+    // file may still be inflating in a worker. Terminate it now so the
+    // upcoming load isn't racing a superseded `done` postback. Cheap
+    // no-op when nothing is in flight or when the WorkerManager probe
+    // has already failed.
+    if (window.WorkerManager && WorkerManager.cancelTimeline) {
+      WorkerManager.cancelTimeline();
+    }
+
+    // ── Encoded-content worker cancellation (PLAN C3) ─────────────────
+    // Same rationale as the YARA / Timeline cancellations above — the
+    // EncodedContentDetector scan from the previous file may still be
+    // chasing nested base64 / hex / zlib chains in a worker. Terminate
+    // it now so the upcoming scan isn't racing a superseded `done`
+    // postback. Cheap no-op when nothing is in flight or when the
+    // WorkerManager probe has already failed.
+    if (window.WorkerManager && WorkerManager.cancelEncoded) {
+      WorkerManager.cancelEncoded();
+    }
+
+    // ── Strings worker cancellation (PLAN C4) ─────────────────────────
+    // Same rationale as the cancellations above — a binary-string
+    // extractor scan (`extractAsciiAndUtf16leStrings`) from the previous
+    // file may still be sweeping a 100+ MiB native binary in a worker.
+    // Terminate it now so the upcoming load isn't racing a superseded
+    // `done` postback. Cheap no-op when nothing is in flight or when
+    // the WorkerManager probe has already failed. No in-tree caller
+    // ships with C4 — the helper is opt-in via
+    // `BinaryStrings.extractStringsAsync()` for the post-D1 renderer
+    // refactor — but the cancellation is wired up now so nothing leaks
+    // when callers do migrate.
+    if (window.WorkerManager && WorkerManager.cancelStrings) {
+      WorkerManager.cancelStrings();
+    }
+
     // ── Timeline → Non-Timeline teardown ──────────────────────────────
     // If a Timeline view is currently mounted but the new file isn't a
     // Timeline format (otherwise `_timelineTryHandle` above would have
@@ -185,13 +233,25 @@ Object.assign(App.prototype, {
       // Compute file hashes in parallel with parsing
       const hashPromise = this._hashFile(buffer);
 
-      // ── Parser watchdog ──────────────────────────────────────────────
-      // Wrap the full renderer dispatch in a single timeout guard so any
-      // renderer that hangs on a maliciously crafted file (malformed PDF
-      // xref, pathological ZIP entry count, OneNote blob loop, etc.) is
-      // aborted after PARSER_LIMITS.TIMEOUT_MS instead of locking the UI.
-      // The inner closure writes to this.findings and to the outer
-      // `docEl` / `analyzer` bindings via closure.
+      // ── Parser watchdog (per-renderer, PLAN B5) ──────────────────────
+      // Run the chosen renderer under `PARSER_LIMITS.RENDERER_TIMEOUT_MS`
+      // (30 s). When a single renderer hangs on a maliciously crafted
+      // file (malformed PDF xref, pathological ZIP entry count, OneNote
+      // blob loop, …) we abort the renderer and fall back to
+      // `PlainTextRenderer` so the analyst still gets a hex/strings view
+      // and a sidebar `IOC.INFO` row that explains why the structured
+      // viewer didn't load. Genuine parser exceptions (i.e. errors that
+      // are NOT a watchdog timeout) bubble out of this block to the
+      // outer `catch (e)` that paints the "Failed to open file" box.
+      //
+      // Why per-renderer instead of one outer guard around the whole
+      // pipeline? A pre-PLAN-B5 30 s wrap that included the encoded-
+      // content recursion + sidebar render would let a 25 s renderer
+      // succeed and then immediately blow the budget on the cheap
+      // post-render work. The 30 s here is a clean per-renderer bound;
+      // the buffer-read above (line ~150) keeps its own
+      // `PARSER_LIMITS.TIMEOUT_MS` (60 s) cap, which is a different
+      // scope (one read per file vs. arbitrary parser work).
       //
       // Dispatch strategy:
       //   1. Build a detection context once (`RendererRegistry.makeContext`)
@@ -203,19 +263,52 @@ Object.assign(App.prototype, {
       //      order, so an extensionless MSIX is still routed to the
       //      MSIX renderer, a renamed .docx stays a Word document, and
       //      `.key` bytes are disambiguated between X.509 and PGP.
-      //   3. Run the per-id handler below which owns the actual
-      //      instantiate → analyze → render sequence (some paths are
-      //      sync, some async; a few attach inner-file listeners).
-      await ParserWatchdog.run(async () => {
-        const rctx = RendererRegistry.makeContext(file, buffer);
-        const decision = RendererRegistry.detect(rctx);
-        const handler = this._rendererDispatch[decision.id] || this._rendererDispatch.plaintext;
-        const result = await handler.call(this, file, buffer, rctx);
+      //   3. Run the per-id handler under the watchdog. On timeout, reset
+      //      any partial state the hung renderer may have written and
+      //      hand the buffer to PlainTextRenderer.
+      const rctx = RendererRegistry.makeContext(file, buffer);
+      const decision = RendererRegistry.detect(rctx);
+      const dispatchId = decision.id;
+      const handler = this._rendererDispatch[dispatchId] || this._rendererDispatch.plaintext;
+
+      try {
+        const result = await ParserWatchdog.run(
+          () => handler.call(this, file, buffer, rctx),
+          { timeout: PARSER_LIMITS.RENDERER_TIMEOUT_MS, name: dispatchId }
+        );
         if (result) {
           docEl = result.docEl;
           if (result.analyzer) analyzer = result.analyzer;
         }
-      }); // end ParserWatchdog.run
+      } catch (renderErr) {
+        // Watchdog timeout → graceful PlainTextRenderer fallback. Skip
+        // the fallback if the dispatcher we just timed out on was already
+        // `plaintext` (degenerate case — let the outer catch render the
+        // "Failed to open file" box).
+        if (renderErr && renderErr._watchdogTimeout && dispatchId !== 'plaintext') {
+          const secs = (PARSER_LIMITS.RENDERER_TIMEOUT_MS / 1000) | 0;
+          console.warn(`[loupe] Renderer "${dispatchId}" timed out after ${secs}s — falling back to plain-text view`);
+          // Reset partial state from the hung renderer so it can't bleed
+          // into the sidebar (findings.risk pre-stamps, half-built IOC
+          // arrays, binary-triage globals from a half-parsed PE/ELF/Mach-O).
+          this.findings = { risk: 'low', externalRefs: [], interestingStrings: [], metadata: {} };
+          this._binaryParsed = null;
+          this._binaryFormat = null;
+          this._yaraBuffer = null;
+          const fallback = await this._rendererDispatch.plaintext.call(this, file, buffer, rctx);
+          docEl = fallback.docEl;
+          analyzer = null;
+          // Surface the fallback to the analyst as a visible IOC.INFO row
+          // (interim; PLAN F2 will unify reporting via App._reportNonFatal).
+          pushIOC(this.findings, {
+            type: IOC.INFO,
+            value: `Parser "${dispatchId}" timed out after ${secs}s — falling back to plain-text view. Open the YARA tab for a manual deep scan.`,
+            severity: 'medium',
+          });
+        } else {
+          throw renderErr;
+        }
+      }
 
 
       // Extract interesting strings from rendered text + VBA source
@@ -240,26 +333,57 @@ Object.assign(App.prototype, {
         };
       }
 
-      // ── Encoded content detection ─────────────────────────────────────
+      // ── Encoded content detection (PLAN C3) ───────────────────────────
+      // Worker-first path: `WorkerManager.runEncoded` spawns a Web Worker
+      // bundle (encoded-content-detector + decompressor + JSZip + pako)
+      // that runs `scan()` and eagerly drives `lazyDecode()` off the main
+      // thread. The buffer is transferred, so we ship a `slice(0)` copy —
+      // every downstream step in `_loadFile` still needs `buffer`. When
+      // the worker probe has failed, or the worker reports an error
+      // (rejects with anything other than `'workers-unavailable'`), we
+      // fall back to the synchronous main-thread scan that has lived
+      // here since before C3. The fallback is the same code path the
+      // earlier Track-C lands used — see C1 (yara) / C2 (timeline) for
+      // the same pattern.
       try {
-        const detector = new EncodedContentDetector();
-        const encodedFindings = await detector.scan(
-          analysisText,
-          new Uint8Array(buffer),
-          {
-            fileType: ext,
-            existingIOCs: this.findings.interestingStrings,
-            mimeAttachments: this.findings._mimeAttachments || null,
+        let encodedFindings;
+        let usedWorker = false;
+        try {
+          const out = await WorkerManager.runEncoded(
+            buffer.slice(0),
+            analysisText,
+            {
+              fileType: ext,
+              mimeAttachments: this.findings._mimeAttachments || null,
+            }
+          );
+          encodedFindings = out.findings || [];
+          usedWorker = true;
+        } catch (workerErr) {
+          if (workerErr && workerErr.message !== 'workers-unavailable') {
+            console.warn('[loupe] EncodedContentDetector worker failed — falling back to main-thread scan:', workerErr);
           }
-        );
+          const detector = new EncodedContentDetector();
+          encodedFindings = await detector.scan(
+            analysisText,
+            new Uint8Array(buffer),
+            {
+              fileType: ext,
+              existingIOCs: this.findings.interestingStrings,
+              mimeAttachments: this.findings._mimeAttachments || null,
+            }
+          );
+          // Speculatively decode lazy findings so sidebar can show decoded
+          // previews immediately (base64/hex decode is lightweight; skip
+          // compressed blobs). The worker path already drove this
+          // eagerly inside the worker, so only run on the fallback path.
+          await Promise.all(
+            encodedFindings
+              .filter(ef => ef.rawCandidate && !ef.decodedBytes)
+              .map(ef => detector.lazyDecode(ef))
+          );
+        }
         this.findings.encodedContent = encodedFindings;
-        // Speculatively decode lazy findings so sidebar can show decoded previews
-        // immediately (base64/hex decode is lightweight; skip compressed blobs)
-        await Promise.all(
-          encodedFindings
-            .filter(ef => ef.rawCandidate && !ef.decodedBytes)
-            .map(ef => detector.lazyDecode(ef))
-        );
         // Store raw bytes reference on compressed findings for lazy decompression
         for (const ef of encodedFindings) {
           if (ef.needsDecompression) ef._rawBytes = new Uint8Array(buffer);

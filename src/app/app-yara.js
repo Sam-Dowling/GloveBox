@@ -1293,7 +1293,12 @@ Object.assign(App.prototype, {
   //  Scanning
   // ═══════════════════════════════════════════════════════════════════════
 
-  /** Run YARA scan against currently loaded file. */
+  /** Run YARA scan against currently loaded file.
+   *
+   *  Worker-first (PLAN C1) — falls back to a synchronous main-thread scan
+   *  when `Worker(blob:)` is denied (Firefox `file://` default). The manual
+   *  tab has no size cap on either path; the user has explicitly asked to
+   *  scan and accepts the latency cost. */
   _yaraRunScan() {
     if (!this._fileBuffer && !this._yaraBuffer) {
       this._yaraSetStatus('No file loaded \u2014 open a file first, then scan', 'error');
@@ -1308,6 +1313,9 @@ Object.assign(App.prototype, {
 
     this._yaraSetStatus('Parsing rules\u2026', 'info');
 
+    // Pre-parse on the main thread so parse errors get the same surface
+    // (status bar with copy button) they had before C1 — and so we can
+    // bail before spawning a worker for nothing.
     const { rules, errors } = YaraEngine.parseRules(source);
     if (errors.length) {
       this._yaraSetStatus('Parse errors: ' + errors.join('; '), 'error');
@@ -1318,32 +1326,58 @@ Object.assign(App.prototype, {
       return;
     }
 
-    this._yaraSetStatus('Scanning ' + rules.length + ' rule(s)\u2026', 'info');
+    const buf = this._yaraBuffer || this._fileBuffer;
+    const wm  = window.WorkerManager;
+    const useWorker = !!(wm && wm.workersAvailable && wm.workersAvailable());
 
-    // Run scan (setTimeout allows UI update)
-    setTimeout(() => {
-      try {
-        const t0 = performance.now();
-        const results = YaraEngine.scan(this._yaraBuffer || this._fileBuffer, rules);
-        const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+    this._yaraSetStatus(
+      'Scanning ' + rules.length + ' rule(s)\u2026' + (useWorker ? ' (worker)' : ''),
+      'info'
+    );
 
-        if (results.length === 0) {
-          this._yaraSetStatus('\u2713 Scan complete in ' + elapsed + 's \u2014 no rules matched', 'success');
-          this._yaraRenderResults([]);
-        } else {
-          this._yaraSetStatus('\u26A0 ' + results.length + ' rule(s) matched in ' + elapsed + 's', 'warning');
-          this._yaraRenderResults(results);
-        }
+    const t0 = performance.now();
 
-        // Store results and update sidebar
-        this._yaraResults = results;
-        if (this.findings) {
-          this._updateSidebarWithYara(results);
-        }
-      } catch (e) {
-        this._yaraSetStatus('Scan error: ' + e.message, 'error');
+    const onSuccess = (results) => {
+      const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+      if (results.length === 0) {
+        this._yaraSetStatus('\u2713 Scan complete in ' + elapsed + 's \u2014 no rules matched', 'success');
+        this._yaraRenderResults([]);
+      } else {
+        this._yaraSetStatus('\u26A0 ' + results.length + ' rule(s) matched in ' + elapsed + 's', 'warning');
+        this._yaraRenderResults(results);
       }
-    }, 50);
+      this._yaraResults = results;
+      if (this.findings) this._updateSidebarWithYara(results);
+    };
+
+    const runSync = () => {
+      // setTimeout(50) lets the "Scanning…" status paint before the
+      // synchronous scan blocks the main thread.
+      setTimeout(() => {
+        try {
+          const results = YaraEngine.scan(buf, rules);
+          onSuccess(results);
+        } catch (e) {
+          this._yaraSetStatus('Scan error: ' + e.message, 'error');
+        }
+      }, 50);
+    };
+
+    if (useWorker) {
+      let copy;
+      try { copy = buf.slice(0); } catch (_) { copy = null; }
+      if (copy) {
+        wm.runYara(copy, source).then((out) => {
+          onSuccess((out && out.results) || []);
+        }).catch((err) => {
+          if (err && err.message === 'workers-unavailable') { runSync(); return; }
+          this._yaraSetStatus('Scan error: ' + (err && err.message ? err.message : String(err)), 'error');
+        });
+        return;
+      }
+    }
+
+    runSync();
   },
 
   /** Set YARA status bar text + style. For multi-item error lists, renders
@@ -1517,13 +1551,13 @@ Object.assign(App.prototype, {
 
   /** Auto-run YARA scan when a file is loaded (uses built-in + uploaded rules).
    *
-   *  Size-gated by `PARSER_LIMITS.MAX_AUTO_YARA_BYTES` (PLAN B3) — large
-   *  buffers freeze the UI for many seconds because YARA runs synchronously
-   *  on the main thread today (PLAN C1 will move it to a worker). When the
-   *  gate trips, the auto-scan is skipped and a sidebar `IOC.INFO` note is
-   *  emitted so the analyst sees *why* YARA didn't run and is pointed at
-   *  the manual YARA tab (which is unrestricted — clicking it is an
-   *  explicit opt-in to the latency cost).
+   *  Runs in a Web Worker (PLAN C1) so a 100 MiB scan no longer freezes
+   *  the UI. When `Worker(blob:)` is denied (e.g. Firefox `file://` default)
+   *  `WorkerManager.runYara` rejects with `'workers-unavailable'` and we
+   *  fall back to the synchronous in-tree path. The
+   *  `PARSER_LIMITS.MAX_AUTO_YARA_BYTES` size gate only applies on the
+   *  fallback path — when the worker is available, scan time is no longer
+   *  blocking and the cap is unnecessary.
    *
    *  Scan errors are reported via `console.warn` plus a sidebar `IOC.INFO`
    *  note (interim shim until PLAN F2 introduces `App._reportNonFatal`). */
@@ -1532,15 +1566,48 @@ Object.assign(App.prototype, {
     const source = this._getAllYaraSource();
     if (!source) return;
 
-    const { rules } = YaraEngine.parseRules(source);
-    if (!rules.length) return;
+    const buf = this._yaraBuffer || this._fileBuffer;
+    if (!buf) return;
 
-    const buf  = this._yaraBuffer || this._fileBuffer;
+    const wm = window.WorkerManager;
+    const useWorker = !!(wm && wm.workersAvailable && wm.workersAvailable());
+
+    // ── Worker path (no size gate — terminate() is real preemption) ────────
+    if (useWorker) {
+      let copy;
+      try {
+        copy = buf.slice(0);
+      } catch (_) {
+        // Detached / OOM — fall through to sync path below.
+        copy = null;
+      }
+      if (copy) {
+        wm.runYara(copy, source).then((out) => {
+          const results = (out && out.results) || [];
+          this._yaraResults = results;
+          if (this.findings) this._updateSidebarWithYara(results);
+        }).catch((err) => {
+          if (err && err.message === 'workers-unavailable') {
+            // Late veto — re-run synchronously below.
+            this._autoYaraScanSync(buf, source);
+            return;
+          }
+          this._reportAutoYaraError(err);
+        });
+        return;
+      }
+    }
+
+    // ── Synchronous fallback path ──────────────────────────────────────────
+    this._autoYaraScanSync(buf, source);
+  },
+
+  /** Synchronous main-thread fallback for `_autoYaraScan`. Used when
+   *  `Worker(blob:)` is unavailable (e.g. Firefox `file://`) or the buffer
+   *  copy for the worker transfer fails. The `MAX_AUTO_YARA_BYTES` cap is
+   *  enforced **only here** — see `src/constants.js` for the rationale. */
+  _autoYaraScanSync(buf, source) {
     const size = (buf && buf.byteLength) || 0;
-
-    // Size gate (PLAN B3): skip auto-scan above the cap and surface the skip
-    // via a sidebar IOC.INFO note. Manual scans (the YARA tab button) remain
-    // unrestricted — the user has already accepted the latency cost there.
     if (size > PARSER_LIMITS.MAX_AUTO_YARA_BYTES) {
       if (this.findings) {
         const mb = (PARSER_LIMITS.MAX_AUTO_YARA_BYTES / (1024 * 1024)) | 0;
@@ -1554,27 +1621,31 @@ Object.assign(App.prototype, {
       }
       return;
     }
-
     try {
+      const { rules } = YaraEngine.parseRules(source);
+      if (!rules.length) return;
       const results = YaraEngine.scan(buf, rules);
       this._yaraResults = results;
       if (this.findings) this._updateSidebarWithYara(results);
     } catch (err) {
-      // PLAN B3 interim shim — F2 replaces this with App._reportNonFatal().
-      // Surfacing the failure (instead of `catch (_) {}`) means a YARA
-      // engine regression no longer ships silently as "rules don't match
-      // anything any more".
-      console.warn('[loupe] auto-YARA scan failed:', err);
-      if (this.findings) {
-        const msg = (err && err.message) ? err.message : String(err);
-        pushIOC(this.findings, {
-          type: IOC.INFO,
-          value: `YARA auto-scan error: ${msg}`,
-          severity: 'info',
-        });
-        const fileName = (this._fileMeta && this._fileMeta.name) || '';
-        this._renderSidebar(fileName, null);
-      }
+      this._reportAutoYaraError(err);
+    }
+  },
+
+  /** Surface an auto-YARA error as a sidebar `IOC.INFO` note plus a console
+   *  warning. Interim shim — PLAN F2 replaces this with
+   *  `App._reportNonFatal`. */
+  _reportAutoYaraError(err) {
+    console.warn('[loupe] auto-YARA scan failed:', err);
+    if (this.findings) {
+      const msg = (err && err.message) ? err.message : String(err);
+      pushIOC(this.findings, {
+        type: IOC.INFO,
+        value: `YARA auto-scan error: ${msg}`,
+        severity: 'info',
+      });
+      const fileName = (this._fileMeta && this._fileMeta.name) || '';
+      this._renderSidebar(fileName, null);
     }
   },
 

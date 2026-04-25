@@ -6,18 +6,66 @@
 
 // ── Parser safety limits ──────────────────────────────────────────────────────
 const PARSER_LIMITS = Object.freeze({
-  MAX_DEPTH:           32,                  // Max recursion / nesting depth
-  MAX_UNCOMPRESSED:    50 * 1024 * 1024,    // 50 MB — max decompressed output
-  MAX_RATIO:           100,                 // Per-entry compression ratio abort
-  MAX_ENTRIES:         10_000,              // Max archive entries before truncation
-  TIMEOUT_MS:          60_000,              // Parser timeout (60 s)
-  MAX_AUTO_YARA_BYTES: 32 * 1024 * 1024,    // 32 MiB — auto-YARA size gate (PLAN B3).
-                                            // Above this, `_autoYaraScan()` skips
-                                            // scanning to avoid a multi-second
-                                            // main-thread freeze on large buffers
-                                            // and emits a sidebar IOC.INFO note
-                                            // pointing the user at the manual
-                                            // YARA tab (which is unrestricted).
+  MAX_DEPTH:            32,                  // Max recursion / nesting depth
+  MAX_UNCOMPRESSED:     50 * 1024 * 1024,    // 50 MB — max decompressed output
+  MAX_RATIO:            100,                 // Per-entry compression ratio abort
+  MAX_ENTRIES:          10_000,              // Max archive entries before truncation
+  TIMEOUT_MS:           60_000,              // Buffer-read cap (`file.arrayBuffer()`)
+                                             // — also the legacy default for any
+                                             // `ParserWatchdog.run(fn)` call site
+                                             // that doesn't pass an explicit budget.
+  RENDERER_TIMEOUT_MS:  30_000,              // 30 s — per-renderer dispatch cap
+                                             // (PLAN B5). When a single renderer
+                                             // hangs on a hostile file, the watchdog
+                                             // aborts and `_loadFile` falls back to
+                                             // `PlainTextRenderer` with a sidebar
+                                             // `IOC.INFO` note. Keep this strictly
+                                             // < `TIMEOUT_MS` so the renderer-level
+                                             // bound triggers first; the buffer-read
+                                             // cap is a different scope (one read
+                                             // per file vs. arbitrary parser work).
+  MAX_AUTO_YARA_BYTES:  32 * 1024 * 1024,    // 32 MiB — auto-YARA size gate
+                                             // (PLAN B3, fallback-only post-C1).
+                                             // Auto-YARA runs in a Web Worker
+                                             // (`src/workers/yara.worker.js`) by
+                                             // default; the worker's preemptive
+                                             // `terminate()` makes scan time a
+                                             // non-issue, so this cap is *only*
+                                             // enforced on the synchronous main-
+                                             // thread fallback path used when
+                                             // `Worker(blob:)` is denied (e.g.
+                                             // Firefox `file://` default). Above
+                                             // the cap on that path,
+                                             // `_autoYaraScanSync()` skips scanning
+                                             // and emits a sidebar IOC.INFO note
+                                             // pointing the user at the manual
+                                             // YARA tab (which is unrestricted on
+                                             // both worker and fallback paths).
+  WORKER_TIMEOUT_MS:    120_000,             // 2 min — preemptive deadline on
+                                             // any `WorkerManager.run*` job
+                                             // (PLAN C5). On expiry the active
+                                             // worker is `terminate()`-d (real
+                                             // preemption, unlike the post-hoc
+                                             // main-thread `ParserWatchdog`)
+                                             // and the promise rejects with a
+                                             // watchdog-shaped error
+                                             // (`_watchdogTimeout = true`,
+                                             // `_watchdogName`,
+                                             // `_watchdogTimeoutMs`). The
+                                             // budget is intentionally larger
+                                             // than `RENDERER_TIMEOUT_MS`
+                                             // (30 s) because workerised work
+                                             // is off-main-thread — the UI
+                                             // stays responsive, so legitimate
+                                             // large-file YARA / encoded /
+                                             // timeline scans should not be
+                                             // false-positively killed at
+                                             // 30 s. Callers fall back to the
+                                             // synchronous in-tree path on
+                                             // any rejection (workers-
+                                             // unavailable, worker error, or
+                                             // watchdog timeout) — same
+                                             // contract as before C5.
 });
 
 // ── Render / data-truncation limits ───────────────────────────────────────────

@@ -234,6 +234,15 @@ JS_FILES = [
     'src/vba-utils.js',
 
     'src/yara-engine.js',
+    # worker-manager.js — central host-side spawner for src/workers/*.worker.js.
+    # The build-gate `_check_worker_spawn_allowlist()` allow-lists this file
+    # plus `src/workers/*.worker.js`; every other call site must funnel through
+    # `window.WorkerManager.{runYara,…}`. Must load AFTER yara-engine.js (it
+    # references the build-injected `__YARA_WORKER_BUNDLE_SRC` constant which
+    # carries a copy of the engine's source) and BEFORE app-yara.js / app-load.js
+    # (which call WorkerManager.runYara / WorkerManager.cancelYara at runtime).
+    # See CONTRIBUTING.md → Worker subsystem and PLAN.md Track C1.
+    'src/worker-manager.js',
 
     'src/decompressor.js',
     # tar-parser.js — shared TAR archive parser with PAX extended header,
@@ -297,6 +306,15 @@ JS_FILES = [
     'src/renderers/csv-renderer.js',
     'src/renderers/json-renderer.js',
     'src/renderers/evtx-renderer.js',
+    # evtx-detector.js — analysis-only EVTX threat-detection / IOC-extraction.
+    # Extracted from evtx-renderer.js so the Timeline parse-only worker
+    # bundle (Wave C) can stay small: the worker never references this file,
+    # and the analyzer runs on the main thread after the worker streams
+    # parsed events back. EvtxRenderer.analyzeForSecurity now forwards to
+    # EvtxDetector.analyzeForSecurity. Must load AFTER evtx-renderer.js
+    # because the detector falls back to `new EvtxRenderer()._parse(bytes)`
+    # when the caller doesn't supply prebuilt events.
+    'src/evtx-detector.js',
     'src/renderers/sqlite-renderer.js',
     'src/renderers/doc-renderer.js',
     'src/renderers/msg-renderer.js',
@@ -373,6 +391,104 @@ JS_FILES = [
 ]
 
 app_js = '\n'.join(read(f) for f in JS_FILES)
+
+# ── Worker bundles ───────────────────────────────────────────────────────────
+# `src/workers/*.worker.js` modules run inside `WorkerGlobalScope` (no DOM,
+# no `window`, no `app.*`). They cannot share a `<script>` block with the
+# main bundle, so each worker is read here, concatenated with the helpers
+# it needs (in C1: `yara-engine.js`), and emitted as a single JS template-
+# literal constant. `src/worker-manager.js` materialises a Worker at
+# runtime via `URL.createObjectURL(new Blob([__YARA_WORKER_BUNDLE_SRC]))`.
+#
+# The worker files are deliberately NOT in `JS_FILES`:
+#   • They must not run on the main thread.
+#   • Excluding them keeps the existing build gates (risk pre-stamping,
+#     bare-IOC types, `_rawText` LF-normalisation, worker-spawn allow-list)
+#     from iterating worker-only code that has no business obeying any of
+#     those rules.
+# Worker source itself is still subject to the same `.clinerules` ban on
+# `eval` / `new Function` / network — review at the file level, not via a
+# build gate.
+#
+# See CONTRIBUTING.md → Worker subsystem and PLAN.md Track C1.
+def _esc_for_template(s: str) -> str:
+    """Escape a string for a JS template literal (backticks, backslashes, ${)."""
+    return s.replace('\\', '\\\\').replace('`', '\\`').replace('${', '\\${')
+
+_yara_worker_bundle_src = read('src/yara-engine.js') + '\n' + read('src/workers/yara.worker.js')
+yara_worker_js = (
+    'const __YARA_WORKER_BUNDLE_SRC = `'
+    + _esc_for_template(_yara_worker_bundle_src)
+    + '`;\n'
+)
+
+# Timeline parse-only worker (PLAN C2).
+# Bundle order matters — the shim defines `RENDER_LIMITS`, `EVTX_COLUMN_ORDER`,
+# `TIMELINE_MAX_ROWS`, the `IOC` proxy, and the `escalateRisk` / `pushIOC` /
+# `lfNormalize` no-op stubs the renderer sources reach for at module load.
+# The renderers then concatenate in the same order the main bundle uses
+# (csv → sqlite → evtx). The timeline.worker.js trailer carries the parse
+# functions and the `self.onmessage` dispatcher. EvtxDetector is deliberately
+# NOT included — analysis runs on the main thread.
+_timeline_worker_bundle_src = (
+    read('src/workers/timeline-worker-shim.js') + '\n'
+    + read('src/renderers/csv-renderer.js') + '\n'
+    + read('src/renderers/sqlite-renderer.js') + '\n'
+    + read('src/renderers/evtx-renderer.js') + '\n'
+    + read('src/workers/timeline.worker.js')
+)
+timeline_worker_js = (
+    'const __TIMELINE_WORKER_BUNDLE_SRC = `'
+    + _esc_for_template(_timeline_worker_bundle_src)
+    + '`;\n'
+)
+
+# EncodedContentDetector worker (PLAN C3).
+# Bundle order matters — the shim defines the IOC table, the
+# `PARSER_LIMITS.MAX_UNCOMPRESSED` cap, and the `_trimPathExtGarbage` helper
+# the detector reads at module load. pako is the Decompressor sync fallback
+# (DecompressionStream isn't always present in WorkerGlobalScope on every
+# browser); JSZip is used by the detector to validate embedded ZIP candidates
+# and prune false-positive zlib hits. The encoded.worker.js trailer carries
+# the `self.onmessage` dispatcher that drives `EncodedContentDetector.scan()`
+# and eagerly fires `lazyDecode()` on every cheap finding.
+_encoded_worker_bundle_src = (
+    read('src/workers/encoded-worker-shim.js') + '\n'
+    + pako_js + '\n'
+    + jszip + '\n'
+    + read('src/decompressor.js') + '\n'
+    + read('src/encoded-content-detector.js') + '\n'
+    + read('src/workers/encoded.worker.js')
+)
+encoded_worker_js = (
+    'const __ENCODED_WORKER_BUNDLE_SRC = `'
+    + _esc_for_template(_encoded_worker_bundle_src)
+    + '`;\n'
+)
+
+# Binary-string extractor worker (PLAN C4).
+# Bundle order: the shim carries a copy of `extractAsciiAndUtf16leStrings()`
+# mirroring `src/constants.js` (the worker has no access to the main bundle's
+# constants module). The strings.worker.js trailer carries the
+# `self.onmessage` dispatcher that drives the extractor and posts
+# `{ascii, utf16, asciiCount, utf16Count, parseMs}` back to the host.
+# No vendored libraries are needed — the extractor is pure JS.
+_strings_worker_bundle_src = (
+    read('src/workers/strings-worker-shim.js') + '\n'
+    + read('src/workers/strings.worker.js')
+)
+strings_worker_js = (
+    'const __STRINGS_WORKER_BUNDLE_SRC = `'
+    + _esc_for_template(_strings_worker_bundle_src)
+    + '`;\n'
+)
+
+# Stamp the worker bundle constants before the main app bundle so
+# `worker-manager.js` (which reads them) finds them defined at module-eval
+# time. All four live in the same `<script>` block, but the order of
+# declarations matters for top-level `const` references resolved at run.
+app_js = yara_worker_js + timeline_worker_js + encoded_worker_js + strings_worker_js + app_js
+
 
 # ── Build gate: risk pre-stamping ─────────────────────────────────────────────
 # `.clinerules` forbids writing `findings.risk = '<tier>'` directly outside the
@@ -520,6 +636,57 @@ def _check_raw_text_normalisation():
         raise SystemExit(msg)
 
 _check_raw_text_normalisation()
+
+
+# ── Build gate: worker-spawn allow-list ───────────────────────────────────────
+# `.clinerules` and `CONTRIBUTING.md` (Architecture & Signal Chain → Worker
+# subsystem) require every Web Worker spawn to live inside an allow-listed
+# module — either a worker module itself (`src/workers/*.worker.js`) or the
+# central host-side spawner (`src/worker-manager.js`). PLAN.md Track C0 sets
+# up this convention before C1–C4 add the first real workers.
+#
+# The gate matches `new Worker(` over every entry in `JS_FILES`. pdf.js
+# spawns its own worker from vendored code, which `build.py` reads
+# separately and never lists in `JS_FILES`, so the gate cannot
+# false-positive on it. Today the allow-list is structurally empty (no
+# in-tree workers exist yet); the gate keeps premature `new Worker(...)`
+# calls out of the tree until each Track-C worker lands together with its
+# host-side spawner.
+_NEW_WORKER_RE = _re.compile(r"\bnew\s+Worker\s*\(")
+def _is_worker_allowlisted(rel: str) -> bool:
+    # Allow worker modules and the future central spawner.
+    if rel == 'src/worker-manager.js':
+        return True
+    if rel.startswith('src/workers/') and rel.endswith('.worker.js'):
+        return True
+    return False
+
+def _check_worker_spawn_allowlist():
+    violations = []
+    for rel in JS_FILES:
+        if _is_worker_allowlisted(rel):
+            continue
+        text = read(rel)
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.lstrip()
+            # Skip pure comment lines so reference snippets in docstrings don't trip the gate.
+            if stripped.startswith('//') or stripped.startswith('*'):
+                continue
+            m = _NEW_WORKER_RE.search(line)
+            if m:
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
+    if violations:
+        msg = (
+            "Build gate failed — `new Worker(` outside the worker-spawn allow-list.\n"
+            "Worker modules must live in src/workers/<name>.worker.js and be\n"
+            "spawned only from src/worker-manager.js. See CONTRIBUTING.md →\n"
+            "Architecture & Signal Chain → Worker subsystem and SECURITY.md →\n"
+            "Full Content-Security-Policy (`worker-src blob:`).\n"
+            "Offending sites:\n  " + "\n  ".join(violations)
+        )
+        raise SystemExit(msg)
+
+_check_worker_spawn_allowlist()
 
 
 # File extensions accepted by the open-file input. Keep as a list for sanity.

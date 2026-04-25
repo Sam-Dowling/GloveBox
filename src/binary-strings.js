@@ -311,7 +311,63 @@ const BinaryStrings = (() => {
     return card;
   }
 
-  return { classify, emit, CAPS, renderCategorisedStringsTable };
+  // ── Async string extractor (opt-in worker hop, PLAN C4) ─────────────
+  //
+  // extractStringsAsync(buffer, [opts]) → Promise<{ascii, utf16}>
+  //
+  // Worker-first wrapper around `extractAsciiAndUtf16leStrings()` from
+  // `src/constants.js`. When `WorkerManager.runStrings` is available
+  // (browser permits `Worker(blob:)`) the extraction runs off-thread
+  // — for >50 MB native binaries / DMG images the difference between
+  // a frozen UI and a responsive one. Otherwise it falls back to the
+  // synchronous main-thread call. The shape of the resolved value
+  // matches the synchronous helper exactly:
+  //   { ascii: string[], utf16: string[] }
+  // (timing / count fields from the worker are dropped — callers that
+  // want them can call WorkerManager.runStrings() directly.)
+  //
+  // No in-tree caller migration ships with this Track — the three
+  // native-binary renderers (PE / ELF / Mach-O) and DMG still call
+  // `extractAsciiAndUtf16leStrings()` synchronously because their
+  // `render(file, buffer, app)` paths are sync and can't `await`. The
+  // helper is pre-positioned for the post-D1 (`renderRoute` +
+  // `RenderResult`) refactor that turns those renderers async.
+  //
+  // Buffer ownership: the worker path **transfers** the buffer. Pass
+  // `buffer.slice(0)` if the caller needs the bytes after the call.
+  function extractStringsAsync(buffer, opts) {
+    const wm = (typeof window !== 'undefined') ? window.WorkerManager : null;
+    if (wm && typeof wm.runStrings === 'function') {
+      return wm.runStrings(buffer, opts || {})
+        .then(r => ({ ascii: r.ascii || [], utf16: r.utf16 || [] }))
+        .catch(err => {
+          // Synchronous fallback — `workers-unavailable` is the expected
+          // negative path (Firefox file:// default), but we also fall
+          // back on any other worker error so a transient failure can't
+          // strand a caller without strings.
+          if (typeof extractAsciiAndUtf16leStrings === 'function') {
+            const bytes = (buffer instanceof ArrayBuffer)
+              ? new Uint8Array(buffer)
+              : (buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer));
+            const r = extractAsciiAndUtf16leStrings(bytes, opts || {});
+            return { ascii: r.ascii || [], utf16: r.utf16 || [] };
+          }
+          throw err;
+        });
+    }
+    // No WorkerManager (e.g. unit-test harness) — call the sync helper
+    // directly. Wrap in Promise.resolve so the contract is uniform.
+    if (typeof extractAsciiAndUtf16leStrings === 'function') {
+      const bytes = (buffer instanceof ArrayBuffer)
+        ? new Uint8Array(buffer)
+        : (buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer));
+      const r = extractAsciiAndUtf16leStrings(bytes, opts || {});
+      return Promise.resolve({ ascii: r.ascii || [], utf16: r.utf16 || [] });
+    }
+    return Promise.reject(new Error('extractAsciiAndUtf16leStrings unavailable'));
+  }
+
+  return { classify, emit, CAPS, renderCategorisedStringsTable, extractStringsAsync };
 })();
 
 
