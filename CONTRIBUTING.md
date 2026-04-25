@@ -823,21 +823,27 @@ subtly misbehave.
     `_addJsonExtractedCol` path as the drawer picker, so both entry
     points share the same virtual-column shape.
 
-  - **ƒx Extract values dialog shape (three panes).** The dialog
+  - **ƒx Extract values dialog shape (two panes).** The dialog
     `_openExtractionDialog()` renders a tab strip — **Smart scan**
-    (ranked `_autoExtractScan()` proposals), **Regex** (preset + custom
-    capture), **Clicker** (click-to-pick value extractor). The
-    Clicker pane lists the first ~30 non-empty samples from the
-    chosen column; clicking or drag-selecting a token classifies it
-    (UUID, IPv4, MAC, hash, decimal, ISO timestamp, email, URL,
-    hostname, path, identifier, quoted token, or fallback literal),
-    generalises an `\b`-anchored regex by finding the shortest prefix
-    / suffix shared by ≥70% of samples, previews hits live, and
-    commits through the same `_addRegexExtractNoRender` path as the
-    Regex tab so the store shape and rendering pipeline stay
-    identical. When the dialog is opened from a column context menu
-    (`_openExtractionDialog(preselectCol)`) the Clicker column
-    dropdown defaults to that column. The Smart-scan toolbar carries bulk
+    (ranked `_autoExtractScan()` proposals) and **Manual** (a single
+    unified pane that fuses the former Clicker click-to-pick UX with
+    the preset / custom regex form). The Manual pane has one shared
+    Column dropdown, one Preset dropdown, one Name field, ~30
+    click-to-pick sample rows, the Pattern / Flags / Group inputs, an
+    inline regex cheatsheet, one live preview, and one Test / Extract
+    footer. Clicking or drag-selecting a token in a sample row
+    classifies it (UUID, IPv4, MAC, hash, decimal, ISO timestamp,
+    email, URL, hostname, path, identifier, quoted token, or fallback
+    literal), generalises an `\b`-anchored regex by finding the
+    shortest prefix / suffix shared by ≥70% of samples, writes the
+    inferred pattern straight into the unified Pattern field (with
+    `flags='i'`, `group='1'`), and re-runs the shared preview. Both
+    presets and click-picked patterns commit through the same
+    `_addRegexExtractNoRender` path so the store shape and rendering
+    pipeline stay identical. When the dialog is opened from a column
+    context menu (`_openExtractionDialog(preselectCol)`) the Manual
+    pane's Column dropdown defaults to that column. The Smart-scan
+    toolbar carries bulk
     `✓ All` / `☐ None` / `↔ Invert` buttons, a live `N of M selected`
     counter, kind facets (`All` / `URL` / `Host` / `Key=Value` / `JSON`),
     a filter input (`/` focuses it), and a sort dropdown. Each proposal
@@ -1136,7 +1142,7 @@ state is (a) easy to grep for, (b) easy to clear with a single filter, and
 | `loupe_timeline_card_widths` | JSON object | left / right edge resize handles on each `.tl-col-card` and `.tl-entity-group` | `{ "<fileKey>": { "<key>": { span: N } \| pixelWidth, … } }` — file key = `name|size|lastModified`; `<key>` is a column name for top-value cards or `entity:<IOC_TYPE>` for entity cards; `span` is a `grid-column: span N` integer; legacy integer pixel values are migrated to a span on read | Per-file manual width overrides for the top-value and entity cards, expressed as an integer `grid-column: span N` so the override cooperates with the `.tl-columns` / `.tl-entities-wrap` CSS Grid `auto-fill minmax()` layout. Scoped to a file so resizing a "User" card in one CSV doesn't re-size a same-named column in an unrelated one. |
 | `loupe_timeline_card_order` | JSON object | drag-to-reorder top-value card headers | `{ "<fileKey>": ["colName1", "colName2", …] }` | Per-file column-name ordering for the 🏆 Top values cards. Columns not present in the saved array are appended at the end. Deleted when empty. |
 | `loupe_timeline_pinned_cols` | JSON object | 📌 pin button on top-value card headers | `{ "<fileKey>": ["colName1", …] }` | Per-file list of pinned top-value card column names. Pinned cards sort to the top-left of the card grid. Deleted when empty. |
-| `loupe_timeline_regex_extracts` | JSON object | ƒx Extract dialog → Regex / Auto tabs | `{ "<fileKey>": [{ name, col, pattern, flags, group, kind }, …] }` | Per-file list of extracted virtual columns created via the Regex tab or Auto (URL / hostname) scan. Re-applied automatically next time the same file is loaded so long-form analyses survive a reload. JSON-path extractions are not persisted (they depend on in-memory parsed values). |
+| `loupe_timeline_regex_extracts` | JSON object | ƒx Extract dialog → Manual / Smart-scan panes | `{ "<fileKey>": [{ name, col, pattern, flags, group, kind }, …] }` | Per-file list of extracted virtual columns created via the Manual pane (preset, custom regex, or click-to-pick) or the Smart-scan auto-proposal pane (URL / hostname / kv-field / json-leaf). Re-applied automatically next time the same file is loaded so long-form analyses survive a reload. JSON-path extractions are not persisted (they depend on in-memory parsed values). |
 | `loupe_timeline_pivot` | JSON object | Pivot section ▸ Rows / Columns / Aggregate / Build | `{ rows: colIdx, cols: colIdx, aggOp: "count" \| "distinct" \| "sum", aggCol: colIdx }` | Last-used pivot spec. Re-populates the selectors on mount so "Build" reconstructs the same pivot without re-picking columns. Col indices can reference extracted virtual columns; if they no longer exist the selectors silently fall back to `-1`. |
 | `loupe_timeline_query` | string | Timeline DSL query-editor textbox above the chip bar | arbitrary DSL query string (see the Timeline query-language grammar below); empty string = no query | Last-used query in the Timeline viewer's DSL query editor. Re-populated on mount so a saved filter survives a reload; an unparseable value is loaded verbatim but quietly falls back to "no query" until fixed. |
 | `loupe_timeline_query_history` | JSON array | ⌄ history button on the Timeline DSL query editor | array of recent non-empty query strings, most recent first, capped at ~20 entries | Recent query history for the editor's ↑ / ↓ history menu. A committed query is pushed to the front and de-duplicated so the dropdown stays usable over long sessions without ballooning localStorage. |
