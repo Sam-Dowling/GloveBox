@@ -701,8 +701,23 @@ subtly misbehave.
   `static render()`. Watchdog timeouts are distinguishable from genuine
   exceptions by the `_watchdogTimeout`, `_watchdogName`, and
   `_watchdogTimeoutMs` sentinel fields on the rejected error; the outer
-  60 s `PARSER_LIMITS.TIMEOUT_MS` cap remains a separate budget around
-  the initial `file.arrayBuffer()` read only.
+   60 s `PARSER_LIMITS.TIMEOUT_MS` cap remains a separate budget around
+   the initial `file.arrayBuffer()` read only.
+- **Per-dispatch size caps are enforced centrally — renderers no longer
+  gate on file size themselves.** PLAN Track F1 added
+  `PARSER_LIMITS.MAX_FILE_BYTES_BY_DISPATCH`, a per-dispatch-id cap table
+  consulted by `RenderRoute.run` *before* the handler is invoked. When
+  `buffer.byteLength` exceeds the matching cap (or `_DEFAULT` when the id
+  is missing) the heavy renderer is bypassed, `app.findings` /
+  `currentResult.binary` / `currentResult.yaraBuffer` are reset, the
+  dispatch is rerouted to `plaintext`, and a single `IOC.INFO` row names
+  the original dispatch id and the cap. When adding a new dispatch id,
+  add a matching entry to `MAX_FILE_BYTES_BY_DISPATCH` (the table is
+  authoritative — falling back to `_DEFAULT` 128 MiB silently is almost
+  never what you want for archives, disk images, or binary executables).
+  F1 guards parser CPU cost, not memory pressure (memory pressure is
+  still surfaced separately by `RENDER_LIMITS.HUGE_FILE_WARN`); the
+  buffer is already in memory at the time of the check.
 
 ### Determinism (for `scripts/build.py` and anything it runs)
 
@@ -1658,6 +1673,19 @@ forbidden APIs (`eval`, `new Function`, `fetch`, `XMLHttpRequest`) are
 renderers that detect those literal tokens in user-supplied SVG / HTML / JS
 content (see `svg-renderer.js`'s threat-pattern table) would otherwise
 produce false positives.
+
+**Per-dispatch size cap (PLAN Track F1).** `RenderRoute.run` consults
+`PARSER_LIMITS.MAX_FILE_BYTES_BY_DISPATCH[dispatchId]` (falling back to
+`_DEFAULT`) **before** invoking the handler. If the file exceeds the
+cap, the heavy renderer is skipped: `app.findings` /
+`currentResult.binary` / `currentResult.yaraBuffer` are reset, dispatch
+is rerouted to `plaintext`, and a single `IOC.INFO` row names the
+original id and the cap. Renderers therefore do **not** need to
+defensively size-gate inside `static render()` for the structured-parse
+path — that responsibility lives in one place. When adding a new
+dispatch id, add a matching entry to `MAX_FILE_BYTES_BY_DISPATCH`; the
+`plaintext` id is intentionally uncapped (`Number.POSITIVE_INFINITY`)
+because it is also the fallback target.
 
 1. **Return shape.** Renderers may return either a bare `HTMLElement` (the
    legacy shape) **or** the canonical `RenderResult` object introduced by

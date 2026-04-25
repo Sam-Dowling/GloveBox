@@ -66,7 +66,93 @@ const PARSER_LIMITS = Object.freeze({
                                              // unavailable, worker error, or
                                              // watchdog timeout) — same
                                              // contract as before C5.
+
+  // ── Per-dispatch file-size caps (PLAN F1) ──────────────────────────
+  // Maximum file size the structured renderer for each dispatch id will
+  // accept. Above the cap, `RenderRoute.run` (`src/render-route.js`)
+  // skips the structured handler, falls back to `PlainTextRenderer`
+  // (the same fallback used by the watchdog-timeout path), and pushes a
+  // single visible `IOC.INFO` row explaining the skip. The buffer is
+  // already in memory at the time of the check — F1 guards parser CPU
+  // cost, not memory pressure (memory pressure is covered separately by
+  // `RENDER_LIMITS.HUGE_FILE_WARN`). Caps are deliberately conservative
+  // and graceful: the analyst can still inspect the raw bytes via the
+  // plaintext view, and the manual YARA tab still scans the unmodified
+  // buffer regardless of this cap. Tune via empirical feedback rather
+  // than ahead-of-time speculation. Keys are the dispatch ids used by
+  // `App.prototype._rendererDispatch` (see `src/app/app-load.js`).
+  // `_DEFAULT` is the fallback when a dispatch id has no explicit row.
+  // Unit: bytes.
+  MAX_FILE_BYTES_BY_DISPATCH: Object.freeze({
+    // Heavy structured-binary parsers (full-file walks, symbol tables,
+    // overlay scans).
+    pe:        256 * 1024 * 1024,
+    elf:       256 * 1024 * 1024,
+    macho:     256 * 1024 * 1024,
+    // Forensic / paginated parsers.
+    pdf:       256 * 1024 * 1024,
+    evtx:      512 * 1024 * 1024,
+    sqlite:    512 * 1024 * 1024,
+    onenote:   256 * 1024 * 1024,
+    // Archives — entry walking is cheap per entry; the real cost is
+    // the number of entries (already capped by `MAX_ENTRIES`) and
+    // recursive sniffing. Allow large container files.
+    zip:       512 * 1024 * 1024,
+    cab:       512 * 1024 * 1024,
+    rar:       512 * 1024 * 1024,
+    sevenz:    512 * 1024 * 1024,
+    tar:       512 * 1024 * 1024,
+    iso:     1_024 * 1024 * 1024,
+    dmg:     1_024 * 1024 * 1024,
+    pkg:       512 * 1024 * 1024,
+    msi:       512 * 1024 * 1024,
+    jar:       256 * 1024 * 1024,
+    msix:      512 * 1024 * 1024,
+    browserext:256 * 1024 * 1024,
+    npm:       256 * 1024 * 1024,
+    // Office (OOXML + ODF + legacy CFB).
+    docx:      128 * 1024 * 1024,
+    xlsx:      256 * 1024 * 1024,
+    pptx:      256 * 1024 * 1024,
+    odt:       128 * 1024 * 1024,
+    odp:       256 * 1024 * 1024,
+    ods:       256 * 1024 * 1024,
+    doc:       128 * 1024 * 1024,
+    ppt:       256 * 1024 * 1024,
+    xls:       256 * 1024 * 1024,
+    // Email containers.
+    msg:       128 * 1024 * 1024,
+    eml:       128 * 1024 * 1024,
+    // Tabular / textual.
+    csv:       512 * 1024 * 1024,
+    json:      256 * 1024 * 1024,
+    // Markup / lightweight viewers.
+    html:       64 * 1024 * 1024,
+    svg:        64 * 1024 * 1024,
+    hta:        64 * 1024 * 1024,
+    rtf:        64 * 1024 * 1024,
+    // Config / scripts.
+    url:         8 * 1024 * 1024,
+    reg:        64 * 1024 * 1024,
+    inf:        16 * 1024 * 1024,
+    iqyslk:     16 * 1024 * 1024,
+    wsf:        16 * 1024 * 1024,
+    clickonce:  16 * 1024 * 1024,
+    plist:      64 * 1024 * 1024,
+    scpt:       64 * 1024 * 1024,
+    lnk:        16 * 1024 * 1024,
+    // Crypto / signatures.
+    pgp:        64 * 1024 * 1024,
+    x509:       16 * 1024 * 1024,
+    // Media.
+    image:     128 * 1024 * 1024,
+    // Plaintext is the fallback target — never gated.
+    plaintext:        Number.POSITIVE_INFINITY,
+    // Catch-all for any future dispatch id without an explicit row.
+    _DEFAULT:  128 * 1024 * 1024,
+  }),
 });
+
 
 // ── Render / data-truncation limits ───────────────────────────────────────────
 // PARSER_LIMITS above is the *safety* envelope (abort-if-breached); the caps

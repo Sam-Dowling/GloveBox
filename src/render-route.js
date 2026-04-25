@@ -128,8 +128,8 @@ const RenderRoute = {
   async run(file, buffer, app, rctx = null) {
     rctx = rctx || RendererRegistry.makeContext(file, buffer);
     const decision = RendererRegistry.detect(rctx);
-    const dispatchId = decision.id;
-    const handler = app._rendererDispatch[dispatchId] || app._rendererDispatch.plaintext;
+    let dispatchId = decision.id;
+    let handler = app._rendererDispatch[dispatchId] || app._rendererDispatch.plaintext;
 
     // ── PLAN D4 — currentResult skeleton allocation ──────────────────
     // Allocate before invoking the handler so the legacy-field aliases
@@ -139,9 +139,51 @@ const RenderRoute = {
     // 'pe'` inside `pe()` would throw or silently lose the write.
     app.currentResult = RenderRoute._emptyResult(buffer);
 
+    // ── PLAN F1 — per-dispatch file-size cap ─────────────────────────
+    // If the file exceeds the structured-renderer cap for this dispatch
+    // id, bypass the heavy parser and fall back to PlainTextRenderer
+    // (same shape the watchdog-timeout fallback below uses). This is a
+    // CPU-cost guard, not a memory-pressure guard — `RENDER_LIMITS.
+    // HUGE_FILE_WARN` covers memory pressure separately. The analyst
+    // can still inspect the bytes via the plaintext view, and the
+    // manual YARA tab still scans the unmodified buffer.
+    let f1Skipped = false;
+    let f1Cap = 0;
+    if (dispatchId !== 'plaintext') {
+      const caps = (PARSER_LIMITS && PARSER_LIMITS.MAX_FILE_BYTES_BY_DISPATCH) || null;
+      const cap = caps
+        ? (caps[dispatchId] != null ? caps[dispatchId] : caps._DEFAULT)
+        : Number.POSITIVE_INFINITY;
+      const size = (buffer && buffer.byteLength) || 0;
+      if (Number.isFinite(cap) && size > cap) {
+        f1Skipped = true;
+        f1Cap = cap;
+        // Reset any partial state (currentResult skeleton already minimal,
+        // but be explicit so the post-fallback path mirrors the watchdog
+        // reset shape).
+        app.findings = { risk: 'low', externalRefs: [], interestingStrings: [], metadata: {} };
+        app.currentResult.binary = null;
+        app.currentResult.yaraBuffer = null;
+        // Re-route to plaintext for the rest of run().
+        const originalDispatchId = dispatchId;
+        dispatchId = 'plaintext';
+        handler = app._rendererDispatch.plaintext;
+        const mibCap  = (cap   / (1024 * 1024)).toFixed(0);
+        const mibSize = (size  / (1024 * 1024)).toFixed(1);
+        console.warn(
+          `[loupe] PLAN F1 — dispatch "${originalDispatchId}" size cap exceeded ` +
+          `(${mibSize} MiB > ${mibCap} MiB) — falling back to plain-text view`
+        );
+        // Stash the original id so the IOC.INFO row below names the
+        // structured renderer the analyst missed out on.
+        rctx._f1OriginalDispatchId = originalDispatchId;
+      }
+    }
+
     let raw;
     let analyzer = null;
     try {
+
       raw = await ParserWatchdog.run(
         () => handler.call(app, file, buffer, rctx),
         { timeout: PARSER_LIMITS.RENDERER_TIMEOUT_MS, name: dispatchId }
@@ -208,8 +250,24 @@ const RenderRoute = {
     result.analyzer = analyzer;
     result.dispatchId = dispatchId;
 
+    // ── PLAN F1 — surface the size-cap skip as a sidebar IOC.INFO ─────
+    // Pushed AFTER the plaintext handler has run so the row lands in the
+    // post-render `app.findings` and is preserved by the post-render IOC
+    // sweep. Mirrors the watchdog-timeout path's note shape.
+    if (f1Skipped) {
+      const orig = (rctx && rctx._f1OriginalDispatchId) || 'structured';
+      const mibCap  = (f1Cap                       / (1024 * 1024)).toFixed(0);
+      const mibSize = ((buffer.byteLength || 0)    / (1024 * 1024)).toFixed(1);
+      pushIOC(app.findings, {
+        type: IOC.INFO,
+        value: `${orig.toUpperCase()} file (${mibSize} MiB) exceeds the ${mibCap} MiB structured-parse cap — falling back to plain-text view. Open the YARA tab for a manual deep scan.`,
+        severity: 'medium',
+      });
+    }
+
     return result;
   },
 };
+
 
 window.RenderRoute = RenderRoute;
