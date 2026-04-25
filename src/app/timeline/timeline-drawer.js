@@ -2,7 +2,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // timeline-drawer.js — TimelineView prototype mixin.
 //
-// Split out of the legacy app-timeline.js monolith (PLAN E1). JSON
+// Split out of the legacy app-timeline.js monolith. JSON
 // drawer leaf-path collector + extracted-column helpers (JSON-leaf
 // flatten, regex extract dedup + persistence, column add/remove).
 //

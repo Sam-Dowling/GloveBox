@@ -70,7 +70,7 @@ function _refangString(str) {
 Object.assign(App.prototype, {
 
   async _loadFile(file, prefetchedBuffer /* optional – passed by Timeline fallback */) {
-    // ── Stale-load token bump (PLAN D2) ───────────────────────────────
+    // ── Stale-load token bump ───────────────────────────────
     // Monotonic per-`_loadFile` invocation. Async work queued by the
     // *previous* load (QR decoders running over a PDF page raster, the
     // crypto.subtle SHA-256 of a PE overlay, an OneNote
@@ -83,6 +83,19 @@ Object.assign(App.prototype, {
     // `_clearFile` resets it to 0 on file close so a stranded post-
     // close mutation also no-ops.
     this._loadToken = (this._loadToken || 0) + 1;
+
+    // ── Debug breadcrumb ────────────────────────────────────
+    // Cheap O(1) push into a 50-entry circular buffer; renders only when
+    // the dev-mode panel is mounted. Captures the headline parameters of
+    // the load so a user reporting "format X failed" can include the
+    // filename + size in their breadcrumb dump.
+    if (typeof this._breadcrumb === 'function') {
+      this._breadcrumb('load', file && file.name ? file.name : '<unnamed>', {
+        size: file && typeof file.size === 'number' ? file.size : null,
+        prefetched: !!prefetchedBuffer,
+        token: this._loadToken,
+      });
+    }
 
     // ── Timeline intercept ────────────────────────────────────────────
     // Every CSV / TSV / EVTX file opens in the Timeline view
@@ -101,7 +114,7 @@ Object.assign(App.prototype, {
       && this._timelineTryHandle
       && this._timelineTryHandle(file)) return;
 
-    // ── YARA worker cancellation (PLAN C1) ────────────────────────────
+    // ── YARA worker cancellation ────────────────────────────
     // A YARA scan from the *previous* file may still be running in a
     // worker. Terminate it now so the upcoming auto-scan isn't racing
     // against a superseded result, and so a 100 MiB scan abandoned by
@@ -112,7 +125,7 @@ Object.assign(App.prototype, {
       WorkerManager.cancelYara();
     }
 
-    // ── Timeline worker cancellation (PLAN C2) ────────────────────────
+    // ── Timeline worker cancellation ────────────────────────
     // Same rationale as the YARA cancellation above — a Timeline parse
     // (CSV / TSV / EVTX / SQLite browser-history) from the previous
     // file may still be inflating in a worker. Terminate it now so the
@@ -123,7 +136,7 @@ Object.assign(App.prototype, {
       WorkerManager.cancelTimeline();
     }
 
-    // ── Encoded-content worker cancellation (PLAN C3) ─────────────────
+    // ── Encoded-content worker cancellation ─────────────────
     // Same rationale as the YARA / Timeline cancellations above — the
     // EncodedContentDetector scan from the previous file may still be
     // chasing nested base64 / hex / zlib chains in a worker. Terminate
@@ -134,22 +147,7 @@ Object.assign(App.prototype, {
       WorkerManager.cancelEncoded();
     }
 
-    // ── Strings worker cancellation (PLAN C4) ─────────────────────────
-    // Same rationale as the cancellations above — a binary-string
-    // extractor scan (`extractAsciiAndUtf16leStrings`) from the previous
-    // file may still be sweeping a 100+ MiB native binary in a worker.
-    // Terminate it now so the upcoming load isn't racing a superseded
-    // `done` postback. Cheap no-op when nothing is in flight or when
-    // the WorkerManager probe has already failed. No in-tree caller
-    // ships with C4 — the helper is opt-in via
-    // `BinaryStrings.extractStringsAsync()` for the post-D1 renderer
-    // refactor — but the cancellation is wired up now so nothing leaks
-    // when callers do migrate.
-    if (window.WorkerManager && WorkerManager.cancelStrings) {
-      WorkerManager.cancelStrings();
-    }
-
-    // ── pdf.worker cancellation (PLAN F3) ─────────────────────────────
+    // ── pdf.worker cancellation ───────────────────────────────────────
     // pdf.js owns its own dedicated worker (`vendor/pdf.worker.js`)
     // outside the C1–C4 `WorkerManager` channels, so the cancellations
     // above won't touch it. PdfRenderer.render() and analyzeForSecurity()
@@ -242,11 +240,15 @@ Object.assign(App.prototype, {
           return;
         }
       }
-      // Store buffer for YARA scanning
-      this._fileBuffer = buffer;
+      // Allocate the canonical `currentResult` skeleton up front so renderer
+      // dispatchers can stamp `binary` / `yaraBuffer` directly during their
+      // body. `RenderRoute.run` re-enters `_emptyResult` itself, but stamping
+      // here guarantees `currentResult.buffer` is live for any pre-dispatch
+      // consumer (the timeline sniff above already returned, so we know we're
+      // on the structured-renderer path).
+      this.currentResult = RenderRoute._emptyResult(buffer);
 
       // Reset YARA state from previous file to prevent stale results bleeding over
-      this._yaraBuffer = null;
       this._yaraResults = null;
       let docEl, analyzer = null;
 
@@ -263,32 +265,30 @@ Object.assign(App.prototype, {
       // Compute file hashes in parallel with parsing
       const hashPromise = this._hashFile(buffer);
 
-      // ── Central renderer dispatch (PLAN D1) ──────────────────────────
+      // ── Central renderer dispatch ──────────────────────────
       // `RenderRoute.run` (src/render-route.js) owns the three concerns
       // that previously lived inline here:
       //   1. Build a `RendererRegistry.makeContext()` and ask
       //      `RendererRegistry.detect()` which renderer wins.
       //   2. Invoke the per-id handler from `this._rendererDispatch`
-      //      under the PLAN-B5 parser-watchdog
+      //      under the parser-watchdog
       //      (`PARSER_LIMITS.RENDERER_TIMEOUT_MS`, 30 s) with a graceful
       //      `PlainTextRenderer` fallback + visible `IOC.INFO` row on
       //      timeout. Genuine parser exceptions still bubble to the
       //      outer `catch (e)` that paints the "Failed to open file"
       //      box — the failure surface is unchanged from before D1.
       //   3. Normalise the handler's return shape into the canonical
-      //      `RenderResult` typedef (`{ docEl, findings, rawText,
-      //      binary?, analyzer?, navTitle, dispatchId }`) — including
-      //      the centralised `lfNormalize(docEl._rawText ||
-      //      docEl.textContent)` that fixes the H3 click-to-focus
-      //      misalignment for renderers that emit text via
-      //      `textContent` rather than an explicit `_rawText`.
-      //   4. Stamp `this.currentResult` so future tracks (D2 findings-
-      //      updated event, D3 openInnerFile, D4 currentResult cutover)
-      //      can read from a single canonical handle. D1 does NOT yet
-      //      migrate any consumer — the sidebar, copy-analysis, and
-      //      YARA paths still read the legacy `_fileBuffer` /
-      //      `_binaryParsed` / `_latestIOCs` fields the per-id handlers
-      //      set directly.
+      //      `RenderResult` typedef (`{ docEl, findings, rawText, buffer,
+      //      binary?, yaraBuffer?, analyzer?, navTitle, dispatchId }`) —
+      //      including the centralised `lfNormalize(docEl._rawText ||
+      //      docEl.textContent)` that produces consistent click-to-focus
+      //      offsets for renderers that emit text via `textContent`
+      //      rather than an explicit `_rawText`.
+      //   4. Stamp `this.currentResult` — the single canonical handle the
+      //      sidebar, copy-analysis, YARA, and drill-down paths all read
+      //      from. Renderer dispatchers write `currentResult.binary` /
+      //      `currentResult.yaraBuffer` during their body via the
+      //      pre-allocated skeleton stamped above.
       //
       // The Timeline branch above is an analysis-bypass route and never
       // reaches `RenderRoute.run`.
@@ -297,8 +297,8 @@ Object.assign(App.prototype, {
       analyzer = result.analyzer || null;
       // Stash the renderer-side analyzer (DOCX `SecurityAnalyzer` is the
       // only one today) so deferred sidebar refreshes triggered by
-      // `App.updateFindings` (PLAN D2) can pass the same analyzer back
-      // into `_renderSidebar` without forcing the caller to remember it.
+      // `App.updateFindings` can pass the same analyzer back into
+      // `_renderSidebar` without forcing the caller to remember it.
       // `_clearFile` nulls this on file close.
       this._currentAnalyzer = analyzer || null;
 
@@ -327,7 +327,7 @@ Object.assign(App.prototype, {
         };
       }
 
-      // ── Encoded content detection (PLAN C3) ───────────────────────────
+      // ── Encoded content detection ───────────────────────────
       // Worker-first path: `WorkerManager.runEncoded` spawns a Web Worker
       // bundle (encoded-content-detector + decompressor + JSZip + pako)
       // that runs `scan()` and eagerly drives `lazyDecode()` off the main
@@ -456,13 +456,13 @@ Object.assign(App.prototype, {
 
       // If the renderer decoded non-UTF-8 content (e.g. UTF-16LE PowerShell),
       // re-encode as UTF-8 for YARA scanning so text-based rules can match.
-      // Route through _yaraBuffer (not _fileBuffer) so Save/Copy raw keep the
-      // original on-disk bytes — renderers like OsascriptRenderer expose a
-      // string-extraction view via _rawText that is NOT the file's real
-      // content. Respect any _yaraBuffer already set by an earlier site
-      // (SVG/HTML augmented buffer).
-      if (docEl._rawText && !this._yaraBuffer) {
-        this._yaraBuffer = new TextEncoder().encode(docEl._rawText).buffer;
+      // Route through `currentResult.yaraBuffer` (not `currentResult.buffer`)
+      // so Save / Copy raw keep the original on-disk bytes — renderers like
+      // OsascriptRenderer expose a string-extraction view via `_rawText`
+      // that is NOT the file's real content. Respect any yaraBuffer already
+      // set by an earlier site (SVG / HTML / Plist / Scpt augmented buffer).
+      if (docEl._rawText && !this.currentResult.yaraBuffer) {
+        this.currentResult.yaraBuffer = new TextEncoder().encode(docEl._rawText).buffer;
       }
 
       // Auto-run YARA scan against loaded file
@@ -477,8 +477,7 @@ Object.assign(App.prototype, {
       this._toast(`Failed to open: ${e.message}`, 'error');
       // Clear stale binary-triage state so the sidebar doesn't render
       // PE/ELF/Mach-O sections from a previous successful load.
-      this._binaryParsed = null;
-      this._binaryFormat = null;
+      if (this.currentResult) this.currentResult.binary = null;
       const pc = document.getElementById('page-container'); pc.innerHTML = '';
       const eb = document.createElement('div'); eb.className = 'error-box';
       const h3 = document.createElement('h3'); h3.textContent = 'Failed to open file'; eb.appendChild(h3);
@@ -487,7 +486,7 @@ Object.assign(App.prototype, {
     } finally { this._setLoading(false); }
   },
 
-  // ── App.updateFindings (PLAN D2) ────────────────────────────────────────
+  // ── App.updateFindings ────────────────────────────────────────
   //
   // Public mutator for late-arriving findings. Renderers must continue to
   // mutate `app.findings` synchronously during `render()` /
@@ -985,7 +984,7 @@ Object.assign(App.prototype, {
     html(file, buffer) {
       const r = new HtmlRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
-      if (this.findings.augmentedBuffer) this._yaraBuffer = this.findings.augmentedBuffer;
+      if (this.findings.augmentedBuffer) this.currentResult.yaraBuffer = this.findings.augmentedBuffer;
       return { docEl: r.render(buffer, file.name) };
     },
     url(file, buffer) {
@@ -1023,19 +1022,19 @@ Object.assign(App.prototype, {
     async svg(file, buffer) {
       const r = new SvgRenderer();
       this.findings = await r.analyzeForSecurity(buffer, file.name);
-      if (this.findings.augmentedBuffer) this._yaraBuffer = this.findings.augmentedBuffer;
+      if (this.findings.augmentedBuffer) this.currentResult.yaraBuffer = this.findings.augmentedBuffer;
       return { docEl: r.render(buffer, file.name) };
     },
     plist(file, buffer) {
       const r = new PlistRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
-      if (this.findings.augmentedBuffer) this._yaraBuffer = this.findings.augmentedBuffer;
+      if (this.findings.augmentedBuffer) this.currentResult.yaraBuffer = this.findings.augmentedBuffer;
       return { docEl: r.render(buffer, file.name) };
     },
     scpt(file, buffer) {
       const r = new OsascriptRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
-      if (this.findings.augmentedBuffer) this._yaraBuffer = this.findings.augmentedBuffer;
+      if (this.findings.augmentedBuffer) this.currentResult.yaraBuffer = this.findings.augmentedBuffer;
       return { docEl: r.render(buffer, file.name) };
     },
 
@@ -1053,28 +1052,28 @@ Object.assign(App.prototype, {
 
     // ── Native binaries ─────────────────────────────────────────────────
     //
-    // Each dispatcher stashes two pieces of renderer state onto `this`
-    // (the App instance) for the sidebar's Binary Metadata + MITRE
-    // ATT&CK sections to consume:
+    // Each dispatcher stamps the format identity + parsed-header struct
+    // onto `this.currentResult.binary` for the sidebar's Binary Triage
+    // and MITRE ATT&CK sections to consume:
     //
-    //   • `_binaryParsed` — the renderer's parsed header struct
+    //   • `binary.parsed` — the renderer's parsed header struct
     //     (r._parsed), used for pivot fields the findings object doesn't
     //     carry verbatim (build IDs, signer tri-state, LC summaries, etc.)
-    //   • `_binaryFormat` — 'pe' | 'elf' | 'macho', so the sidebar knows
+    //   • `binary.format` — 'pe' | 'elf' | 'macho', so the sidebar knows
     //     which format-specific card schema to render without re-sniffing
     //     the bytes.
     //
-    // These are cleared implicitly on the next _loadFile() because the
-    // sidebar renderer checks `_binaryFormat` before reading them; a
-    // non-binary load simply leaves them dangling but unused.
+    // The whole `binary` sub-object is cleared implicitly on the next
+    // _loadFile() because `RenderRoute.run` allocates a fresh
+    // `currentResult` skeleton with `binary: null`; a non-binary load
+    // simply leaves it null.
     pe(file, buffer) {
       // .xll — Excel add-in; structurally a DLL. The PE renderer's
       // format-heuristics pass picks up xlAutoOpen / xlAutoClose so the
       // sidebar / Summary / YARA pass all flag the XLL class correctly.
       const r = new PeRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
-      this._binaryParsed = r._parsed || null;
-      this._binaryFormat = 'pe';
+      this.currentResult.binary = { format: 'pe', parsed: r._parsed || null };
       const docEl = r.render(buffer, file.name);
       // Overlay card may emit `open-inner-file` when the user clicks the
       // "Analyse overlay" button — wire the listener so the synthetic File
@@ -1085,8 +1084,7 @@ Object.assign(App.prototype, {
     elf(file, buffer) {
       const r = new ElfRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
-      this._binaryParsed = r._parsed || null;
-      this._binaryFormat = 'elf';
+      this.currentResult.binary = { format: 'elf', parsed: r._parsed || null };
       const docEl = r.render(buffer, file.name);
       // Overlay card drill-down — see pe() above.
       this._wireInnerFileListener(docEl, file.name);
@@ -1095,8 +1093,7 @@ Object.assign(App.prototype, {
     macho(file, buffer) {
       const r = new MachoRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
-      this._binaryParsed = r._parsed || null;
-      this._binaryFormat = 'macho';
+      this.currentResult.binary = { format: 'macho', parsed: r._parsed || null };
       const docEl = r.render(buffer, file.name);
       // Overlay / Fat-container-tail drill-down — see pe() above.
       this._wireInnerFileListener(docEl, file.name);
@@ -1119,7 +1116,7 @@ Object.assign(App.prototype, {
     },
   },
 
-  // ── Unified inner-file drill-down (PLAN D3) ────────────────────────────
+  // ── Unified inner-file drill-down ────────────────────────────
   //
   // Single entry point for every recursive load: archive entry, attachment,
   // binary overlay, decoded encoded-content blob, PE/ELF/Mach-O resource,
@@ -1265,7 +1262,7 @@ Object.assign(App.prototype, {
       findings: this.findings,
       fileHashes: this.fileHashes,
       fileMeta: this._fileMeta,
-      fileBuffer: this._fileBuffer,
+      currentResult: this.currentResult,
       yaraResults: this._yaraResults,
       pageNode,                 // detached live DOM node (preferred)
       scrollSnapshot,           // Map<element,{top,left}> for restoration
@@ -1373,7 +1370,7 @@ Object.assign(App.prototype, {
       findings: this.findings,
       fileHashes: this.fileHashes,
       fileMeta: this._fileMeta,
-      fileBuffer: this._fileBuffer,
+      currentResult: this.currentResult,
       yaraResults: this._yaraResults,
       pageNode,
       scrollSnapshot,
@@ -1408,7 +1405,7 @@ Object.assign(App.prototype, {
     this.findings = state.findings;
     this.fileHashes = state.fileHashes;
     this._fileMeta = state.fileMeta;
-    this._fileBuffer = state.fileBuffer;
+    this.currentResult = state.currentResult || null;
     this._yaraResults = state.yaraResults;
 
     const pc = document.getElementById('page-container');
@@ -1428,7 +1425,8 @@ Object.assign(App.prototype, {
     }
 
     // Fallback: re-render from buffer if re-attach failed or pageNode missing
-    if (!reattached && state.fileBuffer) {
+    const reBuf = state.currentResult && state.currentResult.buffer;
+    if (!reattached && reBuf) {
       const name = (state.parentName || '').toLowerCase();
       if (name.endsWith('.zip')) this._reRenderZip(state, pc);
       else if (name.endsWith('.msi')) this._reRenderMsi(state, pc);
@@ -1626,7 +1624,7 @@ Object.assign(App.prototype, {
   async _reRenderZip(state, pc) {
     try {
       const r = new ZipRenderer();
-      const buf = state.fileBuffer;
+      const buf = state.currentResult && state.currentResult.buffer;
       const docEl = await r.render(buf, state.parentName);
       this._wireInnerFileListener(docEl, state.parentName);
       pc.innerHTML = '';
@@ -1637,7 +1635,7 @@ Object.assign(App.prototype, {
   _reRenderMsi(state, pc) {
     try {
       const r = new MsiRenderer();
-      const buf = state.fileBuffer;
+      const buf = state.currentResult && state.currentResult.buffer;
       const docEl = r.render(buf, state.parentName);
       this._wireInnerFileListener(docEl, state.parentName);
       pc.innerHTML = '';
@@ -1648,7 +1646,7 @@ Object.assign(App.prototype, {
   _reRenderIso(state, pc) {
     try {
       const r = new IsoRenderer();
-      const buf = state.fileBuffer;
+      const buf = state.currentResult && state.currentResult.buffer;
       const docEl = r.render(buf, state.parentName);
       this._wireInnerFileListener(docEl, state.parentName);
       pc.innerHTML = '';
@@ -1659,7 +1657,7 @@ Object.assign(App.prototype, {
   async _reRenderJar(state, pc) {
     try {
       const r = new JarRenderer();
-      const buf = state.fileBuffer;
+      const buf = state.currentResult && state.currentResult.buffer;
       const docEl = await r.render(buf, state.parentName);
       this._wireInnerFileListener(docEl, state.parentName);
       pc.innerHTML = '';

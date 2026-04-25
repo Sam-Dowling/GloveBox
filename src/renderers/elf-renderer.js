@@ -2343,7 +2343,7 @@ class ElfRenderer {
             findings.metadata['Overlay Type'] = `Appended ${overlayMagic.label}`;
           }
 
-          // PLAN D2: notify App of late metadata write so the sidebar
+          // notify App of late metadata write so the sidebar
           // re-renders once the async digest settles. Direct mutation
           // is preserved so any synchronous downstream consumer of
           // `findings.metadata` in the rest of `analyzeForSecurity`

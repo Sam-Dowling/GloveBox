@@ -2,7 +2,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // timeline-router.js — App.prototype mixin: Timeline routing + lifecycle.
 //
-// Split out of the legacy app-timeline.js monolith (PLAN E1). Provides:
+// Split out of the legacy app-timeline.js monolith. Provides:
 //   _initTimelineState, _isTimelineExt, _sniffTimelineContent,
 //   _timelineTryHandle, _loadFileInTimeline,
 //   _buildTimelineViewFromWorker, _clearTimelineFile.
@@ -200,7 +200,7 @@ Object.assign(App.prototype, {
       };
       this._renderBreadcrumbs();
 
-      // ── Worker-first parse (PLAN C2) ───────────────────────────────
+      // ── Worker-first parse ───────────────────────────────
       // Try `WorkerManager.runTimeline(...)` first. The worker bundle is
       // parse-only — EVTX threat-detection and CSV obvious-malware
       // sweeps stay on the main thread (this method runs them after
@@ -322,7 +322,7 @@ Object.assign(App.prototype, {
   },
 
   // Construct a TimelineView from a parse-only worker `done` payload.
-  // The worker (PLAN C2) ships back `{ columns, rows, formatLabel,
+  // The worker ships back `{ columns, rows, formatLabel,
   // truncated, originalRowCount, defaultTimeColIdx?, defaultStackColIdx?,
   // evtxEvents?, browserType? }` — i.e. the same shape the legacy
   // `TimelineView.from{Csv,Evtx,Sqlite}` factories pass into the

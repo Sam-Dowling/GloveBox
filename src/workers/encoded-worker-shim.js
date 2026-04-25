@@ -4,7 +4,7 @@
 //
 // First file `scripts/build.py` concatenates into the
 // `__ENCODED_WORKER_BUNDLE_SRC` template-literal that powers the encoded-
-// content scan worker (PLAN C3). It declares the small subset of constants
+// content scan worker. It declares the small subset of constants
 // and IOC-side helpers that `src/encoded-content-detector.js` and
 // `src/decompressor.js` reach for at module load and must therefore be
 // defined **before** them.

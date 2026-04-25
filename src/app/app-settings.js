@@ -581,7 +581,7 @@ Object.assign(App.prototype, {
   // nicelist hits reorder without the user having to reload the file.
   _refreshSidebarIfLoaded() {
     try {
-      if (!this._fileBuffer || !this.findings) return;
+      if (!this.currentResult || !this.currentResult.buffer || !this.findings) return;
       if (typeof this._renderSidebar !== 'function') return;
       const fileName = (this._fileMeta && this._fileMeta.name) || '';
       this._renderSidebar(fileName, null);

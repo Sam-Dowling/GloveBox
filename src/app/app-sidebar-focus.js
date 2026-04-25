@@ -1045,17 +1045,13 @@ Object.assign(App.prototype, {
   // `findings.metadata`). The deep structural detail (section tables,
   // resource walks, dylibs, etc.) stays in the main viewer's Tier-C cards.
   //
-  // Stash contract (PLAN D4): the binary triage stash now lives on
+  // Stash contract: the binary triage stash lives on
   // `this.currentResult.binary` (`{ format, parsed }`), populated by the
   // `app-load.js::pe() / elf() / macho()` dispatchers after the renderer
-  // returns. Legacy `this._binaryFormat` / `this._binaryParsed` are
-  // `Object.defineProperty` aliases that read through to the same fields
-  // for one deprecation cycle; the reads here use the canonical path so
-  // sidebar repaints don't emit a deprecation warn.
-  // `_clearFile()` nulls `currentResult` on file close, transparently
-  // clearing both subfields. The outer `_renderSidebar` guard already
-  // skips this path for non-binary formats; the internal guard keeps
-  // the method safe against a mid-render state flip.
+  // returns. `_clearFile()` nulls `currentResult` on file close,
+  // transparently clearing both subfields. The outer `_renderSidebar`
+  // guard already skips this path for non-binary formats; the internal
+  // guard keeps the method safe against a mid-render state flip.
   //
   // Docs: see CONTRIBUTING.md → "Binary triage surfaces" for the module
   // family (`mitre.js`, `binary-verdict.js`, `binary-anomalies.js`,
@@ -1281,8 +1277,6 @@ Object.assign(App.prototype, {
   // side-load hosts, etc. — so any new emission that tags itself with a
   // MITRE id will automatically surface here without further wiring.
   _renderMitreSection(container, fileName) {
-    // PLAN D4: read binary format through `currentResult.binary` rather
-    // than the deprecated `_binaryFormat` alias.
     const cr = this.currentResult || null;
     const binFormat = cr && cr.binary ? cr.binary.format : null;
     if (!binFormat) return;

@@ -4869,3 +4869,101 @@ body.has-timeline #timeline-root {
   display: flex;
   flex-direction: column;
 }
+
+/* ════════════════════════════════════════════════════════════════════════
+   dev-mode debug breadcrumbs overlay
+   ────────────────────────────────────────────────────────────────────────
+   Mounted by `src/app/app-breadcrumbs.js` only when the user has opted
+   in via `localStorage.loupe_dev_breadcrumbs === '1'` (or by calling
+   `app._toggleDevBreadcrumbs()` from devtools). Pure CSS-custom-property
+   styling so every theme overlay (`src/styles/themes/<id>.css`) inherits
+   the look without re-declaring component selectors.
+   ════════════════════════════════════════════════════════════════════════ */
+
+.loupe-breadcrumbs-panel {
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  width: 340px;
+  max-height: 60vh;
+  z-index: 100000;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text);
+}
+.loupe-breadcrumbs-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+.loupe-breadcrumbs-title {
+  font-weight: 600;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+}
+.loupe-breadcrumbs-spacer { flex: 1; }
+.loupe-breadcrumbs-btn {
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.loupe-breadcrumbs-btn:hover { background: var(--row-hover); }
+.loupe-breadcrumbs-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+}
+.loupe-breadcrumbs-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--text-faint);
+  font-style: italic;
+}
+.loupe-breadcrumbs-row {
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--hairline-soft);
+  cursor: pointer;
+}
+.loupe-breadcrumbs-row:hover { background: var(--row-hover); }
+.loupe-breadcrumbs-head {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+}
+.loupe-breadcrumbs-ts {
+  color: var(--text-faint);
+  font-size: 10px;
+  min-width: 50px;
+}
+.loupe-breadcrumbs-scope {
+  color: var(--accent);
+  font-weight: 600;
+}
+.loupe-breadcrumbs-msg {
+  color: var(--text);
+  flex: 1;
+  word-break: break-word;
+}
+.loupe-breadcrumbs-data {
+  margin-top: 2px;
+  padding-left: 56px;
+  color: var(--text-muted);
+  font-size: 10px;
+  word-break: break-all;
+  white-space: pre-wrap;
+}

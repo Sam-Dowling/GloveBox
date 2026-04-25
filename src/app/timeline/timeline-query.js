@@ -3,7 +3,7 @@
 // timeline-query.js — Timeline DSL query language: tokeniser, parser,
 // compiler, serialiser, suggest-context resolver, syntax highlighter.
 //
-// Split out of the legacy app-timeline.js monolith (PLAN E1). Pure
+// Split out of the legacy app-timeline.js monolith. Pure
 // module — no DOM, no class state. Reads the column resolver as a
 // callback so the parser doesn't need a TimelineView reference. The
 // output of `_tlCompileAst` is a predicate `(rowIdx) => boolean` plus

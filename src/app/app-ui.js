@@ -73,12 +73,14 @@ Object.assign(App.prototype, {
 
   // ── Save / Copy current content ─────────────────────────────────────────
   _saveContent() {
-    if (!this._fileBuffer) { this._toast('No file loaded', 'error'); return; }
+    if (!this.currentResult || !this.currentResult.buffer) {
+      this._toast('No file loaded', 'error'); return;
+    }
     // _fileMeta.name is now the single source of truth for the filename
     // (the toolbar used to render this via #file-info.textContent but that
     // element has been replaced by the breadcrumb trail).
     const name = (this._fileMeta && this._fileMeta.name) || 'file';
-    this._downloadBytes(this._fileBuffer, name, 'application/octet-stream');
+    this._downloadBytes(this.currentResult.buffer, name, 'application/octet-stream');
     this._toast('File saved');
   },
 
@@ -119,8 +121,8 @@ Object.assign(App.prototype, {
   ]),
 
   _isRawCopyable() {
-    if (!this._fileBuffer) return false;
-    const bytes = new Uint8Array(this._fileBuffer);
+    if (!this.currentResult || !this.currentResult.buffer) return false;
+    const bytes = new Uint8Array(this.currentResult.buffer);
 
     // Binary-plist sniff — some .plist files are XML (text, copyable), but
     // `bplist00` files are binary. detectedType='plist' doesn't distinguish.
@@ -148,14 +150,16 @@ Object.assign(App.prototype, {
   },
 
   _copyContent() {
-    if (!this._fileBuffer) { this._toast('No file loaded', 'error'); return; }
+    if (!this.currentResult || !this.currentResult.buffer) {
+      this._toast('No file loaded', 'error'); return;
+    }
     if (!this._isRawCopyable()) {
       // Menu gates this already, but stay defensive in case it's invoked
       // via a direct keybinding or future code path.
       this._toast('Binary file — use 💾 Save raw file instead', 'error');
       return;
     }
-    const bytes = new Uint8Array(this._fileBuffer);
+    const bytes = new Uint8Array(this.currentResult.buffer);
     const asText = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
     // Stash the original bytes + filename so a same-session paste can
     // recover them byte-for-byte. The Web Clipboard API's text/plain
@@ -167,7 +171,7 @@ Object.assign(App.prototype, {
     // a freshly-built clipboard.txt.
     this._lastCopiedMeta = {
       name: (this._fileMeta && this._fileMeta.name) || 'clipboard.txt',
-      buffer: this._fileBuffer,
+      buffer: this.currentResult.buffer,
       normText: asText.replace(/\r\n/g, '\n'),
     };
     this._copyToClipboard(asText);
@@ -175,7 +179,9 @@ Object.assign(App.prototype, {
 
   // ── ⚡ Copy Analysis (Summary) — structured report for AI / SOC ──────
   _copyAnalysis() {
-    if (!this._fileBuffer || !this.findings) { this._toast('No file loaded', 'error'); return; }
+    if (!this.currentResult || !this.currentResult.buffer || !this.findings) {
+      this._toast('No file loaded', 'error'); return;
+    }
     // Budget is user-configurable via the Settings dialog (logarithmic
     // 10-step slider from ~4 KB to unbudgeted). The default step (~64 KB)
     // carries every renderer's per-format deep data (PDF JavaScripts,
@@ -698,17 +704,17 @@ Object.assign(App.prototype, {
     // ArrayBuffer (for same-session paste round-trip). Without clearing
     // it, every load/clear cycle leaks the full buffer.
     this._lastCopiedMeta = null;
-    // ── PLAN D4 — single-line currentResult teardown ──────────────────────
-    // Drop the entire RenderRoute result in one assignment. The legacy
-    // fields (`_fileBuffer`, `_yaraBuffer`, `_binaryFormat`, `_binaryParsed`)
-    // are now `Object.defineProperty` aliases that read/write through
-    // `currentResult`, so nulling the wrapper transparently nulls all four
-    // at once. Setting it to `null` (rather than a fresh skeleton) ensures
-    // a stale pre-render alias-write race during the next file's bootstrap
-    // can't pick up dangling state from this one.
+    // ── currentResult teardown ────────────────────────────────────────────
+    // Drop the entire RenderRoute result in one assignment. Every renderer
+    // and per-format helper reads its file bytes / parsed binary / yara
+    // buffer through `this.currentResult.{buffer, yaraBuffer, binary}`, so
+    // nulling the wrapper transparently clears all four channels at once.
+    // Setting it to `null` (rather than a fresh skeleton) ensures any
+    // stale pre-render write race during the next file's bootstrap can't
+    // pick up dangling state from this one.
     this.currentResult = null;
 
-    // ── Stale-load guard reset (PLAN D2) ──────────────────────────────────
+    // ── Stale-load guard reset ────────────────────────────────────────────
     // `_loadToken` is the monotonic counter `_loadFile` bumps on every
     // invocation; deferred mutations (pdf-worker QR decode, async overlay
     // SHA-256, OneNote inflate, etc.) capture it and pass it to
@@ -1269,9 +1275,9 @@ Object.assign(App.prototype, {
 
 
   // Rebuilt on every open so per-file `enabled()` predicates (e.g. the
-  // "Copy raw content" gate that depends on whether _fileBuffer is text)
-  // are re-evaluated against the currently-loaded file rather than being
-  // frozen at first-open time.
+  // "Copy raw content" gate that depends on whether the loaded buffer is
+  // text) are re-evaluated against the currently-loaded file rather than
+  // being frozen at first-open time.
   _buildExportMenu() {
     const menu = document.getElementById('export-menu');
     if (!menu) return;

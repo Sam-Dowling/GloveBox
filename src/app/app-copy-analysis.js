@@ -50,7 +50,7 @@ Object.assign(App.prototype, {
     // badge list, and any anomaly ribbon chips. Mirrors the Tier-A band
     // the main-pane renderer draws so a pasted analysis ticket opens with
     // the same "is this bad?" gloss the analyst saw on screen.
-    // PLAN D4: read binary triage stash + buffer through `currentResult`.
+    // read binary triage stash + buffer through `currentResult`.
     const _crBin = (this.currentResult && this.currentResult.binary) || null;
     const _binFormat = _crBin ? _crBin.format : null;
     const _binParsed = _crBin ? _crBin.parsed : null;

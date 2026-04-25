@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // safelinks.js — SafeLink URL unwrapping for Proofpoint URLDefense (v1, v2,
 // v3) and Microsoft SafeLinks. Extracted from `encoded-content-detector.js`
-// (PLAN Track E2). Mounts as `EncodedContentDetector.unwrapSafeLink` so the
+//. Mounts as `EncodedContentDetector.unwrapSafeLink` so the
 // existing static call sites (the IOC sweep in `_extractIOCsFromDecoded`,
 // EML / image / PDF renderers) need no migration.
 // ════════════════════════════════════════════════════════════════════════════

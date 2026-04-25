@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 // zlib.js — Embedded compressed-blob detection + eager decompression for the
-// encoded-content detector (PLAN Track E2).
+// encoded-content detector.
 //
 // Hosts:
 //   * `_findCompressedBlobCandidates(bytes, context)` — magic-byte scan for

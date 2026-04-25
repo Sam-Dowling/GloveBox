@@ -5,12 +5,20 @@ class App {
   constructor() {
     this.zoom = 100; this.dark = true; this.findings = null;
     this.fileHashes = null; this.sidebarOpen = false; this.activeTab = 'summary';
-    this._fileBuffer = null; this._yaraBuffer = null; this._yaraResults = null; this._yaraEscHandler = null;
+    this.currentResult = null; this._yaraResults = null; this._yaraEscHandler = null;
   }
 
   init() {
     this._initTheme();    // applies persisted theme (localStorage) or default
     this._initSettings(); // restores summary-budget step + paints ⚡ chip
+    // Dev-mode debug breadcrumb ribbon. No-op unless the
+    // `loupe_dev_breadcrumbs` localStorage flag is "1". Helper is defined
+    // in `src/app/app-breadcrumbs.js` and is loaded after this file via
+    // the JS_FILES order in scripts/build.py — guard with `typeof` so an
+    // earlier-init crash here doesn't take the whole boot down with it.
+    if (typeof this._initBreadcrumbs === 'function') {
+      try { this._initBreadcrumbs(); } catch (_) { /* diagnostics are cosmetic */ }
+    }
     // Subtle per-theme animated background on the landing surface.
     // Lives in its own module (`app-bg.js`) and exposes a tiny
     // `window.BgCanvas` singleton. Safe to no-op if the module failed to
@@ -235,7 +243,7 @@ class App {
         const inEditable = aeTag === 'input' || aeTag === 'textarea' ||
           (ae && ae.isContentEditable);
         if (inEditable) return;
-        if (!this._fileBuffer || !this._isRawCopyable()) return;
+        if (!this.currentResult || !this.currentResult.buffer || !this._isRawCopyable()) return;
         e.preventDefault();
         this._copyContent();   // handles UTF-8 decode, _lastCopiedMeta, toast
         return;
@@ -510,7 +518,7 @@ class App {
     if (toolbar) toolbar.insertAdjacentElement('afterend', bar);
   }
 
-  // ── Non-fatal error surfacing (PLAN F2) ─────────────────────────────────
+  // ── Non-fatal error surfacing ───────────────────────────────────────────
   // Centralises the "load chain caught a non-fatal error" idiom — replaces
   // the silent `catch (_) {}` blocks and ad-hoc console.warn + sidebar-IOC
   // dances scattered through the load path (auto-YARA failures, encoded-
@@ -523,15 +531,16 @@ class App {
   //      both the console line and the sidebar IOC value.
   //   2. When `findings` is live and `opts.silent !== true`, push a single
   //      `IOC.INFO` row carrying `Parser warning at <where>: <message>`
-  //      onto the findings table. The D2 microtask coalescer
+  //      onto the findings table. The microtask coalescer
   //      (`_scheduleSidebarRefresh`) collapses multiple non-fatals in the
   //      same task into one repaint.
   //   3. `opts.silent` is the recursion guard for sidebar-refresh failures
   //      (and any future site whose surfacing would re-trigger the very
   //      pipeline that just failed). Console gets the warning either way.
-  //
-  // PLAN F5 will tee a breadcrumb here so the dev-mode overlay records
-  // every non-fatal — the `// PLAN F5` marker below is the wiring point.
+  //   4. Every call also tees a breadcrumb into the dev-mode debug ribbon
+  //      (`app-breadcrumbs.js`) so analysts running with
+  //      `loupe_dev_breadcrumbs=1` can audit the non-fatal stream without
+  //      scraping the console.
   //
   // @param {string} where    short call-site tag (kebab-case)
   // @param {Error}  err      the thrown error
@@ -543,7 +552,19 @@ class App {
     const msg = (err && err.message) ? err.message : String(err);
     // eslint-disable-next-line no-console
     console.warn(`[loupe] ${where}: ${msg}`, err);
-    // PLAN F5: dev-mode breadcrumb ribbon hooks here.
+    // Tee every non-fatal into the dev-mode breadcrumb ribbon.
+    // Always pushed (even when `opts.silent` skips the sidebar IOC row)
+    // because a silent-true call site like `_scheduleSidebarRefresh`
+    // failure is exactly the kind of pipeline glitch the dev-mode
+    // observer most wants to see. The push is an O(1) array append into
+    // a 50-entry circular buffer; the panel only re-renders when it's
+    // mounted (i.e. the persisted flag is on).
+    if (typeof this._breadcrumb === 'function') {
+      this._breadcrumb('non-fatal:' + where, msg, {
+        silent: !!opts.silent,
+        severity: opts.severity || 'info',
+      });
+    }
     if (opts.silent) return;
     if (!this.findings) return;
     try {
@@ -566,164 +587,3 @@ class App {
   }
 
 }
-
-// ════════════════════════════════════════════════════════════════════════════
-// PLAN D4 — `app.currentResult` replaces scattered renderer-side stashes
-// ════════════════════════════════════════════════════════════════════════════
-//
-// Before D4, renderer dispatchers in `_rendererDispatch` hand-stamped four
-// instance properties on the App for downstream consumers:
-//
-//   • `app._fileBuffer`    — original file ArrayBuffer (auto-YARA, copy-
-//                            analysis, sidebar encoded-content drill-down)
-//   • `app._yaraBuffer`    — optional augmented buffer (SVG / HTML / Plist /
-//                            Scpt renderers fold decoded payloads into it
-//                            so the YARA pass scans the payload, not the
-//                            wrapper)
-//   • `app._binaryFormat`  — 'pe' | 'elf' | 'macho' | null (sidebar Binary
-//                            Metadata + copy-analysis verdict band gate
-//                            on this)
-//   • `app._binaryParsed`  — the renderer's parsed header struct (pivot
-//                            fields the findings object doesn't carry
-//                            verbatim)
-//
-// The D4 cutover funnels all four through a single `app.currentResult`
-// object owned by `RenderRoute.run` (`src/render-route.js`). To avoid a
-// big-bang renderer migration, the legacy field names are kept alive as
-// `Object.defineProperty` aliases on `App.prototype` — every existing
-// renderer's `this._binaryFormat = 'pe'` / `this._fileBuffer = buffer`
-// continues to work unchanged, with the assignment routed into
-// `currentResult.binary` / `currentResult.buffer`. Reads warn-once per
-// session so any downstream consumer can be migrated incrementally.
-//
-// Strategy (per PLAN.md §3 Track-D notes):
-//
-//   1. **This session (D4):** install the aliases, snapshot/restore
-//      `currentResult` across nav-stack frames, migrate the most visible
-//      read sites (sidebar Binary-Metadata, copy-analysis verdict band,
-//      encoded-content drill-down `_fileBuffer` read).
-//   2. **Follow-up session:** migrate every renderer dispatcher's writes
-//      to assign `this.currentResult.binary = { format, parsed }` /
-//      `this.currentResult.yaraBuffer = augmentedBuffer` directly.
-//   3. **Two sessions later:** delete these aliases.
-//
-// Build-gate caveat: the warn-once Set is intentionally module-scoped (not
-// per-instance) so the second `_loadFile` of the same session doesn't
-// re-warn for the same field — keeps the console signal-to-noise high.
-
-const _D4_WARNED = new Set();
-function _d4WarnRead(field, replacement) {
-  if (_D4_WARNED.has(field)) return;
-  _D4_WARNED.add(field);
-  // eslint-disable-next-line no-console
-  console.warn(`[loupe] app.${field} is deprecated (PLAN D4) — use app.${replacement}`);
-}
-
-// `_fileBuffer` ── read-through to `currentResult.buffer`.
-//
-// Renderers that set this during dispatch (every binary handler does
-// `this._fileBuffer = buffer;` indirectly via the legacy `_loadFile`
-// pre-render write) will lazy-allocate a `currentResult` skeleton if one
-// hasn't been allocated yet. `RenderRoute.run` then replaces the skeleton
-// with the canonical one before normal post-render plumbing reads from it.
-Object.defineProperty(App.prototype, '_fileBuffer', {
-  configurable: true,
-  get() {
-    _d4WarnRead('_fileBuffer', 'currentResult.buffer');
-    return this.currentResult ? this.currentResult.buffer : null;
-  },
-  set(v) {
-    if (!this.currentResult) {
-      // Tolerate the constructor's `this._fileBuffer = null;` and
-      // `_clearFile`'s null-out without allocating a skeleton.
-      if (v == null) return;
-      this.currentResult = (typeof RenderRoute !== 'undefined' && RenderRoute._emptyResult)
-        ? RenderRoute._emptyResult(v)
-        : { docEl: null, findings: null, rawText: '', buffer: v, binary: null, yaraBuffer: null, navTitle: '', analyzer: null, dispatchId: null };
-      return;
-    }
-    this.currentResult.buffer = v;
-  },
-});
-
-// `_yaraBuffer` ── read-through to `currentResult.yaraBuffer`. SVG / HTML
-// / Plist / Scpt renderers stash their `findings.augmentedBuffer` here so
-// `_autoYaraScan` scans the augmented bytes (e.g. the inflated decoded
-// payload from an obfuscated SVG) rather than the raw on-disk bytes.
-Object.defineProperty(App.prototype, '_yaraBuffer', {
-  configurable: true,
-  get() {
-    _d4WarnRead('_yaraBuffer', 'currentResult.yaraBuffer');
-    return this.currentResult ? this.currentResult.yaraBuffer : null;
-  },
-  set(v) {
-    if (!this.currentResult) {
-      if (v == null) return;
-      this.currentResult = (typeof RenderRoute !== 'undefined' && RenderRoute._emptyResult)
-        ? RenderRoute._emptyResult(null)
-        : { docEl: null, findings: null, rawText: '', buffer: null, binary: null, yaraBuffer: null, navTitle: '', analyzer: null, dispatchId: null };
-    }
-    this.currentResult.yaraBuffer = v;
-  },
-});
-
-// `_binaryFormat` ── read-through to `currentResult.binary?.format`. The
-// PE / ELF / Mach-O dispatchers write 'pe' / 'elf' / 'macho' immediately
-// after a successful `analyzeForSecurity`; null on every other format.
-// Setting null (e.g. the catch-arm of `_loadFile` clearing stale binary
-// state, or `_clearFile`) drops the whole `binary` sub-object.
-Object.defineProperty(App.prototype, '_binaryFormat', {
-  configurable: true,
-  get() {
-    _d4WarnRead('_binaryFormat', 'currentResult.binary?.format');
-    return (this.currentResult && this.currentResult.binary)
-      ? this.currentResult.binary.format
-      : null;
-  },
-  set(v) {
-    if (!this.currentResult) {
-      if (v == null) return;
-      this.currentResult = (typeof RenderRoute !== 'undefined' && RenderRoute._emptyResult)
-        ? RenderRoute._emptyResult(null)
-        : { docEl: null, findings: null, rawText: '', buffer: null, binary: null, yaraBuffer: null, navTitle: '', analyzer: null, dispatchId: null };
-    }
-    if (v == null) {
-      this.currentResult.binary = null;
-    } else {
-      if (!this.currentResult.binary) this.currentResult.binary = { format: null, parsed: null };
-      this.currentResult.binary.format = v;
-    }
-  },
-});
-
-// `_binaryParsed` ── read-through to `currentResult.binary?.parsed`.
-// The renderer's parsed-header struct (PE-image-header / ELF / Mach-O
-// load-command summary), used by sidebar Binary-Metadata / copy-analysis
-// verdict band for fields the findings object doesn't carry verbatim.
-Object.defineProperty(App.prototype, '_binaryParsed', {
-  configurable: true,
-  get() {
-    _d4WarnRead('_binaryParsed', 'currentResult.binary?.parsed');
-    return (this.currentResult && this.currentResult.binary)
-      ? this.currentResult.binary.parsed
-      : null;
-  },
-  set(v) {
-    if (!this.currentResult) {
-      if (v == null) return;
-      this.currentResult = (typeof RenderRoute !== 'undefined' && RenderRoute._emptyResult)
-        ? RenderRoute._emptyResult(null)
-        : { docEl: null, findings: null, rawText: '', buffer: null, binary: null, yaraBuffer: null, navTitle: '', analyzer: null, dispatchId: null };
-    }
-    if (!this.currentResult.binary) {
-      // Setting only `_binaryParsed` (no `_binaryFormat` write yet) is the
-      // pre-D4 ordering for PE / ELF / Mach-O dispatchers: parsed first,
-      // then format. Allocate the binary sub-object so the format write
-      // can land in the same shape.
-      if (v == null) return;
-      this.currentResult.binary = { format: null, parsed: null };
-    }
-    this.currentResult.binary.parsed = v;
-  },
-});
-

@@ -2662,7 +2662,7 @@ class MachoRenderer {
                 note: `${tailSize.toLocaleString()} B past last slice (${tailPct.toFixed(1)}% of file), entropy ${tailEntropy.toFixed(2)}${tailMagic ? `, magic ${tailMagic.label}` : ''}`,
                 _noDomainSibling: true,
               });
-              // PLAN D2: notify App of late metadata write so the sidebar
+              // notify App of late metadata write so the sidebar
               // re-renders once the async digest settles. Direct mutation
               // is preserved so any synchronous downstream consumer of
               // `findings.metadata` in the rest of `analyzeForSecurity`
@@ -2709,7 +2709,7 @@ class MachoRenderer {
               findings.metadata['Overlay Type'] = `Appended ${overlayMagic.label}`;
             }
 
-            // PLAN D2: see Fat Tail SHA-256 site above for rationale.
+            // see Fat Tail SHA-256 site above for rationale.
             BinaryOverlay.sha256Hex(overlayBytes).then(hex => {
               if (!hex) return;
               findings.metadata['Overlay SHA-256'] = hex;

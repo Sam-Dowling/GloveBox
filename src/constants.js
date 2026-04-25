@@ -11,11 +11,12 @@ const PARSER_LIMITS = Object.freeze({
   MAX_RATIO:            100,                 // Per-entry compression ratio abort
   MAX_ENTRIES:          10_000,              // Max archive entries before truncation
   TIMEOUT_MS:           60_000,              // Buffer-read cap (`file.arrayBuffer()`)
-                                             // — also the legacy default for any
+                                             // — also the default for any
                                              // `ParserWatchdog.run(fn)` call site
-                                             // that doesn't pass an explicit budget.
+                                             // that doesn't pass an explicit
+                                             // `{ timeout }` budget.
   RENDERER_TIMEOUT_MS:  30_000,              // 30 s — per-renderer dispatch cap
-                                             // (PLAN B5). When a single renderer
+                                             //. When a single renderer
                                              // hangs on a hostile file, the watchdog
                                              // aborts and `_loadFile` falls back to
                                              // `PlainTextRenderer` with a sidebar
@@ -24,9 +25,10 @@ const PARSER_LIMITS = Object.freeze({
                                              // bound triggers first; the buffer-read
                                              // cap is a different scope (one read
                                              // per file vs. arbitrary parser work).
-  MAX_AUTO_YARA_BYTES:  32 * 1024 * 1024,    // 32 MiB — auto-YARA size gate
-                                             // (PLAN B3, fallback-only post-C1).
-                                             // Auto-YARA runs in a Web Worker
+  SYNC_YARA_FALLBACK_MAX_BYTES:  32 * 1024 * 1024,
+                                             // 32 MiB — synchronous main-thread
+                                             // auto-YARA size gate. Auto-YARA
+                                             // runs in a Web Worker
                                              // (`src/workers/yara.worker.js`) by
                                              // default; the worker's preemptive
                                              // `terminate()` makes scan time a
@@ -43,7 +45,7 @@ const PARSER_LIMITS = Object.freeze({
                                              // both worker and fallback paths).
   WORKER_TIMEOUT_MS:    120_000,             // 2 min — preemptive deadline on
                                              // any `WorkerManager.run*` job
-                                             // (PLAN C5). On expiry the active
+                                             //. On expiry the active
                                              // worker is `terminate()`-d (real
                                              // preemption, unlike the post-hoc
                                              // main-thread `ParserWatchdog`)
@@ -67,7 +69,7 @@ const PARSER_LIMITS = Object.freeze({
                                              // watchdog timeout) — same
                                              // contract as before C5.
 
-  // ── Per-dispatch file-size caps (PLAN F1) ──────────────────────────
+  // ── Per-dispatch file-size caps ──────────────────────────
   // Maximum file size the structured renderer for each dispatch id will
   // accept. Above the cap, `RenderRoute.run` (`src/render-route.js`)
   // skips the structured handler, falls back to `PlainTextRenderer`

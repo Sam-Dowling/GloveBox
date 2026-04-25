@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Static contract check for files under ``src/renderers/``.
 
-PLAN.md Track D5 — turn the de-facto Renderer Contract documented in
+Turns the de-facto Renderer Contract documented in
 ``CONTRIBUTING.md → Renderer Contract — Reference`` into a runnable,
 renderer-scoped check.
 
-The four B-track build gates in ``scripts/build.py`` (B1 risk pre-stamp,
-B2 bare-string IOC ``type:`` values, B4 ``_rawText`` LF-normalisation, C0
-``new Worker(`` allow-list) already enforce most of these invariants
-*tree-wide*; this script re-validates the three of them that apply to the
-renderer surface (B1 / B2 / B4 — C0 lives in ``src/worker-manager.js``,
-not ``src/renderers/``) narrowed to ``src/renderers/`` and adds the
-renderer-only structural checks (a class definition exists, a ``render(``
-method exists). The narrower scope buys two things:
+The four build gates in ``scripts/build.py`` (risk pre-stamp, bare-string
+IOC ``type:`` values, ``_rawText`` LF-normalisation, ``new Worker(``
+allow-list) already enforce most of these invariants *tree-wide*; this
+script re-validates the three of them that apply to the renderer surface
+(risk / IOC type / ``_rawText`` — the worker-spawn rule lives in
+``src/worker-manager.js``, not ``src/renderers/``) narrowed to
+``src/renderers/`` and adds the renderer-only structural checks (a class
+definition exists, a ``render(`` method exists). The narrower scope buys
+two things:
 
   1. A per-renderer report — when a contract violation lands in a renderer
      the offender is named in renderer terms ("PE renderer pre-stamps
@@ -31,8 +32,7 @@ are intentionally **not** checked here — the runtime CSP
 (``default-src 'none'``) already blocks every one of them, and renderers
 that detect the *literal token* in user-supplied SVG / HTML / JS content
 (see ``svg-renderer.js`` threat-pattern tables) would otherwise produce
-false positives. The four PLAN-mandated contract rules below are
-sufficient.
+false positives. The four contract rules below are sufficient.
 
 Helpers under ``src/renderers/`` that are not per-format renderers are
 allow-listed up front (``HELPER_FILES``); they are not required to expose a
@@ -72,19 +72,20 @@ HELPER_FILES = {
 
 # ── Regexes (each mirrors a build-time gate from scripts/build.py) ────────
 
-# B1 — `findings.risk = '<tier>'` writes outside `escalateRisk()`.
+# Risk pre-stamp — `findings.risk = '<tier>'` writes outside
+# `escalateRisk()`.
 _RISK_PRE_STAMP_RE = re.compile(
     r"""\.risk\s*=\s*['"](low|medium|high|critical|info)['"]"""
 )
 
-# B2 — bare-string IOC `type:` paired with `severity:` on the same line.
+# Bare-string IOC `type:` paired with `severity:` on the same line.
 # The two-key fingerprint is unique to IOC entries; renderer-internal DTOs
 # without a sibling `severity:` field do not match.
 _BARE_IOC_TYPE_RE = re.compile(
     r"""\btype:\s*['"][A-Za-z][A-Za-z _]*['"][^}\n]*?\bseverity\s*:"""
 )
 
-# B4 — `*._rawText = <RHS>` writes whose RHS does not begin with
+# `*._rawText = <RHS>` writes whose RHS does not begin with
 # `lfNormalize(`.
 _RAW_TEXT_LHS_RE = re.compile(r"\._rawText\s*=\s*(.+?)\s*;?\s*$")
 
@@ -110,8 +111,8 @@ def _scan_file(rel: str, text: str, *, is_helper: bool) -> list[tuple[str, str]]
     violations: list[tuple[str, str]] = []
     lines = text.splitlines()
 
-    # Per-line content gates (B1 / B2 / B4 — narrowed copies of the
-    # tree-wide build gates in scripts/build.py).
+    # Per-line content gates (narrowed copies of the tree-wide build
+    # gates in scripts/build.py).
     for lineno, line in enumerate(lines, start=1):
         if _is_comment_line(line):
             continue

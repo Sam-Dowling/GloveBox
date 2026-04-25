@@ -1295,12 +1295,13 @@ Object.assign(App.prototype, {
 
   /** Run YARA scan against currently loaded file.
    *
-   *  Worker-first (PLAN C1) — falls back to a synchronous main-thread scan
-   *  when `Worker(blob:)` is denied (Firefox `file://` default). The manual
-   *  tab has no size cap on either path; the user has explicitly asked to
-   *  scan and accepts the latency cost. */
+   *  Worker-first — falls back to a synchronous main-thread scan when
+   *  `Worker(blob:)` is denied (Firefox `file://` default). The manual tab
+   *  has no size cap on either path; the user has explicitly asked to scan
+   *  and accepts the latency cost. */
   _yaraRunScan() {
-    if (!this._fileBuffer && !this._yaraBuffer) {
+    const cr = this.currentResult;
+    if (!cr || (!cr.buffer && !cr.yaraBuffer)) {
       this._yaraSetStatus('No file loaded \u2014 open a file first, then scan', 'error');
       return;
     }
@@ -1326,7 +1327,7 @@ Object.assign(App.prototype, {
       return;
     }
 
-    const buf = this._yaraBuffer || this._fileBuffer;
+    const buf = cr.yaraBuffer || cr.buffer;
     const wm  = window.WorkerManager;
     const useWorker = !!(wm && wm.workersAvailable && wm.workersAvailable());
 
@@ -1551,22 +1552,23 @@ Object.assign(App.prototype, {
 
   /** Auto-run YARA scan when a file is loaded (uses built-in + uploaded rules).
    *
-   *  Runs in a Web Worker (PLAN C1) so a 100 MiB scan no longer freezes
-   *  the UI. When `Worker(blob:)` is denied (e.g. Firefox `file://` default)
+   *  Runs in a Web Worker so a 100 MiB scan no longer freezes the UI. When
+   *  `Worker(blob:)` is denied (e.g. Firefox `file://` default)
    *  `WorkerManager.runYara` rejects with `'workers-unavailable'` and we
    *  fall back to the synchronous in-tree path. The
-   *  `PARSER_LIMITS.MAX_AUTO_YARA_BYTES` size gate only applies on the
-   *  fallback path — when the worker is available, scan time is no longer
-   *  blocking and the cap is unnecessary.
+   *  `PARSER_LIMITS.SYNC_YARA_FALLBACK_MAX_BYTES` size gate only applies on
+   *  the fallback path — when the worker is available, scan time is no
+   *  longer blocking and the cap is unnecessary.
    *
-   *  Scan errors are routed through `App._reportNonFatal('auto-yara', err)`
-   *  (PLAN F2) — surfaced as a sidebar `IOC.INFO` row plus a `console.warn`. */
+   *  Scan errors are routed through `App._reportNonFatal('auto-yara', err)`,
+   *  which surfaces them as a sidebar `IOC.INFO` row plus a `console.warn`. */
   _autoYaraScan() {
-    if (!this._fileBuffer && !this._yaraBuffer) return;
+    const cr = this.currentResult;
+    if (!cr || (!cr.buffer && !cr.yaraBuffer)) return;
     const source = this._getAllYaraSource();
     if (!source) return;
 
-    const buf = this._yaraBuffer || this._fileBuffer;
+    const buf = cr.yaraBuffer || cr.buffer;
     if (!buf) return;
 
     const wm = window.WorkerManager;
@@ -1604,13 +1606,14 @@ Object.assign(App.prototype, {
 
   /** Synchronous main-thread fallback for `_autoYaraScan`. Used when
    *  `Worker(blob:)` is unavailable (e.g. Firefox `file://`) or the buffer
-   *  copy for the worker transfer fails. The `MAX_AUTO_YARA_BYTES` cap is
-   *  enforced **only here** — see `src/constants.js` for the rationale. */
+   *  copy for the worker transfer fails. The
+   *  `SYNC_YARA_FALLBACK_MAX_BYTES` cap is enforced **only here** — see
+   *  `src/constants.js` for the rationale. */
   _autoYaraScanSync(buf, source) {
     const size = (buf && buf.byteLength) || 0;
-    if (size > PARSER_LIMITS.MAX_AUTO_YARA_BYTES) {
+    if (size > PARSER_LIMITS.SYNC_YARA_FALLBACK_MAX_BYTES) {
       if (this.findings) {
-        const mb = (PARSER_LIMITS.MAX_AUTO_YARA_BYTES / (1024 * 1024)) | 0;
+        const mb = (PARSER_LIMITS.SYNC_YARA_FALLBACK_MAX_BYTES / (1024 * 1024)) | 0;
         pushIOC(this.findings, {
           type: IOC.INFO,
           value: `YARA auto-scan skipped (file >${mb} MiB; open the YARA tab to scan manually)`,
@@ -1633,7 +1636,7 @@ Object.assign(App.prototype, {
   },
 
   /** Surface an auto-YARA error as a sidebar `IOC.INFO` note plus a console
-   *  warning. Forwards to the canonical PLAN F2 helper
+   *  warning. Forwards to the canonical helper
    *  `App._reportNonFatal('auto-yara', err)` which handles both — kept as a
    *  thin per-call-site method so future call-site-specific instrumentation
    *  (timing, sampling, etc.) has a single seam to widen. */

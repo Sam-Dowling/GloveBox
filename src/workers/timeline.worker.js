@@ -1,6 +1,6 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
-// timeline.worker.js — Timeline parse-only worker (PLAN C2)
+// timeline.worker.js — Timeline parse-only worker
 //
 // Pure WorkerGlobalScope module: no DOM, no `window`, no `app.*` references.
 // Runs CSV / TSV / EVTX / SQLite-browser-history parsing off the main thread
@@ -72,9 +72,10 @@
 //   { event: 'error', message: string }
 //
 // The buffer is **transferred** (caller loses access). Callers that need the
-// bytes again — `_loadFileInTimeline` keeps reading `_fileBuffer` after the
-// timeline factory returns to feed `_loadFile` for the analyser sidebar —
-// pass a `buffer.slice(0)` copy. See `src/worker-manager.js::runTimeline`.
+// bytes again — `_loadFileInTimeline` keeps reading
+// `this.currentResult.buffer` after the timeline factory returns to feed
+// `_loadFile` for the analyser sidebar — pass a `buffer.slice(0)` copy.
+// See `src/worker-manager.js::runTimeline`.
 //
 // Failure surface
 // ---------------

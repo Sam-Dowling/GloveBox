@@ -1,21 +1,23 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
 // parser-watchdog.js — Timeout guard for parser invocations
-// Wraps sync or async parser calls with a configurable deadline.
-// If a parser hangs (e.g. on a maliciously crafted file), the promise rejects
-// after the timeout so the UI can recover.
+//
+// Wraps a sync or async function with a configurable deadline. If the
+// function hangs (e.g. on a maliciously crafted file), the returned
+// promise rejects after the timeout so the UI can recover.
 //
 // Two callers today:
 //   • `_loadFile` reads `file.arrayBuffer()` under the default
 //     `PARSER_LIMITS.TIMEOUT_MS` (60 s) buffer-read cap.
-//   • `_loadFile` wraps the per-renderer dispatch handler under
-//     `PARSER_LIMITS.RENDERER_TIMEOUT_MS` (30 s, PLAN B5) with a graceful
-//     `PlainTextRenderer` fallback when a renderer hangs on a hostile file.
+//   • `RenderRoute.run` wraps the per-renderer dispatch handler under
+//     `PARSER_LIMITS.RENDERER_TIMEOUT_MS` (30 s) with a graceful
+//     `PlainTextRenderer` fallback when a renderer hangs on a hostile
+//     file.
 //
-// On timeout, the rejected error carries three sentinel fields so callers can
-// distinguish a watchdog kill from a genuine parser exception and react
-// (e.g. swap to a fallback renderer) instead of bubbling to the generic
-// "Failed to open file" error box:
+// On timeout, the rejected error carries three sentinel fields so callers
+// can distinguish a watchdog kill from a genuine parser exception and
+// react (e.g. swap to a fallback renderer) instead of bubbling to the
+// generic "Failed to open file" error box:
 //   err._watchdogTimeout    = true
 //   err._watchdogName       = <name from opts, or null>
 //   err._watchdogTimeoutMs  = <effective timeout in ms>
@@ -26,35 +28,31 @@ const ParserWatchdog = {
   /**
    * Run a function with a timeout guard.
    *
-   * Back-compat: `msOrOpts` may be a bare number (legacy 1-arg / 2-arg form
-   * `ParserWatchdog.run(fn)` / `ParserWatchdog.run(fn, 5000)`) or an options
-   * object. Pre-PLAN-B5 call sites continue to work unchanged.
-   *
-   * @param {Function} fn        — sync or async function to execute
-   * @param {number|Object} [msOrOpts]
-   *        number — timeout in milliseconds
-   *        object — { timeout?: number, name?: string, skipOuter?: boolean }
-   *          • timeout   default `PARSER_LIMITS.TIMEOUT_MS` (60 s)
-   *          • name      label echoed in the timeout error message and on
-   *                      `err._watchdogName` so callers can branch on which
-   *                      renderer / phase tripped
-   *          • skipOuter forward-compat plumbing for renderers that opt in
-   *                      to running their own watchdog: when true, this call
-   *                      is a no-op race and just `await`s `fn()` directly.
-   *                      Reserved for future use; not invoked today.
-   * @returns {Promise<*>}       — resolves with fn's return value or rejects on timeout
+   * @param {Function} fn      — sync or async function to execute
+   * @param {Object}  [opts]
+   * @param {number}  [opts.timeout]   timeout in ms; defaults to
+   *                                   `PARSER_LIMITS.TIMEOUT_MS` (60 s)
+   * @param {string}  [opts.name]      label echoed in the timeout error
+   *                                   message and on `err._watchdogName`
+   *                                   so callers can branch on which
+   *                                   renderer / phase tripped.
+   * @param {boolean} [opts.skipOuter] when true, this call is a no-op
+   *                                   race and just `await`s `fn()`
+   *                                   directly. Reserved plumbing for a
+   *                                   future renderer-side opt-in to a
+   *                                   self-managed deadline; not invoked
+   *                                   today.
+   * @returns {Promise<*>}     resolves with fn's return value or rejects
+   *                           on timeout.
    */
-  run(fn, msOrOpts) {
-    const opts = (msOrOpts !== null && typeof msOrOpts === 'object')
-      ? msOrOpts
-      : { timeout: msOrOpts };
-    const timeout = opts.timeout || (typeof PARSER_LIMITS !== 'undefined' ? PARSER_LIMITS.TIMEOUT_MS : 60000);
-    const name = opts.name || null;
+  run(fn, opts) {
+    const o = opts || {};
+    const timeout = o.timeout || (typeof PARSER_LIMITS !== 'undefined' ? PARSER_LIMITS.TIMEOUT_MS : 60000);
+    const name = o.name || null;
 
-    // skipOuter — caller has already arranged its own deadline; just run fn
-    // and surface its result/exception verbatim. Reserved plumbing for the
-    // renderer-side watchdog opt-in introduced by PLAN B5.
-    if (opts.skipOuter) {
+    // skipOuter — caller has already arranged its own deadline; just run
+    // fn and surface its result/exception verbatim.
+    if (o.skipOuter) {
       return Promise.resolve().then(fn);
     }
 

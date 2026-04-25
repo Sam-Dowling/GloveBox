@@ -40,92 +40,31 @@ class HtmlRenderer {
     container.appendChild(toolbar);
 
     // ── Preview pane (sandboxed iframe) ──────────────────────────────────
+    // The iframe + drag/scroll/drop shield are produced by the shared
+    // `SandboxPreview` helper. The sandbox is
+    // `allow-same-origin` so we can forward scroll deltas to the
+    // iframe's contentWindow programmatically, but the inner CSP
+    // (default in `SandboxPreview.DEFAULT_INNER_CSP` —
+    // `default-src 'none'; style-src 'unsafe-inline'; img-src data:`)
+    // still blocks scripts, network, fonts, and objects regardless of
+    // what the file declares. The shield re-dispatches drag/drop as
+    // `loupe-*` CustomEvents so files dropped on the preview open in
+    // Loupe instead of being navigated to by the browser
+    // (`app-core.js` listens). Convention: append iframe first, then
+    // shield, both into a `position:relative` wrapper.
     const previewPane = document.createElement('div');
     previewPane.className = 'html-preview-pane';
 
-    const iframe = document.createElement('iframe');
-    iframe.className = 'html-iframe';
-    // allow-same-origin enables scroll forwarding via contentWindow.scrollBy()
-    // while still blocking scripts, forms, popups, and top navigation
-    iframe.sandbox = 'allow-same-origin';
-    // Use srcdoc instead of blob URL - content is inline, works better with
-    // allow-same-origin for scroll access across all protocols including file://
-    // Inject an inner CSP to lock down the sandboxed document itself —
-    // blocks scripts, fetches, fonts, objects; allows only inline styles and data: images
-    const innerCSP = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'; img-src data:">';
-    iframe.srcdoc = innerCSP + text;
-    iframe.title = 'Sandboxed HTML preview';
-
-    // ── Drag shield ──────────────────────────────────────────────────────
-    // Always-active transparent overlay above the iframe. Intercepts drag/drop
-    // events (preventing browser from navigating when files are dropped on the
-    // iframe) and forwards scroll events to the iframe content programmatically.
-    const dragShield = document.createElement('div');
-    dragShield.className = 'html-drag-shield';
-
-    // ── Drag event handlers ─────────────────────────────────────────────
-    // Capture drag events and dispatch custom events for Loupe app handling
-    dragShield.addEventListener('dragenter', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      window.dispatchEvent(new CustomEvent('loupe-dragenter'));
+    const { iframe, dragShield } = SandboxPreview.create({
+      html: text,
+      wrap: false,
+      iframeClassName: 'html-iframe',
+      shieldClassName: 'html-drag-shield',
+      title: 'Sandboxed HTML preview',
+      forwardScroll: true,
+      forwardTouchScroll: true,
+      forwardDragDrop: true,
     });
-
-    dragShield.addEventListener('dragover', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-    });
-
-    dragShield.addEventListener('dragleave', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      window.dispatchEvent(new CustomEvent('loupe-dragleave'));
-    });
-
-    dragShield.addEventListener('drop', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      if (e.dataTransfer?.files?.length) {
-        window.dispatchEvent(new CustomEvent('loupe-drop', {
-          detail: { files: e.dataTransfer.files }
-        }));
-      }
-    });
-
-    // ── Scroll forwarding ───────────────────────────────────────────────
-    // Forward wheel events to the iframe content programmatically.
-    // Works because we have allow-same-origin and srcdoc (same origin as parent).
-    dragShield.addEventListener('wheel', (e) => {
-      e.preventDefault();
-      try {
-        iframe.contentWindow.scrollBy(e.deltaX, e.deltaY);
-      } catch (_) { /* ignore if cross-origin error */ }
-    }, { passive: false });
-
-    // ── Touch scroll support ────────────────────────────────────────────
-    // Track touch movements and scroll the iframe content accordingly
-    let touchStartY = 0;
-    let touchStartX = 0;
-
-    dragShield.addEventListener('touchstart', (e) => {
-      if (e.touches.length === 1) {
-        touchStartY = e.touches[0].clientY;
-        touchStartX = e.touches[0].clientX;
-      }
-    }, { passive: true });
-
-    dragShield.addEventListener('touchmove', (e) => {
-      if (e.touches.length === 1) {
-        const deltaY = touchStartY - e.touches[0].clientY;
-        const deltaX = touchStartX - e.touches[0].clientX;
-        touchStartY = e.touches[0].clientY;
-        touchStartX = e.touches[0].clientX;
-        try {
-          iframe.contentWindow.scrollBy(deltaX, deltaY);
-        } catch (_) { /* ignore if cross-origin error */ }
-      }
-    }, { passive: true });
 
     previewPane.appendChild(iframe);
     previewPane.appendChild(dragShield);

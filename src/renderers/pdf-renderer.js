@@ -29,8 +29,8 @@ class PdfRenderer {
    * "Extracted Files" banner mirroring the MSG / EML / ZIP UX so users can
    * open attachments inline or download JS scripts directly from the viewer.
    *
-   * **PLAN F3 — pdf.worker lifecycle.** pdf.js owns its own dedicated worker
-   * (`vendor/pdf.worker.js`, spawned independently of the C1–C4
+   * **pdf.worker lifecycle.** pdf.js owns its own dedicated worker
+   * (`vendor/pdf.worker.js`, spawned independently of the
    * `WorkerManager` channels). Every open `PDFDocumentProxy` is registered
    * on the static `_activeDocs` set so a Back-then-forward navigation can
    * call `PdfRenderer.disposeWorker()` from `App._loadFile` and preempt
@@ -91,7 +91,7 @@ class PdfRenderer {
       // Store page count for caller
       wrap.dataset.pageCount = pdf.numPages;
     } catch (err) {
-      // PLAN F3: cancellation via `PdfRenderer.disposeWorker()` calls
+      // cancellation via `PdfRenderer.disposeWorker()` calls
       // `pdf.destroy()` mid-loop, after which any pending `getPage(...)` /
       // `page.render(...)` promise rejects with a pdf.js "Worker was
       // destroyed" / `AbortException`. Treat both as benign supersession
@@ -365,7 +365,7 @@ class PdfRenderer {
       }
       const data = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer).slice();
       const pdf = await pdfjsLib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
-      // PLAN F3: register the analyser doc so a Back-then-forward navigation
+      // register the analyser doc so a Back-then-forward navigation
       // can preempt a long-running deep scan via `PdfRenderer.disposeWorker()`.
       // Removed from the set on the normal `pdf.destroy()` path below; the
       // outer catch handles the cancellation case.
@@ -648,7 +648,7 @@ class PdfRenderer {
       return f;
     } catch (_) {
       // pdf.js failed (malformed / malicious) — rely on raw-scan alone.
-      // (Includes the PLAN F3 cancellation case, where `disposeWorker()`
+      // (Includes the cancellation case, where `disposeWorker()`
       // tore the doc down mid-scan; the catch leaves us with whatever
       // raw-scan results were already gathered before the doc opened.)
       this._attachJavaScripts(f, rawScripts);
@@ -1299,10 +1299,10 @@ class PdfRenderer {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// PLAN F3 — pdf.worker lifecycle.
+// pdf.worker lifecycle.
 //
 // pdf.js owns its own dedicated worker (`vendor/pdf.worker.js`) outside the
-// C1–C4 `WorkerManager` channels. `_activeDocs` tracks every open
+// `WorkerManager` channels. `_activeDocs` tracks every open
 // `PDFDocumentProxy` from both `render()` and `analyzeForSecurity()` so a
 // rapid file switch (Back-then-forward, drag-and-drop while a render is in
 // flight) can preempt in-flight `getPage()` / `page.render()` /

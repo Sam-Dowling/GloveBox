@@ -122,9 +122,9 @@ A bird's-eye view of which cross-cutting features each renderer participates in.
 
 - The 7-Zip and RAR rows are ◐ for drill-down because both are listing-only — the Loupe build avoids shipping LZMA / LZSS / PPMd decoders, so individual entries appear in the archive tree with a lock icon and click-to-open is suppressed.
 - DMG drill-down is ◐ because partition walking surfaces embedded `.app` bundle paths but does not always extract their contents.
-- Encoded-content recursion is ◐ for EVTX / CSV because it runs per-row inside the Timeline grid rather than producing the full recursive lineage view that text/email/PDF/image pipelines do — see PLAN.md item M4 for the canonical fix.
+- Encoded-content recursion is ◐ for EVTX / CSV because it runs per-row inside the Timeline grid rather than producing the full recursive lineage view that text/email/PDF/image pipelines do — the full lineage is surfaced when the per-cell scan promotes the row.
 - Click-to-focus is ◐ on Office (OOXML/OLE2/ODF), MSI, OneNote, PDF and JAR renderers because those views aren't backed by a single plaintext stream — clicks scroll to the right card, sheet, page, or class but cannot land on a per-character `<mark>` highlight.
-- Auto-YARA is currently universal across every renderer (no size gate today) — PLAN.md tracks B3 (size gate + visible failure) and C1 (Web Worker) as the upcoming improvements.
+- Auto-YARA runs in a Web Worker on every successful load, with a synchronous main-thread fallback gated by `SYNC_YARA_FALLBACK_MAX_BYTES` (32 MiB) when the browser refuses `Worker(blob:)`.
 
 ---
 

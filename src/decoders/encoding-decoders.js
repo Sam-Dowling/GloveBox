@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 // encoding-decoders.js — `_decodeCandidate` dispatch + per-encoding decoders
-// for the secondary encoding family (PLAN Track E2).
+// for the secondary encoding family.
 //
 // `_decodeCandidate` is the single switch dispatched by `_processCandidate`.
 // All cases ultimately produce a `Uint8Array` (or `null` on failure) that is

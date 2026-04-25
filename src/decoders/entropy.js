@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 // entropy.js — Entropy / decode-validation utilities + classification &
-// severity for the encoded-content detector (PLAN Track E2).
+// severity for the encoded-content detector.
 //
 // Hosts:
 //   * `_shannonEntropyString` / `_shannonEntropyBytes` — Shannon entropy

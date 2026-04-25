@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// ioc-extract.js — IOC extraction from decoded payloads (PLAN Track E2).
+// ioc-extract.js — IOC extraction from decoded payloads.
 //
 // Scans a decoded byte buffer for URLs, emails, IPs, Windows + UNC paths and
 // returns an IOC[] tagged with `IOC.*` constants and severity hints. URLs are

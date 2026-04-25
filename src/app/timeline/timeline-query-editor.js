@@ -2,7 +2,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // timeline-query-editor.js — TimelineQueryEditor class.
 //
-// Split out of the legacy app-timeline.js monolith (PLAN E1). Owns the
+// Split out of the legacy app-timeline.js monolith. Owns the
 // overlay <textarea> + syntax-highlighted <pre> + suggestion dropdown +
 // inline history + undo/redo ring. Bound to a TimelineView instance via
 // constructor opts.

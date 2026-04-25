@@ -1,6 +1,6 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
-// encoded.worker.js — EncodedContentDetector parse-only worker (PLAN C3)
+// encoded.worker.js — EncodedContentDetector parse-only worker
 //
 // Pure WorkerGlobalScope module: no DOM, no `window`, no `app.*` references.
 // Runs the 2,114-line `EncodedContentDetector.scan()` recursion off the main

@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 // encoding-finders.js — Candidate finders for the "secondary" encoding family
-// (PLAN Track E2). One finder per technique; each emits the same candidate
+//. One finder per technique; each emits the same candidate
 // object shape consumed by `_processCandidate()`:
 //
 //   { type, raw, offset, length, entropy, confidence, hint, autoDecoded, … }

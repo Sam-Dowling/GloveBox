@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 // whitelist.js — Context-based whitelist predicates for the encoded-content
-// detector (PLAN Track E2). Each helper inspects the text region around a
+// detector. Each helper inspects the text region around a
 // candidate offset to decide whether the match is benign (data: URI, PEM,
 // CSS @font-face, MIME body, GUID, hash literal, PowerShell -EncodedCommand,
 // Base32-keyword anchor) and should be skipped before invoking the heavier

@@ -8,7 +8,7 @@ const _SIDEBAR_SEV_ORDER = { critical: 0, high: 1, medium: 2, info: 3 };
 Object.assign(App.prototype, {
 
   // Shared helper: create a synthetic file from decoded bytes and dispatch
-  // it through the unified `App.openInnerFile` drill-down (PLAN D3).
+  // it through the unified `App.openInnerFile` drill-down.
   // Deduplicated from the five "Decode & Analyse" / "Load for analysis" /
   // "Load embedded ZIP" / "Decompress & Analyse" / "All the way" button
   // handlers in the encoded-content card. The returnFocus payload tells
@@ -111,11 +111,11 @@ Object.assign(App.prototype, {
 
     // 3b. Binary triage surfaces — only present when the currently loaded
     // file routed through one of the three native-binary renderers. Both
-    // sections read from the stash populated by app-load.js dispatchers
-    // (`this._binaryParsed` / `this._binaryFormat`) and are a no-op
-    // otherwise. Keeps the sidebar focused on pivot + MITRE rollup — the
-    // heavy structural detail stays in the main viewer's Tier-C cards.
-    if (this._binaryFormat) {
+    // sections read from `this.currentResult.binary` (`{format, parsed}`)
+    // populated by app-load.js dispatchers, and are a no-op otherwise.
+    // Keeps the sidebar focused on pivot + MITRE rollup — the heavy
+    // structural detail stays in the main viewer's Tier-C cards.
+    if (this.currentResult && this.currentResult.binary) {
       this._renderBinaryMetadataSection(body, fileName);
       this._renderMitreSection(body, fileName);
     }
@@ -1196,7 +1196,7 @@ Object.assign(App.prototype, {
         loadZipBtn.textContent = '▶ Load embedded ZIP';
         loadZipBtn.title = 'Extract and open the embedded ZIP archive';
         loadZipBtn.addEventListener('click', () => {
-          const rawBytes = new Uint8Array(this._fileBuffer);
+          const rawBytes = new Uint8Array(this.currentResult.buffer);
           const zipBytes = rawBytes.subarray(finding.embeddedZipOffset);
           this._drillDownToSynthetic(zipBytes, `embedded_zip_offset${finding.offset}.zip`, 'application/zip', fileName, finding.offset);
         });

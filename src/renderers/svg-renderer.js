@@ -180,32 +180,40 @@ class SvgRenderer {
     container.appendChild(toolbar);
 
     // ── Preview pane (sandboxed iframe) ──────────────────────────────────
+    // The iframe + drag-shield pair is produced by the shared
+    // `SandboxPreview` helper. The DOCTYPE-strip
+    // pre-step below is SVG-specific (HTML parsers don't handle XML
+    // internal DTD subsets — `]>` would render as visible text), so it
+    // stays in the renderer rather than the helper. The helper's
+    // `wrap:true` mode then assembles the `<!DOCTYPE html><html>…` shell
+    // with the inner CSP `<meta>` (default
+    // `default-src 'none'; style-src 'unsafe-inline'; img-src data:` —
+    // pinned in `SandboxPreview.DEFAULT_INNER_CSP`) and the dark-mode
+    // aware checkerboard background.
     const previewPane = document.createElement('div');
     previewPane.className = 'svg-preview-pane';
 
-    const iframe = document.createElement('iframe');
-    iframe.className = 'svg-iframe';
-    iframe.sandbox = 'allow-same-origin';
-    // Strip DOCTYPE (with optional internal subset) — HTML parsers don't handle
-    // XML internal DTD subsets, causing ]> to render as visible text
+    // Strip DOCTYPE (with optional internal subset) before injection.
     const previewText = text.replace(/<!DOCTYPE[^[>]*\[[^\]]*\]>/gi, '').replace(/<!DOCTYPE[^>]*>/gi, '');
-    // Wrap SVG in minimal HTML with dark-mode aware background
-    // Inner CSP locks down the sandboxed document — blocks scripts, fetches, fonts, objects
-    const wrappedSvg = `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:"><style>
-      html,body{margin:0;padding:16px;display:flex;justify-content:center;align-items:center;min-height:100vh;box-sizing:border-box;
-      background:repeating-conic-gradient(#f0f0f0 0% 25%,white 0% 50%) 50%/20px 20px;}
-      svg{max-width:100%;max-height:90vh;}
-    </style></head><body>${previewText}</body></html>`;
-    iframe.srcdoc = wrappedSvg;
-    iframe.title = 'SVG preview (sandboxed)';
 
-    // Scroll forwarding
-    const dragShield = document.createElement('div');
-    dragShield.className = 'svg-drag-shield';
-    dragShield.addEventListener('wheel', e => {
-      e.preventDefault();
-      try { iframe.contentWindow.scrollBy(0, e.deltaY); } catch (_) {}
-    }, { passive: false });
+    const wrapStyle =
+      'html,body{margin:0;padding:16px;display:flex;justify-content:center;align-items:center;min-height:100vh;box-sizing:border-box;' +
+      'background:repeating-conic-gradient(#f0f0f0 0% 25%,white 0% 50%) 50%/20px 20px;}' +
+      'svg{max-width:100%;max-height:90vh;}';
+
+    const { iframe, dragShield } = SandboxPreview.create({
+      html: previewText,
+      wrap: true,
+      wrapStyle: wrapStyle,
+      iframeClassName: 'svg-iframe',
+      shieldClassName: 'svg-drag-shield',
+      title: 'SVG preview (sandboxed)',
+      forwardScroll: true,
+      // SVG renderer historically only forwarded vertical wheel scroll;
+      // the helper forwards both axes. Touch / drag-drop intentionally
+      // off — drops on SVG previews are routed by the page-level
+      // overlay in app-core.js.
+    });
 
     previewPane.appendChild(iframe);
     previewPane.appendChild(dragShield);

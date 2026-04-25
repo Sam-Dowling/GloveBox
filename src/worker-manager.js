@@ -1,6 +1,6 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
-// worker-manager.js — Host-side spawner for `src/workers/*.worker.js` (PLAN C1)
+// worker-manager.js — Host-side spawner for `src/workers/*.worker.js`
 //
 // This file is the **only** sanctioned home for `new Worker(...)` outside
 // `src/workers/*.worker.js` itself. The build-time gate in
@@ -21,9 +21,9 @@
 //   3. A monotonic per-channel token is bumped on every call. Stale
 //      messages from a superseded worker are dropped at receive time.
 //      The matching `cancel*()` helper bumps the token and terminates the
-//      active worker — `_loadFile` calls all four cancellers on entry so
+//      active worker — `_loadFile` calls every canceller on entry so
 //      each new file abandons every previous in-flight job.
-//   4. **Timeout (PLAN C5).** Every job is bracketed by a
+//   4. **Timeout.** Every job is bracketed by a
 //      `PARSER_LIMITS.WORKER_TIMEOUT_MS` (2 min) deadline. On expiry the
 //      worker is `terminate()`-d (real preemption — the worker's JS
 //      engine is killed mid-iteration, unlike the post-hoc main-thread
@@ -40,20 +40,20 @@
 // ----------------
 // `postMessage(buffer, [buffer])` **transfers** ownership: the worker
 // gains the bytes, the main thread loses them. Auto-YARA happens on every
-// load, and the rest of the pipeline still needs `_fileBuffer`, so the
+// load, and the rest of the pipeline still needs the buffer, so the
 // caller must pass a `buffer.slice(0)` copy. The cost is one memcpy of the
 // scan buffer; cheap relative to the scan itself.
 //
-// Centralisation (PLAN C5)
-// ------------------------
-// All four `run*` methods funnel through the private `_runWorkerJob`
+// Centralisation
+// --------------
+// All public `run*` methods funnel through the private `_runWorkerJob`
 // helper below. The helper owns: probe gating, supersession (token +
 // terminate), spawn-failure → "workers-unavailable" demotion, message /
 // error wiring, stale-token drops, **timeout-via-terminate**, and the
 // finalisation/cleanup path. Each public `runYara` / `runTimeline` /
-// `runEncoded` / `runStrings` is now a thin wrapper that supplies the
-// per-channel state and payload shape; adding a new worker channel takes
-// ~25 lines instead of ~80.
+// `runEncoded` is a thin wrapper that supplies the per-channel state and
+// payload shape; adding a new worker channel takes ~25 lines instead of
+// ~80.
 // ════════════════════════════════════════════════════════════════════════════
 
 window.WorkerManager = (function () {
@@ -75,7 +75,6 @@ window.WorkerManager = (function () {
     yara:     { active: null, token: 0 },
     timeline: { active: null, token: 0 },
     encoded:  { active: null, token: 0 },
-    strings:  { active: null, token: 0 },
   };
 
   function _probe() {
@@ -101,13 +100,12 @@ window.WorkerManager = (function () {
    * Spawn a worker from one of the inlined bundle constants.
    * The build script (`scripts/build.py`) prepends each constant
    * (`__YARA_WORKER_BUNDLE_SRC`, `__TIMELINE_WORKER_BUNDLE_SRC`,
-   * `__ENCODED_WORKER_BUNDLE_SRC`, `__STRINGS_WORKER_BUNDLE_SRC`) to the
-   * top of the application script block. Each bundle is a self-contained
-   * concatenation of: shim → vendored deps (if any) → in-tree deps →
-   * `*.worker.js` dispatcher.
+   * `__ENCODED_WORKER_BUNDLE_SRC`) to the top of the application script
+   * block. Each bundle is a self-contained concatenation of: shim →
+   * vendored deps (if any) → in-tree deps → `*.worker.js` dispatcher.
    *
    * @param {string} bundleSrc  the `__*_WORKER_BUNDLE_SRC` string
-   * @param {string} channel    'yara' | 'timeline' | 'encoded' | 'strings'
+   * @param {string} channel    'yara' | 'timeline' | 'encoded'
    *                            (used only in the missing-bundle error)
    */
   function _spawnFromBundle(bundleSrc, channel) {
@@ -135,11 +133,11 @@ window.WorkerManager = (function () {
    *   • probe gating + spawn-failure demotion
    *   • supersession (token bump + terminate of any prior active worker)
    *   • message / error wiring and stale-token drops
-   *   • timeout-via-terminate (PLAN C5)
+   *   • timeout-via-terminate
    *   • cleanup (terminate + clear active handle on every terminal branch)
    *
    * @param {object}   spec
-   * @param {string}   spec.channel       'yara' | 'timeline' | 'encoded' | 'strings'
+   * @param {string}   spec.channel       'yara' | 'timeline' | 'encoded'
    * @param {string}   spec.bundleSrc     the `__*_WORKER_BUNDLE_SRC` constant
    * @param {object}   spec.payload       the body of `postMessage()` (no buffers)
    * @param {Transferable[]} [spec.transfers]  optional transfer list
@@ -197,7 +195,7 @@ window.WorkerManager = (function () {
         fn(val);
       };
 
-      // ── Timeout (PLAN C5) — real preemption via worker.terminate() ──
+      // ── Timeout — real preemption via worker.terminate() ──
       // The error shape deliberately mirrors `ParserWatchdog.run`'s
       // sentinel fields so callers that already branch on
       // `err._watchdogTimeout` (e.g. `app-load.js`'s renderer dispatch
@@ -218,6 +216,16 @@ window.WorkerManager = (function () {
           err._watchdogTimeout   = true;
           err._watchdogName      = spec.channel;
           err._watchdogTimeoutMs = timeoutMs;
+          // Surface the worker-side preemption to the dev-mode breadcrumb
+          // ribbon. Guarded so a missing mixin or pre-init termination can
+          // never break the existing reject path.
+          try {
+            if (typeof window !== 'undefined' &&
+                window.app &&
+                typeof window.app._breadcrumb === 'function') {
+              window.app._breadcrumb('worker:' + spec.channel, 'timeout', { timeoutMs });
+            }
+          } catch (_) { /* breadcrumb best-effort, never block reject */ }
           reject(err);
         }, timeoutMs);
       }
@@ -267,7 +275,7 @@ window.WorkerManager = (function () {
    * every channel's canceller so a new file abandons every previous
    * scan / parse.
    *
-   * @param {string} channel  'yara' | 'timeline' | 'encoded' | 'strings'
+   * @param {string} channel  'yara' | 'timeline' | 'encoded'
    */
   function _cancelChannel(channel) {
     const ch = _channels[channel];
@@ -324,7 +332,7 @@ window.WorkerManager = (function () {
    *
    *  The buffer is **transferred**; pass `buffer.slice(0)` if the caller
    *  still needs the bytes for downstream analyser code. The Timeline
-   *  caller does — `_loadFileInTimeline` keeps reading `_fileBuffer` to
+   *  caller does — `_loadFileInTimeline` keeps reading the buffer to
    *  drive the analyser sidebar after the parse returns.
    *
    *  @param {ArrayBuffer} buffer  bytes to parse; will be transferred
@@ -364,7 +372,7 @@ window.WorkerManager = (function () {
    *
    *  The buffer is **transferred**; pass `buffer.slice(0)` if the caller
    *  still needs the bytes. The `_loadFile` caller does — every downstream
-   *  step (renderer, hashing, YARA, sidebar) reads `_fileBuffer` after the
+   *  step (renderer, hashing, YARA, sidebar) reads the buffer after the
    *  scan returns.
    *
    *  @param {ArrayBuffer} buffer        bytes to scan; will be transferred
@@ -390,49 +398,11 @@ window.WorkerManager = (function () {
   }
   function cancelEncoded() { _cancelChannel('encoded'); }
 
-  /** Extract ASCII + UTF-16LE printable strings from a buffer in a worker.
-   *  Returns a Promise that resolves with
-   *    { ascii: string[], utf16: string[],
-   *      asciiCount: N, utf16Count: N, parseMs: N }
-   *  — the same shape `extractAsciiAndUtf16leStrings()` returns on the
-   *  main thread, plus timing.
-   *
-   *  Rejects with `Error('workers-unavailable')` when the probe failed
-   *  (caller falls back to the synchronous path), `Error(...)` with
-   *  `_watchdogTimeout=true` on timeout, or with the worker's reported
-   *  error otherwise.
-   *
-   *  The buffer is **transferred**; pass `buffer.slice(0)` if the caller
-   *  still needs the bytes. Today only DMG migrates to the worker — its
-   *  caller (`DmgRenderer._scanStringsAsync`) deliberately works on a
-   *  copy because the bytes are also handed to the renderer's UDIF /
-   *  partition-table parsers right after.
-   *
-   *  @param {ArrayBuffer} buffer  bytes to scan; will be transferred
-   *  @param {object}      [opts]  forwarded to extractAsciiAndUtf16leStrings:
-   *                                 { start?, end?, asciiMin?, utf16Min?, cap? } */
-  function runStrings(buffer, opts) {
-    return _runWorkerJob({
-      channel:   'strings',
-      bundleSrc: typeof __STRINGS_WORKER_BUNDLE_SRC !== 'undefined' ? __STRINGS_WORKER_BUNDLE_SRC : '',
-      payload:   { buffer, opts: opts || {} },
-      transfers: [buffer],
-      decodeDone: (m) => ({
-        ascii:      m.ascii      || [],
-        utf16:      m.utf16      || [],
-        asciiCount: m.asciiCount || 0,
-        utf16Count: m.utf16Count || 0,
-        parseMs:    m.parseMs    || 0,
-      }),
-    });
-  }
-  function cancelStrings() { _cancelChannel('strings'); }
-
   /** Returns true when `Worker(blob:)` is usable for the rest of the
    *  session. Cached after first call. Auto-YARA uses this to decide
-   *  whether the `MAX_AUTO_YARA_BYTES` size gate still applies (the gate
-   *  exists to protect the synchronous fallback; with a worker the scan
-   *  can run on arbitrary sizes without freezing the UI). */
+   *  whether the `SYNC_YARA_FALLBACK_MAX_BYTES` size gate still applies
+   *  (the gate exists to protect the synchronous fallback; with a worker
+   *  the scan can run on arbitrary sizes without freezing the UI). */
   function workersAvailable() {
     return _probe();
   }
@@ -444,8 +414,6 @@ window.WorkerManager = (function () {
     cancelTimeline,
     runEncoded,
     cancelEncoded,
-    runStrings,
-    cancelStrings,
     workersAvailable,
   };
 

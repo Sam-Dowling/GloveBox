@@ -4,7 +4,7 @@
 //
 // This is the first file `scripts/build.py` concatenates into the
 // `__TIMELINE_WORKER_BUNDLE_SRC` template-literal that powers the Timeline
-// parse-only worker (PLAN C2). It declares the small subset of constants
+// parse-only worker. It declares the small subset of constants
 // and analyzer stubs the renderer sources reach for at module load and
 // must therefore be defined **before** them.
 //

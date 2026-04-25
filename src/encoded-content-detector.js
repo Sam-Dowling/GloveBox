@@ -4,7 +4,7 @@
 //
 // This file is the **class root**. Per-feature methods are mounted onto
 // `EncodedContentDetector.prototype` via `Object.assign(...)` from the
-// sibling files in `src/decoders/` (PLAN Track E2 split):
+// sibling files in `src/decoders/`:
 //
 //   safelinks.js          — static unwrapSafeLink (Proofpoint v1/v2/v3 + MS)
 //   whitelist.js          — _isDataURI / _isPEM / _isCSSFontData / _isMIMEBody /
@@ -123,12 +123,14 @@ class EncodedContentDetector {
   async scan(textContent, rawBytes, context = {}) {
     const findings = [];
 
-    // Phase 1: Find candidates in text content
+    // Find primary text-encoding candidates (Base64 / Hex / Base32).
     const b64Candidates = this._findBase64Candidates(textContent, context);
     const hexCandidates = this._findHexCandidates(textContent, context);
     const b32Candidates = this._findBase32Candidates(textContent, context);
 
-    // Phase 1c: Additional encoding candidates
+    // Find secondary encoding candidates (URL-enc / HTML entities /
+    // \\uXXXX / char-array / octal / Script.Encode / space-hex / ROT13 /
+    // split-join).
     const urlEncCandidates = this._findUrlEncodedCandidates(textContent, context);
     const htmlEntCandidates = this._findHtmlEntityCandidates(textContent, context);
     const unicodeEscCandidates = this._findUnicodeEscapeCandidates(textContent, context);
@@ -139,13 +141,13 @@ class EncodedContentDetector {
     const rot13Candidates = this._findRot13Candidates(textContent, context);
     const splitJoinCandidates = this._findSplitJoinCandidates(textContent, context);
 
-    // Phase 1d: Command obfuscation candidates
+    // Find CMD / PowerShell command-obfuscation candidates.
     const cmdObfCandidates = this._findCommandObfuscationCandidates(textContent, context);
 
-    // Phase 1b: Find compressed blob candidates in raw bytes
+    // Find compressed-blob candidates in the raw bytes (zlib / gzip / etc.).
     const compressedCandidates = this._findCompressedBlobCandidates(rawBytes, context);
 
-    // Phase 2 & 3: Decode and classify each candidate
+    // Decode and classify every candidate.
     for (const cand of b64Candidates) {
       const result = await this._processCandidate(cand, 0);
       if (result) findings.push(result);

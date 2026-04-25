@@ -1,7 +1,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // base64-hex.js — Candidate finders + decoders for Base64, Hex (continuous,
 // `\xNN` escape sequences, PowerShell `0x..,0x..` byte arrays) and Base32.
-// Extracted from `encoded-content-detector.js` (PLAN Track E2).
+// Extracted from `encoded-content-detector.js`.
 //
 // Each `_findX*Candidates()` returns objects of shape:
 //   { type, raw, offset, length, entropy, confidence, hint, autoDecoded }

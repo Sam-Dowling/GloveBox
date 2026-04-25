@@ -2,7 +2,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // timeline-helpers.js — Timeline mode constants + pure helper functions.
 //
-// Split out of the legacy app-timeline.js monolith (PLAN E1). Contains:
+// Split out of the legacy app-timeline.js monolith. Contains:
 //   - All TIMELINE_* constants (keys, palette, presets, bucket options).
 //   - All `_tl*` pure helper functions (timestamp parsing, auto-detect,
 //     formatters, JSON path extraction, CSV cell escaping, etc.).

@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 // cmd-obfuscation.js — CMD + PowerShell command-obfuscation detection &
-// deobfuscation (PLAN Track E2). Extracted as a single module because the
+// deobfuscation. Extracted as a single module because the
 // CMD and PowerShell techniques share the candidate-emission contract and
 // finding-shape (`{type:'cmd-obfuscation', technique, raw, deobfuscated, …}`)
 // and frequently appear interleaved in the same script.

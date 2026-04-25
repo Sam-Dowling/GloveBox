@@ -1,6 +1,6 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
-// yara.worker.js — YARA scan worker (PLAN C1)
+// yara.worker.js — YARA scan worker
 //
 // Pure WorkerGlobalScope module: no DOM, no `window`, no `app.*` references.
 // The worker runs `YaraEngine.parseRules` + `YaraEngine.scan` off the main
@@ -24,18 +24,19 @@
 //   out: { event: 'done',  results: [...], parseMs: N, scanMs: N }
 //        { event: 'error', message: string }
 //
-// The buffer is **transferred** (caller loses access). Callers that need the
-// bytes again — every site does today, since the load pipeline keeps reading
-// `_fileBuffer` after auto-YARA — pass a `buffer.slice(0)` copy so the
-// original survives. See `src/worker-manager.js::runYara`.
+// The buffer is **transferred** (caller loses access). Callers that need
+// the bytes again — every site does, since the load pipeline keeps
+// reading `this.currentResult.buffer` after auto-YARA — pass a
+// `buffer.slice(0)` copy so the original survives. See
+// `src/worker-manager.js::runYara`.
 //
 // Failure surface
 // ---------------
 // Parse errors and scan exceptions both come back as `{event: 'error'}`.
-// The host (`src/app/app-yara.js::_autoYaraScan`) treats both the same way:
-// console.warn + sidebar `IOC.INFO` row (interim shim until PLAN F2 lands
-// `App._reportNonFatal`). The worker never throws — every path posts
-// exactly one terminal event then exits.
+// The host (`src/app/app-yara.js::_autoYaraScan`) routes both through
+// `App._reportNonFatal('auto-yara', err)`, which emits a single sidebar
+// `IOC.INFO` row plus a console breadcrumb. The worker never throws —
+// every path posts exactly one terminal event then exits.
 //
 // CSP note
 // --------

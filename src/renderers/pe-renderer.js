@@ -3732,7 +3732,7 @@ class PeRenderer {
           // is already the "signature hash" which the Certificates section
           // shows separately.
           if (!overlayIsJustAuthenticode) {
-            // PLAN D2: the overlay digest is the canonical "late-arriving
+            // the overlay digest is the canonical "late-arriving
             // finding" — `crypto.subtle.digest` resolves after
             // `_renderSidebar` has already painted from the synchronous
             // `findings` snapshot, so a direct write here was invisible

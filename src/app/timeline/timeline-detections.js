@@ -2,7 +2,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // timeline-detections.js — TimelineView prototype mixin.
 //
-// Split out of the legacy app-timeline.js monolith (PLAN E1). EVTX-only
+// Split out of the legacy app-timeline.js monolith. EVTX-only
 // in-view Detections + Entities sections plus their helpers.
 //
 // **Analysis-bypass guard.** These methods consume the result of

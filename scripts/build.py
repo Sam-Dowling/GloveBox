@@ -150,8 +150,8 @@ default_yara_js = f'const DEFAULT_YARA_RULES = `{yar_rules_escaped}`;\n'
 # helpers can load in any order after that, but we keep the listing
 # deterministic for byte-reproducible builds. This list is splatted into
 # `JS_FILES` (main bundle) and concatenated into `_encoded_worker_bundle_src`
-# (worker bundle) so the two stay in sync. See PLAN.md Track E2 and
-# CONTRIBUTING.md → Encoded-content split.
+# (worker bundle) so the two stay in sync. See CONTRIBUTING.md →
+# Encoded-content split.
 _DETECTOR_FILES = [
     'src/encoded-content-detector.js',
     'src/decoders/safelinks.js',
@@ -190,7 +190,18 @@ JS_FILES = [
     # `_downloadBytes` / renderer-local Save button funnels through this).
     # No dependencies — pure DOM + Blob ceremony.
     'src/file-download.js',
+    # sandbox-preview.js — shared sandboxed-iframe + drag-shield helper
+    # used by html-renderer.js and svg-renderer.js. Exposes
+    # `window.SandboxPreview.create({...})`
+    # which builds the `iframe` (with `sandbox='allow-same-origin'` +
+    # inner CSP `<meta>` tag) and the overlay drag-shield `<div>` that
+    # forwards wheel/touch scroll deltas and re-dispatches drag/drop
+    # as `loupe-*` CustomEvents. Must load BEFORE the renderers that
+    # consume it (`html-renderer.js`, `svg-renderer.js`). No
+    # dependencies — pure DOM + closures.
+    'src/sandbox-preview.js',
     # hashes.js — shared non-cryptographic fingerprint hashes (imphash
+
     # helpers, Rich-header hash, Mach-O symhash). Must load BEFORE any
     # native-binary renderer (pe/elf/macho) so they can call
     # `computeImportHashFromList`, `computeRichHash`, `computeSymHash`
@@ -265,7 +276,7 @@ JS_FILES = [
     # references the build-injected `__YARA_WORKER_BUNDLE_SRC` constant which
     # carries a copy of the engine's source) and BEFORE app-yara.js / app-load.js
     # (which call WorkerManager.runYara / WorkerManager.cancelYara at runtime).
-    # See CONTRIBUTING.md → Worker subsystem and PLAN.md Track C1.
+    # See CONTRIBUTING.md → Worker subsystem.
     'src/worker-manager.js',
 
     'src/decompressor.js',
@@ -279,7 +290,7 @@ JS_FILES = [
     # and one static (`unwrapSafeLink`). They MUST load AFTER the class root and
     # in the order below — see `_DETECTOR_FILES` for the canonical list, which
     # is reused by `_encoded_worker_bundle_src` to keep the worker bundle in
-    # sync. See PLAN.md Track E2 and CONTRIBUTING.md → Encoded-content split.
+    # sync. See CONTRIBUTING.md → Encoded-content split.
     *_DETECTOR_FILES,
     'src/qr-decoder.js',
 
@@ -332,14 +343,14 @@ JS_FILES = [
     # rows, absolute-positioned rows, right-side resizable drawer, unified
     # highlight state machine, chunked cooperative parse, mandatory
     # destroy()). Must load BEFORE every renderer that consumes it
-    # (csv-renderer.js today; evtx / xlsx / sqlite / json in Wave B).
+    # (csv-renderer.js today; future evtx / xlsx / sqlite / json adopters).
     'src/renderers/grid-viewer.js',
     'src/renderers/csv-renderer.js',
     'src/renderers/json-renderer.js',
     'src/renderers/evtx-renderer.js',
     # evtx-detector.js — analysis-only EVTX threat-detection / IOC-extraction.
     # Extracted from evtx-renderer.js so the Timeline parse-only worker
-    # bundle (Wave C) can stay small: the worker never references this file,
+    # bundle stays small: the worker never references this file,
     # and the analyzer runs on the main thread after the worker streams
     # parsed events back. EvtxRenderer.analyzeForSecurity now forwards to
     # EvtxDetector.analyzeForSecurity. Must load AFTER evtx-renderer.js
@@ -374,19 +385,18 @@ JS_FILES = [
     # name, and BEFORE app-core.js so `App._loadFile` can call
     # `RendererRegistry.detect()` / `RendererRegistry.makeContext()`.
     'src/renderer-registry.js',
-    # render-route.js — central renderer dispatch helper introduced by
-    # PLAN Track D1. Exposes `window.RenderRoute.run(file, buf, app, rctx?)`
-    # which calls `RendererRegistry.detect()`, invokes the matched
-    # `App._rendererDispatch[id]` handler under the PLAN-B5 parser-watchdog
+    # render-route.js — central renderer dispatch helper. Exposes
+    # `window.RenderRoute.run(file, buf, app, rctx?)` which calls
+    # `RendererRegistry.detect()`, invokes the matched
+    # `App._rendererDispatch[id]` handler under the parser-watchdog
     # (`PARSER_LIMITS.RENDERER_TIMEOUT_MS`), normalises the renderer's
     # return into the canonical `RenderResult` shape (centralised
-    # `lfNormalize` of `_rawText`/`textContent` — fixes H3), and stamps
+    # `lfNormalize` of `_rawText`/`textContent`), and stamps
     # `app.currentResult`. Must load AFTER renderer-registry.js (the
     # detect/makeContext entrypoints) and AFTER parser-watchdog.js (read
     # via the global), and BEFORE app-core.js so `App._loadFile` can call
     # `RenderRoute.run(...)` without a forward reference. The
-    # `_rendererDispatch` table itself stays in `app-load.js` until D4
-    # cuts it over to a registry-driven structure.
+    # `_rendererDispatch` table itself lives in `app-load.js`.
     'src/render-route.js',
     # app-bg.js — subtle per-theme animated landing-surface background
     # (plasma drift on light/dark, floating hearts on mocha, floating
@@ -400,8 +410,7 @@ JS_FILES = [
     'src/app/app-core.js',
 
     # src/app/timeline/ — Timeline mode (CSV / TSV / EVTX / SQLite browser
-    # history), split out of the legacy `app-timeline.js` monolith by PLAN
-    # Track E1 (10,061 LOC → 7 cohesive modules under src/app/timeline/).
+    # history), split into 7 cohesive modules under src/app/timeline/.
     # Must load AFTER app-core.js (defines `App`) and AFTER grid-viewer.js /
     # csv-renderer.js / evtx-renderer.js / sqlite-renderer.js (all under
     # src/renderers/, already concatenated above) since TimelineView reuses
@@ -462,6 +471,17 @@ JS_FILES = [
     # App.prototype. Must load AFTER app-ui.js because the Settings tab's
     # theme picker references the THEMES registry + _setTheme defined there.
     'src/app/app-settings.js',
+    # Dev-mode debug breadcrumbs ribbon. Pure mixin
+    # (`Object.assign(App.prototype, {...})`) with no cross-mixin
+    # dependencies; every consumer (`_initBreadcrumbs`, `_breadcrumb`,
+    # `_toggleDevBreadcrumbs`) is guarded with
+    # `typeof this._breadcrumb === 'function'` at the call sites
+    # (`app-core.js::_reportNonFatal`, `app-load.js::_loadFile`,
+    # `render-route.js`, `worker-manager.js`) so load order relative to
+    # the other late mixins doesn't matter — only that it loads AFTER
+    # `app-core.js` defines the `App` constructor. Kept last so the
+    # diagnostics layer never hides a real bootstrap dependency.
+    'src/app/app-breadcrumbs.js',
 ]
 
 app_js = '\n'.join(read(f) for f in JS_FILES)
@@ -484,7 +504,7 @@ app_js = '\n'.join(read(f) for f in JS_FILES)
 # `eval` / `new Function` / network — review at the file level, not via a
 # build gate.
 #
-# See CONTRIBUTING.md → Worker subsystem and PLAN.md Track C1.
+# See CONTRIBUTING.md → Worker subsystem.
 def _esc_for_template(s: str) -> str:
     """Escape a string for a JS template literal (backticks, backslashes, ${)."""
     return s.replace('\\', '\\\\').replace('`', '\\`').replace('${', '\\${')
@@ -496,7 +516,7 @@ yara_worker_js = (
     + '`;\n'
 )
 
-# Timeline parse-only worker (PLAN C2).
+# Timeline parse-only worker.
 # Bundle order matters — the shim defines `RENDER_LIMITS`, `EVTX_COLUMN_ORDER`,
 # `TIMELINE_MAX_ROWS`, the `IOC` proxy, and the `escalateRisk` / `pushIOC` /
 # `lfNormalize` no-op stubs the renderer sources reach for at module load.
@@ -517,7 +537,7 @@ timeline_worker_js = (
     + '`;\n'
 )
 
-# EncodedContentDetector worker (PLAN C3).
+# EncodedContentDetector worker.
 # Bundle order matters — the shim defines the IOC table, the
 # `PARSER_LIMITS.MAX_UNCOMPRESSED` cap, and the `_trimPathExtGarbage` helper
 # the detector reads at module load. pako is the Decompressor sync fallback
@@ -544,28 +564,11 @@ encoded_worker_js = (
     + '`;\n'
 )
 
-# Binary-string extractor worker (PLAN C4).
-# Bundle order: the shim carries a copy of `extractAsciiAndUtf16leStrings()`
-# mirroring `src/constants.js` (the worker has no access to the main bundle's
-# constants module). The strings.worker.js trailer carries the
-# `self.onmessage` dispatcher that drives the extractor and posts
-# `{ascii, utf16, asciiCount, utf16Count, parseMs}` back to the host.
-# No vendored libraries are needed — the extractor is pure JS.
-_strings_worker_bundle_src = (
-    read('src/workers/strings-worker-shim.js') + '\n'
-    + read('src/workers/strings.worker.js')
-)
-strings_worker_js = (
-    'const __STRINGS_WORKER_BUNDLE_SRC = `'
-    + _esc_for_template(_strings_worker_bundle_src)
-    + '`;\n'
-)
-
 # Stamp the worker bundle constants before the main app bundle so
 # `worker-manager.js` (which reads them) finds them defined at module-eval
-# time. All four live in the same `<script>` block, but the order of
+# time. All three live in the same `<script>` block, but the order of
 # declarations matters for top-level `const` references resolved at run.
-app_js = yara_worker_js + timeline_worker_js + encoded_worker_js + strings_worker_js + app_js
+app_js = yara_worker_js + timeline_worker_js + encoded_worker_js + app_js
 
 
 # ── Build gate: risk pre-stamping ─────────────────────────────────────────────
@@ -720,19 +723,16 @@ _check_raw_text_normalisation()
 # `.clinerules` and `CONTRIBUTING.md` (Architecture & Signal Chain → Worker
 # subsystem) require every Web Worker spawn to live inside an allow-listed
 # module — either a worker module itself (`src/workers/*.worker.js`) or the
-# central host-side spawner (`src/worker-manager.js`). PLAN.md Track C0 sets
-# up this convention before C1–C4 add the first real workers.
+# central host-side spawner (`src/worker-manager.js`).
 #
 # The gate matches `new Worker(` over every entry in `JS_FILES`. pdf.js
 # spawns its own worker from vendored code, which `build.py` reads
 # separately and never lists in `JS_FILES`, so the gate cannot
-# false-positive on it. Today the allow-list is structurally empty (no
-# in-tree workers exist yet); the gate keeps premature `new Worker(...)`
-# calls out of the tree until each Track-C worker lands together with its
-# host-side spawner.
+# false-positive on it. The gate keeps stray `new Worker(...)` calls
+# outside the worker subsystem from sneaking into the bundle.
 _NEW_WORKER_RE = _re.compile(r"\bnew\s+Worker\s*\(")
 def _is_worker_allowlisted(rel: str) -> bool:
-    # Allow worker modules and the future central spawner.
+    # Allow worker modules and the central spawner.
     if rel == 'src/worker-manager.js':
         return True
     if rel.startswith('src/workers/') and rel.endswith('.worker.js'):
@@ -767,7 +767,7 @@ def _check_worker_spawn_allowlist():
 _check_worker_spawn_allowlist()
 
 
-# ── PLAN F2 — silent-catch gate ─────────────────────────────────────────────
+# ── Build gate: silent-catch sweep ───────────────────────────────────────────
 # `catch (...) {}` (an empty body) inside the file-load chain swallows parser
 # faults: the renderer dies in async work, the catch eats the error, and the
 # sidebar paints from a half-built `findings` object with no breadcrumb in
@@ -779,7 +779,8 @@ _check_worker_spawn_allowlist()
 # The gate is scoped to the load chain (`src/app/app-load.js`,
 # `src/app/app-yara.js`) — renderers, cosmetic UI, and settings are out of
 # scope and continue to use their existing `try { … } catch (_) { /* … */ }`
-# patterns until PLAN F5 (dev-mode breadcrumb ribbon) picks them up.
+# patterns. Renderer-side breadcrumbs are picked up by the dev-mode debug
+# breadcrumbs ribbon (`src/app/app-breadcrumbs.js`) instead.
 #
 # Escape hatch: append `// loupe-allow:silent-catch` to a line that legitimately
 # wants an empty body (we don't have any today; the marker is forward-looking).

@@ -2,7 +2,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 // timeline-view.js — TimelineView class core.
 //
-// Split out of the legacy app-timeline.js monolith (PLAN E1). Owns all
+// Split out of the legacy app-timeline.js monolith. Owns all
 // DOM + state for a single loaded file: virtual scroll grid, scrubber,
 // stacked-bar histogram, top-values cards, query chips, pivot table,
 // extraction dialog, exports.
@@ -3777,7 +3777,7 @@ class TimelineView {
   // ── Detections + Entities (EVTX-only) ────────────────────────────────────
   // Methods `_renderDetections`, `_renderEntities`, `_collectEntities`,
   // `_pivotOnEntity`, `_pivotAnyContainsToggle` are attached to
-  // TimelineView.prototype by `timeline-detections.js` (PLAN E1 split).
+  // TimelineView.prototype by `timeline-detections.js`.
 
 
   _paintColumnCards(host, stats, role) {
@@ -6195,7 +6195,7 @@ class TimelineView {
   // `_uniqueColName`, `_removeExtractedCol`,
   // `_rebuildExtractedStateAndRender`, `_persistRegexExtracts` are
   // attached to TimelineView.prototype by `timeline-drawer.js`
-  // (PLAN E1 split).
+  //.
 
   // ── Pivot ────────────────────────────────────────────────────────────────
   // Auto-pivot heuristic — pick sensible Rows / Cols / Aggregate selections
