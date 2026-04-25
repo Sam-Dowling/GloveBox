@@ -11,6 +11,7 @@
 ## 📑 Contents
 
 - [Supported Formats (full reference)](#-supported-formats-full-reference)
+- [Renderer Capability Matrix](#-renderer-capability-matrix)
 - [Security Analysis Capabilities](#-security-analysis-capabilities)
 - [User Interface](#-user-interface)
 - [Timeline](#-timeline)
@@ -53,6 +54,77 @@ Extensionless and renamed files are auto-routed via magic-byte sniff, extension 
 | **Images** | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` — preview + steganography / polyglot detection |
 | **SVG** | `.svg` — sandboxed preview + source view, deep SVG-specific security analysis |
 | **Catch-all** | *Any file* — line-numbered text view (encoding auto-detect, syntax highlighting toggle, soft-wraps minified single-line files) or hex dump for binary data |
+
+---
+
+## 🧮 Renderer Capability Matrix
+
+A bird's-eye view of which cross-cutting features each renderer participates in. Use this to know — at a glance — whether dropping format X will give you a verdict band, click-to-focus on every IOC, recursive decoding of embedded payloads, etc.
+
+**Legend:** ✅ supported · ◐ partial / inline-only · — not applicable for the format
+
+**Columns**
+
+- **Verdict band** — Tier-A summary banner with risk score + anomaly chips (today: PE / ELF / Mach-O only).
+- **Encoded recursion** — `EncodedContentDetector` peels nested Base64 / hex / gzip / zlib / Base32 layers and surfaces every layer in the sidebar.
+- **Auto-YARA** — every successful file load runs the YARA engine against the file (or an augmented `_yaraBuffer`). Currently universal across renderers.
+- **Click-to-focus** — clicking an IOC or YARA hit in the sidebar scrolls the viewer to and highlights the matching string. Requires `container._rawText` (or a `_showSourcePane()` toggle for sandboxed previews).
+- **Drill-down** — opens nested files (archive entries, attachments, decoded payloads, binary overlays / resources) as fresh top-level analyses with Back navigation.
+
+| Renderer | Extensions / Inputs | Verdict band | Encoded recursion | Auto-YARA | Click-to-focus | Drill-down |
+|---|---|:-:|:-:|:-:|:-:|:-:|
+| `pe-renderer` | `.exe` `.dll` `.sys` `.scr` `.cpl` `.ocx` `.drv` `.com` `.xll` | ✅ | ✅ | ✅ | ✅ | ✅ (resources, overlay) |
+| `elf-renderer` | `.so` `.o` `.elf`, extensionless ELF | ✅ | ✅ | ✅ | ✅ | ✅ (overlay) |
+| `macho-renderer` | `.dylib` `.bundle`, Mach-O Fat/Universal | ✅ | ✅ | ✅ | ✅ | ✅ (overlay) |
+| `pdf-renderer` | `.pdf` | — | ✅ | ✅ | ◐ (page-anchored) | ✅ (`/EmbeddedFile`, JS bodies, XFA) |
+| `eml-renderer` | `.eml` | — | ✅ | ✅ | ✅ | ✅ (attachments) |
+| `msg-renderer` | `.msg` (Outlook OLE) | — | ✅ | ✅ | ✅ | ✅ (attachments) |
+| `onenote-renderer` | `.one` | — | ✅ | ✅ | ◐ | ✅ (FileDataStoreObject blobs) |
+| `image-renderer` | `.jpg` `.png` `.gif` `.bmp` `.webp` `.ico` `.tif` `.avif` | — | ✅ (EXIF / chunks / QR) | ✅ | — | — |
+| `svg-renderer` | `.svg` | — | — (XML walker covers it) | ✅ | ✅ (source toggle) | — |
+| `html-renderer` | `.html` `.htm` `.mht` `.mhtml` `.xhtml` | — | — | ✅ | ✅ (source toggle) | — |
+| `xlsx-renderer` | `.xlsx` `.xlsm` `.docx` `.docm` `.pptx` `.pptm` `.ods` (OOXML/ODF) | — | — | ✅ | ◐ (per-sheet / VBA) | ✅ (VBA, embeds) |
+| `doc-renderer` | `.doc` `.xls` `.ppt` (OLE2 legacy) | — | — | ✅ | ◐ | ✅ (VBA streams) |
+| `odp-renderer` | `.odp` | — | — | ✅ | ◐ | — |
+| `odt-renderer` | `.odt` | — | — | ✅ | ◐ | — |
+| `rtf-renderer` | `.rtf` | — | — | ✅ | ✅ | ✅ (OLE objects) |
+| `lnk-renderer` | `.lnk` | — | — | ✅ | — | — |
+| `hta-renderer` | `.hta` | — | — | ✅ | ✅ | — |
+| `wsf-renderer` | `.wsf` `.wsc` `.wsh` | — | — | ✅ | ✅ | — |
+| `inf-renderer` | `.inf` `.sct` | — | — | ✅ | ✅ | — |
+| `reg-renderer` | `.reg` | — | — | ✅ | ✅ | — |
+| `url-renderer` | `.url` `.webloc` `.website` | — | — | ✅ | ✅ (source toggle) | — |
+| `msi-renderer` | `.msi` | — | — | ✅ | ◐ | ✅ (CustomActions, embedded CAB / streams) |
+| `clickonce-renderer` | `.application` `.manifest` | — | — | ✅ | ✅ | — |
+| `msix-renderer` | `.msix` `.msixbundle` `.appx` `.appxbundle` `.appinstaller` | — | — | ✅ | ✅ | ✅ (inner files) |
+| `browserext-renderer` | `.crx` `.xpi` | — | — | ✅ | ✅ | ✅ (manifest, scripts, icons) |
+| `npm-renderer` | `.tgz` (npm) · `package.json` · `package-lock.json` | — | — | ✅ | ✅ | ✅ (`package/*` entries) |
+| `jar-renderer` | `.jar` `.war` `.ear` · `.class` | — | — | ✅ | ◐ | ✅ (class files, manifest) |
+| `osascript-renderer` | `.applescript` `.scpt` `.scptd` `.jxa` | — | — | ✅ | ✅ | — |
+| `plist-renderer` | `.plist` (XML + binary) | — | — | ✅ | ✅ | — |
+| `dmg-renderer` | `.dmg` | — | — | ✅ | — | ◐ (partitions / `.app` paths) |
+| `pkg-renderer` | `.pkg` `.mpkg` | — | — | ✅ | — | ✅ (xar TOC entries, scripts) |
+| `x509-renderer` | `.pem` `.der` `.crt` `.cer` `.p12` `.pfx` `.key` | — | — | ✅ | — | — |
+| `pgp-renderer` | `.pgp` `.gpg` `.asc` `.sig` `.key` | — | — | ✅ | — | — |
+| `evtx-renderer` | `.evtx` | — | ◐ (per-row EventData) | ✅ | — (Timeline grid) | — |
+| `sqlite-renderer` | `.sqlite` `.db` (non-history) | — | — | ✅ | ✅ | — |
+| `csv-renderer` | `.csv` `.tsv` (Timeline-routed) | — | ◐ (per-cell) | ✅ | — (Timeline grid) | — |
+| `json-renderer` | `.json` `.ndjson` `.jsonl` | — | — | ✅ | ✅ | — |
+| `iqy-slk-renderer` | `.iqy` `.slk` | — | — | ✅ | ✅ | — |
+| `zip-renderer` | `.zip` `.tar` `.tgz` `.gz` | — | — | ✅ | — | ✅ (per-entry) |
+| `seven7-renderer` | `.7z` | — | — | ✅ | — | ◐ (listing-only; entries locked) |
+| `rar-renderer` | `.rar` | — | — | ✅ | — | ◐ (listing-only; entries locked) |
+| `cab-renderer` | `.cab` | — | — | ✅ | — | ✅ (uncompressed / MSZIP) |
+| `iso-renderer` | `.iso` `.img` | — | — | ✅ | — | ✅ (ISO 9660 entries) |
+| `plaintext-renderer` | `.vbs` `.ps1` `.bat` `.cmd` `.js` · catch-all text | — | ✅ | ✅ | ✅ | — |
+
+**Notes on the partial states.**
+
+- The 7-Zip and RAR rows are ◐ for drill-down because both are listing-only — the Loupe build avoids shipping LZMA / LZSS / PPMd decoders, so individual entries appear in the archive tree with a lock icon and click-to-open is suppressed.
+- DMG drill-down is ◐ because partition walking surfaces embedded `.app` bundle paths but does not always extract their contents.
+- Encoded-content recursion is ◐ for EVTX / CSV because it runs per-row inside the Timeline grid rather than producing the full recursive lineage view that text/email/PDF/image pipelines do — see PLAN.md item M4 for the canonical fix.
+- Click-to-focus is ◐ on Office (OOXML/OLE2/ODF), MSI, OneNote, PDF and JAR renderers because those views aren't backed by a single plaintext stream — clicks scroll to the right card, sheet, page, or class but cannot land on a per-character `<mark>` highlight.
+- Auto-YARA is currently universal across every renderer (no size gate today) — PLAN.md tracks B3 (size gate + visible failure) and C1 (Web Worker) as the upcoming improvements.
 
 ---
 

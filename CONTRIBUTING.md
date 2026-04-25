@@ -130,6 +130,200 @@ and replace both the SHA and the trailing `# vX.Y.Z` comment.
 
 ---
 
+## Architecture & Signal Chain
+
+This section is the architectural map: the path a file takes from drop to
+sidebar, who mutates what along the way, and the four cross-cutting
+contracts that hold it all together. **Read this first** before making any
+non-trivial change. It describes the **current de-facto state** of the code
+— some of these contracts are not yet enforced. The roadmap that codifies
+them lives in `PLAN.md`; the prescriptive renderer rules live in the
+[Renderer Contract](#renderer-contract) section further down.
+
+### Signal chain (ingress → render → sidebar)
+
+```mermaid
+flowchart TD
+    %% Ingress
+    subgraph INGRESS["File ingress"]
+        A1[Drop zone]
+        A2[File picker]
+        A3["iframe drag-shield<br/>loupe-drop CustomEvent"]
+        A1 --> H[App._handleFiles]
+        A2 --> H
+        A3 --> H
+    end
+
+    H --> L["App._loadFile<br/>(file, prefetchedBuffer?)"]
+    L --> RB[FileReader.readAsArrayBuffer]
+    RB --> SNIFF{Timeline<br/>3-probe sniff?}
+
+    %% Timeline branch
+    SNIFF -- "CSV / TSV / EVTX" --> TL["Timeline route<br/>app-timeline.js<br/>(monolith)"]
+
+    %% Generic branch
+    SNIFF -- other --> RR[RendererRegistry.dispatch]
+    RR --> RM[magic pass]
+    RR --> RX[ext + extDisambiguator]
+    RR --> RT[text-head sniff]
+    RM --> DT[_rendererDispatch table]
+    RX --> DT
+    RT --> DT
+
+    DT --> RD["Renderer.render(file, buf, app)"]
+
+    %% Renderer side-effects
+    RD --> SE1[Build DOM container]
+    RD --> SE2["Mutate app.findings:<br/>{ risk, externalRefs[],<br/>interestingStrings[],<br/>metadata, ... }"]
+    RD --> SE3[Stamp app._fileBuffer<br/>app._yaraBuffer<br/>app._binaryParsed]
+    RD --> SE4[Set container._rawText<br/>(must be LF-normalised)]
+    RD --> SE5["pushIOC(findings, {type:IOC.X, value, severity})"]
+
+    %% Mount + sidebar
+    SE1 --> MOUNT["#page-container<br/>innerHTML='', appendChild"]
+    SE2 --> SBR[App._renderSidebar]
+    SE5 --> SBR
+
+    %% YARA
+    SBR --> YARA["App._autoYaraScan()<br/>main thread, blocking"]
+    YARA --> SBY[Sidebar YARA section]
+
+    %% Drill-down
+    subgraph DRILL["Drill-down (recursive)"]
+        D1[archive-tree row click] --> DEV[open-inner-file CustomEvent]
+        D2[binary-overlay re-dispatch] --> DEV
+        D3["encoded-content-detector<br/>decoded blob"] --> D3a[synthetic File]
+        D3a --> DEV
+        DEV --> RR
+    end
+
+    %% Sidebar surfaces
+    SBR --> S1[Detections]
+    SBR --> S2[IOCs]
+    SBR --> S3[File Info]
+    S1 --> CTF[Click-to-focus<br/>app-sidebar-focus.js]
+    S2 --> CTF
+    CTF --> CTFs[String search inside<br/>container._rawText]
+```
+
+`CODEMAP.md` is the inverse-index: every box above maps to a file and line
+range. Surgical anchors:
+
+| Box | File · symbol |
+|---|---|
+| Drop zone | `src/app/app-core.js` · `_setupDrop` |
+| `_loadFile` | `src/app/app-load.js` · `App._loadFile` |
+| Registry dispatch | `src/renderer-registry.js` · `RendererRegistry.dispatch` |
+| Per-renderer dispatch table | `src/app/app-load.js` · `_rendererDispatch` |
+| Sidebar render | `src/app/app-sidebar.js` · `_renderSidebar` |
+| Click-to-focus | `src/app/app-sidebar-focus.js` |
+| Auto-YARA | `src/app/app-yara.js` · `_autoYaraScan` |
+| `pushIOC` helper | `src/constants.js` · `pushIOC` |
+| Encoded-content recursion | `src/encoded-content-detector.js` |
+
+### Renderer side-effect contract (current de-facto state)
+
+Every renderer's `static render(file, arrayBuffer, app)` performs the same
+side-effects today, but **nothing enforces this contract** end-to-end and
+the per-renderer drift is real. Use this table as the architectural map;
+the prescriptive rules every renderer must obey are codified further down
+in [Renderer Contract](#renderer-contract) and [IOC Push Checklist](#ioc-push-checklist).
+
+| Step | Required? | What | Read site |
+|---|---|---|---|
+| 1 | required | Build a DOM container and return it (or `{ docEl }`) | `_rendererDispatch` mounts it under `#page-container` |
+| 2 | required | Mutate `app.findings` (`risk`, `externalRefs[]`, `interestingStrings[]`, `metadata`, …) | Sidebar render |
+| 3 | sometimes | Stamp `app._fileBuffer`, `app._yaraBuffer` | Auto-YARA prefers `_yaraBuffer`, else `_fileBuffer` |
+| 4 | binary only | Stamp `app._binaryParsed`, `app._binaryFormat` | Copy-Analysis + verdict band |
+| 5 | required | Set `container._rawText` (LF-normalised) | Click-to-focus string search |
+| 6 | required | Use `pushIOC()` and `IOC.*` constants — never bare strings | Sidebar IOC filter |
+| 7 | optional | Call `mirrorMetadataIOCs()` to surface metadata as clickable IOCs | File Info → IOCs |
+| 8 | risk | Initialise `findings.risk = 'low'`; escalate only from evidence on `externalRefs` | Risk bar, Summary export |
+
+See [Risk Tier Calibration](#risk-tier-calibration) for the formal escalation
+ladder; pre-stamping `findings.risk = 'high'` is a `.clinerules` violation
+(false-positive risk colouring on benign samples).
+
+### IOC entry shape
+
+The canonical pusher is `pushIOC(findings, opts)` at `src/constants.js`. Its
+on-wire shape is the same regardless of bucket (`interestingStrings` vs.
+`externalRefs`):
+
+```js
+{
+  type: IOC.URL,            // string constant from IOC.* table
+  url: '<value>',            // historical name; sidebar reads .url for any type
+  severity: 'info'|'medium'|'high'|'critical',
+  note?: string,
+  _highlightText?: string,   // click-to-focus target; defaults to .url
+  _sourceOffset?, _sourceLength?,
+  _decodedFrom?, _encodedFinding?, ...
+}
+```
+
+`pushIOC` enforces the `IOC.*` constants and **auto-emits siblings** off a
+URL push via vendored `tldts`: a registrable `IOC.DOMAIN` for non-IP hosts,
+an `IOC.IP` row when the URL embeds a literal IP, and `IOC.PATTERN` rows
+for punycode/IDN homoglyphs and abuse-prone public suffixes. Pass
+`_noDomainSibling: true` if the caller already emitted a domain manually.
+
+Read sites: `src/app/app-sidebar.js`, `src/app/app-sidebar-focus.js`,
+`src/app/app-copy-analysis.js`. Full per-field contract:
+[IOC Push Checklist](#ioc-push-checklist).
+
+### Drill-down: the `open-inner-file` event protocol
+
+Recursive dispatch (open an archive entry, an attachment, a re-classified
+binary overlay, a decoded payload) is plumbed through a single bubbling
+CustomEvent named `open-inner-file`. The renderer that builds a child
+view dispatches; `_loadFile` listens at the `App` shell and re-enters
+the main load path.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `event.detail` | `File` | A real or synthetic `File` object — the inner entry to load |
+| `event.detail.name` | `string` | Display name for the breadcrumb / nav stack |
+| `event.detail._prefetchedBuffer` | `ArrayBuffer?` | Optional; lets the listener skip a re-read when the parent already has the bytes in memory |
+
+**Dispatchers (today):**
+
+- `archive-tree.js` row click (used by zip/7z/tar/cab/iso/jar/msi/msix/pkg/npm/browserext)
+- `binary-overlay.js` re-dispatch button (PE/ELF/Mach-O appended payload)
+- `pe-renderer.js` resource-tree row click (embedded PE/script/data resources)
+- `eml-renderer.js`, `msg-renderer.js`, `pdf-renderer.js`, `onenote-renderer.js` attachment opens
+
+**Listener:** `src/app/app-load.js` (one App-level handler). It pushes a
+nav-stack frame, then re-enters `_loadFile(file, prefetchedBuffer)` which
+re-runs the full `RendererRegistry.dispatch` chain. The Back button pops
+the frame and replays the parent.
+
+`encoded-content-detector` is a partial exception: it inline-classifies
+decoded blobs today rather than going through `open-inner-file`. Roadmap
+item D3 unifies both paths under a single `App.openInnerFile` helper.
+
+### YARA cost model
+
+| Path | Trigger | Thread | Failure mode | Gating |
+|---|---|---|---|---|
+| Auto-YARA (`_autoYaraScan`) | Every successful `_loadFile` | Main, synchronous | `catch (_) {}` swallows errors silently | None today; PLAN B3 adds a `MAX_AUTO_YARA_BYTES` size cap |
+| Manual scan tab | User clicks the **YARA** sidebar tab | Main, synchronous | Surfaced via the panel's status line | Manual only |
+| Rules editor validate / preview | User edits in the rules dialog | Main, synchronous | Inline `valid` / `errors` summary | Manual only |
+
+The engine itself (`src/yara-engine.js`) is pure JS and well-bounded; the
+cost is the scheduling, not the parser. PLAN items B3 (size gate +
+visible failure surface) and C1 (move scanning to a Web Worker) address
+the main-thread freeze on multi-megabyte files.
+
+### Persistence keys
+
+Every user-persisted preference lives under the `loupe_` namespace and is
+catalogued in [Persistence Keys](#persistence-keys) below — that table is
+the single source of truth. New keys must obey the rules in that section
+(prefix, accessor pattern, validation on read).
+
+---
+
 ## Gotchas & Tripfalls
 
 If you skip this section your change will probably still build, then
@@ -1179,7 +1373,78 @@ prefix sweep and needs no additional wiring in `_reset()`.
 
 ## Renderer Contract
 
-Renderers are self-contained classes exposing a static `render(file, arrayBuffer, app)` that returns a DOM element (the "view container"). To participate in sidebar click-to-highlight (the yellow/blue `<mark>` cycling users see when clicking an IOC or YARA hit) a text-based renderer should attach the following optional hooks to the container element it returns:
+Renderers are self-contained classes exposing a static `render(file, arrayBuffer, app)` that returns a DOM element (the "view container").
+
+This section is the **prescriptive reference** for everything a renderer is
+required (or merely permitted) to do. The architectural map of the same
+contract — *who reads what, in which order* — lives in the
+[Renderer side-effect contract](#renderer-side-effect-contract-current-de-facto-state)
+table inside [Architecture & Signal Chain](#architecture--signal-chain). Read
+the architectural map first if you need orientation; come back here for the
+rules.
+
+### Renderer Contract — Reference
+
+The five rules below subsume every other "your renderer must…" instruction
+elsewhere in this file. The deeper subsections (Risk Tier Calibration, IOC
+Push Helpers / Checklist, click-to-highlight hooks) are the spelled-out forms
+of rules 4, 5, and the table that follows this preamble respectively.
+
+1. **Return shape.** Today, `render(file, buf, app)` returns a single
+   `HTMLElement` — the view container that gets mounted under
+   `#page-container`. Per [PLAN.md](../PLAN.md) Track D1 the canonical return
+   will become an object:
+   ```js
+   { docEl: HTMLElement, findings?: Findings, rawText?: string,
+     binary?: BinaryParsed, navTitle?: string }
+   ```
+   Both shapes will be accepted during the migration; the central
+   `renderRoute` helper introduced by D1 normalises them. Until then, return
+   the bare `HTMLElement` and continue mutating `app.findings` as today.
+
+2. **Required `app.*` writes.** Mirroring the architectural side-effect table:
+
+   | Field | When | Read by |
+   |---|---|---|
+   | `app.findings` | always | sidebar render, copy-analysis, exporters |
+   | `app._fileBuffer` | always | auto-YARA fallback, copy-analysis |
+   | `app._yaraBuffer` | when augmenting (e.g. SVG/HTML inject decoded payload) | auto-YARA prefers this over `_fileBuffer` |
+   | `app._binaryParsed`, `app._binaryFormat` | binary renderers only (PE / ELF / Mach-O) | verdict band, copy-analysis |
+   | `container._rawText` | every text-backed renderer | click-to-focus string search |
+
+   Track D4 in PLAN.md replaces the scattered `app.*_buffer` globals with a
+   single `app.currentResult`; until that lands, write the legacy fields.
+
+3. **`container._rawText` must be LF-normalised.** Replace `\r\n` and bare
+   `\r` with `\n` *before* assignment. Click-to-focus offsets misalign past
+   the first CR otherwise — this is `.clinerules` Tripwire #11. PLAN Track
+   B4 will land a centralised `lfNormalize()` helper plus a build-time
+   grep gate; until then, normalise inline (`text.replace(/\r\n?/g, '\n')`).
+
+4. **Never pre-stamp `findings.risk`.** Initialise `f.risk = 'low'` and
+   only escalate from evidence pushed onto `f.externalRefs` /
+   `f.interestingStrings`, using the rank-monotonic ladder spelled out in
+   [Risk Tier Calibration](#risk-tier-calibration). Pre-stamping
+   `'medium'` / `'high'` / `'critical'` produces false-positive risk
+   colouring on benign samples and is the single most-flagged
+   `.clinerules` violation in code review. PLAN Track B1 will land an
+   `escalateRisk()` helper plus a build-time grep gate.
+
+5. **IOC `type` values must be `IOC.*` constants.** Bare strings
+   (`type: 'url'`) silently break sidebar filtering — the read-side
+   compares against the canonical `IOC.URL` etc. in
+   [`src/constants.js`](src/constants.js). Push every IOC through
+   `pushIOC()` so the canonical shape is enforced and the auto-emitted
+   sibling rows (registrable domain via `tldts`, embedded IPs in URLs,
+   punycode/IDN homoglyph patterns) come along for free. The full
+   per-field rules are in [IOC Push Checklist](#ioc-push-checklist);
+   the helpers themselves in [IOC Push Helpers](#ioc-push-helpers).
+   PLAN Track B2 will land a build-time grep gate that fails on any
+   bare-string IOC type at an IOC push site.
+
+### Click-to-highlight hooks
+
+To participate in sidebar click-to-highlight (the yellow/blue `<mark>` cycling users see when clicking an IOC or YARA hit) a text-based renderer should attach the following optional hooks to the container element it returns:
 
 | Property | Type | Purpose |
 |---|---|---|
