@@ -471,6 +471,57 @@ def _check_bare_ioc_types():
 _check_bare_ioc_types()
 
 
+# ── Build gate: `_rawText` LF-normalisation ───────────────────────────────────
+# `.clinerules` and `CONTRIBUTING.md` (Tripwires + Renderer Contract rule #3)
+# require every `*._rawText = <expr>` write to route through `lfNormalize()`
+# from `src/constants.js`. The sidebar's click-to-focus engine searches the
+# post-render DOM for IOC strings using offsets computed from `_rawText`; the
+# browser collapses bare-CR / CRLF sequences in the rendered DOM, so any CR
+# leaking into `_rawText` desynchronises every match offset after the first
+# CR. `lfNormalize(s) = s.replace(/\r\n?/g, '\n')` is idempotent for
+# already-LF-only inputs and cheap enough to apply unconditionally.
+#
+# The gate matches `<lhs>._rawText = <rhs>` and rejects any RHS that does not
+# begin with `lfNormalize(`. The accepted shape is deliberately narrow: empty
+# strings (`''`), join-on-`\n` (`arr.join('\n')`), and pure passthroughs from
+# another `_rawText` MUST also be wrapped (every renderer site already does so
+# — see `src/constants.js::lfNormalize` docstring).
+#
+# Allow-list: only `src/constants.js` is exempt, since it defines the helper.
+_RAW_TEXT_LHS_RE = _re.compile(r"\._rawText\s*=\s*(.+?)\s*;?\s*$")
+_RAW_TEXT_GATE_ALLOWLIST = { 'src/constants.js' }
+
+def _check_raw_text_normalisation():
+    violations = []
+    for rel in JS_FILES:
+        if rel in _RAW_TEXT_GATE_ALLOWLIST:
+            continue
+        text = read(rel)
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.lstrip()
+            # Skip pure comment lines so reference snippets in docstrings don't trip the gate.
+            if stripped.startswith('//') or stripped.startswith('*'):
+                continue
+            m = _RAW_TEXT_LHS_RE.search(line)
+            if not m:
+                continue
+            rhs = m.group(1).lstrip()
+            if not rhs.startswith('lfNormalize('):
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
+    if violations:
+        msg = (
+            "Build gate failed — `_rawText` write not LF-normalised.\n"
+            "Wrap the RHS in `lfNormalize(...)` from src/constants.js — bare\n"
+            "CRLF / CR sequences leaking into `_rawText` desynchronise every\n"
+            "click-to-focus offset after the first CR. See CONTRIBUTING.md →\n"
+            "Tripwires and Renderer Contract rule #3.\n"
+            "Offending sites:\n  " + "\n  ".join(violations)
+        )
+        raise SystemExit(msg)
+
+_check_raw_text_normalisation()
+
+
 # File extensions accepted by the open-file input. Keep as a list for sanity.
 
 ACCEPT_EXTS = [

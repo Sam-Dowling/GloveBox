@@ -1515,7 +1515,18 @@ Object.assign(App.prototype, {
   //  Auto-scan & sidebar integration
   // ═══════════════════════════════════════════════════════════════════════
 
-  /** Auto-run YARA scan when a file is loaded (uses built-in + uploaded rules). */
+  /** Auto-run YARA scan when a file is loaded (uses built-in + uploaded rules).
+   *
+   *  Size-gated by `PARSER_LIMITS.MAX_AUTO_YARA_BYTES` (PLAN B3) — large
+   *  buffers freeze the UI for many seconds because YARA runs synchronously
+   *  on the main thread today (PLAN C1 will move it to a worker). When the
+   *  gate trips, the auto-scan is skipped and a sidebar `IOC.INFO` note is
+   *  emitted so the analyst sees *why* YARA didn't run and is pointed at
+   *  the manual YARA tab (which is unrestricted — clicking it is an
+   *  explicit opt-in to the latency cost).
+   *
+   *  Scan errors are reported via `console.warn` plus a sidebar `IOC.INFO`
+   *  note (interim shim until PLAN F2 introduces `App._reportNonFatal`). */
   _autoYaraScan() {
     if (!this._fileBuffer && !this._yaraBuffer) return;
     const source = this._getAllYaraSource();
@@ -1524,11 +1535,47 @@ Object.assign(App.prototype, {
     const { rules } = YaraEngine.parseRules(source);
     if (!rules.length) return;
 
+    const buf  = this._yaraBuffer || this._fileBuffer;
+    const size = (buf && buf.byteLength) || 0;
+
+    // Size gate (PLAN B3): skip auto-scan above the cap and surface the skip
+    // via a sidebar IOC.INFO note. Manual scans (the YARA tab button) remain
+    // unrestricted — the user has already accepted the latency cost there.
+    if (size > PARSER_LIMITS.MAX_AUTO_YARA_BYTES) {
+      if (this.findings) {
+        const mb = (PARSER_LIMITS.MAX_AUTO_YARA_BYTES / (1024 * 1024)) | 0;
+        pushIOC(this.findings, {
+          type: IOC.INFO,
+          value: `YARA auto-scan skipped (file >${mb} MiB; open the YARA tab to scan manually)`,
+          severity: 'info',
+        });
+        const fileName = (this._fileMeta && this._fileMeta.name) || '';
+        this._renderSidebar(fileName, null);
+      }
+      return;
+    }
+
     try {
-      const results = YaraEngine.scan(this._yaraBuffer || this._fileBuffer, rules);
+      const results = YaraEngine.scan(buf, rules);
       this._yaraResults = results;
       if (this.findings) this._updateSidebarWithYara(results);
-    } catch (_) { /* silently ignore scan errors during auto-scan */ }
+    } catch (err) {
+      // PLAN B3 interim shim — F2 replaces this with App._reportNonFatal().
+      // Surfacing the failure (instead of `catch (_) {}`) means a YARA
+      // engine regression no longer ships silently as "rules don't match
+      // anything any more".
+      console.warn('[loupe] auto-YARA scan failed:', err);
+      if (this.findings) {
+        const msg = (err && err.message) ? err.message : String(err);
+        pushIOC(this.findings, {
+          type: IOC.INFO,
+          value: `YARA auto-scan error: ${msg}`,
+          severity: 'info',
+        });
+        const fileName = (this._fileMeta && this._fileMeta.name) || '';
+        this._renderSidebar(fileName, null);
+      }
+    }
   },
 
   // ═══════════════════════════════════════════════════════════════════════

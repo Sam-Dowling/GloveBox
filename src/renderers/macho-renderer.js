@@ -1517,7 +1517,7 @@ class MachoRenderer {
     // pipeline and EncodedContentDetector scan clean string data instead
     // of noisy DOM text (table headers, hex addresses, UI chrome, etc.)
     if (parsedStrings && parsedStrings.length > 0) {
-      wrap._rawText = parsedStrings.join('\n');
+      wrap._rawText = lfNormalize(parsedStrings.join('\n'));
     }
 
     return wrap;

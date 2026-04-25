@@ -106,7 +106,7 @@ class JsonRenderer {
     const wrap = document.createElement('div');
     wrap.className = 'json-view grid-view';
     wrap.textContent = msg;
-    wrap._rawText = '';
+    wrap._rawText = lfNormalize('');
     return wrap;
   }
 
@@ -129,13 +129,13 @@ class JsonRenderer {
       const pt = new PlainTextRenderer();
       const el = pt.render(buf, fileName || 'data.json', 'application/json');
       host.appendChild(el);
-      host._rawText = el._rawText || text;
+      host._rawText = lfNormalize(el._rawText || text);
       host._rawBytes = el._rawBytes || new Uint8Array(buf);
     } catch (e) {
       const pre = document.createElement('pre');
       pre.textContent = text;
       host.appendChild(pre);
-      host._rawText = text;
+      host._rawText = lfNormalize(text);
     }
     return host;
   }
@@ -195,7 +195,7 @@ class JsonRenderer {
       info.className = 'csv-info';
       info.textContent = 'Empty array — no items to display.';
       wrap.appendChild(info);
-      wrap._rawText = '[]';
+      wrap._rawText = lfNormalize('[]');
       return wrap;
     }
 
@@ -387,7 +387,7 @@ class JsonRenderer {
     });
 
     const wrap = viewer.root();
-    wrap._rawText = rawText;
+    wrap._rawText = lfNormalize(rawText);
     wrap._jsonViewer = viewer;
     return wrap;
   }

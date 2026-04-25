@@ -158,7 +158,7 @@ class EmlRenderer {
     // collapse into a single whitespace-free blob and the generic email
     // regex greedily extends the local-part, producing bogus IOCs like
     // `requiredReply-Toattacker@evil.example.com`.
-    wrap._rawText = text;
+    wrap._rawText = lfNormalize(text);
     return wrap;
   }
 

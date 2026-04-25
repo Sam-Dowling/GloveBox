@@ -88,7 +88,7 @@ class InfSctRenderer {
     this._appendSource(wrap, text, bytes, 'ini');
 
     // Expose raw text for IOC extraction, YARA match highlighting and click-to-scroll
-    wrap._rawText = text;
+    wrap._rawText = lfNormalize(text);
     return wrap;
   }
 
@@ -182,7 +182,7 @@ class InfSctRenderer {
     this._appendSource(wrap, text, bytes, 'xml');
 
     // Expose raw text for IOC extraction, YARA match highlighting and click-to-scroll
-    wrap._rawText = text;
+    wrap._rawText = lfNormalize(text);
     return wrap;
   }
 

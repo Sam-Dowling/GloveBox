@@ -458,7 +458,7 @@ class OsascriptRenderer {
                         <span class="osascript-banner-sub">Script bundles are directory packages. Extract the bundle and open <code>main.scpt</code> individually for analysis.</span>
                     </div>
                 </div>`;
-            wrap._rawText = '';
+            wrap._rawText = lfNormalize('');
             return wrap;
         }
 
@@ -497,7 +497,7 @@ class OsascriptRenderer {
             }
 
             wrap.innerHTML = html;
-            wrap._rawText = parsed.hasSource ? parsed.source : parsed.strings.join('\n');
+            wrap._rawText = lfNormalize(parsed.hasSource ? parsed.source : parsed.strings.join('\n'));
             return wrap;
         }
 
@@ -520,7 +520,7 @@ class OsascriptRenderer {
             </div>`;
 
         wrap.innerHTML = html;
-        wrap._rawText = source;
+        wrap._rawText = lfNormalize(source);
         return wrap;
     }
 

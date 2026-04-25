@@ -6,11 +6,18 @@
 
 // ── Parser safety limits ──────────────────────────────────────────────────────
 const PARSER_LIMITS = Object.freeze({
-  MAX_DEPTH:        32,                   // Max recursion / nesting depth
-  MAX_UNCOMPRESSED: 50 * 1024 * 1024,     // 50 MB — max decompressed output
-  MAX_RATIO:        100,                  // Per-entry compression ratio abort
-  MAX_ENTRIES:      10_000,               // Max archive entries before truncation
-  TIMEOUT_MS:       60_000,               // Parser timeout (60 s)
+  MAX_DEPTH:           32,                  // Max recursion / nesting depth
+  MAX_UNCOMPRESSED:    50 * 1024 * 1024,    // 50 MB — max decompressed output
+  MAX_RATIO:           100,                 // Per-entry compression ratio abort
+  MAX_ENTRIES:         10_000,              // Max archive entries before truncation
+  TIMEOUT_MS:          60_000,              // Parser timeout (60 s)
+  MAX_AUTO_YARA_BYTES: 32 * 1024 * 1024,    // 32 MiB — auto-YARA size gate (PLAN B3).
+                                            // Above this, `_autoYaraScan()` skips
+                                            // scanning to avoid a multi-second
+                                            // main-thread freeze on large buffers
+                                            // and emits a sidebar IOC.INFO note
+                                            // pointing the user at the manual
+                                            // YARA tab (which is unrestricted).
 });
 
 // ── Render / data-truncation limits ───────────────────────────────────────────
@@ -350,6 +357,31 @@ function escalateRisk(findings, tier) {
   const cur  = _RISK_RANK[findings.risk] || 0;
   const next = _RISK_RANK[tier] || 0;
   if (next > cur) findings.risk = tier;
+}
+
+// ── Line-ending normaliser ────────────────────────────────────────────────────
+// Every renderer that builds a `container._rawText` string for the sidebar's
+// click-to-focus engine MUST route the text through `lfNormalize()` first.
+// CRLF / bare-CR sequences leaking into `_rawText` desynchronise every
+// click-to-focus offset after the first CR (the highlighter searches the
+// post-render DOM, which the browser has collapsed CRs in, so a CRLF in
+// `_rawText` shifts every subsequent match by one character per CR). The
+// build script enforces this by rejecting `*._rawText = <expr>` writes whose
+// RHS is not a `lfNormalize(...)` call, an empty/literal string sentinel, an
+// `'\n'`-join of binary-extracted strings, or a passthrough from another
+// already-normalised `_rawText`. See CONTRIBUTING.md → Tripwires and
+// Renderer Contract rule #3.
+//
+// The single-pass `\r\n?` regex covers both classic CRLF and bare-CR
+// (Mac-classic) line endings — equivalent to the older two-pass
+// `replace(/\r\n/g, '\n').replace(/\r/g, '\n')` chain that used to be
+// copy-pasted across renderers, but cheaper.
+//
+// @param {string} s
+// @returns {string} `s` with every `\r\n` and bare `\r` replaced by `\n`;
+//                   non-string inputs collapse to `''`.
+function lfNormalize(s) {
+  return typeof s === 'string' ? s.replace(/\r\n?/g, '\n') : '';
 }
 
 /**

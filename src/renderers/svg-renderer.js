@@ -221,7 +221,7 @@ class SvgRenderer {
     sourcePane.className = 'svg-source-pane';
     sourcePane.style.display = 'none';
 
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normalizedText = lfNormalize(text);
     const lines = normalizedText.split('\n');
 
     let highlightedLines = null;
@@ -260,7 +260,7 @@ class SvgRenderer {
 
     // Expose raw text + source-pane helper so the sidebar can auto-switch
     // from Preview → Source before trying to highlight.
-    container._rawText = normalizedText;
+    container._rawText = lfNormalize(text);
     container._showSourcePane = () => {
       if (sourcePane.style.display === 'none') {
         sourceBtn.click();

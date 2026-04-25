@@ -8,7 +8,7 @@ class HtaRenderer {
   render(buffer) {
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normalizedText = lfNormalize(text);
     const wrap = document.createElement('div');
     wrap.className = 'hta-view';
 
@@ -118,7 +118,7 @@ class HtaRenderer {
     // Expose raw text + source-pane helper so the sidebar can scroll to it
     // before highlighting. HTA's source is always visible (no tab toggle),
     // so _showSourcePane just scrolls it into view.
-    wrap._rawText = normalizedText;
+    wrap._rawText = lfNormalize(text);
     wrap._showSourcePane = () => {
       sourcePane.scrollIntoView({ behavior: 'smooth', block: 'start' });
     };
@@ -140,7 +140,7 @@ class HtaRenderer {
 
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normalizedText = lfNormalize(text);
 
     f.externalRefs.push({
       type: IOC.INFO,

@@ -8,7 +8,7 @@ class UrlShortcutRenderer {
   render(buffer, fileName) {
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normalizedText = lfNormalize(text);
     const ext = (fileName || '').split('.').pop().toLowerCase();
     const wrap = document.createElement('div'); wrap.className = 'url-view';
 
@@ -127,7 +127,7 @@ class UrlShortcutRenderer {
     rawDetails.appendChild(sourcePane);
     wrap.appendChild(rawDetails);
 
-    wrap._rawText = normalizedText;
+    wrap._rawText = lfNormalize(text);
     wrap._showSourcePane = () => {
       rawDetails.open = true;
       // Wait for the <details> element to finish laying out its now-visible
@@ -154,7 +154,7 @@ class UrlShortcutRenderer {
 
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normalizedText = lfNormalize(text);
     const ext = (fileName || '').split('.').pop().toLowerCase();
     const parsed = ext === 'webloc' ? this._parseWebloc(text) : this._parseUrlFile(text);
 

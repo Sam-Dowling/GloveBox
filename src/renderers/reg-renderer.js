@@ -120,7 +120,7 @@ class RegRenderer {
     scr.appendChild(table); wrap.appendChild(scr);
 
     // Expose raw text for IOC extraction, YARA match highlighting and click-to-scroll
-    wrap._rawText = text;
+    wrap._rawText = lfNormalize(text);
     return wrap;
   }
 

@@ -303,7 +303,7 @@ class PlainTextRenderer {
     }
 
     // Store raw decoded text for analysis pipeline (IOC extraction, encoded content detection)
-    wrap._rawText = currentText;
+    wrap._rawText = lfNormalize(currentText);
     wrap._rawBytes = bytes;
 
     // Mutable reference to the current text pane (may be replaced on re-render)
@@ -342,7 +342,7 @@ class PlainTextRenderer {
     encSelect.addEventListener('change', () => {
       currentEncoding = encSelect.value;
       currentText = this._normalizeNewlines(this._decodeAs(bytes, currentEncoding));
-      wrap._rawText = currentText;
+      wrap._rawText = lfNormalize(currentText);
       rebuildTextPane();
     });
 

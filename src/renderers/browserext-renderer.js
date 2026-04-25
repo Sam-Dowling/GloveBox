@@ -146,7 +146,7 @@ class BrowserExtRenderer {
         `<div class="bin-fallback-sub">The package or manifest appears to be malformed, so structural analysis isn't available. ` +
         `IOC extraction and YARA rules can still run against whatever text could be decoded.</div>`;
       wrap.appendChild(notice);
-      wrap._rawText = '';
+      wrap._rawText = lfNormalize('');
       return wrap;
     }
   }
@@ -540,13 +540,13 @@ class BrowserExtRenderer {
       wrap.appendChild(rawDetails);
 
       // Hooks for the sidebar click-to-focus pipeline.
-      wrap._rawText = normalizedManifest;
+      wrap._rawText = lfNormalize(normalizedManifest);
       wrap._showSourcePane = () => {
         rawDetails.open = true;
         setTimeout(() => rawDetails.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
       };
     } else {
-      wrap._rawText = '';
+      wrap._rawText = lfNormalize('');
     }
 
     return wrap;

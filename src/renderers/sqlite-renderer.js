@@ -929,7 +929,7 @@ class SqliteRenderer {
 
 
     wrap.appendChild(viewer.root());
-    wrap._rawText = rawText;
+    wrap._rawText = lfNormalize(rawText);
     wrap._sqliteViewer = viewer;
   }
 
@@ -1013,7 +1013,7 @@ class SqliteRenderer {
         rawLines.push(row.map(v => v == null ? '' : String(v)).join('\t'));
       }
     }
-    wrap._rawText = rawLines.join('\n');
+    wrap._rawText = lfNormalize(rawLines.join('\n'));
 
     // Activate the first table by default.
     activate(tableNames[0]);

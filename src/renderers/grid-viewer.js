@@ -311,7 +311,7 @@ class GridViewer {
   _buildDOM() {
     const root = document.createElement('div');
     root.className = this._rootClass + ' grid-view';
-    root._rawText = this.rawText;
+    root._rawText = lfNormalize(this.rawText);
 
     // ── Info bar ────────────────────────────────────────────────────────────
     const info = document.createElement('div');

@@ -32,7 +32,7 @@ class IqySlkRenderer {
 
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normalizedText = lfNormalize(text);
 
     if (ext === 'iqy') {
       f.externalRefs.push({
@@ -266,7 +266,7 @@ class IqySlkRenderer {
    * <mark>s around YARA/IOC matches.
    */
   _addRawView(wrap, text, byteLen, format) {
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normalizedText = lfNormalize(text);
     const lines = normalizedText.split('\n');
 
     const info = document.createElement('div');
@@ -312,7 +312,7 @@ class IqySlkRenderer {
     wrap.appendChild(sourcePane);
 
     // Expose for sidebar navigation.
-    wrap._rawText = normalizedText;
+    wrap._rawText = lfNormalize(text);
     wrap._showSourcePane = () => {
       sourcePane.scrollIntoView({ behavior: 'smooth', block: 'start' });
     };

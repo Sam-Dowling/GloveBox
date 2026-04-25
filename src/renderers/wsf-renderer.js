@@ -129,7 +129,7 @@ class WsfRenderer {
 
     // Expose raw source text so the sidebar's click-to-highlight logic can
     // locate YARA/IOC matches inside the rendered `.plaintext-table`.
-    wrap._rawText = text;
+    wrap._rawText = lfNormalize(text);
 
     return wrap;
   }

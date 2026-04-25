@@ -2282,9 +2282,9 @@ class PeRenderer {
       ? arr.filter(s => !_viSuppress.has(s))
       : arr;
     if (this._lastStrings) {
-      wrap._rawText = _filterVi(this._lastStrings).join('\n');
+      wrap._rawText = lfNormalize(_filterVi(this._lastStrings).join('\n'));
     } else if (wrap._fallbackStrings) {
-      wrap._rawText = _filterVi(wrap._fallbackStrings).join('\n');
+      wrap._rawText = lfNormalize(_filterVi(wrap._fallbackStrings).join('\n'));
     }
 
 

@@ -706,7 +706,7 @@ class PlistRenderer {
     // the first string leaf in the serialised tree rather than on the XML line
     // containing the URL). For binary plists there is no xmlSource and no
     // plaintext-table, so the tree serialisation is a harmless fallback.
-    wrap._rawText = xmlSource || (root ? this._toText(root) : '');
+    wrap._rawText = lfNormalize(xmlSource || (root ? this._toText(root) : ''));
     return wrap;
   }
 

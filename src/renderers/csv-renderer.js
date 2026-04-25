@@ -48,7 +48,7 @@ class CsvRenderer {
       const empty = document.createElement('div');
       empty.className = 'csv-view grid-view';
       empty.textContent = 'Empty file.';
-      empty._rawText = '';
+      empty._rawText = lfNormalize('');
       return empty;
     }
 

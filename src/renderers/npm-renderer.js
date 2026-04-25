@@ -278,7 +278,7 @@ class NpmRenderer {
     // must match the string every `_sourceOffset` / `_sourceLength` in
     // findings refers to, so we normalize CRLF and use the same buffer
     // here, in `analyzeForSecurity`, and in every `locate()` call.
-    wrap._rawText = rawText;
+    wrap._rawText = lfNormalize(rawText);
     wrap._showSourcePane = () => {
       rawDetails.open = true;
       setTimeout(() => rawDetails.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);

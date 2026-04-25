@@ -306,7 +306,7 @@ item D3 unifies both paths under a single `App.openInnerFile` helper.
 
 | Path | Trigger | Thread | Failure mode | Gating |
 |---|---|---|---|---|
-| Auto-YARA (`_autoYaraScan`) | Every successful `_loadFile` | Main, synchronous | `catch (_) {}` swallows errors silently | None today; PLAN B3 adds a `MAX_AUTO_YARA_BYTES` size cap |
+| Auto-YARA (`_autoYaraScan`) | Every successful `_loadFile` | Main, synchronous | Visible `IOC.INFO` note on size-skip / scan error (interim shim until PLAN F2 introduces `App._reportNonFatal`) | Skipped above `PARSER_LIMITS.MAX_AUTO_YARA_BYTES` (32 MiB) — manual scan via the YARA tab is unrestricted |
 | Manual scan tab | User clicks the **YARA** sidebar tab | Main, synchronous | Surfaced via the panel's status line | Manual only |
 | Rules editor validate / preview | User edits in the rules dialog | Main, synchronous | Inline `valid` / `errors` summary | Manual only |
 
@@ -434,9 +434,13 @@ subtly misbehave.
   `pushIOC` pins the on-wire shape and auto-emits a sibling `IOC.DOMAIN`
   when `tldts` resolves the URL to a registrable domain. If you already
   emit a manual domain row, pass `_noDomainSibling: true`.
-- **`_rawText` must be `\n`-normalised.** The sidebar's click-to-focus uses
-  character offsets into `_rawText`; a single CRLF misaligns every offset
-  after it.
+- **`_rawText` must be `\n`-normalised — wrap the RHS in `lfNormalize(...)`.**
+  The sidebar's click-to-focus uses character offsets into `_rawText`; a
+  single CRLF misaligns every offset after it. Use the canonical
+  `lfNormalize(s)` helper from [`src/constants.js`](src/constants.js) on
+  every `*._rawText = <expr>` write — `scripts/build.py` rejects any RHS
+  that doesn't begin with `lfNormalize(` (allow-listed only for
+  `src/constants.js`, where the helper lives).
 - **Renderer roots must opt into full width.** `#viewer` is a flex column
   with `align-items: center`, which shrink-wraps any unconstrained child
   to its own content width. A `<table>` or `<pre>` that contains a
@@ -1423,11 +1427,14 @@ of rules 4, 5, and the table that follows this preamble respectively.
    Track D4 in PLAN.md replaces the scattered `app.*_buffer` globals with a
    single `app.currentResult`; until that lands, write the legacy fields.
 
-3. **`container._rawText` must be LF-normalised.** Replace `\r\n` and bare
-   `\r` with `\n` *before* assignment. Click-to-focus offsets misalign past
-   the first CR otherwise — this is `.clinerules` Tripwire #11. PLAN Track
-   B4 will land a centralised `lfNormalize()` helper plus a build-time
-   grep gate; until then, normalise inline (`text.replace(/\r\n?/g, '\n')`).
+3. **`container._rawText` must be LF-normalised — wrap the RHS in `lfNormalize(...)`.**
+   Click-to-focus offsets misalign past the first CR otherwise — this is
+   `.clinerules` Tripwire #11. Use the canonical `lfNormalize(s)` helper
+   from [`src/constants.js`](src/constants.js) (single-pass `\r\n?` regex,
+   idempotent for already-LF text, non-string inputs collapse to `''`).
+   Direct writes whose RHS does not begin with `lfNormalize(` are rejected
+   by a build-time grep gate in `scripts/build.py` (allow-listed only for
+   `src/constants.js`, where the helper lives).
 
 4. **Never pre-stamp `findings.risk`.** Initialise `f.risk = 'low'` and
    only escalate via `escalateRisk(findings, tier)` from

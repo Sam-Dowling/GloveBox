@@ -1123,7 +1123,7 @@ Object.assign(App.prototype, {
     if (state.pageNode) {
       try {
         pc.appendChild(state.pageNode);
-        if (state.rawText) state.pageNode._rawText = state.rawText;
+        if (state.rawText) state.pageNode._rawText = lfNormalize(state.rawText);
         if (state.scrollSnapshot) this._restoreScroll(state.scrollSnapshot);
         reattached = true;
       } catch (e) {

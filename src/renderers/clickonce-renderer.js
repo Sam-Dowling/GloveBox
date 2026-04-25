@@ -20,7 +20,7 @@ class ClickOnceRenderer {
   render(buffer, fileName) {
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normalizedText = lfNormalize(text);
     const parsed = this._parseManifest(text);
 
     const wrap = document.createElement('div');
@@ -187,7 +187,7 @@ class ClickOnceRenderer {
     wrap.appendChild(rawDetails);
 
     // Hooks for the sidebar highlight pipeline — same pattern as url-renderer.
-    wrap._rawText = normalizedText;
+    wrap._rawText = lfNormalize(text);
     wrap._showSourcePane = () => {
       rawDetails.open = true;
       setTimeout(() => rawDetails.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
@@ -208,7 +208,7 @@ class ClickOnceRenderer {
     };
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normalizedText = lfNormalize(text);
     const parsed = this._parseManifest(text);
     f.clickOnceInfo = parsed;
 

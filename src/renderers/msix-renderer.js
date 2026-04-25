@@ -137,10 +137,10 @@ class MsixRenderer {
       // Best-effort _rawText so sidebar IOC / YARA keeps working.
       if (!isZip) {
         try {
-          wrap._rawText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-        } catch (_) { wrap._rawText = ''; }
+          wrap._rawText = lfNormalize(new TextDecoder('utf-8', { fatal: false }).decode(bytes));
+        } catch (_) { wrap._rawText = lfNormalize(''); }
       } else {
-        wrap._rawText = '';
+        wrap._rawText = lfNormalize('');
       }
       return wrap;
     }
@@ -281,7 +281,7 @@ class MsixRenderer {
       wrap.appendChild(rawDetails);
 
       // Hooks for the sidebar highlight pipeline — identical to ClickOnce.
-      wrap._rawText = normalizedManifest;
+      wrap._rawText = lfNormalize(normalizedManifest);
       wrap._showSourcePane = () => {
         rawDetails.open = true;
         setTimeout(() => rawDetails.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
@@ -289,7 +289,7 @@ class MsixRenderer {
     } else {
       // Even without a manifest (bare ZIP), stash an empty _rawText so the
       // sidebar doesn't try to highlight against undefined.
-      wrap._rawText = '';
+      wrap._rawText = lfNormalize('');
     }
 
     return wrap;
@@ -356,7 +356,7 @@ class MsixRenderer {
     wrap.appendChild(rawDetails);
 
     // Hooks for sidebar highlight pipeline.
-    wrap._rawText = normalizedText;
+    wrap._rawText = lfNormalize(normalizedText);
     wrap._showSourcePane = () => {
       rawDetails.open = true;
       setTimeout(() => rawDetails.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);

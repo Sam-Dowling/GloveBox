@@ -1321,7 +1321,7 @@ class ElfRenderer {
     // On parse failure we still populate from the fallback scan so YARA
     // and IOC extraction keep running on truncated binaries.
     if (parsedStrings && parsedStrings.length > 0) {
-      wrap._rawText = parsedStrings.join('\n');
+      wrap._rawText = lfNormalize(parsedStrings.join('\n'));
     }
 
     return wrap;

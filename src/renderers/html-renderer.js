@@ -141,7 +141,7 @@ class HtmlRenderer {
     const sourcePane = document.createElement('div');
     sourcePane.className = 'html-source-pane hidden';
 
-    const normalizedText = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    const normalizedText = lfNormalize(text);
     const lines = normalizedText.split('\n');
     const maxLines = RENDER_LIMITS.MAX_TEXT_LINES;
     const lineCount = Math.min(lines.length, maxLines);
@@ -194,7 +194,7 @@ class HtmlRenderer {
 
     // Expose raw text + source-pane helper so the sidebar can auto-switch
     // from Preview → Source before trying to highlight.
-    container._rawText = normalizedText;
+    container._rawText = lfNormalize(text);
     container._showSourcePane = () => {
       if (sourcePane.classList.contains('hidden')) {
         sourceBtn.click();
