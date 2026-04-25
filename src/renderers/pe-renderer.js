@@ -3732,8 +3732,24 @@ class PeRenderer {
           // is already the "signature hash" which the Certificates section
           // shows separately.
           if (!overlayIsJustAuthenticode) {
+            // PLAN D2: the overlay digest is the canonical "late-arriving
+            // finding" — `crypto.subtle.digest` resolves after
+            // `_renderSidebar` has already painted from the synchronous
+            // `findings` snapshot, so a direct write here was invisible
+            // until the user toggled tabs (issue H2). After mutating
+            // findings.metadata in place (so any synchronous downstream
+            // consumer in `analyzeForSecurity` continues to see the
+            // value), notify the App via `updateFindings` so the
+            // microtask-coalesced sidebar refresh picks it up.
             BinaryOverlay.sha256Hex(overlayBytes).then(hex => {
-              if (hex) findings.metadata['Overlay SHA-256'] = hex;
+              if (!hex) return;
+              findings.metadata['Overlay SHA-256'] = hex;
+              if (typeof window !== 'undefined' && window.app
+                  && typeof window.app.updateFindings === 'function') {
+                window.app.updateFindings({
+                  metadata: { 'Overlay SHA-256': hex },
+                });
+              }
             });
           }
         }

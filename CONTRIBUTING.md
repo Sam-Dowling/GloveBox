@@ -162,7 +162,8 @@ flowchart TD
     SNIFF -- "CSV / TSV / EVTX" --> TL["Timeline route<br/>app-timeline.js<br/>(monolith)"]
 
     %% Generic branch
-    SNIFF -- other --> RR[RendererRegistry.dispatch]
+    SNIFF -- other --> RR2["RenderRoute.run<br/>src/render-route.js"]
+    RR2 --> RR[RendererRegistry.dispatch]
     RR --> RM[magic pass]
     RR --> RX[ext + extDisambiguator]
     RR --> RT[text-head sniff]
@@ -183,6 +184,11 @@ flowchart TD
     SE1 --> MOUNT["#page-container<br/>innerHTML='', appendChild"]
     SE2 --> SBR[App._renderSidebar]
     SE5 --> SBR
+
+    %% Late mutator escape hatch (PLAN D2)
+    LATE["Late async mutators<br/>(QR decode, OneNote inflate,<br/>Overlay SHA-256, …)"]
+    LATE -. "App.updateFindings(patch)" .-> UPD["microtask-coalesced<br/>findings:updated event"]
+    UPD -. dotted .-> SBR
 
     %% YARA
     SBR --> YARA["App._autoYaraScan()<br/>worker (yara.worker.js);<br/>sync main-thread fallback"]
@@ -214,6 +220,7 @@ range. Surgical anchors:
 | Drop zone | `src/app/app-core.js` · `_setupDrop` |
 | `_loadFile` | `src/app/app-load.js` · `App._loadFile` |
 | Registry dispatch | `src/renderer-registry.js` · `RendererRegistry.dispatch` |
+| Central dispatch helper | `src/render-route.js` · `RenderRoute.run` |
 | Per-renderer dispatch table | `src/app/app-load.js` · `_rendererDispatch` |
 | Sidebar render | `src/app/app-sidebar.js` · `_renderSidebar` |
 | Click-to-focus | `src/app/app-sidebar-focus.js` |
@@ -646,7 +653,16 @@ subtly misbehave.
   mutates `findings` *after* that snapshot lands the `qrPayload` /
   auto-emitted IOC in an object nobody is rendering. `PdfRenderer` is
   the model: it already awaits `pdfjs` page rendering and calls the
-  sync `decodeRGBA()` on pixels it already owns.
+  sync `decodeRGBA()` on pixels it already owns. **Escape hatch (PLAN
+  D2):** when awaiting really isn't possible — e.g. an already-fired
+  `crypto.subtle.digest` whose `.then` resolves long after
+  `analyzeForSecurity` returned — call
+  `window.app.updateFindings({ interestingStrings: [...], metadata: {...},
+  risk: 'medium' }, { token: app._loadToken })` from the late
+  continuation. The patch is microtask-coalesced, dedup'd by `id`, and
+  silently dropped if `app._loadToken` has been bumped by a Back/forward
+  navigation since the work was queued. Prefer awaiting; reach for
+  `updateFindings` only when the renderer cannot.
 - **Binary overlay detection is shared across PE / ELF / Mach-O** via
   `src/binary-overlay.js` (`BinaryOverlay.compute()` + `renderCard()`).
   Overlay start is computed per-format: PE uses
@@ -1516,17 +1532,26 @@ elsewhere in this file. The deeper subsections (Risk Tier Calibration, IOC
 Push Helpers / Checklist, click-to-highlight hooks) are the spelled-out forms
 of rules 4, 5, and the table that follows this preamble respectively.
 
-1. **Return shape.** Today, `render(file, buf, app)` returns a single
-   `HTMLElement` — the view container that gets mounted under
-   `#page-container`. Per [PLAN.md](../PLAN.md) Track D1 the canonical return
-   will become an object:
+1. **Return shape.** Renderers may return either a bare `HTMLElement` (the
+   legacy shape) **or** the canonical `RenderResult` object introduced by
+   PLAN Track D1:
    ```js
    { docEl: HTMLElement, findings?: Findings, rawText?: string,
-     binary?: BinaryParsed, navTitle?: string }
+     binary?: BinaryParsed, navTitle?: string, analyzer?: SecurityAnalyzer }
    ```
-   Both shapes will be accepted during the migration; the central
-   `renderRoute` helper introduced by D1 normalises them. Until then, return
-   the bare `HTMLElement` and continue mutating `app.findings` as today.
+   The central `RenderRoute.run()` helper in
+   [`src/render-route.js`](src/render-route.js) normalises both shapes,
+   wraps every dispatch in `ParserWatchdog.run({timeout:
+   PARSER_LIMITS.RENDERER_TIMEOUT_MS, name: dispatchId})`, runs the result's
+   `rawText` through `lfNormalize()` once (so renderers that emit only
+   `docEl.textContent` and forget the per-write LF normalisation can no
+   longer misalign click-to-focus offsets), and stamps `app.currentResult`
+   for downstream consumers. New renderers should still mutate
+   `app.findings` directly — the migration to a return-value-driven
+   `findings` happens in PLAN Tracks D2 / D4. The `app.currentResult`
+   object stamped by D1 is intentionally not consumed yet (sidebar /
+   copy-analysis / auto-YARA still read the legacy `_fileBuffer` /
+   `_binaryParsed` / `_latestIOCs` fields); D4 cuts read sites over.
 
 2. **Required `app.*` writes.** Mirroring the architectural side-effect table:
 

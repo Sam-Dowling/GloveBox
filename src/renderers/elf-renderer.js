@@ -2343,11 +2343,21 @@ class ElfRenderer {
             findings.metadata['Overlay Type'] = `Appended ${overlayMagic.label}`;
           }
 
-          // SHA-256 lands on metadata once the async digest settles; the
-          // sidebar will pick it up on the next refresh. The render-side
-          // card also populates its own row via the same promise.
+          // PLAN D2: notify App of late metadata write so the sidebar
+          // re-renders once the async digest settles. Direct mutation
+          // is preserved so any synchronous downstream consumer of
+          // `findings.metadata` in the rest of `analyzeForSecurity`
+          // still sees the value; `updateFindings` just makes the
+          // existing snapshot-based sidebar refresh aware of it.
           BinaryOverlay.sha256Hex(overlayBytes).then(hex => {
-            if (hex) findings.metadata['Overlay SHA-256'] = hex;
+            if (!hex) return;
+            findings.metadata['Overlay SHA-256'] = hex;
+            if (typeof window !== 'undefined' && window.app
+                && typeof window.app.updateFindings === 'function') {
+              window.app.updateFindings({
+                metadata: { 'Overlay SHA-256': hex },
+              });
+            }
           });
         }
       } catch (_) { /* overlay analysis is best-effort */ }

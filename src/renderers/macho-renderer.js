@@ -2662,8 +2662,21 @@ class MachoRenderer {
                 note: `${tailSize.toLocaleString()} B past last slice (${tailPct.toFixed(1)}% of file), entropy ${tailEntropy.toFixed(2)}${tailMagic ? `, magic ${tailMagic.label}` : ''}`,
                 _noDomainSibling: true,
               });
+              // PLAN D2: notify App of late metadata write so the sidebar
+              // re-renders once the async digest settles. Direct mutation
+              // is preserved so any synchronous downstream consumer of
+              // `findings.metadata` in the rest of `analyzeForSecurity`
+              // still sees the value; `updateFindings` just makes the
+              // existing snapshot-based sidebar refresh aware of it.
               BinaryOverlay.sha256Hex(tailBytes).then(hex => {
-                if (hex) findings.metadata['Fat Tail SHA-256'] = hex;
+                if (!hex) return;
+                findings.metadata['Fat Tail SHA-256'] = hex;
+                if (typeof window !== 'undefined' && window.app
+                    && typeof window.app.updateFindings === 'function') {
+                  window.app.updateFindings({
+                    metadata: { 'Fat Tail SHA-256': hex },
+                  });
+                }
               });
             }
           }
@@ -2696,8 +2709,16 @@ class MachoRenderer {
               findings.metadata['Overlay Type'] = `Appended ${overlayMagic.label}`;
             }
 
+            // PLAN D2: see Fat Tail SHA-256 site above for rationale.
             BinaryOverlay.sha256Hex(overlayBytes).then(hex => {
-              if (hex) findings.metadata['Overlay SHA-256'] = hex;
+              if (!hex) return;
+              findings.metadata['Overlay SHA-256'] = hex;
+              if (typeof window !== 'undefined' && window.app
+                  && typeof window.app.updateFindings === 'function') {
+                window.app.updateFindings({
+                  metadata: { 'Overlay SHA-256': hex },
+                });
+              }
             });
           }
         }

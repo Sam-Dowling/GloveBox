@@ -70,6 +70,20 @@ function _refangString(str) {
 Object.assign(App.prototype, {
 
   async _loadFile(file, prefetchedBuffer /* optional – passed by Timeline fallback */) {
+    // ── Stale-load token bump (PLAN D2) ───────────────────────────────
+    // Monotonic per-`_loadFile` invocation. Async work queued by the
+    // *previous* load (QR decoders running over a PDF page raster, the
+    // crypto.subtle SHA-256 of a PE overlay, an OneNote
+    // FileDataStoreObject decode that lost a race with a quick Back-
+    // then-forward navigation) may resolve **after** this method
+    // returns and try to call `App.updateFindings(patch, { token })`.
+    // The mutator no-ops when the supplied token doesn't match the
+    // current value, so a deferred mutation can never paint into the
+    // *next* file's findings / sidebar. Defaults to 0 on first load;
+    // `_clearFile` resets it to 0 on file close so a stranded post-
+    // close mutation also no-ops.
+    this._loadToken = (this._loadToken || 0) + 1;
+
     // ── Timeline intercept ────────────────────────────────────────────
     // Every CSV / TSV / EVTX file opens in the Timeline view
     // unconditionally. `_timelineTryHandle` returns truthy when it
@@ -233,88 +247,52 @@ Object.assign(App.prototype, {
       // Compute file hashes in parallel with parsing
       const hashPromise = this._hashFile(buffer);
 
-      // ── Parser watchdog (per-renderer, PLAN B5) ──────────────────────
-      // Run the chosen renderer under `PARSER_LIMITS.RENDERER_TIMEOUT_MS`
-      // (30 s). When a single renderer hangs on a maliciously crafted
-      // file (malformed PDF xref, pathological ZIP entry count, OneNote
-      // blob loop, …) we abort the renderer and fall back to
-      // `PlainTextRenderer` so the analyst still gets a hex/strings view
-      // and a sidebar `IOC.INFO` row that explains why the structured
-      // viewer didn't load. Genuine parser exceptions (i.e. errors that
-      // are NOT a watchdog timeout) bubble out of this block to the
-      // outer `catch (e)` that paints the "Failed to open file" box.
+      // ── Central renderer dispatch (PLAN D1) ──────────────────────────
+      // `RenderRoute.run` (src/render-route.js) owns the three concerns
+      // that previously lived inline here:
+      //   1. Build a `RendererRegistry.makeContext()` and ask
+      //      `RendererRegistry.detect()` which renderer wins.
+      //   2. Invoke the per-id handler from `this._rendererDispatch`
+      //      under the PLAN-B5 parser-watchdog
+      //      (`PARSER_LIMITS.RENDERER_TIMEOUT_MS`, 30 s) with a graceful
+      //      `PlainTextRenderer` fallback + visible `IOC.INFO` row on
+      //      timeout. Genuine parser exceptions still bubble to the
+      //      outer `catch (e)` that paints the "Failed to open file"
+      //      box — the failure surface is unchanged from before D1.
+      //   3. Normalise the handler's return shape into the canonical
+      //      `RenderResult` typedef (`{ docEl, findings, rawText,
+      //      binary?, analyzer?, navTitle, dispatchId }`) — including
+      //      the centralised `lfNormalize(docEl._rawText ||
+      //      docEl.textContent)` that fixes the H3 click-to-focus
+      //      misalignment for renderers that emit text via
+      //      `textContent` rather than an explicit `_rawText`.
+      //   4. Stamp `this.currentResult` so future tracks (D2 findings-
+      //      updated event, D3 openInnerFile, D4 currentResult cutover)
+      //      can read from a single canonical handle. D1 does NOT yet
+      //      migrate any consumer — the sidebar, copy-analysis, and
+      //      YARA paths still read the legacy `_fileBuffer` /
+      //      `_binaryParsed` / `_latestIOCs` fields the per-id handlers
+      //      set directly.
       //
-      // Why per-renderer instead of one outer guard around the whole
-      // pipeline? A pre-PLAN-B5 30 s wrap that included the encoded-
-      // content recursion + sidebar render would let a 25 s renderer
-      // succeed and then immediately blow the budget on the cheap
-      // post-render work. The 30 s here is a clean per-renderer bound;
-      // the buffer-read above (line ~150) keeps its own
-      // `PARSER_LIMITS.TIMEOUT_MS` (60 s) cap, which is a different
-      // scope (one read per file vs. arbitrary parser work).
-      //
-      // Dispatch strategy:
-      //   1. Build a detection context once (`RendererRegistry.makeContext`)
-      //      — this memoises ASCII heads, the OLE stream list, and the
-      //      ZIP central-directory peek so every predicate touches the
-      //      bytes at most once.
-      //   2. Ask `RendererRegistry.detect()` which renderer wins. The
-      //      registry runs magic → extension → text-sniff passes in that
-      //      order, so an extensionless MSIX is still routed to the
-      //      MSIX renderer, a renamed .docx stays a Word document, and
-      //      `.key` bytes are disambiguated between X.509 and PGP.
-      //   3. Run the per-id handler under the watchdog. On timeout, reset
-      //      any partial state the hung renderer may have written and
-      //      hand the buffer to PlainTextRenderer.
-      const rctx = RendererRegistry.makeContext(file, buffer);
-      const decision = RendererRegistry.detect(rctx);
-      const dispatchId = decision.id;
-      const handler = this._rendererDispatch[dispatchId] || this._rendererDispatch.plaintext;
+      // The Timeline branch above is an analysis-bypass route and never
+      // reaches `RenderRoute.run`.
+      const result = await RenderRoute.run(file, buffer, this);
+      docEl = result.docEl;
+      analyzer = result.analyzer || null;
+      // Stash the renderer-side analyzer (DOCX `SecurityAnalyzer` is the
+      // only one today) so deferred sidebar refreshes triggered by
+      // `App.updateFindings` (PLAN D2) can pass the same analyzer back
+      // into `_renderSidebar` without forcing the caller to remember it.
+      // `_clearFile` nulls this on file close.
+      this._currentAnalyzer = analyzer || null;
 
-      try {
-        const result = await ParserWatchdog.run(
-          () => handler.call(this, file, buffer, rctx),
-          { timeout: PARSER_LIMITS.RENDERER_TIMEOUT_MS, name: dispatchId }
-        );
-        if (result) {
-          docEl = result.docEl;
-          if (result.analyzer) analyzer = result.analyzer;
-        }
-      } catch (renderErr) {
-        // Watchdog timeout → graceful PlainTextRenderer fallback. Skip
-        // the fallback if the dispatcher we just timed out on was already
-        // `plaintext` (degenerate case — let the outer catch render the
-        // "Failed to open file" box).
-        if (renderErr && renderErr._watchdogTimeout && dispatchId !== 'plaintext') {
-          const secs = (PARSER_LIMITS.RENDERER_TIMEOUT_MS / 1000) | 0;
-          console.warn(`[loupe] Renderer "${dispatchId}" timed out after ${secs}s — falling back to plain-text view`);
-          // Reset partial state from the hung renderer so it can't bleed
-          // into the sidebar (findings.risk pre-stamps, half-built IOC
-          // arrays, binary-triage globals from a half-parsed PE/ELF/Mach-O).
-          this.findings = { risk: 'low', externalRefs: [], interestingStrings: [], metadata: {} };
-          this._binaryParsed = null;
-          this._binaryFormat = null;
-          this._yaraBuffer = null;
-          const fallback = await this._rendererDispatch.plaintext.call(this, file, buffer, rctx);
-          docEl = fallback.docEl;
-          analyzer = null;
-          // Surface the fallback to the analyst as a visible IOC.INFO row
-          // (interim; PLAN F2 will unify reporting via App._reportNonFatal).
-          pushIOC(this.findings, {
-            type: IOC.INFO,
-            value: `Parser "${dispatchId}" timed out after ${secs}s — falling back to plain-text view. Open the YARA tab for a manual deep scan.`,
-            severity: 'medium',
-          });
-        } else {
-          throw renderErr;
-        }
-      }
-
-
-      // Extract interesting strings from rendered text + VBA source
-      // Use ._rawText if available (PlainTextRenderer provides clean decoded text
-      // instead of hex dump output that would break IOC extraction)
-      const analysisText = docEl._rawText || docEl.textContent;
+      // Extract interesting strings from rendered text + VBA source.
+      // `result.rawText` is `lfNormalize(docEl._rawText || docEl.textContent)`
+      // — the centralised LF-normalisation introduced by D1, replacing
+      // the previous direct `docEl._rawText || docEl.textContent` read
+      // (which could leak CRLF past the first CR for renderers that
+      // didn't attach `_rawText`).
+      const analysisText = result.rawText;
       const rendererIOCs = this.findings.interestingStrings || [];
       const extracted = this._extractInterestingStrings(analysisText, this.findings);
       this.findings.interestingStrings = [...rendererIOCs, ...extracted];
@@ -487,6 +465,128 @@ Object.assign(App.prototype, {
       const p1 = document.createElement('p'); p1.textContent = e.message; eb.appendChild(p1);
       pc.appendChild(eb);
     } finally { this._setLoading(false); }
+  },
+
+  // ── App.updateFindings (PLAN D2) ────────────────────────────────────────
+  //
+  // Public mutator for late-arriving findings. Renderers must continue to
+  // mutate `app.findings` synchronously during `render()` /
+  // `analyzeForSecurity()` (the renderer contract has not changed —
+  // `_renderSidebar` still snapshots a complete picture at the moment
+  // `_loadFile` resolves). What this helper exists for is the *deferred*
+  // case: an async pdf.worker page raster QR decode, an OneNote
+  // FileDataStoreObject inflate, an `crypto.subtle.digest('SHA-256',
+  // overlayBytes)` for a PE/ELF/Mach-O overlay, an Image-renderer's
+  // post-paint TIFF IFD walk — anything that produces an IOC / metadata
+  // field / risk escalation **after** `_renderSidebar` has already painted
+  // from the snapshot. Before D2 those late writes silently never reached
+  // the sidebar (issue H2).
+  //
+  // Contract:
+  //   • `patch` is `{ externalRefs?, interestingStrings?, metadata?,
+  //                  risk?, encodedContent? }`. Any subset.
+  //   • `opts.token` is an optional stale-load guard. Callers that captured
+  //     `app._loadToken` at the moment they queued the async work pass it
+  //     in — if a Back-or-forward navigation has happened in the meantime,
+  //     `app._loadToken` will have been bumped and the patch is silently
+  //     dropped (so a stranded post-load digest can't paint into the next
+  //     file's findings).
+  //   • Dedup is opt-in via a stable `id` field on each pushed entry.
+  //     Entries with the same `id` as something already in
+  //     `findings.externalRefs` / `interestingStrings` /
+  //     `findings.encodedContent` are skipped. Entries without `id` are
+  //     appended unconditionally — preserving the pre-D2 behaviour for
+  //     renderers that haven't migrated.
+  //   • `risk` is fed through `escalateRisk(findings, tier)` so the B1
+  //     ladder rules apply (no pre-stamping past the current tier).
+  //   • The patch dispatches `findings:updated` on `document` with
+  //     `{ detail: { sections: [...] } }` for any external listeners
+  //     (copy-analysis cache, future inspector overlay, etc.) and
+  //     schedules a microtask-coalesced sidebar re-render.
+  updateFindings(patch, opts) {
+    if (!this.findings || !patch) return;
+    if (opts && opts.token !== undefined && opts.token !== this._loadToken) {
+      // Stale load — patch was queued for a previous file. Drop.
+      return;
+    }
+    const sections = new Set();
+
+    if (Array.isArray(patch.externalRefs) && patch.externalRefs.length) {
+      const dst = this.findings.externalRefs = this.findings.externalRefs || [];
+      const seenIds = new Set(dst.filter(r => r && r.id).map(r => r.id));
+      for (const ref of patch.externalRefs) {
+        if (!ref) continue;
+        if (ref.id && seenIds.has(ref.id)) continue;
+        if (ref.id) seenIds.add(ref.id);
+        dst.push(ref);
+      }
+      sections.add('detections'); sections.add('iocs');
+    }
+    if (Array.isArray(patch.interestingStrings) && patch.interestingStrings.length) {
+      const dst = this.findings.interestingStrings = this.findings.interestingStrings || [];
+      const seenIds = new Set(dst.filter(r => r && r.id).map(r => r.id));
+      for (const s of patch.interestingStrings) {
+        if (!s) continue;
+        if (s.id && seenIds.has(s.id)) continue;
+        if (s.id) seenIds.add(s.id);
+        dst.push(s);
+      }
+      sections.add('detections'); sections.add('iocs');
+    }
+    if (patch.metadata && typeof patch.metadata === 'object') {
+      this.findings.metadata = this.findings.metadata || {};
+      Object.assign(this.findings.metadata, patch.metadata);
+      sections.add('fileInfo');
+    }
+    if (patch.risk && typeof escalateRisk === 'function') {
+      escalateRisk(this.findings, patch.risk);
+      sections.add('risk');
+    }
+    if (Array.isArray(patch.encodedContent) && patch.encodedContent.length) {
+      const dst = this.findings.encodedContent = this.findings.encodedContent || [];
+      const seenIds = new Set(dst.filter(r => r && r.id).map(r => r.id));
+      for (const ef of patch.encodedContent) {
+        if (!ef) continue;
+        if (ef.id && seenIds.has(ef.id)) continue;
+        if (ef.id) seenIds.add(ef.id);
+        dst.push(ef);
+      }
+      sections.add('deobfuscation');
+    }
+
+    this._scheduleSidebarRefresh(sections);
+  },
+
+  // Microtask-coalesced sidebar refresh. Multiple `updateFindings(...)`
+  // calls in the same task collapse into one re-render — important when a
+  // renderer's deferred path emits 20 IOCs in a tight loop. The set of
+  // touched sections is preserved on `_pendingSbSections` for a future
+  // surgical re-render impl; today V1 just calls the existing
+  // `_renderSidebar` (which preserves section open/closed state via
+  // `_resolveSectionOpen`, so a full re-render is visually stable).
+  _scheduleSidebarRefresh(sections) {
+    if (!sections) sections = new Set();
+    this._pendingSbSections = this._pendingSbSections || new Set();
+    sections.forEach(s => this._pendingSbSections.add(s));
+    if (this._sbRefreshScheduled) return;
+    this._sbRefreshScheduled = true;
+    Promise.resolve().then(() => {
+      const pending = this._pendingSbSections || new Set();
+      this._pendingSbSections = null;
+      this._sbRefreshScheduled = false;
+      if (!this.findings) return;
+      try {
+        document.dispatchEvent(new CustomEvent('findings:updated', {
+          detail: { sections: [...pending] },
+        }));
+      } catch (_) { /* event dispatch is best-effort */ }
+      const fileName = (this._fileMeta && this._fileMeta.name) || '';
+      try {
+        this._renderSidebar(fileName, this._currentAnalyzer || null);
+      } catch (err) {
+        console.warn('[loupe] deferred sidebar refresh failed:', err);
+      }
+    });
   },
 
   // ── Hashing ─────────────────────────────────────────────────────────────

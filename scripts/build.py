@@ -343,6 +343,20 @@ JS_FILES = [
     # name, and BEFORE app-core.js so `App._loadFile` can call
     # `RendererRegistry.detect()` / `RendererRegistry.makeContext()`.
     'src/renderer-registry.js',
+    # render-route.js — central renderer dispatch helper introduced by
+    # PLAN Track D1. Exposes `window.RenderRoute.run(file, buf, app, rctx?)`
+    # which calls `RendererRegistry.detect()`, invokes the matched
+    # `App._rendererDispatch[id]` handler under the PLAN-B5 parser-watchdog
+    # (`PARSER_LIMITS.RENDERER_TIMEOUT_MS`), normalises the renderer's
+    # return into the canonical `RenderResult` shape (centralised
+    # `lfNormalize` of `_rawText`/`textContent` — fixes H3), and stamps
+    # `app.currentResult`. Must load AFTER renderer-registry.js (the
+    # detect/makeContext entrypoints) and AFTER parser-watchdog.js (read
+    # via the global), and BEFORE app-core.js so `App._loadFile` can call
+    # `RenderRoute.run(...)` without a forward reference. The
+    # `_rendererDispatch` table itself stays in `app-load.js` until D4
+    # cuts it over to a registry-driven structure.
+    'src/render-route.js',
     # app-bg.js — subtle per-theme animated landing-surface background
     # (plasma drift on light/dark, floating hearts on mocha, floating
     # kittens on latte, golden-ratio phyllotaxis spiral on solarized,

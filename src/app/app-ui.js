@@ -703,6 +703,23 @@ Object.assign(App.prototype, {
     // cleared here so the next load — which may be any format — doesn't
     // see stale parsed headers or a stale format marker.
     this._binaryParsed = null; this._binaryFormat = null;
+    // ── Stale-load guard reset (PLAN D2) ──────────────────────────────────
+    // `_loadToken` is the monotonic counter `_loadFile` bumps on every
+    // invocation; deferred mutations (pdf-worker QR decode, async overlay
+    // SHA-256, OneNote inflate, etc.) capture it and pass it to
+    // `App.updateFindings({...}, { token })` so a stranded post-close
+    // mutation no-ops instead of painting into the next file's findings.
+    // Reset to 0 here so a deferred call queued *during* the now-cleared
+    // load doesn't accidentally match the next file's first token of 1.
+    // `_currentAnalyzer` was stashed by `_loadFile` so the deferred
+    // sidebar refresh can re-render with the same DOCX `SecurityAnalyzer`
+    // instance — null it on close. `_pendingSbSections` /
+    // `_sbRefreshScheduled` are the microtask coalescing flags; clear so
+    // a stale microtask doesn't try to repaint the sidebar after teardown.
+    this._loadToken = 0;
+    this._currentAnalyzer = null;
+    this._pendingSbSections = null;
+    this._sbRefreshScheduled = false;
 
     // ── Sidebar highlight teardown ────────────────────────────────────────
     // Pending highlight timers hold closures over stale findings / DOM
