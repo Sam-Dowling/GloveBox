@@ -142,8 +142,32 @@ yar_rules = '\n'.join(yar_parts)
 yar_rules_escaped = yar_rules.replace('\\', '\\\\').replace('`', '\\`').replace('${', '\\${')
 default_yara_js = f'const DEFAULT_YARA_RULES = `{yar_rules_escaped}`;\n'
 
+# `EncodedContentDetector` is split across `src/encoded-content-detector.js`
+# (the class root with constructor / static tables / scan orchestrator) and
+# nine helper modules under `src/decoders/` that attach instance methods via
+# `Object.assign(EncodedContentDetector.prototype, {...})` and one static
+# (`unwrapSafeLink`). Order matters — the class root MUST load first; the
+# helpers can load in any order after that, but we keep the listing
+# deterministic for byte-reproducible builds. This list is splatted into
+# `JS_FILES` (main bundle) and concatenated into `_encoded_worker_bundle_src`
+# (worker bundle) so the two stay in sync. See PLAN.md Track E2 and
+# CONTRIBUTING.md → Encoded-content split.
+_DETECTOR_FILES = [
+    'src/encoded-content-detector.js',
+    'src/decoders/safelinks.js',
+    'src/decoders/whitelist.js',
+    'src/decoders/entropy.js',
+    'src/decoders/ioc-extract.js',
+    'src/decoders/base64-hex.js',
+    'src/decoders/zlib.js',
+    'src/decoders/encoding-finders.js',
+    'src/decoders/encoding-decoders.js',
+    'src/decoders/cmd-obfuscation.js',
+]
+
 # JS files concatenated in dependency order
 JS_FILES = [
+
     'src/constants.js',
     # nicelist.js — known-good global infrastructure (NICELIST) used by the
     # sidebar IOC table to demote / hide benign cloud / registry / CA /
@@ -250,8 +274,15 @@ JS_FILES = [
     # Consumed by ZipRenderer (tar/tar.gz) and NpmRenderer (tgz tarballs).
     # Must load AFTER constants.js (PARSER_LIMITS) and BEFORE both renderers.
     'src/tar-parser.js',
-    'src/encoded-content-detector.js',
+    # encoded-content-detector.js is the class root; the helper modules under
+    # src/decoders/ attach instance methods via Object.assign(...prototype, ...)
+    # and one static (`unwrapSafeLink`). They MUST load AFTER the class root and
+    # in the order below — see `_DETECTOR_FILES` for the canonical list, which
+    # is reused by `_encoded_worker_bundle_src` to keep the worker bundle in
+    # sync. See PLAN.md Track E2 and CONTRIBUTING.md → Encoded-content split.
+    *_DETECTOR_FILES,
     'src/qr-decoder.js',
+
     'src/docx-parser.js',
     'src/style-resolver.js',
     'src/numbering-resolver.js',
@@ -495,14 +526,18 @@ timeline_worker_js = (
 # and prune false-positive zlib hits. The encoded.worker.js trailer carries
 # the `self.onmessage` dispatcher that drives `EncodedContentDetector.scan()`
 # and eagerly fires `lazyDecode()` on every cheap finding.
+# `_DETECTOR_FILES` (defined above) lists the class root + nine helper
+# modules under `src/decoders/`; concatenating them in that order is
+# equivalent to what `JS_FILES` does on the main thread.
 _encoded_worker_bundle_src = (
     read('src/workers/encoded-worker-shim.js') + '\n'
     + pako_js + '\n'
     + jszip + '\n'
     + read('src/decompressor.js') + '\n'
-    + read('src/encoded-content-detector.js') + '\n'
+    + '\n'.join(read(f) for f in _DETECTOR_FILES) + '\n'
     + read('src/workers/encoded.worker.js')
 )
+
 encoded_worker_js = (
     'const __ENCODED_WORKER_BUNDLE_SRC = `'
     + _esc_for_template(_encoded_worker_bundle_src)

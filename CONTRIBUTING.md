@@ -537,7 +537,49 @@ subtly misbehave.
   viewer) callsite. Renderers load before `renderer-registry.js`,
   which loads before `app-core.js`.
 
+  **`EncodedContentDetector` split (PLAN Track E2).** The detector
+  used to live entirely in a 2,114-LOC `src/encoded-content-detector.js`.
+  It now follows the same prototype-mixin pattern as `App`: the class
+  root in `src/encoded-content-detector.js` (~480 LOC) keeps the
+  constructor, the static recognition tables (`MAGIC_BYTES`,
+  `TEXT_SIGNATURES`, `HIGH_CONFIDENCE_B64`), the `static
+  _propagateInnerFindings` helper, the `async scan()` orchestrator,
+  the recursion driver `_processCandidate`, and `lazyDecode`. Nine
+  helper modules under `src/decoders/` each attach instance methods
+  via `Object.assign(EncodedContentDetector.prototype, {...})`, with
+  one static (`EncodedContentDetector.unwrapSafeLink`) carried by
+  `safelinks.js`. The canonical load order — class root first, helpers
+  afterwards — is encoded once in the `_DETECTOR_FILES` Python list at
+  the top of `scripts/build.py`; that same list is splatted into
+  `JS_FILES` for the main bundle and concatenated into
+  `_encoded_worker_bundle_src` for `src/workers/encoded.worker.js` so
+  the two bundles cannot drift. The recursive call in
+  `_processCandidate` (`new EncodedContentDetector(...).scan(...)`)
+  works on the inner instance because the helpers attach to the
+  prototype at module load. The split files are:
+
+  | File | Methods | Purpose |
+  |---|---|---|
+  | `src/decoders/safelinks.js` | `unwrapSafeLink` (static) | Proofpoint URLDefense v1 / v2 / v3 + Microsoft SafeLinks unwrapping. |
+  | `src/decoders/whitelist.js` | `_isDataURI`, `_isPEMBlock`, `_isCSSFontData`, `_isMIMEBody`, `_isHashLength`, `_isGUID`, `_isPowerShellEncodedCommand`, `_hasBase32Context` | Cheap whitelisting predicates that suppress known-benign blob shapes before any decode. |
+  | `src/decoders/entropy.js` | `_classify`, `_assessSeverity`, `_shannonEntropyString`, `_shannonEntropyBytes`, `_tryDecodeUTF8`, `_isValidUTF8`, `_tryDecodeUTF16LE` | Decoded-payload classification + entropy / UTF-8 / UTF-16LE heuristics. |
+  | `src/decoders/ioc-extract.js` | `_extractIOCsFromDecoded` | Pulls `IOC.*` candidates out of a decoded blob and routes them through `unwrapSafeLink`. |
+  | `src/decoders/base64-hex.js` | `_findBase64Candidates`, `_findHexCandidates`, `_findBase32Candidates`, `_decodeBase64`, `_decodeHex`, `_decodeBase32` | Base64 / hex / base32 candidate finders + sync decoders. |
+  | `src/decoders/zlib.js` | `_findCompressedBlobCandidates`, `_processCompressedCandidate` | zlib / gzip / deflate stream finders + a sync `Decompressor` wrapper. |
+  | `src/decoders/encoding-finders.js` | URL-enc / HTML-ent / Unicode-esc / Char-Array (8 flavours) / Octal / Script.Encode / space-hex / ROT13 / Split-Join finders | Per-encoding candidate scanners. |
+  | `src/decoders/encoding-decoders.js` | `_decodeCandidate` switch + per-encoding decoders + `_decodeScriptEncoded` | Per-encoding decode routines, including the MS Script Encoder cipher tables. |
+  | `src/decoders/cmd-obfuscation.js` | `_findCommandObfuscationCandidates`, `_processCommandObfuscation` | CMD caret / concat / envvar de-obfuscation **and** PowerShell concat / replace / backtick / format / reverse de-obfuscation. |
+
+  When adding a new encoding family: pick the helper file whose
+  responsibility matches (or add a tenth file under `src/decoders/`
+  and append it to `_DETECTOR_FILES`), keep new methods on the
+  prototype via the existing `Object.assign(...)` block at the bottom
+  of the file, never re-declare the class, and never depend on the
+  helpers loading in any specific order relative to one another — the
+  contract is "class root first, helpers afterwards", nothing finer.
+
 ### CSP & runtime safety
+
 
 - **No `eval`, no `new Function`, no network.** The Content-Security-Policy
   (`default-src 'none'` + `script-src 'unsafe-inline'` only for the
