@@ -2807,7 +2807,7 @@ class TimelineView {
       console.warn('[timeline] EVTX analyzeForSecurity failed:', e);
     }
 
-    const columns = ['Timestamp', 'Event ID', 'Level', 'Provider', 'Channel', 'Computer', 'Event Data'];
+    const columns = [...EVTX_COLUMN_ORDER];
     let truncated = false;
     let list = events;
     if (events.length > TIMELINE_MAX_ROWS) {
@@ -3607,7 +3607,7 @@ class TimelineView {
       }
     }
     if (!eids.size) { this._detectionBitmap = null; return; }
-    const eventIdCol = this._baseColumns.indexOf('Event ID');
+    const eventIdCol = this._baseColumns.indexOf(EVTX_COLUMNS.EVENT_ID);
     if (eventIdCol < 0) { this._detectionBitmap = null; return; }
     const n = this.rows.length;
     const bm = new Uint8Array(n);
@@ -6026,10 +6026,10 @@ class TimelineView {
     // null from the hooks short-circuits the augment path.
     const Reg = (typeof window !== 'undefined' && window.EvtxEventIds) || null;
     const evtxEidCol = (this._evtxFindings && Reg)
-      ? this._baseColumns.indexOf('Event ID')
+      ? this._baseColumns.indexOf(EVTX_COLUMNS.EVENT_ID)
       : -1;
     const evtxChannelCol = (evtxEidCol >= 0)
-      ? this._baseColumns.indexOf('Channel')
+      ? this._baseColumns.indexOf(EVTX_COLUMNS.CHANNEL)
       : -1;
     const evtxLookupRec = (dataIdx) => {
       if (evtxEidCol < 0) return null;
@@ -6369,7 +6369,7 @@ class TimelineView {
     });
 
     // Event ID column index for EVTX (matches `fromEvtx` schema).
-    const eventIdCol = this._baseColumns.indexOf('Event ID');
+    const eventIdCol = this._baseColumns.indexOf(EVTX_COLUMNS.EVENT_ID);
 
     body.innerHTML = '';
     const tbl = document.createElement('table');
@@ -8940,7 +8940,7 @@ class TimelineView {
     // but forensically-important fields (LogonType, UserAccountControl…)
     // surface in the dialog instead of being filtered out as noise.
     const isEvtx = this.formatLabel === 'EVTX'
-      || (this._baseColumns && this._baseColumns.indexOf('Event Data') !== -1);
+      || (this._baseColumns && this._baseColumns.indexOf(EVTX_COLUMNS.EVENT_DATA) !== -1);
 
     // Forensics-grade EVTX fields: pre-selected by default (others stay
     // visible but unchecked) so analysts can Extract-selected and get a

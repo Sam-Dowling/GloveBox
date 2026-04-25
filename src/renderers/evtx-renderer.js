@@ -1612,7 +1612,7 @@ class EvtxRenderer {
 
     // ── Build the GridViewer — inherits virtual scroll, drawer, IOC/YARA
     //    highlighting, filter → same primitive as CSV/XLSX/SQLite. ───────
-    const columns = ['Timestamp', 'Event ID', 'Level', 'Provider', 'Channel', 'Computer', 'Event Data'];
+    const columns = [...EVTX_COLUMN_ORDER];
     const rows = new Array(limitedEvents.length);
     for (let i = 0; i < limitedEvents.length; i++) {
       const ev = limitedEvents[i];
