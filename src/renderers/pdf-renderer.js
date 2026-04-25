@@ -28,11 +28,23 @@ class PdfRenderer {
    * (JavaScript, embedded files) on `app.findings`, we prepend a clickable
    * "Extracted Files" banner mirroring the MSG / EML / ZIP UX so users can
    * open attachments inline or download JS scripts directly from the viewer.
+   *
+   * **PLAN F3 — pdf.worker lifecycle.** pdf.js owns its own dedicated worker
+   * (`vendor/pdf.worker.js`, spawned independently of the C1–C4
+   * `WorkerManager` channels). Every open `PDFDocumentProxy` is registered
+   * on the static `_activeDocs` set so a Back-then-forward navigation can
+   * call `PdfRenderer.disposeWorker()` from `App._loadFile` and preempt
+   * any in-flight `getPage(i)` / `page.render(...)` / `analyzeForSecurity`
+   * promises against the previous file. The page loop is wrapped so the
+   * `Worker was destroyed` rejection that pdf.js surfaces post-`destroy()`
+   * doesn't bubble to `_loadFile`'s outer "Failed to open file" toast —
+   * a partial render is the expected outcome of a deliberate cancellation.
    */
   async render(buffer, fileName, findings) {
     if (typeof pdfjsLib === 'undefined') throw new Error('PDF.js library not loaded — cannot render PDF');
     const data = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer).slice();
     const pdf = await pdfjsLib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
+    PdfRenderer._activeDocs.add(pdf);
     const wrap = document.createElement('div');
     wrap.className = 'pdf-view';
 
@@ -42,43 +54,60 @@ class PdfRenderer {
     this._renderExtractedBanner(wrap, findings, fileName);
 
     const scale = 1.5;
-    for (let i = 1; i <= pdf.numPages; i++) {
-      const page = await pdf.getPage(i);
-      const vp = page.getViewport({ scale });
+    try {
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const vp = page.getViewport({ scale });
 
-      const pageDiv = document.createElement('div');
-      pageDiv.className = 'page';
-      pageDiv.style.width = Math.ceil(vp.width) + 'px';
-      pageDiv.style.height = Math.ceil(vp.height) + 'px';
-      pageDiv.style.position = 'relative';
+        const pageDiv = document.createElement('div');
+        pageDiv.className = 'page';
+        pageDiv.style.width = Math.ceil(vp.width) + 'px';
+        pageDiv.style.height = Math.ceil(vp.height) + 'px';
+        pageDiv.style.position = 'relative';
 
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.ceil(vp.width);
-      canvas.height = Math.ceil(vp.height);
-      canvas.style.display = 'block';
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.ceil(vp.width);
+        canvas.height = Math.ceil(vp.height);
+        canvas.style.display = 'block';
 
-      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-      pageDiv.appendChild(canvas);
+        await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+        pageDiv.appendChild(canvas);
 
-      // Hidden text layer so docEl.textContent exposes page text for IOC extraction
-      try {
-        const tc = await page.getTextContent();
-        const spans = tc.items.map(it => it.str).join(' ');
-        if (spans.trim()) {
-          const tl = document.createElement('div');
-          tl.className = 'pdf-text-layer';
-          tl.style.cssText = 'position:absolute;left:-9999px;top:0;width:0;height:0;overflow:hidden;';
-          tl.textContent = spans;
-          pageDiv.appendChild(tl);
-        }
-      } catch (_) { /* text extraction failed — non-fatal */ }
+        // Hidden text layer so docEl.textContent exposes page text for IOC extraction
+        try {
+          const tc = await page.getTextContent();
+          const spans = tc.items.map(it => it.str).join(' ');
+          if (spans.trim()) {
+            const tl = document.createElement('div');
+            tl.className = 'pdf-text-layer';
+            tl.style.cssText = 'position:absolute;left:-9999px;top:0;width:0;height:0;overflow:hidden;';
+            tl.textContent = spans;
+            pageDiv.appendChild(tl);
+          }
+        } catch (_) { /* text extraction failed — non-fatal */ }
 
-      wrap.appendChild(pageDiv);
+        wrap.appendChild(pageDiv);
+      }
+      // Store page count for caller
+      wrap.dataset.pageCount = pdf.numPages;
+    } catch (err) {
+      // PLAN F3: cancellation via `PdfRenderer.disposeWorker()` calls
+      // `pdf.destroy()` mid-loop, after which any pending `getPage(...)` /
+      // `page.render(...)` promise rejects with a pdf.js "Worker was
+      // destroyed" / `AbortException`. Treat both as benign supersession
+      // (the *next* file is already loading) and return the partial wrap;
+      // genuine parse failures still bubble.
+      const msg = (err && (err.message || err.name || String(err))) || '';
+      const cancelled = err && (err.name === 'AbortException'
+        || /worker\s+was\s+destroyed/i.test(msg)
+        || /transport\s+closed/i.test(msg));
+      if (!cancelled) throw err;
+      wrap.dataset.pageCount = String(wrap.querySelectorAll('.page').length);
+      wrap.dataset.cancelled = '1';
     }
-    // Store page count for caller
-    wrap.dataset.pageCount = pdf.numPages;
     return wrap;
   }
+
 
   /** Analyse PDF buffer for security-relevant artefacts. */
   async analyzeForSecurity(buffer, fileName) {
@@ -336,7 +365,13 @@ class PdfRenderer {
       }
       const data = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer).slice();
       const pdf = await pdfjsLib.getDocument({ data, disableAutoFetch: true, disableStream: true }).promise;
+      // PLAN F3: register the analyser doc so a Back-then-forward navigation
+      // can preempt a long-running deep scan via `PdfRenderer.disposeWorker()`.
+      // Removed from the set on the normal `pdf.destroy()` path below; the
+      // outer catch handles the cancellation case.
+      PdfRenderer._activeDocs.add(pdf);
       const meta = await pdf.getMetadata();
+
       if (meta && meta.info) {
         const i = meta.info;
         if (i.Title) f.metadata.title = i.Title;
@@ -604,6 +639,7 @@ class PdfRenderer {
         } catch (_) { /* skip page */ }
       }
 
+      PdfRenderer._activeDocs.delete(pdf);
       pdf.destroy();
 
       // Merge pdf.js-derived scripts with raw-scan scripts (dedup by hash)
@@ -612,11 +648,15 @@ class PdfRenderer {
       return f;
     } catch (_) {
       // pdf.js failed (malformed / malicious) — rely on raw-scan alone.
+      // (Includes the PLAN F3 cancellation case, where `disposeWorker()`
+      // tore the doc down mid-scan; the catch leaves us with whatever
+      // raw-scan results were already gathered before the doc opened.)
       this._attachJavaScripts(f, rawScripts);
       this._mirrorPdfMetadataIOCs(f);
       return f;
     }
   }
+
 
   // ── Mirror classic-pivot PDF metadata into the IOC table ──────────────
   // PDF Info-dict + XMP carry a handful of fields that are real IR pivots:
@@ -1257,3 +1297,37 @@ class PdfRenderer {
     return chunks.join('');
   }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// PLAN F3 — pdf.worker lifecycle.
+//
+// pdf.js owns its own dedicated worker (`vendor/pdf.worker.js`) outside the
+// C1–C4 `WorkerManager` channels. `_activeDocs` tracks every open
+// `PDFDocumentProxy` from both `render()` and `analyzeForSecurity()` so a
+// rapid file switch (Back-then-forward, drag-and-drop while a render is in
+// flight) can preempt in-flight `getPage()` / `page.render()` /
+// `getJSActions()` work via `PdfRenderer.disposeWorker()` from
+// `App._loadFile`.
+//
+// We deliberately do NOT terminate `pdfjsLib.GlobalWorkerOptions.workerPort`
+// — pdf.js re-uses the global worker cheaply for the next document, and
+// tearing it down forces an expensive re-spawn. `pdf.destroy()` per-doc is
+// sufficient: it cancels the pending tasks for *that* document and lets the
+// renderer / analyser catch the resulting `Worker was destroyed` /
+// `AbortException` rejections as benign supersession.
+// ════════════════════════════════════════════════════════════════════════════
+PdfRenderer._activeDocs = new Set();
+
+PdfRenderer.disposeWorker = async function disposeWorker() {
+  const docs = Array.from(PdfRenderer._activeDocs);
+  PdfRenderer._activeDocs.clear();
+  if (!docs.length) return;
+  await Promise.allSettled(docs.map(d => {
+    try {
+      const r = d && typeof d.destroy === 'function' ? d.destroy() : null;
+      return Promise.resolve(r).catch(() => {});
+    } catch (_) {
+      return Promise.resolve();
+    }
+  }));
+};

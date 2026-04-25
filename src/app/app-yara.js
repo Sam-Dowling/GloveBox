@@ -1559,8 +1559,8 @@ Object.assign(App.prototype, {
    *  fallback path — when the worker is available, scan time is no longer
    *  blocking and the cap is unnecessary.
    *
-   *  Scan errors are reported via `console.warn` plus a sidebar `IOC.INFO`
-   *  note (interim shim until PLAN F2 introduces `App._reportNonFatal`). */
+   *  Scan errors are routed through `App._reportNonFatal('auto-yara', err)`
+   *  (PLAN F2) — surfaced as a sidebar `IOC.INFO` row plus a `console.warn`. */
   _autoYaraScan() {
     if (!this._fileBuffer && !this._yaraBuffer) return;
     const source = this._getAllYaraSource();
@@ -1633,20 +1633,12 @@ Object.assign(App.prototype, {
   },
 
   /** Surface an auto-YARA error as a sidebar `IOC.INFO` note plus a console
-   *  warning. Interim shim — PLAN F2 replaces this with
-   *  `App._reportNonFatal`. */
+   *  warning. Forwards to the canonical PLAN F2 helper
+   *  `App._reportNonFatal('auto-yara', err)` which handles both — kept as a
+   *  thin per-call-site method so future call-site-specific instrumentation
+   *  (timing, sampling, etc.) has a single seam to widen. */
   _reportAutoYaraError(err) {
-    console.warn('[loupe] auto-YARA scan failed:', err);
-    if (this.findings) {
-      const msg = (err && err.message) ? err.message : String(err);
-      pushIOC(this.findings, {
-        type: IOC.INFO,
-        value: `YARA auto-scan error: ${msg}`,
-        severity: 'info',
-      });
-      const fileName = (this._fileMeta && this._fileMeta.name) || '';
-      this._renderSidebar(fileName, null);
-    }
+    this._reportNonFatal('auto-yara', err);
   },
 
   // ═══════════════════════════════════════════════════════════════════════

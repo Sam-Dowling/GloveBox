@@ -330,7 +330,7 @@ dispatching the bubbling event — same nav-stack push, same
 
 | Path | Trigger | Thread | Failure mode | Gating |
 |---|---|---|---|---|
-| Auto-YARA (`_autoYaraScan`) | Every successful `_loadFile` | Worker (`yara.worker.js`); main-thread fallback when `Worker(blob:)` is denied | Visible `IOC.INFO` note on size-skip / scan error (interim shim until PLAN F2 introduces `App._reportNonFatal`) | Worker path: unbounded — `worker.terminate()` cancels mid-loop on Back navigation. Fallback path: skipped above `PARSER_LIMITS.MAX_AUTO_YARA_BYTES` (32 MiB) since the main thread cannot be preempted. Manual scan via the YARA tab is unrestricted on either path |
+| Auto-YARA (`_autoYaraScan`) | Every successful `_loadFile` | Worker (`yara.worker.js`); main-thread fallback when `Worker(blob:)` is denied | Visible `IOC.INFO` note on size-skip / scan error (routed through `App._reportNonFatal('auto-yara', err)` — see *Renderer conventions* below) | Worker path: unbounded — `worker.terminate()` cancels mid-loop on Back navigation. Fallback path: skipped above `PARSER_LIMITS.MAX_AUTO_YARA_BYTES` (32 MiB) since the main thread cannot be preempted. Manual scan via the YARA tab is unrestricted on either path |
 | Manual scan tab | User clicks the **YARA** sidebar tab | Worker (`yara.worker.js`); main-thread fallback when `Worker(blob:)` is denied | Surfaced via the panel's status line (suffixed `(worker)` when the worker path is active) | Manual only |
 | Rules editor validate / preview | User edits in the rules dialog | Main, synchronous | Inline `valid` / `errors` summary | Manual only |
 
@@ -419,7 +419,7 @@ PLAN Track C worker lands together with its host-side spawner.
 | `src/workers/timeline.worker.js` | `src/worker-manager.js` (`WorkerManager.runTimeline(buffer, kind, options)` / `WorkerManager.cancelTimeline()`) | **Parse-only** off-thread loader for the four timeline-tab kinds — `csv`, `tsv`, `evtx`, `sqlite` (Chrome history). The worker is composed by `scripts/build.py` from `src/workers/timeline-worker-shim.js` (stubs out `IOC`/`escalateRisk`/`pushIOC`/`lfNormalize`/`EVTX_EVENT_DESCRIPTIONS` so renderer code parses cleanly outside the App context) + the parse halves of `csv-renderer.js`, `sqlite-renderer.js`, and `evtx-renderer.js`, then `timeline.worker.js` itself, inlined as `__TIMELINE_WORKER_BUNDLE_SRC` and materialised the same `Blob` → `URL.createObjectURL` → `new Worker(url)` way as the YARA worker. **Analysis stays on the main thread:** the EVTX path runs `EvtxDetector.analyzeForSecurity(buffer, fileName, prebuiltEvents)` on the host after the rows arrive (the worker emits `events` alongside `rows` so the analyzer can reuse them without re-parsing); CSV/TSV obvious-malware sweeps and the per-cell `EncodedContentDetector` pass also stay host-side. The worker bundle deliberately excludes `EvtxDetector`, `EncodedContentDetector`, IOC plumbing, and any DOM. | Inbound: `{kind, buffer, options}` (one transferable `ArrayBuffer`; `options` carries kind-specific knobs such as the CSV delimiter override or the SQLite history `tableHint`). Outbound: a single terminal `{event:'done', kind, columns, rows, formatLabel, truncated, originalRowCount, parseMs, ...kindExtras}` (e.g. EVTX adds `events` for the main-thread analyzer; SQLite adds the resolved `tableHint`) or `{event:'error', message}`. Cancellation is `worker.terminate()` from `_loadFile` (alongside `cancelYara()`) and on the next `runTimeline` call. |
 | `src/workers/encoded.worker.js` | `src/worker-manager.js` (`WorkerManager.runEncoded(buffer, textContent, options)` / `WorkerManager.cancelEncoded()`) | Off-thread `EncodedContentDetector.scan()` — the 2,114-line recursion that mines nested base64 / hex / zlib / chararray / Python-`bytes()` chains out of every loaded file's text view. The worker bundle is composed by `scripts/build.py` from `src/workers/encoded-worker-shim.js` (a tight prelude that defines just the `IOC.*` constants, the `PARSER_LIMITS.MAX_UNCOMPRESSED` cap, and `_trimPathExtGarbage` that the detector reads at module load) + `vendor/pako.min.js` (sync zlib fallback when `DecompressionStream` is missing) + `vendor/jszip.min.js` (used by the detector to validate embedded ZIP candidates and prune false-positive zlib hits) + `src/decompressor.js` + `src/encoded-content-detector.js`, then `encoded.worker.js` itself, inlined as `__ENCODED_WORKER_BUNDLE_SRC`. The worker eagerly drives `lazyDecode()` on every cheap finding before posting so the sidebar can render decoded previews without a second round-trip. **IOC merging stays on the main thread** — the host's `_loadFile` post-scan loop owns deduping decoded IOCs against `findings.interestingStrings`, stamping `_sourceOffset` / `_highlightText` / `_decodedFrom` / `_encodedFinding` back-references for click-to-focus, and re-attaching `_rawBytes` (stripped before postMessage to avoid detaching the host's buffer copy) on compressed findings whose decompression is deferred to user click. | Inbound: `{textContent, rawBytes (transferred ArrayBuffer), options:{fileType, mimeAttachments, maxRecursionDepth?, maxCandidatesPerType?}}`. Outbound: `{event:'done', findings, parseMs}` (findings have `_rawBytes` stripped — host re-stamps from its retained copy) or `{event:'error', message}`. Exactly one terminal event per scan. Cancellation is `worker.terminate()` from `_loadFile` (alongside `cancelYara()` / `cancelTimeline()`) and on the next `runEncoded` call. |
 | `src/workers/strings.worker.js` | `src/worker-manager.js` (`WorkerManager.runStrings(buffer, opts)` / `WorkerManager.cancelStrings()`) | Off-thread ASCII + UTF-16LE printable-string extractor — the same two-pass sweep `extractAsciiAndUtf16leStrings()` performs on the main thread for PE / ELF / Mach-O / DMG. The worker bundle is composed by `scripts/build.py` from `src/workers/strings-worker-shim.js` (carries a verbatim copy of the extractor — the worker has no access to `src/constants.js`) + `strings.worker.js` itself, inlined as `__STRINGS_WORKER_BUNDLE_SRC`. **No in-tree caller migration ships with C4** — the three native-binary renderers and DMG still call `extractAsciiAndUtf16leStrings()` synchronously because their `static render(file, buffer, app)` paths cannot `await` until PLAN Track D1 (`renderRoute` + `RenderResult`) lands. The worker is exposed today as the opt-in `BinaryStrings.extractStringsAsync(buffer, opts)` helper so renderers can adopt it as soon as they go async; the helper falls back to the synchronous `extractAsciiAndUtf16leStrings()` whenever the worker probe fails or the worker rejects. The `cancelStrings()` cancellation hook is wired into `_loadFile` alongside the YARA / Timeline / Encoded hooks so nothing leaks across file loads once callers do migrate. | Inbound: `{buffer (transferred ArrayBuffer), opts:{start?, end?, asciiMin?, utf16Min?, cap?}}`. Outbound: `{event:'done', ascii, utf16, asciiCount, utf16Count, parseMs}` (same shape as the synchronous helper plus timing) or `{event:'error', message}`. Exactly one terminal event per scan. Cancellation is `worker.terminate()` from `_loadFile` (alongside `cancelYara()` / `cancelTimeline()` / `cancelEncoded()`) and on the next `runStrings` call. |
-| `vendor/pdf.worker.js` | `pdfjsLib` (vendored) | Worker-side PDF page rendering for `PdfRenderer`. Spawns its own worker from the vendored bundle independently of `worker-manager.js`. | Internal pdf.js `postMessage` protocol — opaque to Loupe. |
+| `vendor/pdf.worker.js` | `pdfjsLib` (vendored); cancellation via `PdfRenderer.disposeWorker()` from `_loadFile` (PLAN F3) | Worker-side PDF page rendering for `PdfRenderer`. Spawns its own worker from the vendored bundle independently of `worker-manager.js`; `PdfRenderer._activeDocs` tracks every open `PDFDocumentProxy` from `render()` + `analyzeForSecurity()` so a Back-then-forward navigation calls `pdf.destroy()` on each one to preempt in-flight `getPage()` / `page.render()` / `getJSActions()`. Both call sites recognise the resulting `Worker was destroyed` / `AbortException` rejection as benign supersession and return a partial wrap / partial findings instead of bubbling a "Failed to open file" toast. The global `pdfjsLib.GlobalWorkerOptions.workerPort` is intentionally NOT torn down — pdf.js re-uses it cheaply for the next document. | Internal pdf.js `postMessage` protocol — opaque to Loupe. |
 
 The YARA worker is the canonical reference for new PLAN Track C
 workers: a single worker module that owns one CPU-heavy pass, a thin
@@ -703,6 +703,40 @@ subtly misbehave.
   `_watchdogTimeoutMs` sentinel fields on the rejected error; the outer
    60 s `PARSER_LIMITS.TIMEOUT_MS` cap remains a separate budget around
    the initial `file.arrayBuffer()` read only.
+- **Silent `catch (...) {}` is banned in the load chain.** `src/app/app-load.js`
+  and `src/app/app-yara.js` form the file-load chain — every async parser
+  fault that bubbles up to one of these files used to be candidate-territory
+  for a `} catch (_) {}` empty-body swallow. PLAN Track F2 introduced the
+  canonical replacement: `App._reportNonFatal(where, err, opts?)` (defined
+  in `src/app/app-core.js`). Call signature:
+  ```js
+  this._reportNonFatal('encoded-content', err);                 // typical
+  this._reportNonFatal('sidebar-refresh', err, { silent: true }); // see below
+  this._reportNonFatal('auto-yara', err, { severity: 'low' });
+  ```
+  The helper always `console.warn`s a structured `[loupe] <where>: <message>`
+  breadcrumb so devs see the failure in DevTools, and (unless `silent: true`)
+  pushes a single `IOC.INFO` row through `pushIOC()` and re-schedules a
+  microtask-coalesced sidebar refresh via `_scheduleSidebarRefresh(['iocs'])`
+  so the analyst sees a Parser-warning row in the IOC list. Use
+  `silent: true` when the surrounding code already retries successfully (so
+  the IOC would be misleading) **or** when the call site is itself the
+  sidebar-refresh path — pushing an IOC + scheduling a refresh from inside
+  a sidebar-refresh `catch` would recurse. The third recognised opt is
+  `severity: 'info' | 'low' | 'medium' | 'high' | 'critical'`, defaulting
+  to `'info'`.
+  Enforced by a build-time grep gate in `scripts/build.py` —
+  `_check_silent_catches()` walks `LOAD_CHAIN_FILES = ('src/app/app-load.js',
+  'src/app/app-yara.js')` and rejects any line matching
+  `\bcatch\s*\([^)]*\)\s*\{\s*\}`. Pure comment lines and lines carrying
+  the explicit escape hatch `// loupe-allow:silent-catch` are skipped (no
+  in-tree call site uses the hatch today; it exists for the rare future
+  case where an empty body really is correct). Renderers, cosmetic UI
+  (`app-ui.js`, `app-bg.js`, `app-settings.js`), and the per-format
+  copy-analysis builders are **out of scope** — they continue to use
+  rationale-commented `try { … } catch (_) { /* … */ }` patterns until PLAN
+  Track F5 (dev-mode breadcrumb ribbon) extends the ribbon to those
+  surfaces.
 - **Per-dispatch size caps are enforced centrally — renderers no longer
   gate on file size themselves.** PLAN Track F1 added
   `PARSER_LIMITS.MAX_FILE_BYTES_BY_DISPATCH`, a per-dispatch-id cap table

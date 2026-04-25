@@ -767,7 +767,54 @@ def _check_worker_spawn_allowlist():
 _check_worker_spawn_allowlist()
 
 
+# ── PLAN F2 — silent-catch gate ─────────────────────────────────────────────
+# `catch (...) {}` (an empty body) inside the file-load chain swallows parser
+# faults: the renderer dies in async work, the catch eats the error, and the
+# sidebar paints from a half-built `findings` object with no breadcrumb in
+# console / IOC list. The canonical replacement is `App._reportNonFatal(where,
+# err, opts?)` (defined in src/app/app-core.js) which:
+#   • console.warn's a structured `[loupe] <where>: <message>` breadcrumb
+#   • optionally pushes an `IOC.INFO` row so the analyst can see it failed
+#   • re-schedules a microtask-coalesced sidebar refresh
+# The gate is scoped to the load chain (`src/app/app-load.js`,
+# `src/app/app-yara.js`) — renderers, cosmetic UI, and settings are out of
+# scope and continue to use their existing `try { … } catch (_) { /* … */ }`
+# patterns until PLAN F5 (dev-mode breadcrumb ribbon) picks them up.
+#
+# Escape hatch: append `// loupe-allow:silent-catch` to a line that legitimately
+# wants an empty body (we don't have any today; the marker is forward-looking).
+LOAD_CHAIN_FILES = ('src/app/app-load.js', 'src/app/app-yara.js')
+_SILENT_CATCH_RE = _re.compile(r"\bcatch\s*\([^)]*\)\s*\{\s*\}")
+
+def _check_silent_catches():
+    violations = []
+    for rel in LOAD_CHAIN_FILES:
+        text = read(rel)
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.lstrip()
+            # Skip pure comment lines so reference snippets in docstrings
+            # don't trip the gate.
+            if stripped.startswith('//') or stripped.startswith('*'):
+                continue
+            if '// loupe-allow:silent-catch' in line:
+                continue
+            if _SILENT_CATCH_RE.search(line):
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
+    if violations:
+        msg = (
+            "Build gate failed — empty `catch (...) {}` in load chain. "
+            "Route non-fatal failures through App._reportNonFatal(where, err, opts?) "
+            "so the breadcrumb reaches console + (optionally) the sidebar IOC list. "
+            "See CONTRIBUTING.md → Tripwires & Build Gates → Silent-catch sweep.\n"
+            "Offending sites:\n  " + "\n  ".join(violations)
+        )
+        raise SystemExit(msg)
+
+_check_silent_catches()
+
+
 # File extensions accepted by the open-file input. Keep as a list for sanity.
+
 
 ACCEPT_EXTS = [
     '.docx','.docm','.xlsx','.xlsm','.xls','.ods','.pptx','.pptm','.ppt','.odt','.odp',

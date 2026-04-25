@@ -149,6 +149,22 @@ Object.assign(App.prototype, {
       WorkerManager.cancelStrings();
     }
 
+    // ── pdf.worker cancellation (PLAN F3) ─────────────────────────────
+    // pdf.js owns its own dedicated worker (`vendor/pdf.worker.js`)
+    // outside the C1–C4 `WorkerManager` channels, so the cancellations
+    // above won't touch it. PdfRenderer.render() and analyzeForSecurity()
+    // register every open `PDFDocumentProxy` on `PdfRenderer._activeDocs`;
+    // calling `disposeWorker()` here destroys each one, which causes any
+    // pending `getPage()` / `page.render()` / `getJSActions()` against
+    // the previous file to reject. Both call sites recognise the
+    // `Worker was destroyed` / `AbortException` rejection as a benign
+    // supersession (the next file is already loading) and return a
+    // partial wrap / partial findings instead of bubbling a "Failed to
+    // open file" toast.
+    if (typeof PdfRenderer !== 'undefined' && PdfRenderer.disposeWorker) {
+      PdfRenderer.disposeWorker();
+    }
+
     // ── Timeline → Non-Timeline teardown ──────────────────────────────
     // If a Timeline view is currently mounted but the new file isn't a
     // Timeline format (otherwise `_timelineTryHandle` above would have
@@ -339,7 +355,11 @@ Object.assign(App.prototype, {
           usedWorker = true;
         } catch (workerErr) {
           if (workerErr && workerErr.message !== 'workers-unavailable') {
-            console.warn('[loupe] EncodedContentDetector worker failed — falling back to main-thread scan:', workerErr);
+            // Worker path failed but the synchronous fallback below still
+            // succeeds — silent:true keeps the IOC list clean while the
+            // breadcrumb console.warn inside _reportNonFatal preserves the
+            // diagnostic for devs.
+            this._reportNonFatal('encoded-worker-fallback', workerErr, { silent: true });
           }
           const detector = new EncodedContentDetector();
           encodedFindings = await detector.scan(
@@ -403,7 +423,7 @@ Object.assign(App.prototype, {
           }
         }
       } catch (encErr) {
-        console.warn('Encoded content detection error:', encErr);
+        this._reportNonFatal('encoded-content', encErr);
         this.findings.encodedContent = [];
       }
 
@@ -584,7 +604,10 @@ Object.assign(App.prototype, {
       try {
         this._renderSidebar(fileName, this._currentAnalyzer || null);
       } catch (err) {
-        console.warn('[loupe] deferred sidebar refresh failed:', err);
+        // silent:true is mandatory here — _reportNonFatal pushes an INFO IOC
+        // and re-schedules a sidebar refresh, which would re-enter this same
+        // failure site and recurse. Console-only is the safe path.
+        this._reportNonFatal('sidebar-refresh', err, { silent: true });
       }
     });
   },

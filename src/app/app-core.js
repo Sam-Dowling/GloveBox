@@ -510,6 +510,54 @@ class App {
     if (toolbar) toolbar.insertAdjacentElement('afterend', bar);
   }
 
+  // ── Non-fatal error surfacing (PLAN F2) ─────────────────────────────────
+  // Centralises the "load chain caught a non-fatal error" idiom — replaces
+  // the silent `catch (_) {}` blocks and ad-hoc console.warn + sidebar-IOC
+  // dances scattered through the load path (auto-YARA failures, encoded-
+  // content-detector worker rejections, deferred sidebar-refresh races).
+  //
+  // Behaviour:
+  //   1. Always `console.warn(...)` so dev-tools sees the full stack. The
+  //      `where` string identifies the call site (`'auto-yara'`,
+  //      `'encoded-content'`, `'sidebar-refresh'`, etc.) and lands in
+  //      both the console line and the sidebar IOC value.
+  //   2. When `findings` is live and `opts.silent !== true`, push a single
+  //      `IOC.INFO` row carrying `Parser warning at <where>: <message>`
+  //      onto the findings table. The D2 microtask coalescer
+  //      (`_scheduleSidebarRefresh`) collapses multiple non-fatals in the
+  //      same task into one repaint.
+  //   3. `opts.silent` is the recursion guard for sidebar-refresh failures
+  //      (and any future site whose surfacing would re-trigger the very
+  //      pipeline that just failed). Console gets the warning either way.
+  //
+  // PLAN F5 will tee a breadcrumb here so the dev-mode overlay records
+  // every non-fatal — the `// PLAN F5` marker below is the wiring point.
+  //
+  // @param {string} where    short call-site tag (kebab-case)
+  // @param {Error}  err      the thrown error
+  // @param {Object} [opts]
+  //   @param {boolean} [opts.silent]   skip the sidebar IOC + repaint
+  //   @param {string}  [opts.severity] override the default 'info' tier
+  _reportNonFatal(where, err, opts) {
+    opts = opts || {};
+    const msg = (err && err.message) ? err.message : String(err);
+    // eslint-disable-next-line no-console
+    console.warn(`[loupe] ${where}: ${msg}`, err);
+    // PLAN F5: dev-mode breadcrumb ribbon hooks here.
+    if (opts.silent) return;
+    if (!this.findings) return;
+    try {
+      pushIOC(this.findings, {
+        type: IOC.INFO,
+        value: `Parser warning at ${where}: ${msg}`,
+        severity: opts.severity || 'info',
+      });
+    } catch (_) { /* findings shape mismatch — console.warn above is enough */ }
+    if (typeof this._scheduleSidebarRefresh === 'function') {
+      this._scheduleSidebarRefresh(new Set(['iocs']));
+    }
+  }
+
   _handleFiles(files) {
     if (!files || !files.length) return;
     // Clear nav stack for fresh file loads (not drill-down into archives)
