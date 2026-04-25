@@ -64,15 +64,15 @@ class GridViewer {
    * }} opts
    */
   constructor(opts) {
-    this.columns        = opts.columns || [];
-    this.rows           = opts.rows || [];
-    this.rowSearchText  = opts.rowSearchText || null;
-    this.rowOffsets     = opts.rowOffsets || null;
-    this.rawText        = opts.rawText || '';
-    this._rootClass     = opts.className || 'csv-view';
-    this._infoText      = opts.infoText || '';
-    this._truncNote     = opts.truncationNote || '';
-    this._emptyMessage  = opts.emptyMessage || 'Empty file.';
+    this.columns = opts.columns || [];
+    this.rows = opts.rows || [];
+    this.rowSearchText = opts.rowSearchText || null;
+    this.rowOffsets = opts.rowOffsets || null;
+    this.rawText = opts.rawText || '';
+    this._rootClass = opts.className || 'csv-view';
+    this._infoText = opts.infoText || '';
+    this._truncNote = opts.truncationNote || '';
+    this._emptyMessage = opts.emptyMessage || 'Empty file.';
     // Optional hooks — let format-specific renderers (EVTX, XLSX, SQLite,
     // JSON) reuse the virtual-scroll + drawer + highlight core while still
     // owning their own toolbar and drawer-body layout:
@@ -82,18 +82,18 @@ class GridViewer {
     //   rowTitle      : (dataIdx) => string   // drawer heading override
     //   cellText      : (dataIdx, colIdx, rawCell) => string  // display formatter
     //   cellClass     : (dataIdx, colIdx, rawCell) => string|null  // extra class
-    this._detailBuilder   = typeof opts.detailBuilder === 'function' ? opts.detailBuilder : null;
-    this._hideFilterBar   = !!opts.hideFilterBar;
+    this._detailBuilder = typeof opts.detailBuilder === 'function' ? opts.detailBuilder : null;
+    this._hideFilterBar = !!opts.hideFilterBar;
     this._extraToolbarEls = Array.isArray(opts.extraToolbarEls) ? opts.extraToolbarEls : [];
-    this._rowTitleFn      = typeof opts.rowTitle === 'function' ? opts.rowTitle : null;
-    this._cellTextFn      = typeof opts.cellText === 'function' ? opts.cellText : null;
-    this._cellClassFn     = typeof opts.cellClass === 'function' ? opts.cellClass : null;
+    this._rowTitleFn = typeof opts.rowTitle === 'function' ? opts.rowTitle : null;
+    this._cellTextFn = typeof opts.cellText === 'function' ? opts.cellText : null;
+    this._cellClassFn = typeof opts.cellClass === 'function' ? opts.cellClass : null;
     // Optional per-cell title-attribute callback. When it returns a non-null
     // string, the value replaces the default tooltip on the `<td>` (which
     // normally only kicks in for cells whose text is longer than 40 chars).
     // Timeline Mode uses this to attach a multi-line Event-ID → human name +
     // MITRE ATT&CK tooltip to the EVTX "Event ID" column.
-    this._cellTitleFn     = typeof opts.cellTitle === 'function' ? opts.cellTitle : null;
+    this._cellTitleFn = typeof opts.cellTitle === 'function' ? opts.cellTitle : null;
     // Optional per-drawer-row augment hook. Called AFTER the default drawer
     // key/value row has been populated, with the key + value DOM elements so
     // callers can append decorative pills (e.g. an Event-ID summary + MITRE
@@ -115,7 +115,7 @@ class GridViewer {
     // time. Used by Timeline mode to tint "suspicious" rows without
     // re-rendering the whole grid. Pure decoration — does not affect
     // filtering or layout.
-    this._rowClassFn      = typeof opts.rowClass === 'function' ? opts.rowClass : null;
+    this._rowClassFn = typeof opts.rowClass === 'function' ? opts.rowClass : null;
 
     // Timeline layout. Opt-in per-caller:
     //   timeColumn       : number|null     — index of the timestamp column.
@@ -133,10 +133,10 @@ class GridViewer {
     //                                          a full re-filter. Without a
     //                                          callback the default path
     //                                          calls this._applyFilter().
-    this._timeColumn       = Number.isInteger(opts.timeColumn) ? opts.timeColumn : null;
+    this._timeColumn = Number.isInteger(opts.timeColumn) ? opts.timeColumn : null;
     this._timeColumnIsAuto = !Number.isInteger(opts.timeColumn);
-    this._timeParser       = typeof opts.timeParser === 'function' ? opts.timeParser : null;
-    this._timeBucketCount  = Math.max(20, Math.min(400, opts.timelineBuckets || 100));
+    this._timeParser = typeof opts.timeParser === 'function' ? opts.timeParser : null;
+    this._timeBucketCount = Math.max(20, Math.min(400, opts.timelineBuckets || 100));
     this._onFilterRecompute = typeof opts.onFilterRecompute === 'function' ? opts.onFilterRecompute : null;
 
     // Timeline Mode hand-off — when the grid is embedded inside Timeline
@@ -147,7 +147,7 @@ class GridViewer {
     // own internal `.grid-timeline` strip. Returning a truthy value (or
     // just being present) is treated as "handled": the grid does not run
     // its own built-in timeline promotion path for that click.
-    this._onUseAsTimeline   = typeof opts.onUseAsTimeline === 'function' ? opts.onUseAsTimeline : null;
+    this._onUseAsTimeline = typeof opts.onUseAsTimeline === 'function' ? opts.onUseAsTimeline : null;
     this._onStackTimelineBy = typeof opts.onStackTimelineBy === 'function' ? opts.onStackTimelineBy : null;
 
     // Drawer-body JSON-tree picker hook — when a cell in the drawer
@@ -179,13 +179,13 @@ class GridViewer {
     // Also toggle-able at runtime via the column-header menu item
     // "Stack timeline by this column". Top STACK_MAX_KEYS groups get their
     // own colour; the rest collapse into an "Other" bucket.
-    this._timeStackColumn  = Number.isInteger(opts.timelineStackColumn) ? opts.timelineStackColumn : null;
-    this._timeStackKeys    = null;  // Array<string> — legend order, index = palette slot
+    this._timeStackColumn = Number.isInteger(opts.timelineStackColumn) ? opts.timelineStackColumn : null;
+    this._timeStackKeys = null;  // Array<string> — legend order, index = palette slot
     this._timeStackOtherIdx = -1;   // index in _timeStackKeys reserved for "Other" (-1 = not used)
     // Stacked-bucket aggregate: Array(B) of Int32Array(keyCount). Swaps in
     // for _timeBuckets when stacking is active.
     this._timeStackBuckets = null;
-    this.STACK_MAX_KEYS    = 8;    // top-N + "Other"; keep palette readable
+    this.STACK_MAX_KEYS = 8;    // top-N + "Other"; keep palette readable
     this.STACK_MAX_DISTINCT = 500;  // refuse to stack if distinct-value count blows past this
 
 
@@ -203,22 +203,22 @@ class GridViewer {
     //                      computed against _timeRange (i.e. the visible
     //                      view). Rebuilt by _rebuildBucketsForView().
     //   _timeWindow      = null | { min, max }   — active user selection.
-    this._timeMs        = null;
+    this._timeMs = null;
     this._timeDataRange = null;
-    this._timeRange     = null;
-    this._timeBuckets   = null;
-    this._timeWindow    = null;
+    this._timeRange = null;
+    this._timeBuckets = null;
+    this._timeWindow = null;
 
 
     // Tunables (intentionally internal — callers don't twiddle these).
-    this.ROW_HEIGHT   = 28;
-    this.HEADER_H     = 32;
-    this.BUFFER_ROWS  = 12;
-    this.MIN_COL_W    = 60;
-    this.MAX_COL_W    = 320;     // default soft-cap for 'text' kind
+    this.ROW_HEIGHT = 28;
+    this.HEADER_H = 32;
+    this.BUFFER_ROWS = 12;
+    this.MIN_COL_W = 60;
+    this.MAX_COL_W = 320;     // default soft-cap for 'text' kind
     this.SHORT_COL_MAX = 240;    // 'short' kind soft-cap
     this.BLOB_BASE_MAX = 420;    // 'blob' kind base clamp (grows beyond via slack)
-    this.CELL_PAD_PX  = 22;      // body cell horizontal padding+border
+    this.CELL_PAD_PX = 22;      // body cell horizontal padding+border
     this.HEADER_EXTRA_PX = 24;   // extra px needed in header for chevron + sort indicator
     this.ROWNUM_COL_W = 64;
     this.DRAWER_MIN_W = 280;
@@ -243,28 +243,28 @@ class GridViewer {
     // and absorbs 100% of leftover slack so JSON/Message-style columns can
     // fill the viewport instead of being pinned at the old 480 px cap.
     this._columnKindsHint = Array.isArray(opts.columnKinds) ? opts.columnKinds.slice() : null;
-    this._columnKinds     = [];
+    this._columnKinds = [];
     this._columnWidthMeta = [];
-    this._chW             = 7.2;   // px-per-char fallback; replaced on mount
-    this._chWMeasured     = false;
+    this._chW = 7.2;   // px-per-char fallback; replaced on mount
+    this._chWMeasured = false;
 
     // Per-renderer-kind storage namespace for user-resized column widths.
     // Caller may pass `gridKey` explicitly; otherwise fall back to className
     // (e.g. 'evtx-view', 'csv-view') so EVTX-resized widths survive
     // re-opens but don't pollute other renderers.
     this._gridKey = String(opts.gridKey || opts.className || 'grid')
-                       .replace(/[^a-zA-Z0-9_-]/g, '_');
+      .replace(/[^a-zA-Z0-9_-]/g, '_');
     this._userColWidths = this._loadUserColumnWidths();   // Map<colIdx, px>
 
     // Mutable state — all reads go through here; all writes schedule a render.
     this.state = {
       filteredIndices: null,              // null = no filter + no sort; else Array of dataIdx
-      visibleCount:    this.rows.length,
-      renderedRange:   { start: -1, end: -1 },
+      visibleCount: this.rows.length,
+      renderedRange: { start: -1, end: -1 },
       drawer: {
-        open:    false,
+        open: false,
         dataIdx: -1,
-        width:   this._loadDrawerWidth()
+        width: this._loadDrawerWidth()
       },
       // Single highlight group — one timer, one state, one renderer path.
       //   mode === 'flash' → { mode, dataIdx, clearAt, timer, onExpire }
@@ -277,18 +277,18 @@ class GridViewer {
     };
 
     // Column-level features, defang, malformed ribbon.
-    this._sortOrder       = null;   // null | Int32Array — permutation of dataIdx under current sort
-    this._sortSpec        = null;   // null | { colIdx, dir: 'asc'|'desc' }
-    this._hiddenCols      = new Set();
-    this._malformedRows   = null;   // null | Set<dataIdx>   (CSV short-row / bad-quote rows)
+    this._sortOrder = null;   // null | Int32Array — permutation of dataIdx under current sort
+    this._sortSpec = null;   // null | { colIdx, dir: 'asc'|'desc' }
+    this._hiddenCols = new Set();
+    this._malformedRows = null;   // null | Set<dataIdx>   (CSV short-row / bad-quote rows)
     this._malformedCursor = -1;
 
-    this._renderRAF     = null;
-    this._resizeObs     = null;
-    this._destroyed     = false;
+    this._renderRAF = null;
+    this._resizeObs = null;
+    this._destroyed = false;
     this._boundHandlers = {};
-    this._columnWidths  = [];
-    this._openPopover   = null;     // active header menu / top-values popover DOM node
+    this._columnWidths = [];
+    this._openPopover = null;     // active header menu / top-values popover DOM node
 
 
     this._buildDOM();
@@ -391,7 +391,7 @@ class GridViewer {
     hiddenChip.style.display = 'none';
     hiddenChip.innerHTML =
       '<button class="tb-btn grid-hidden-label" title="Show hidden columns…">' +
-        '👁 <span class="grid-hidden-count">0</span> hidden' +
+      '👁 <span class="grid-hidden-count">0</span> hidden' +
       '</button>' +
       '<button class="tb-btn grid-hidden-show" title="Unhide every hidden column">Show all</button>';
     filterBar.appendChild(hiddenChip);
@@ -459,45 +459,45 @@ class GridViewer {
     }
 
     // Stash DOM refs
-    this._root         = root;
-    this._info         = info;
-    this._progress     = progress;
-    this._progressBar  = progress.querySelector('.grid-progress-bar');
-    this._progressLbl  = progress.querySelector('.grid-progress-label');
-    this._filterInput  = filterInput;
-    this._clearBtn     = clearBtn;
+    this._root = root;
+    this._info = info;
+    this._progress = progress;
+    this._progressBar = progress.querySelector('.grid-progress-bar');
+    this._progressLbl = progress.querySelector('.grid-progress-label');
+    this._filterInput = filterInput;
+    this._clearBtn = clearBtn;
     this._filterStatus = filterStatus;
-    this._malformedChip   = malformedChip;
-    this._malformedLabel  = malformedChip.querySelector('.grid-malformed-count');
-    this._malformedNextBtn   = malformedChip.querySelector('.grid-malformed-next');
+    this._malformedChip = malformedChip;
+    this._malformedLabel = malformedChip.querySelector('.grid-malformed-count');
+    this._malformedNextBtn = malformedChip.querySelector('.grid-malformed-next');
     this._malformedFilterBtn = malformedChip.querySelector('.grid-malformed-filter');
-    this._hiddenChip         = hiddenChip;
-    this._hiddenCountLabel   = hiddenChip.querySelector('.grid-hidden-count');
+    this._hiddenChip = hiddenChip;
+    this._hiddenCountLabel = hiddenChip.querySelector('.grid-hidden-count');
     this._hiddenChipLabelBtn = hiddenChip.querySelector('.grid-hidden-label');
-    this._hiddenShowAllBtn   = hiddenChip.querySelector('.grid-hidden-show');
-    this._main         = main;
-    this._emptyEl      = null;
+    this._hiddenShowAllBtn = hiddenChip.querySelector('.grid-hidden-show');
+    this._main = main;
+    this._emptyEl = null;
 
     // Timeline strip refs
-    this._timelineEl        = timeline;
-    this._timelineTrackEl   = timeline.querySelector('.grid-timeline-track');
+    this._timelineEl = timeline;
+    this._timelineTrackEl = timeline.querySelector('.grid-timeline-track');
     this._timelineBucketsEl = timeline.querySelector('.grid-timeline-buckets');
-    this._timelineWindowEl  = timeline.querySelector('.grid-timeline-window');
+    this._timelineWindowEl = timeline.querySelector('.grid-timeline-window');
     this._timelineTooltipEl = timeline.querySelector('.grid-timeline-tooltip');
     this._timelineLabelLeft = timeline.querySelector('.grid-timeline-label-left');
-    this._timelineLabelRight= timeline.querySelector('.grid-timeline-label-right');
+    this._timelineLabelRight = timeline.querySelector('.grid-timeline-label-right');
     this._timelineWindowLbl = timeline.querySelector('.grid-timeline-window-label');
-    this._timelineClearBtn  = timeline.querySelector('.grid-timeline-clear');
-    this._timelineCursorEl  = timeline.querySelector('.grid-timeline-cursor');
+    this._timelineClearBtn = timeline.querySelector('.grid-timeline-clear');
+    this._timelineCursorEl = timeline.querySelector('.grid-timeline-cursor');
 
-    this._scr          = scr;
-    this._header       = header;
-    this._sizer        = sizer;
+    this._scr = scr;
+    this._header = header;
+    this._sizer = sizer;
     this._drawerHandle = handle;
-    this._drawer       = drawer;
-    this._drawerBody   = drawer.querySelector('.grid-drawer-body');
-    this._drawerClose  = drawer.querySelector('.grid-drawer-close');
-    this._drawerTitle  = drawer.querySelector('.grid-drawer-title');
+    this._drawer = drawer;
+    this._drawerBody = drawer.querySelector('.grid-drawer-body');
+    this._drawerClose = drawer.querySelector('.grid-drawer-close');
+    this._drawerTitle = drawer.querySelector('.grid-drawer-title');
 
     // Build header cells
     this._buildHeaderCells();
@@ -628,8 +628,8 @@ class GridViewer {
     probe.style.border = '0';
     probe.textContent = '0'.repeat(80);   // 80 zeros → stable sample
     const host = (this._sizer && this._sizer.isConnected) ? this._sizer
-               : (this._root  && this._root.isConnected)  ? this._root
-               : document.body;
+      : (this._root && this._root.isConnected) ? this._root
+        : document.body;
     host.appendChild(probe);
     const w = probe.getBoundingClientRect().width / 80;
     probe.remove();
@@ -769,10 +769,10 @@ class GridViewer {
     this._classifyColumns();
     const chW = this._measureCharWidth();
     const kinds = this._columnKinds;
-    const lens  = this._columnLengths;
+    const lens = this._columnLengths;
     const cols = this.columns.length;
     const widths = new Array(cols);
-    const meta   = new Array(cols);
+    const meta = new Array(cols);
 
     for (let c = 0; c < cols; c++) {
       const kind = kinds[c] || 'text';
@@ -848,9 +848,9 @@ class GridViewer {
   _applyColumnTemplate() {
     // Build the list of visible (non-hidden) columns with their kind,
     // base width, and greedy flag.
-    const visIdx  = [];
-    const baseWs  = [];
-    const meta    = [];
+    const visIdx = [];
+    const baseWs = [];
+    const meta = [];
     for (let i = 0; i < this._columnWidths.length; i++) {
       if (this._hiddenCols.has(i)) continue;
       visIdx.push(i);
@@ -899,7 +899,7 @@ class GridViewer {
             // Fixed-shape kinds + user overrides never grow.
             if (meta[i].userOverride) continue;
             if (k === 'timestamp' || k === 'number' || k === 'id' ||
-                k === 'hash' || k === 'enum') continue;
+              k === 'hash' || k === 'enum') continue;
             growable.push(i);
           }
           if (growable.length === 0) {
@@ -962,8 +962,8 @@ class GridViewer {
 
     // Record the rendered widths so manual-resize drag handles can read
     // their starting pixel value cheaply without re-reading the CSS var.
-    this._visibleColIdxs      = visIdx;
-    this._renderedColWidths   = outWs.slice();
+    this._visibleColIdxs = visIdx;
+    this._renderedColWidths = outWs.slice();
   }
 
   // ══════════════════════════════════════════════════════════════════════════
@@ -1284,6 +1284,12 @@ class GridViewer {
       window.addEventListener('mouseup', onUp);
       e.preventDefault();
     });
+    this._drawerHandle.addEventListener('dblclick', () => {
+      const defaultW = 700;
+      this.state.drawer.width = defaultW;
+      this._drawer.style.flexBasis = defaultW + 'px';
+      this._saveDrawerWidth(defaultW);
+    });
   }
 
   _loadDrawerWidth() {
@@ -1318,7 +1324,7 @@ class GridViewer {
     const prevBtn = this._drawer.querySelector('.grid-drawer-search-prev');
     this._drawerSearchTerm = '';
     this._drawerSearchHits = [];
-    this._drawerSearchIdx  = -1;
+    this._drawerSearchIdx = -1;
 
     let debounceT = null;
     const scheduleApply = () => {
@@ -1534,12 +1540,12 @@ class GridViewer {
       return;
     }
 
-    const scrollTop    = this._scr.scrollTop;
-    const viewportH    = this._scr.clientHeight || 400;
+    const scrollTop = this._scr.scrollTop;
+    const viewportH = this._scr.clientHeight || 400;
 
     // Virtual range — trivial arithmetic because row height is constant.
     const firstIdx = Math.max(0, Math.floor(scrollTop / this.ROW_HEIGHT) - this.BUFFER_ROWS);
-    const lastIdx  = Math.min(
+    const lastIdx = Math.min(
       visible,
       Math.ceil((scrollTop + viewportH) / this.ROW_HEIGHT) + this.BUFFER_ROWS
     );
@@ -1824,9 +1830,9 @@ class GridViewer {
         vEl.classList.add('csv-detail-val-json');
         const onPick = this._onCellPick
           ? (path, nodeValue, action) => {
-              try { this._onCellPick(dataIdx, i, path, nodeValue, action); }
-              catch (e) { try { console.error('onCellPick threw', e); } catch (_) { /* ignore */ } }
-            }
+            try { this._onCellPick(dataIdx, i, path, nodeValue, action); }
+            catch (e) { try { console.error('onCellPick threw', e); } catch (_) { /* ignore */ } }
+          }
           : null;
         const tree = TreeHelper.render(parsed, {
           onPick,
@@ -1892,9 +1898,9 @@ class GridViewer {
       if (!text) continue;
       const idx = text.toLowerCase().indexOf(needle);
       if (idx === -1) continue;
-      const before  = _esc(text.slice(0, idx));
+      const before = _esc(text.slice(0, idx));
       const matched = _esc(text.slice(idx, idx + term.length));
-      const after   = _esc(text.slice(idx + term.length));
+      const after = _esc(text.slice(idx + term.length));
       el.innerHTML = `${before}<mark class="csv-ioc-highlight csv-ioc-highlight-flash">${matched}</mark>${after}`;
     }
   }
@@ -2261,29 +2267,29 @@ class GridViewer {
 
     this._root._csvFilters = {
       // Core
-      filterInput:      this._filterInput,
-      applyFilter:      () => this._applyFilter(),
-      clearFilter:      () => { this._filterInput.value = ''; this._applyFilter(); },
-      scrollContainer:  this._scr,
-      dataRows:         dataRowsProxy,
-      headerRow:        this.columns,
-      expandRow:        (rowObj) => {
+      filterInput: this._filterInput,
+      applyFilter: () => this._applyFilter(),
+      clearFilter: () => { this._filterInput.value = ''; this._applyFilter(); },
+      scrollContainer: this._scr,
+      dataRows: dataRowsProxy,
+      headerRow: this.columns,
+      expandRow: (rowObj) => {
         const idx = rowObj && rowObj.dataIndex !== undefined ? rowObj.dataIndex : rowObj;
         this._openDrawer(+idx);
       },
-      scrollToRow:      (idx, flash = true) => this._scrollToRow(+idx, flash),
+      scrollToRow: (idx, flash = true) => this._scrollToRow(+idx, flash),
       scrollToFirstMatch: () => {
         if (this._visibleCount() > 0) this._scrollToRow(this._dataIdxOf(0));
       },
-      forceRender:      () => this._forceFullRender(),
-      buildDetailPane:  (td, row, dataIdx) => {
+      forceRender: () => this._forceFullRender(),
+      buildDetailPane: (td, row, dataIdx) => {
         const pane = this._buildDetailPaneElement(this.columns, row, dataIdx);
         td.appendChild(pane);
       },
-      state:            this.state,
+      state: this.state,
       getVisibleRowCount: () => this._visibleCount(),
-      getDataIndex:     (v) => this._dataIdxOf(v),
-      getVirtualIndex:  (d) => this._virtualIdxOf(d),
+      getDataIndex: (v) => this._dataIdxOf(v),
+      getVirtualIndex: (d) => this._virtualIdxOf(d),
 
       // IOC navigation — sets ioc highlight state + opens drawer + scrolls.
       scrollToRowWithIocHighlight: (dataIdx, term, clearMs = 5000, onExpire = null) => {
@@ -2333,8 +2339,8 @@ class GridViewer {
       rowData: row,
       searchText,
       offsetStart: off ? off.start : 0,
-      offsetEnd:   off ? off.end   : 0,
-      dataIndex:   dataIdx,
+      offsetEnd: off ? off.end : 0,
+      dataIndex: dataIdx,
       tr: null, detailTr: null, detailTd: null, visible: true
     };
   }
@@ -2456,11 +2462,11 @@ class GridViewer {
     const vw = window.innerWidth || document.documentElement.clientWidth;
     const vh = window.innerHeight || document.documentElement.clientHeight;
     let left = rect.left;
-    let top  = rect.bottom + 2;
+    let top = rect.bottom + 2;
     if (left + popW > vw - 8) left = Math.max(8, vw - popW - 8);
     if (top + popH > vh - 8) top = Math.max(8, rect.top - popH - 2);
     pop.style.left = left + 'px';
-    pop.style.top  = top + 'px';
+    pop.style.top = top + 'px';
     pop.style.visibility = '';
   }
 
@@ -2508,12 +2514,12 @@ class GridViewer {
     // — same contract as `JsonTree._openKeyMenu`.
     document.body.appendChild(pop);
     pop.style.left = (ev.clientX || 0) + 'px';
-    pop.style.top  = (ev.clientY || 0) + 'px';
+    pop.style.top = (ev.clientY || 0) + 'px';
     const rect = pop.getBoundingClientRect();
     const vw = window.innerWidth || document.documentElement.clientWidth;
     const vh = window.innerHeight || document.documentElement.clientHeight;
-    if (rect.right  > vw) pop.style.left = Math.max(0, vw - rect.width  - 4) + 'px';
-    if (rect.bottom > vh) pop.style.top  = Math.max(0, vh - rect.height - 4) + 'px';
+    if (rect.right > vw) pop.style.left = Math.max(0, vw - rect.width - 4) + 'px';
+    if (rect.bottom > vh) pop.style.top = Math.max(0, vh - rect.height - 4) + 'px';
 
     this._openPopover = pop;
   }
@@ -3047,13 +3053,13 @@ class GridViewer {
       return;
     }
 
-    this._timeMs        = ms;
+    this._timeMs = ms;
     this._timeDataRange = { min, max };
     // Preserve an existing zoom if the user has a window active and it
     // still lies inside the new data range; otherwise fall back to the
     // full data range.
     if (this._timeWindow &&
-        this._timeWindow.min >= min && this._timeWindow.max <= max) {
+      this._timeWindow.min >= min && this._timeWindow.max <= max) {
       this._timeRange = { min: this._timeWindow.min, max: this._timeWindow.max };
     } else {
       this._timeRange = { min, max };
@@ -3066,7 +3072,7 @@ class GridViewer {
 
     // If a window is active but out of range (e.g. after setRows), clear it.
     if (this._timeWindow &&
-        (this._timeWindow.max < min || this._timeWindow.min > max)) {
+      (this._timeWindow.max < min || this._timeWindow.min > max)) {
       this._timeWindow = null;
       this._timeRange = { min, max };
       this._rebuildBucketsForView();
@@ -3308,7 +3314,6 @@ class GridViewer {
     this._timeStackKeys = null;
     if (this._timelineCursorEl) this._timelineCursorEl.classList.add('hidden');
     if (this._timelineEl) this._timelineEl.classList.add('hidden');
-    if (this._timelineLegendEl) this._timelineLegendEl.classList.add('hidden');
   }
 
   /** Render the bucket bars + min/max date labels. When stacking is
@@ -3379,7 +3384,6 @@ class GridViewer {
       }
     }
     this._timelineBucketsEl.replaceChildren(frag);
-    this._paintTimelineLegend();
 
     this._timelineLabelLeft.replaceChildren(this._fmtEdgeLabel(this._timeRange.min));
     this._timelineLabelRight.replaceChildren(this._fmtEdgeLabel(this._timeRange.max));
@@ -3387,62 +3391,8 @@ class GridViewer {
     // even though the visible label stops at whole seconds.
     const minIso = new Date(this._timeRange.min).toISOString().replace('T', ' ').slice(0, 19);
     const maxIso = new Date(this._timeRange.max).toISOString().replace('T', ' ').slice(0, 19);
-    this._timelineLabelLeft.title  = minIso + ' UTC';
+    this._timelineLabelLeft.title = minIso + ' UTC';
     this._timelineLabelRight.title = maxIso + ' UTC';
-  }
-
-  /** Lazily mint (and update) a small floating legend chip that lists
-   *  the palette → key mapping when stacking is active. Positioned as
-   *  an overlay over the timeline strip (via CSS) so it never steals
-   *  flex width from the bucket track — same trick as the window-range
-   *  chip. Hidden when no stack is active. */
-  _paintTimelineLegend() {
-    // Legend is disabled: the stacked-bar palette is decorative and the
-    // timeline strip is too narrow for a useful legend. Keep the method
-    // (and the .grid-timeline-bar-stack palette CSS) so bars remain
-    // coloured and the call sites stay intact. The body below is left in
-    // place for easy re-enable — it's unreachable by design.
-    if (this._timelineLegendEl) this._timelineLegendEl.classList.add('hidden');
-    return;
-    // eslint-disable-next-line no-unreachable
-    if (!this._timelineEl) return;
-    const stacking = this._timeStackBuckets && this._timeStackKeys && this._timeStackKeys.length;
-    if (!this._timelineLegendEl) {
-      const el = document.createElement('div');
-      el.className = 'grid-timeline-legend hidden';
-      this._timelineEl.appendChild(el);
-      this._timelineLegendEl = el;
-    }
-    const legend = this._timelineLegendEl;
-    if (!stacking) {
-      legend.classList.add('hidden');
-      legend.replaceChildren();
-      return;
-    }
-    const keys = this._timeStackKeys;
-    const colName = this.columns[this._timeStackColumn] || `Column ${this._timeStackColumn + 1}`;
-    const frag = document.createDocumentFragment();
-    const titleEl = document.createElement('span');
-    titleEl.className = 'grid-timeline-legend-title';
-    titleEl.textContent = `${colName}:`;
-    frag.appendChild(titleEl);
-    for (let k = 0; k < keys.length; k++) {
-      const item = document.createElement('span');
-      item.className = 'grid-timeline-legend-item';
-      item.style.setProperty('--grid-stack-slot', String(k));
-      const sw = document.createElement('span');
-      sw.className = 'grid-timeline-legend-swatch';
-      item.appendChild(sw);
-      const lbl = document.createElement('span');
-      lbl.className = 'grid-timeline-legend-label';
-      const txt = String(keys[k] || '');
-      lbl.textContent = txt.length > 24 ? txt.slice(0, 24) + '…' : (txt || '(empty)');
-      lbl.title = txt || '(empty)';
-      item.appendChild(lbl);
-      frag.appendChild(item);
-    }
-    legend.replaceChildren(frag);
-    legend.classList.remove('hidden');
   }
 
 
@@ -3520,7 +3470,7 @@ class GridViewer {
     const span = max - min || 1;
     const l = Math.max(0, (this._timeWindow.min - min) / span) * 100;
     const r = Math.min(1, (this._timeWindow.max - min) / span) * 100;
-    this._timelineWindowEl.style.left  = l + '%';
+    this._timelineWindowEl.style.left = l + '%';
     this._timelineWindowEl.style.width = Math.max(0.5, r - l) + '%';
     this._timelineWindowEl.classList.remove('hidden');
     this._timelineClearBtn.classList.remove('hidden');
@@ -3543,7 +3493,7 @@ class GridViewer {
    *  plus mousemove for the floating tooltip. */
   _wireTimelineEvents() {
     const track = this._timelineTrackEl;
-    const tip   = this._timelineTooltipEl;
+    const tip = this._timelineTooltipEl;
     if (!track) return;
 
     const pctFromX = (clientX) => {
@@ -3562,7 +3512,7 @@ class GridViewer {
       const b = Math.min(this._timeBuckets.length - 1, Math.floor(p * this._timeBuckets.length));
       const count = this._timeBuckets[b];
       const bStart = this._timeRange.min + (b / this._timeBuckets.length) * (this._timeRange.max - this._timeRange.min);
-      const bEnd   = this._timeRange.min + ((b + 1) / this._timeBuckets.length) * (this._timeRange.max - this._timeRange.min);
+      const bEnd = this._timeRange.min + ((b + 1) / this._timeBuckets.length) * (this._timeRange.max - this._timeRange.min);
       tip.textContent = `${count.toLocaleString()} row${count === 1 ? '' : 's'} · ${this._fmtTimeLabel(bStart)} → ${this._fmtTimeLabel(bEnd)}`;
       const rect = track.getBoundingClientRect();
       const x = e.clientX - rect.left;
@@ -3605,7 +3555,7 @@ class GridViewer {
           const span = this._timeRange.max - this._timeRange.min;
           const b = Math.min(B - 1, Math.floor(startP * B));
           const bStart = this._timeRange.min + (b / B) * span;
-          const bEnd   = this._timeRange.min + ((b + 1) / B) * span;
+          const bEnd = this._timeRange.min + ((b + 1) / B) * span;
           this._setTimeWindow(bStart, bEnd);
         } else {
           // Commit the drag-selected window through _setTimeWindow so the
@@ -3640,7 +3590,7 @@ class GridViewer {
       if (max > this._timeDataRange.max) max = this._timeDataRange.max;
     }
     this._timeWindow = { min, max };
-    this._timeRange  = { min, max };
+    this._timeRange = { min, max };
     this._rebuildBucketsForView();
     this._paintTimeline();
     this._paintTimelineWindow();
@@ -3653,8 +3603,8 @@ class GridViewer {
    *  started from. */
   _clearTimeWindow() {
     if (!this._timeWindow && (!this._timeDataRange ||
-        (this._timeRange && this._timeRange.min === this._timeDataRange.min &&
-                            this._timeRange.max === this._timeDataRange.max))) {
+      (this._timeRange && this._timeRange.min === this._timeDataRange.min &&
+        this._timeRange.max === this._timeDataRange.max))) {
       return;
     }
     this._timeWindow = null;

@@ -1149,7 +1149,7 @@ body.grid-resizing {
   flex: 0 0 420px;
   /* default; overridden inline from GridViewer */
   min-width: 280px;
-  max-width: 1000px;
+  max-width: 80vw;
   display: flex;
   flex-direction: column;
   background: #fbfbfc;
@@ -12060,56 +12060,47 @@ body.dark .grid-timeline-clear:hover {
    `.grid-timeline-bar` accent-tinted rule still applies for flat /
    unstacked mode; the -bar-stack variant below overrides it when a
    stack column is active. */
-.grid-timeline-bar.grid-timeline-bar-stack,
-.grid-timeline-legend-swatch {
+.grid-timeline-bar.grid-timeline-bar-stack {
   background: #8b8b8b;
   /* fallback for slots beyond the palette */
 }
 
-.grid-timeline-bar-stack[style*="--grid-stack-slot: 0"],
-.grid-timeline-legend-item[style*="--grid-stack-slot: 0"] .grid-timeline-legend-swatch {
+.grid-timeline-bar-stack[style*="--grid-stack-slot: 0"] {
   background: #4c78a8;
   /* blue */
 }
 
-.grid-timeline-bar-stack[style*="--grid-stack-slot: 1"],
-.grid-timeline-legend-item[style*="--grid-stack-slot: 1"] .grid-timeline-legend-swatch {
+.grid-timeline-bar-stack[style*="--grid-stack-slot: 1"] {
   background: #f58518;
   /* orange */
 }
 
-.grid-timeline-bar-stack[style*="--grid-stack-slot: 2"],
-.grid-timeline-legend-item[style*="--grid-stack-slot: 2"] .grid-timeline-legend-swatch {
+.grid-timeline-bar-stack[style*="--grid-stack-slot: 2"] {
   background: #54a24b;
   /* green */
 }
 
-.grid-timeline-bar-stack[style*="--grid-stack-slot: 3"],
-.grid-timeline-legend-item[style*="--grid-stack-slot: 3"] .grid-timeline-legend-swatch {
+.grid-timeline-bar-stack[style*="--grid-stack-slot: 3"] {
   background: #e45756;
   /* red */
 }
 
-.grid-timeline-bar-stack[style*="--grid-stack-slot: 4"],
-.grid-timeline-legend-item[style*="--grid-stack-slot: 4"] .grid-timeline-legend-swatch {
+.grid-timeline-bar-stack[style*="--grid-stack-slot: 4"] {
   background: #72b7b2;
   /* teal */
 }
 
-.grid-timeline-bar-stack[style*="--grid-stack-slot: 5"],
-.grid-timeline-legend-item[style*="--grid-stack-slot: 5"] .grid-timeline-legend-swatch {
+.grid-timeline-bar-stack[style*="--grid-stack-slot: 5"] {
   background: #b279a2;
   /* mauve */
 }
 
-.grid-timeline-bar-stack[style*="--grid-stack-slot: 6"],
-.grid-timeline-legend-item[style*="--grid-stack-slot: 6"] .grid-timeline-legend-swatch {
+.grid-timeline-bar-stack[style*="--grid-stack-slot: 6"] {
   background: #ff9da6;
   /* pink */
 }
 
-.grid-timeline-bar-stack[style*="--grid-stack-slot: 7"],
-.grid-timeline-legend-item[style*="--grid-stack-slot: 7"] .grid-timeline-legend-swatch {
+.grid-timeline-bar-stack[style*="--grid-stack-slot: 7"] {
   background: #9d755d;
   /* brown ("Other" slot when 8 groups fill) */
 }
@@ -12119,76 +12110,6 @@ body.dark .grid-timeline-clear:hover {
    categorical colour assignment stays stable on hover. */
 .grid-timeline-track:hover .grid-timeline-bar-stack {
   filter: brightness(1.12) saturate(1.05);
-}
-
-/* Floating legend chip — lazily minted by _paintTimelineLegend() and
-   appended into .grid-timeline. Uses the same absolute-overlay trick
-   as the window-label and clear button so showing it cannot reflow
-   the bucket track. Anchored top-left so it sits against the
-   left-edge date label rather than colliding with the window chip. */
-.grid-timeline-legend {
-  position: absolute;
-  top: 5px;
-  left: 112px;
-  /* clears the left-edge YYYY-MM-DD/HH:MM:SS label */
-  z-index: 4;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  max-width: calc(100% - 260px);
-  /* leave space for window chip + clear btn */
-  overflow: hidden;
-  font-size: 10.5px;
-  font-family: 'Consolas', 'Menlo', monospace;
-  color: var(--text-muted, #666);
-  padding: 2px 8px;
-  border: 1px solid var(--hairline-soft, rgba(127, 127, 127, .3));
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--bg-secondary, #fff) 72%, transparent);
-  backdrop-filter: blur(2px);
-  white-space: nowrap;
-  pointer-events: none;
-  /* legend is informational — clicks fall through to the track */
-}
-
-.grid-timeline-legend.hidden {
-  display: none;
-}
-
-body.dark .grid-timeline-legend {
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--bg-secondary) 72%, transparent);
-}
-
-.grid-timeline-legend-title {
-  font-weight: 600;
-  color: var(--text, #222);
-  opacity: 0.85;
-}
-
-body.dark .grid-timeline-legend-title {
-  color: var(--text);
-}
-
-.grid-timeline-legend-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-}
-
-.grid-timeline-legend-swatch {
-  width: 9px;
-  height: 9px;
-  border-radius: 2px;
-  flex: 0 0 auto;
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, .08) inset;
-}
-
-.grid-timeline-legend-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 90px;
 }
 
 
@@ -15823,9 +15744,8 @@ body.dark .grid-cell.tl-stack-text-35 {
 
 .tl-clicker-row {
   padding: 3px 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: pre-wrap;
+  word-break: break-all;
   cursor: text;
   border-bottom: 1px solid var(--hairline);
   user-select: text;
