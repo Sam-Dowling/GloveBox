@@ -242,8 +242,8 @@ class LnkRenderer {
 
       for (const d of dangers) {
         f.externalRefs.push({ type: IOC.PATTERN, url: d.label + ': ' + d.detail, severity: d.sev });
-        if (d.sev === 'high') f.risk = 'high';
-        else if (d.sev === 'medium' && f.risk !== 'high') f.risk = 'medium';
+        if (d.sev === 'high') escalateRisk(f, 'high');
+        else if (d.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
       }
 
       // Check for UNC paths (credential theft) in any parsed path string
@@ -261,7 +261,7 @@ class LnkRenderer {
         if (uncSeen.has(m[0])) continue;
         uncSeen.add(m[0]);
         f.externalRefs.push({ type: IOC.UNC_PATH, url: m[0], severity: 'medium' });
-        if (f.risk === 'low') f.risk = 'medium';
+        if (f.risk === 'low') escalateRisk(f, 'medium');
       }
 
       // Icon pulled from UNC or HTTP(S) — known credential-theft / staging technique
@@ -272,7 +272,7 @@ class LnkRenderer {
             type: IOC.UNC_PATH, url: src, severity: 'high',
             note: 'Icon fetched from UNC (credential-theft/SMB beacon)'
           });
-          f.risk = 'high';
+          escalateRisk(f, 'high');
         } else if (/^https?:\/\//i.test(src)) {
           const u = sanitizeUrl(src);
           if (u) {
@@ -280,7 +280,7 @@ class LnkRenderer {
               type: IOC.URL, url: u, severity: 'high',
               note: 'Icon fetched from remote URL'
             });
-            f.risk = 'high';
+            escalateRisk(f, 'high');
           }
         }
       }
@@ -293,7 +293,7 @@ class LnkRenderer {
             const u = sanitizeUrl(it.label);
             if (u) {
               f.externalRefs.push({ type: IOC.URL, url: u, severity: 'medium' });
-              if (f.risk === 'low') f.risk = 'medium';
+              if (f.risk === 'low') escalateRisk(f, 'medium');
             }
           }
         }

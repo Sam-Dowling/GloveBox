@@ -507,7 +507,7 @@ class RarRenderer {
         severity: 'high',
         bucket: 'externalRefs',
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
     }
     if (parsed.multiVolume) {
       pushIOC(f, {
@@ -516,7 +516,7 @@ class RarRenderer {
         severity: 'medium',
         bucket: 'externalRefs',
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
     if (parsed.solid) {
       pushIOC(f, {
@@ -531,8 +531,8 @@ class RarRenderer {
     const warnings = this._checkWarnings(parsed);
     for (const w of warnings) {
       f.externalRefs.push({ type: IOC.PATTERN, url: w.msg, severity: w.sev });
-      if (w.sev === 'high') f.risk = 'high';
-      else if (w.sev === 'medium' && f.risk !== 'high') f.risk = 'medium';
+      if (w.sev === 'high') escalateRisk(f, 'high');
+      else if (w.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
     }
 
     // Surface executable/script paths as FILE_PATH IOCs

@@ -1222,7 +1222,7 @@ class JarRenderer {
       const eExt = e.path.split('.').pop().toLowerCase();
       if (dangerousExts.has(eExt)) {
         f.interestingStrings.push({ type: IOC.FILE_PATH, url: e.path, severity: 'medium', note: 'Suspicious resource inside JAR' });
-        if (f.risk === 'low') f.risk = 'medium';
+        if (f.risk === 'low') escalateRisk(f, 'medium');
       }
     }
 
@@ -1306,10 +1306,10 @@ class JarRenderer {
       else if (g.severity === 'medium') mediumCount++;
     }
 
-    if (criticalCount > 0) f.risk = 'critical';
-    else if (highCount >= 3 || obfuscation.length > 0) f.risk = 'high';
-    else if (highCount > 0 || mediumCount >= 3) f.risk = 'medium';
-    else if (mediumCount > 0) f.risk = 'low';
-    else f.risk = 'low';
+    if (criticalCount > 0) escalateRisk(f, 'critical');
+    else if (highCount >= 3 || obfuscation.length > 0) escalateRisk(f, 'high');
+    else if (highCount > 0 || mediumCount >= 3) escalateRisk(f, 'medium');
+    else if (mediumCount > 0) escalateRisk(f, 'low');
+    else escalateRisk(f, 'low');
   }
 }

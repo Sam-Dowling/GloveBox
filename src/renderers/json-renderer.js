@@ -640,7 +640,7 @@ class JsonRenderer {
         url: 'Base64-encoded data URI embedded in JSON value — common payload-smuggling shape',
         severity: 'medium',
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // JSON Web Token shape in values: `eyJ<base64>.<base64>.<base64>`.

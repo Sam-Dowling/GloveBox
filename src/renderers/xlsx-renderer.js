@@ -235,7 +235,7 @@ class XlsxRenderer {
         };
       }
       if (wb.vbaraw || ['xlsm', 'xltm', 'xlam'].includes(ext)) {
-        f.hasMacros = true; f.risk = 'medium';
+        f.hasMacros = true; escalateRisk(f, 'medium');
         if (wb.vbaraw) f.macroSize = wb.vbaraw.byteLength || wb.vbaraw.length || 0;
         try {
           const zip = await JSZip.loadAsync(buffer);
@@ -248,7 +248,7 @@ class XlsxRenderer {
             for (const m of f.modules) {
               if (!m.source) continue;
               const pats = autoExecPatterns(m.source);
-              if (pats.length) { f.autoExec.push({ module: m.name, patterns: pats }); f.risk = 'high'; }
+              if (pats.length) { f.autoExec.push({ module: m.name, patterns: pats }); escalateRisk(f, 'high'); }
             }
           }
           if (!f.rawBin && wb.vbaraw)
@@ -265,8 +265,8 @@ class XlsxRenderer {
           const relRefs = await OoxmlRelScanner.scan(zip);
           for (const r of relRefs) {
             f.externalRefs.push(r);
-            if (r.severity === 'high') f.risk = 'high';
-            else if (r.severity === 'medium' && f.risk === 'low') f.risk = 'medium';
+            if (r.severity === 'high') escalateRisk(f, 'high');
+            else if (r.severity === 'medium' && f.risk === 'low') escalateRisk(f, 'medium');
           }
         } catch (e) { /* ignore */ }
       }
@@ -292,7 +292,7 @@ class XlsxRenderer {
               note: 'visibility state settable only from VBA editor',
               bucket: 'externalRefs',
             });
-            if (f.risk === 'low') f.risk = 'medium';
+            if (f.risk === 'low') escalateRisk(f, 'medium');
           }
           if (!ws['!ref']) continue;
           const rng = XLSX.utils.decode_range(ws['!ref']);
@@ -335,7 +335,7 @@ class XlsxRenderer {
               note: 'XLM/Excel-4.0 auto-exec name',
               bucket: 'externalRefs',
             });
-            f.risk = 'high';
+            escalateRisk(f, 'high');
           }
           if (ref && /^\s*[\[\\]/.test(ref)) {
             pushIOC(f, {
@@ -345,7 +345,7 @@ class XlsxRenderer {
               note: 'external-workbook or UNC-path link in defined name',
               bucket: 'externalRefs',
             });
-            if (f.risk === 'low') f.risk = 'medium';
+            if (f.risk === 'low') escalateRisk(f, 'medium');
           }
           for (const u of extractUrls(ref, 4)) {
             pushIOC(f, { type: IOC.URL, value: u, severity: 'medium', note: `defined name "${nm}"`, bucket: 'externalRefs' });
@@ -364,8 +364,8 @@ class XlsxRenderer {
           note: h.sev === 'high' ? 'high-risk spreadsheet function' : 'network/hyperlink formula',
           bucket: 'externalRefs',
         });
-        if (h.sev === 'high') f.risk = 'high';
-        else if (h.sev === 'medium' && f.risk === 'low') f.risk = 'medium';
+        if (h.sev === 'high') escalateRisk(f, 'high');
+        else if (h.sev === 'medium' && f.risk === 'low') escalateRisk(f, 'medium');
       }
       if (formulaHits.length > FORMULA_CAP) {
         pushIOC(f, {
@@ -389,7 +389,7 @@ class XlsxRenderer {
           note: `formula in ${u.sheet}!${u.addr}`,
           bucket: 'externalRefs',
         });
-        if (f.risk === 'low') f.risk = 'medium';
+        if (f.risk === 'low') escalateRisk(f, 'medium');
       }
     } catch (e) {
       f.metadata.parseError = e.message || 'Unknown parse error';

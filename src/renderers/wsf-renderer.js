@@ -189,10 +189,10 @@ class WsfRenderer {
     const highs = f.externalRefs.filter(r => r.severity === 'high').length;
     const hasCrit = f.externalRefs.some(r => r.severity === 'critical');
     const hasMed = f.externalRefs.some(r => r.severity === 'medium');
-    if (hasCrit) f.risk = 'critical';
-    else if (highs >= 2) f.risk = 'high';
-    else if (highs >= 1) f.risk = 'medium';
-    else if (hasMed) f.risk = 'low';
+    if (hasCrit) escalateRisk(f, 'critical');
+    else if (highs >= 2) escalateRisk(f, 'high');
+    else if (highs >= 1) escalateRisk(f, 'medium');
+    else if (hasMed) escalateRisk(f, 'low');
     return f;
   }
 

@@ -1897,9 +1897,9 @@ Object.assign(App.prototype, {
     if (results.length > 0) {
       const riskRank = { critical: 4, high: 3, medium: 2, low: 1 };
       const currentRank = riskRank[this.findings.risk] || 1;
-      if (maxSeverity === 'critical' && currentRank < 4) this.findings.risk = 'critical';
-      else if (maxSeverity === 'high' && currentRank < 3) this.findings.risk = 'high';
-      else if (maxSeverity === 'medium' && currentRank < 2) this.findings.risk = 'medium';
+      if (maxSeverity === 'critical' && currentRank < 4) escalateRisk(this.findings, 'critical');
+      else if (maxSeverity === 'high' && currentRank < 3) escalateRisk(this.findings, 'high');
+      else if (maxSeverity === 'medium' && currentRank < 2) escalateRisk(this.findings, 'medium');
     }
     // Re-render sidebar. Use _fileMeta as single source of truth for the
     // filename (legacy #file-info element was replaced by the breadcrumb trail).

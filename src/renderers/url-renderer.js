@@ -178,8 +178,8 @@ class UrlShortcutRenderer {
         };
         if (loc) { ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
         f.externalRefs.push(ref);
-        if (r.sev === 'high') f.risk = 'high';
-        else if (r.sev === 'medium' && f.risk !== 'high') f.risk = 'medium';
+        if (r.sev === 'high') escalateRisk(f, 'high');
+        else if (r.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
       }
       // Add the URL itself as a finding
       const urlSev = /^\\\\|^file:/i.test(parsed.url) ? 'high' : 'medium';

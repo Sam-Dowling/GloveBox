@@ -106,7 +106,7 @@ class DocBinaryRenderer {
       let vbaStream = null;
       for (const [name, data] of cfb.streams.entries()) {
         if (name === 'vba/vba' || name.includes('vba') || name.includes('macro')) {
-          f.hasMacros = true; f.risk = 'medium';
+          f.hasMacros = true; escalateRisk(f, 'medium');
           if (!vbaStream || data.length > vbaStream.length) vbaStream = data;
         }
       }

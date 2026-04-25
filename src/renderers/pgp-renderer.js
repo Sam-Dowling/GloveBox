@@ -1109,7 +1109,7 @@ class PgpRenderer {
         armorBlocks = this._decodeArmor(text);
         if (armorBlocks.length === 0) {
           findings.summary = 'No valid PGP armor blocks found';
-          findings.risk = findings.riskLevel;
+          escalateRisk(findings, findings.riskLevel);
           findings.metadata = {};
           findings.externalRefs = [];
           return findings;
@@ -1302,7 +1302,7 @@ class PgpRenderer {
       else findings.riskLevel = 'low';
 
       // Normalise to sidebar-compatible shape
-      findings.risk = findings.riskLevel;
+      escalateRisk(findings, findings.riskLevel);
       findings.metadata = {};
       for (const fs of findings.formatSpecific) findings.metadata[fs.label] = fs.value;
       findings.externalRefs = findings.detections.map(d => ({
@@ -1326,7 +1326,7 @@ class PgpRenderer {
       }
     } catch (e) {
       findings.summary = `Analysis error: ${e.message}`;
-      findings.risk = findings.riskLevel;
+      escalateRisk(findings, findings.riskLevel);
       findings.metadata = {};
       findings.externalRefs = [];
     }

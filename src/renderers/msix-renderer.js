@@ -821,10 +821,10 @@ class MsixRenderer {
     // HTTP MainPackage Uri + fullTrustProcess helper + AppExecutionAlias
     // hijack). Without the critical bucket, those stacks topped out at
     // 'high', visibly under-calling peer formats.
-    if (score >= 8) f.risk = 'critical';
-    else if (score >= 5) f.risk = 'high';
-    else if (score >= 2) f.risk = 'medium';
-    else f.risk = 'low';
+    if (score >= 8) escalateRisk(f, 'critical');
+    else if (score >= 5) escalateRisk(f, 'high');
+    else if (score >= 2) escalateRisk(f, 'medium');
+    else escalateRisk(f, 'low');
 
     // Mirror classic-pivot metadata into the IOC table. Publisher DN +
     // computed PublisherId are the two fields every incident responder

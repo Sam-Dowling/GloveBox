@@ -165,7 +165,7 @@ class QrDecoder {
     // Escalate overall risk when a URL is present. We never de-escalate;
     // analyzers upstream may have already set 'high' for other reasons.
     if (classified && classified.type === IOC.URL) {
-      if (findings.risk === 'low' || !findings.risk) findings.risk = 'medium';
+      if (findings.risk === 'low' || !findings.risk) escalateRisk(findings, 'medium');
     }
   }
 

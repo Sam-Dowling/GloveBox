@@ -1064,10 +1064,10 @@ class BrowserExtRenderer {
     }
 
     // ── Risk bucket — matches MsixRenderer's critical / high / medium / low ladder
-    if (score >= 8) f.risk = 'critical';
-    else if (score >= 5) f.risk = 'high';
-    else if (score >= 2) f.risk = 'medium';
-    else f.risk = 'low';
+    if (score >= 8) escalateRisk(f, 'critical');
+    else if (score >= 5) escalateRisk(f, 'high');
+    else if (score >= 2) escalateRisk(f, 'medium');
+    else escalateRisk(f, 'low');
 
     // Mirror classic-pivot metadata into the IOC table. CRX ID + Gecko ID +
     // update URL are the standard pivots for browser-extension hunting.

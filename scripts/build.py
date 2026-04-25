@@ -374,7 +374,105 @@ JS_FILES = [
 
 app_js = '\n'.join(read(f) for f in JS_FILES)
 
+# ── Build gate: risk pre-stamping ─────────────────────────────────────────────
+# `.clinerules` forbids writing `findings.risk = '<tier>'` directly outside the
+# `escalateRisk()` helper in `src/constants.js`. Pre-stamping produces
+# false-positive risk colouring on benign samples — every escalation must come
+# from evidence pushed onto `externalRefs` / `interestingStrings`. See
+# CONTRIBUTING.md → Risk Tier Calibration / Tripwires.
+_RISK_PRE_STAMP_RE = _re.compile(r"""\.risk\s*=\s*['"](low|medium|high|critical|info)['"]""")
+_RISK_GATE_ALLOWLIST = { 'src/constants.js' }
+
+def _check_risk_pre_stamping():
+    violations = []
+    for rel in JS_FILES:
+        if rel in _RISK_GATE_ALLOWLIST:
+            continue
+        text = read(rel)
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            # Skip pure comment lines so reference snippets in docstrings don't trip the gate.
+            stripped = line.lstrip()
+            if stripped.startswith('//') or stripped.startswith('*'):
+                continue
+            m = _RISK_PRE_STAMP_RE.search(line)
+            if m:
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
+    if violations:
+        msg = (
+            "Build gate failed — direct risk pre-stamping detected. Use "
+            "`escalateRisk(findings, tier)` from src/constants.js instead.\n"
+            "Offending sites:\n  " + "\n  ".join(violations)
+        )
+        raise SystemExit(msg)
+
+_check_risk_pre_stamping()
+
+
+# ── Build gate: bare-string IOC `type:` values ────────────────────────────────
+# `.clinerules` requires every IOC entry's `type` field to be an `IOC.*`
+# constant from the table in `src/constants.js` (e.g. `IOC.URL`, not the bare
+# string `'URL'` or `'url'`). Bare-string types silently break sidebar
+# filtering — the Detections / IOCs filter is keyed on the `IOC.*` token, so a
+# bare string yields a row that exists in `findings` but never appears under
+# any sidebar tab.
+#
+# The gate matches the canonical IOC-entry shape: an object literal that
+# carries BOTH a `type:` key with a bare string AND a `severity:` key on the
+# same source line. That two-key fingerprint is unique to IOC pushes — it
+# does not appear in:
+#   • YaraEngine string-kind objects (`{ type: 'text', ... }`, no `severity`)
+#   • plist `_type` discriminators (different key, no `severity`)
+#   • SheetJS `XLSX.read({ type: 'array' })` (no `severity`)
+#   • STIX 2.1 / MISP export schema (`type: 'indicator'`, no `severity` key)
+#   • renderer-internal display DTOs in wsf-renderer / x509-renderer (no
+#     `severity` key — those structs are re-fanned out into real `IOC.*`
+#     pushes by the same renderer)
+#
+# So the gate is the conjunction `type: '<string>' ... severity:` on a single
+# line. False positives can be silenced by either:
+#   (a) replacing the bare string with the `IOC.*` constant (the spec-correct
+#       fix in the overwhelming majority of cases), or
+#   (b) renaming the discriminator field if it genuinely is a non-IOC DTO.
+#
+# Allow-list: only `src/constants.js` is exempt — that's where the `IOC.*`
+# table itself defines the canonical strings.
+_BARE_IOC_TYPE_RE = _re.compile(
+    r"""\btype:\s*['"][A-Za-z][A-Za-z _]*['"][^}\n]*?\bseverity\s*:"""
+)
+_IOC_GATE_ALLOWLIST = { 'src/constants.js' }
+
+def _check_bare_ioc_types():
+    violations = []
+    for rel in JS_FILES:
+        if rel in _IOC_GATE_ALLOWLIST:
+            continue
+        text = read(rel)
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            # Skip pure comment lines so reference snippets in docstrings don't trip the gate.
+            stripped = line.lstrip()
+            if stripped.startswith('//') or stripped.startswith('*'):
+                continue
+            # Only single-line IOC entries — the multi-line case routes through
+            # `pushIOC()` which centralises validation in src/constants.js.
+            m = _BARE_IOC_TYPE_RE.search(line)
+            if m:
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
+    if violations:
+        msg = (
+            "Build gate failed — bare-string IOC `type:` value detected.\n"
+            "Use the canonical `IOC.*` constant from src/constants.js (e.g. "
+            "`IOC.URL`, `IOC.IP`, `IOC.PATTERN`) instead of a bare string —\n"
+            "bare-string types silently break sidebar IOC filtering. See "
+            "CONTRIBUTING.md → Renderer Contract item #5 / IOC Push Checklist.\n"
+            "Offending sites:\n  " + "\n  ".join(violations)
+        )
+        raise SystemExit(msg)
+
+_check_bare_ioc_types()
+
+
 # File extensions accepted by the open-file input. Keep as a list for sanity.
+
 ACCEPT_EXTS = [
     '.docx','.docm','.xlsx','.xlsm','.xls','.ods','.pptx','.pptm','.ppt','.odt','.odp',
     '.csv','.tsv','.doc','.msg','.eml','.lnk','.hta','.rtf','.pdf',

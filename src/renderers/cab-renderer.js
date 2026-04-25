@@ -473,7 +473,7 @@ class CabRenderer {
         severity: 'medium',
         bucket: 'externalRefs',
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
     if (parsed.header.reservePresent) {
       pushIOC(f, {
@@ -488,15 +488,15 @@ class CabRenderer {
     const warnings = this._checkWarnings(parsed.files);
     for (const w of warnings) {
       f.externalRefs.push({ type: IOC.PATTERN, url: w.msg, severity: w.sev });
-      if (w.sev === 'high') f.risk = 'high';
-      else if (w.sev === 'medium' && f.risk !== 'high') f.risk = 'medium';
+      if (w.sev === 'high') escalateRisk(f, 'high');
+      else if (w.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
     }
 
     // Surface executable/script paths as FILE_PATH IOCs (same grammar as zip-renderer)
     const dangerous = parsed.files.filter(e => CabRenderer.EXEC_EXTS.has((e.path || '').split('.').pop().toLowerCase()));
     if (dangerous.length) {
       f.externalRefs.push({ type: IOC.PATTERN, url: `${dangerous.length} executable/script file(s) inside cabinet`, severity: 'high' });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
       for (const e of dangerous.slice(0, 50)) {
         f.externalRefs.push({ type: IOC.FILE_PATH, url: e.path, severity: 'high' });
       }

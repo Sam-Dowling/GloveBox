@@ -745,7 +745,6 @@ Object.assign(App.prototype, {
     if (!this.findings || !this.findings.encodedContent) return;
     const riskRank = { critical: 4, high: 3, medium: 2, low: 1 };
     const sevToRisk = { critical: 'critical', high: 'high', medium: 'medium' };
-    const currentRank = riskRank[this.findings.risk] || 1;
     let maxRisk = null;
     for (const ef of this.findings.encodedContent) {
       const mapped = sevToRisk[ef.severity];
@@ -753,9 +752,7 @@ Object.assign(App.prototype, {
         maxRisk = mapped;
       }
     }
-    if (maxRisk && (riskRank[maxRisk] || 0) > currentRank) {
-      this.findings.risk = maxRisk;
-    }
+    if (maxRisk) escalateRisk(this.findings, maxRisk);
   },
 
   // ── Highlight encoded content in the view pane ──────────────────────────

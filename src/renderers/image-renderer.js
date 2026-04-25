@@ -143,7 +143,7 @@ class ImageRenderer {
               url: `${this._fmtBytes(extra)} of data appended after PNG IEND chunk — possible steganography or embedded payload`,
               severity: 'medium'
             });
-            f.risk = 'medium';
+            escalateRisk(f, 'medium');
           }
           break;
         }
@@ -164,7 +164,7 @@ class ImageRenderer {
             url: `${this._fmtBytes(extra)} of data appended after JPEG EOI marker — possible steganography or embedded payload`,
             severity: 'medium'
           });
-          f.risk = 'medium';
+          escalateRisk(f, 'medium');
         }
       }
     }
@@ -184,7 +184,7 @@ class ImageRenderer {
             url: `${this._fmtBytes(extra)} of data appended after GIF trailer — possible steganography or embedded payload`,
             severity: 'medium'
           });
-          if (f.risk === 'low') f.risk = 'medium';
+          if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       }
     }
@@ -220,7 +220,7 @@ class ImageRenderer {
                 url: `Large PNG ${tName} chunk (${this._fmtBytes(chunkLen)}) — potential data-hiding channel`,
                 severity: 'medium'
               });
-              if (f.risk === 'low') f.risk = 'medium';
+              if (f.risk === 'low') escalateRisk(f, 'medium');
             }
             // Extract text content for payload scanning
             if (chunkLen > 0 && chunkLen <= 65536) {
@@ -290,7 +290,7 @@ class ImageRenderer {
                     url: `PNG ${tName} chunk contains Base64 blob (${textContent.length} chars) — possible encoded payload`,
                     severity: 'high'
                   });
-                  f.risk = 'high';
+                  escalateRisk(f, 'high');
                 }
                 if (/TVqQ|TVpQ|TVoA|TVnA|\bMZ\b/.test(textContent)) {
                   f.externalRefs.push({
@@ -298,7 +298,7 @@ class ImageRenderer {
                     url: `PNG ${tName} chunk contains PE magic signature — hidden executable payload`,
                     severity: 'high'
                   });
-                  f.risk = 'high';
+                  escalateRisk(f, 'high');
                 }
                 if (/powershell|cmd\s*\/c|<script|<\?php|eval\s*\(/i.test(textContent)) {
                   f.externalRefs.push({
@@ -306,7 +306,7 @@ class ImageRenderer {
                     url: `PNG ${tName} chunk contains script payload pattern`,
                     severity: 'high'
                   });
-                  f.risk = 'high';
+                  escalateRisk(f, 'high');
                 }
               }
             }
@@ -332,7 +332,7 @@ class ImageRenderer {
             url: `${this._fmtBytes(extra)} of data appended past declared BMP size (${this._fmtBytes(declaredSize)}) — possible embedded payload`,
             severity: 'medium'
           });
-          if (f.risk === 'low') f.risk = 'medium';
+          if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       }
     }
@@ -345,7 +345,7 @@ class ImageRenderer {
           url: `Embedded PE (MZ) header found at offset ${i} inside image — hidden executable`,
           severity: 'high'
         });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
         break;
       }
     }
@@ -358,7 +358,7 @@ class ImageRenderer {
           url: `Embedded ZIP archive found at offset ${i} inside image — polyglot file`,
           severity: 'medium'
         });
-        if (f.risk === 'low') f.risk = 'medium';
+        if (f.risk === 'low') escalateRisk(f, 'medium');
         break;
       }
     }
@@ -548,7 +548,7 @@ class ImageRenderer {
         highlightText: gpsStr,
         note: 'EXIF GPS coordinates',
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // ── Device serial: unique per-camera pivot ────────────────────────
@@ -666,7 +666,7 @@ class ImageRenderer {
           url: `EXIF ${field} contains Base64 blob (${str.length} chars) — possible encoded payload`,
           severity: 'high'
         });
-        if (f.risk !== 'high') f.risk = 'high';
+        if (f.risk !== 'high') escalateRisk(f, 'high');
       }
       // PE magic in text
       if (/TVqQ|TVpQ|TVoA|TVnA|\bMZ\b/.test(str)) {
@@ -675,7 +675,7 @@ class ImageRenderer {
           url: `EXIF ${field} contains PE magic signature — hidden executable payload`,
           severity: 'high'
         });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
       }
       // Script patterns
       if (/powershell|cmd\s*\/c|<script|<\?php|<\?=|eval\s*\(|document\.write/i.test(str)) {
@@ -684,7 +684,7 @@ class ImageRenderer {
           url: `EXIF ${field} contains script payload pattern`,
           severity: 'high'
         });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
       }
     }
   }
@@ -719,7 +719,7 @@ class ImageRenderer {
         severity: 'medium',
         note: 'Malformed / non-JPEG thumbnail payload',
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
   }
 

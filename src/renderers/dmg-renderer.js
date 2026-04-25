@@ -219,7 +219,7 @@ class DmgRenderer {
         url: `Encrypted DMG (${envelope}) — contents not inspectable without passphrase`,
         severity: 'high'
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
       f.metadata = { title: '(encrypted DMG)', subject: this._fmtBytes(bytes.length) };
       return f;
     }
@@ -247,7 +247,7 @@ class DmgRenderer {
         url: `${strings.apps.length} application bundle path(s) inside disk image`,
         severity: 'high'
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
       for (const path of strings.apps.slice(0, APP_IOC_CAP)) {
         f.externalRefs.push({ type: IOC.FILE_PATH, url: path, severity: 'high' });
       }
@@ -267,7 +267,7 @@ class DmgRenderer {
         url: 'DMG contains both an Applications symlink and a .app bundle — classic drag-to-install social-engineering shape',
         severity: 'high'
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
     }
 
     // Hidden .app (leading dot) — staple of macOS trojans
@@ -278,7 +278,7 @@ class DmgRenderer {
         url: `${hidden.length} hidden .app bundle(s) inside disk image`,
         severity: 'high'
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
     }
 
     // URLs surfaced from the image (Info.plist, license text)

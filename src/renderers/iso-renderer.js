@@ -144,7 +144,7 @@ class IsoRenderer {
           url: `${dangerous.length} executable/script file(s) inside disk image`,
           severity: 'high'
         });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
         for (const e of dangerous) {
           f.externalRefs.push({ type: IOC.FILE_PATH, url: e.path || e.name, severity: 'high' });
         }
@@ -154,14 +154,14 @@ class IsoRenderer {
       const lnks = files.filter(e => /\.lnk$/i.test(e.name));
       if (lnks.length) {
         f.externalRefs.push({ type: IOC.PATTERN, url: 'Windows shortcut (.lnk) inside disk image — common phishing technique', severity: 'high' });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
       }
 
       // autorun.inf
       const autorun = files.filter(e => /^autorun\.inf$/i.test(e.name));
       if (autorun.length) {
         f.externalRefs.push({ type: IOC.PATTERN, url: 'autorun.inf detected — may auto-execute content', severity: 'high' });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
       }
 
       // Hidden files (starting with .)

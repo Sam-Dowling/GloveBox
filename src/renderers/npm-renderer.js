@@ -504,10 +504,10 @@ class NpmRenderer {
     }
 
     // ── Risk bucket — same ladder MsixRenderer / BrowserExtRenderer use ──
-    if (score >= 8) f.risk = 'critical';
-    else if (score >= 5) f.risk = 'high';
-    else if (score >= 2) f.risk = 'medium';
-    else f.risk = 'low';
+    if (score >= 8) escalateRisk(f, 'critical');
+    else if (score >= 5) escalateRisk(f, 'high');
+    else if (score >= 2) escalateRisk(f, 'medium');
+    else escalateRisk(f, 'low');
 
     // ── Classic-pivot IOC mirroring from metadata ────────────────────────
     mirrorMetadataIOCs(f, {

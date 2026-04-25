@@ -1002,7 +1002,7 @@ class ZipRenderer {
     // ── ZIP encryption check ─────────────────────────────────────────────────
     if (this._detectEncryption(bytes)) {
       f.externalRefs.push({ type: IOC.PATTERN, url: 'Password-protected archive detected', severity: 'high' });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
 
       // Try to crack password
       const result = await this._tryPasswords(bytes, ZipRenderer.PASSWORD_LIST);
@@ -1120,7 +1120,7 @@ class ZipRenderer {
           note: 'extreme compression ratio',
           bucket: 'externalRefs',
         });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
       }
       if (bombHits.length > MAX_PER_BUCKET) {
         pushIOC(f, { type: IOC.INFO, value: `+${bombHits.length - MAX_PER_BUCKET} more zip-bomb candidate(s) truncated`, severity: 'info', bucket: 'externalRefs' });
@@ -1148,7 +1148,7 @@ class ZipRenderer {
           note: 'UNIX permissions flagged during extraction',
           bucket: 'externalRefs',
         });
-        if (f.risk === 'low') f.risk = 'medium';
+        if (f.risk === 'low') escalateRisk(f, 'medium');
       }
       for (const d of dateHits.slice(0, MAX_PER_BUCKET)) {
         pushIOC(f, {
@@ -1170,15 +1170,15 @@ class ZipRenderer {
     const warnings = this._checkWarnings(entries);
     for (const w of warnings) {
       f.externalRefs.push({ type: IOC.PATTERN, url: w.msg, severity: w.sev });
-      if (w.sev === 'high') f.risk = 'high';
-      else if (w.sev === 'medium' && f.risk !== 'high') f.risk = 'medium';
+      if (w.sev === 'high') escalateRisk(f, 'high');
+      else if (w.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
     }
 
     // Count dangerous files
     const dangerous = entries.filter(e => !e.dir && ZipRenderer.EXEC_EXTS.has((e.path || '').split('.').pop().toLowerCase()));
     if (dangerous.length) {
       f.externalRefs.push({ type: IOC.PATTERN, url: `${dangerous.length} executable/script file(s) inside archive`, severity: 'high' });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
     }
     for (const e of dangerous) {
       f.externalRefs.push({ type: IOC.FILE_PATH, url: e.path, severity: 'high' });

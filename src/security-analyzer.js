@@ -229,7 +229,7 @@ class SecurityAnalyzer {
               type: IOC.URL, url, severity: 'high',
               note: `Hidden in docProps/custom.xml property "${prop.getAttribute('name') || '?'}"`
             });
-            if (f.risk !== 'high') f.risk = 'high';
+            if (f.risk !== 'high') escalateRisk(f, 'high');
           }
           // IP scan
           const ips = val.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
@@ -239,7 +239,7 @@ class SecurityAnalyzer {
                 type: IOC.IP, url: ip, severity: 'medium',
                 note: `In docProps/custom.xml property "${prop.getAttribute('name') || '?'}"`
               });
-              if (f.risk === 'low') f.risk = 'medium';
+              if (f.risk === 'low') escalateRisk(f, 'medium');
             }
           }
           // Base64 blob scan
@@ -250,7 +250,7 @@ class SecurityAnalyzer {
               severity: 'high',
               note: 'Possible encoded payload in docProps/custom.xml'
             });
-            if (f.risk !== 'high') f.risk = 'high';
+            if (f.risk !== 'high') escalateRisk(f, 'high');
           }
         }
       } catch (_) { /* custom.xml parse failure — non-fatal */ }
@@ -281,8 +281,8 @@ class SecurityAnalyzer {
                 url: `Field code: ${df.label} — "${text.slice(0, 120)}"`,
                 severity: df.sev
               });
-              if (df.sev === 'critical') f.risk = 'high';
-              else if (f.risk === 'low') f.risk = 'medium';
+              if (df.sev === 'critical') escalateRisk(f, 'high');
+              else if (f.risk === 'low') escalateRisk(f, 'medium');
             }
           }
           // Extract URLs from field instructions
@@ -291,7 +291,7 @@ class SecurityAnalyzer {
             if (!seen.has('url:' + url)) {
               seen.add('url:' + url);
               f.externalRefs.push({ type: IOC.URL, url, severity: 'high', note: 'URL in field instruction' });
-              if (f.risk !== 'high') f.risk = 'high';
+              if (f.risk !== 'high') escalateRisk(f, 'high');
             }
           }
         }
@@ -307,16 +307,16 @@ class SecurityAnalyzer {
                 url: `Field code: ${df.label} — "${instr.slice(0, 120)}"`,
                 severity: df.sev
               });
-              if (df.sev === 'critical') f.risk = 'high';
-              else if (f.risk === 'low') f.risk = 'medium';
+              if (df.sev === 'critical') escalateRisk(f, 'high');
+              else if (f.risk === 'low') escalateRisk(f, 'medium');
             }
           }
         }
       } catch (_) { /* field-code walk failure — non-fatal */ }
     }
 
-    if (f.hasMacros && f.autoExec.length) f.risk = 'high';
-    else if (f.hasMacros || f.externalRefs.length) if (f.risk === 'low') f.risk = 'medium';
+    if (f.hasMacros && f.autoExec.length) escalateRisk(f, 'high');
+    else if (f.hasMacros || f.externalRefs.length) if (f.risk === 'low') escalateRisk(f, 'medium');
     return f;
   }
 

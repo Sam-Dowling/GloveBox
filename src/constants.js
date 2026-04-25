@@ -329,6 +329,29 @@ function _parseUrlHost(url) {
   } catch (_) { return null; }
 }
 
+// ── Risk-tier escalation ──────────────────────────────────────────────────────
+// Renderers must initialise `findings.risk = 'low'` and only ever escalate
+// from evidence pushed onto `findings.externalRefs` / `interestingStrings`.
+// Pre-stamping a higher tier produces false-positive risk colouring on benign
+// samples — see CONTRIBUTING.md → Risk Tier Calibration. The build script
+// rejects bare `findings.risk = '<tier>'` writes outside this file.
+const _RISK_RANK = Object.freeze({ info: 0, low: 1, medium: 2, high: 3, critical: 4 });
+
+/**
+ * Rank-monotonically lift `findings.risk` to `tier`. Never lowers an existing
+ * higher tier; safe to call repeatedly. The canonical helper for risk
+ * escalation across every renderer.
+ *
+ * @param {object} findings  the `analyzeForSecurity()` findings object
+ * @param {string} tier      'info' | 'low' | 'medium' | 'high' | 'critical'
+ */
+function escalateRisk(findings, tier) {
+  if (!findings || !tier) return;
+  const cur  = _RISK_RANK[findings.risk] || 0;
+  const next = _RISK_RANK[tier] || 0;
+  if (next > cur) findings.risk = tier;
+}
+
 /**
  * Canonical IOC pusher. Every renderer that emits IOCs should route through
  * this helper so:

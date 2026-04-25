@@ -349,7 +349,7 @@ class EmlRenderer {
             url: `Reply-To (${rtAddr}) differs from From (${fromAddr})`,
             severity: 'medium'
           });
-          if (f.risk === 'low') f.risk = 'medium';
+          if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       }
 
@@ -366,7 +366,7 @@ class EmlRenderer {
             url: `Display name impersonates authority role ("${displayName.slice(0, 60)}") but sender is freemail (${fromDomain})`,
             severity: 'high'
           });
-          if (f.risk !== 'high') f.risk = 'high';
+          if (f.risk !== 'high') escalateRisk(f, 'high');
         }
       }
 
@@ -385,7 +385,7 @@ class EmlRenderer {
               url: `Return-Path domain (${rpDomain}) differs from From domain (${fromDomain})`,
               severity: 'medium'
             });
-            if (f.risk === 'low') f.risk = 'medium';
+            if (f.risk === 'low') escalateRisk(f, 'medium');
           }
           // Message-ID domain mismatch
           const msgId = email.messageId || '';
@@ -413,7 +413,7 @@ class EmlRenderer {
               url: `Message claims to be a reply (In-Reply-To/References present) but has only ${receivedCount} Received hop(s) — possible thread hijack`,
               severity: 'medium'
             });
-            if (f.risk === 'low') f.risk = 'medium';
+            if (f.risk === 'low') escalateRisk(f, 'medium');
           }
         }
       }
@@ -453,7 +453,7 @@ class EmlRenderer {
             url: 'Bidirectional text override detected in Subject — possible extension spoofing (T1036.002)',
             severity: 'critical'
           });
-          f.risk = 'high';
+          escalateRisk(f, 'high');
         }
         for (const att of email.attachments) {
           if (att.filename && bidiRE.test(att.filename)) {
@@ -462,7 +462,7 @@ class EmlRenderer {
               url: `Bidirectional text override in attachment filename "${att.filename.slice(0, 80)}" — possible extension spoofing (T1036.002)`,
               severity: 'critical'
             });
-            f.risk = 'high';
+            escalateRisk(f, 'high');
           }
         }
       }
@@ -486,7 +486,7 @@ class EmlRenderer {
             url: att.filename,
             severity: 'high'
           });
-          f.risk = 'high';
+          escalateRisk(f, 'high');
         }
 
         // ── QR-decode image attachments ────────────────────────────────
@@ -536,7 +536,7 @@ class EmlRenderer {
               } else {
                 pushUrl(clean, 'Tracking pixel (1x1 image)', 'medium');
               }
-              if (f.risk === 'low') f.risk = 'medium';
+              if (f.risk === 'low') escalateRisk(f, 'medium');
             }
           }
         }
@@ -564,7 +564,7 @@ class EmlRenderer {
             url: 'SPF/DKIM/DMARC check: ' + email.authResults.substring(0, 200),
             severity: authTripleFail ? 'high' : 'medium'
           });
-          if (f.risk === 'low') f.risk = 'medium';
+          if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       }
 
@@ -574,8 +574,8 @@ class EmlRenderer {
       // combo — every verified-origin check failed and the message still
       // carries a clickable URL.
       const hasBodyUrl = f.externalRefs.some(r => r.type === IOC.URL);
-      if (replyToMismatch && hasBodyUrl && f.risk !== 'high') f.risk = 'high';
-      if (authTripleFail && hasBodyUrl && f.risk !== 'high') f.risk = 'high';
+      if (replyToMismatch && hasBodyUrl && f.risk !== 'high') escalateRisk(f, 'high');
+      if (authTripleFail && hasBodyUrl && f.risk !== 'high') escalateRisk(f, 'high');
 
       // Mirror classic-pivot metadata into the IOC table. Message-ID,
       // Reply-To, From, and To are the header-level pivots every

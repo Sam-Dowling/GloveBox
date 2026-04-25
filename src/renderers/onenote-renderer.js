@@ -203,7 +203,7 @@ class OneNoteRenderer {
         url: `${objects.length} embedded file object(s) in OneNote`,
         severity: 'high'
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
 
       f.metadata.embeddedObjectCount = objects.length;
       const guids = [];

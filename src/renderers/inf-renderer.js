@@ -239,16 +239,16 @@ class InfSctRenderer {
         f.externalRefs.push({ type: IOC.PATTERN, url: w.label, severity: w.sev });
       }
       const highCount = analysis.warnings.filter(w => w.sev === 'high' || w.sev === 'critical').length;
-      if (highCount >= 3) f.risk = 'critical';
+      if (highCount >= 3) escalateRisk(f, 'critical');
 
       // Emit IOCs that the generic scanner won't catch (bare filenames, DIRID paths)
       this._emitInfIocs(f, text, analysis);
     }
 
     // Evidence-based risk calibration — see cross-renderer-sanity-check audit.
-    // (Runs after both SCT and INF branches. If the INF branch already bumped
-    // to 'critical', this block won't lower it thanks to the rank check.)
-    const rank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+    // (Runs after both SCT and INF branches. escalateRisk() is rank-monotonic
+    // so if the INF branch already bumped to 'critical' this block won't
+    // lower it.)
     const highs = f.externalRefs.filter(r => r.severity === 'high').length;
     const hasCrit = f.externalRefs.some(r => r.severity === 'critical');
     const hasMed = f.externalRefs.some(r => r.severity === 'medium');
@@ -257,7 +257,7 @@ class InfSctRenderer {
     else if (highs >= 2) tier = 'high';
     else if (highs >= 1) tier = 'medium';
     else if (hasMed) tier = 'low';
-    if ((rank[tier] || 0) > (rank[f.risk] || 0)) f.risk = tier;
+    escalateRisk(f, tier);
 
     return f;
   }

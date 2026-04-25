@@ -2399,13 +2399,13 @@ class ElfRenderer {
       // ── Risk assessment ────────────────────────────────────────────
       findings.autoExec = issues;
 
-      if (riskScore >= 8) findings.risk = 'critical';
-      else if (riskScore >= 5) findings.risk = 'high';
-      else if (riskScore >= 2) findings.risk = 'medium';
-      else findings.risk = 'low';
+      if (riskScore >= 8) escalateRisk(findings, 'critical');
+      else if (riskScore >= 5) escalateRisk(findings, 'high');
+      else if (riskScore >= 2) escalateRisk(findings, 'medium');
+      else escalateRisk(findings, 'low');
 
     } catch (e) {
-      findings.risk = 'medium';
+      escalateRisk(findings, 'medium');
       findings.autoExec = ['ELF parsing partially failed: ' + e.message];
     }
 

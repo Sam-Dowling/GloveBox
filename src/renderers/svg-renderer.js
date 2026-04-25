@@ -321,10 +321,7 @@ class SvgRenderer {
     let qrImagesScanned = 0;
     const qrPromises = [];
 
-    const setRisk = (level) => {
-      const levels = { low: 0, medium: 1, high: 2, critical: 3 };
-      if (levels[level] > levels[findingsRef.risk]) findingsRef.risk = level;
-    };
+    const setRisk = (level) => escalateRisk(findingsRef, level);
 
 
     // Parse SVG as XML

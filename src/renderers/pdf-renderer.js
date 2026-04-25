@@ -99,7 +99,7 @@ class PdfRenderer {
       if (uri && !uriSeen.has(uri)) {
         uriSeen.add(uri);
         f.externalRefs.push({ type: IOC.URL, url: uri, severity: 'medium', note: '/URI action' });
-        if (f.risk === 'low') f.risk = 'medium';
+        if (f.risk === 'low') escalateRisk(f, 'medium');
       }
     }
     // URIs — hex-escaped
@@ -110,7 +110,7 @@ class PdfRenderer {
         if (decoded && !uriSeen.has(decoded)) {
           uriSeen.add(decoded);
           f.externalRefs.push({ type: IOC.URL, url: decoded, severity: 'medium', note: '/URI action' });
-          if (f.risk === 'low') f.risk = 'medium';
+          if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       } catch (_) { /* skip malformed */ }
     }
@@ -123,7 +123,7 @@ class PdfRenderer {
           type: IOC.COMMAND_LINE, url: target, severity: 'high',
           note: '/Launch action target (executes local file)'
         });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
       }
     }
     // /Launch with embedded Win dict
@@ -134,7 +134,7 @@ class PdfRenderer {
           type: IOC.COMMAND_LINE, url: target, severity: 'high',
           note: '/Launch /Win target'
         });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
       }
     }
 
@@ -148,7 +148,7 @@ class PdfRenderer {
           url: target, severity: 'high',
           note: '/GoToR remote jump'
         });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
       }
     }
 
@@ -159,7 +159,7 @@ class PdfRenderer {
         type: IOC.PATTERN, url: `${goToECount} /GoToE action(s)`,
         severity: 'high', note: '/GoToE jumps into an embedded PDF (malware staging)'
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
     }
 
     // ── /SubmitForm and /ImportData ───────────────────────────────────────
@@ -169,7 +169,7 @@ class PdfRenderer {
         type: IOC.PATTERN, url: `${submitCount} /SubmitForm action(s)`,
         severity: 'medium', note: 'Form submission exfil vector'
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
     const importCount = (raw.match(/\/S\s*\/ImportData\b/g) || []).length;
     if (importCount) {
@@ -177,7 +177,7 @@ class PdfRenderer {
         type: IOC.PATTERN, url: `${importCount} /ImportData action(s)`,
         severity: 'medium', note: 'Imports FDF/XFDF at open'
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // ── JavaScript: count distinctly, then extract bodies ─────────────────
@@ -195,7 +195,7 @@ class PdfRenderer {
         type: IOC.PATTERN, url: `${jsCount} /JS or /JavaScript object(s)`,
         severity: 'high', note: 'PDF JavaScript — used by exploits and phishing'
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
     }
 
     // ── /OpenAction / /AA (additional actions) presence ───────────────────
@@ -204,7 +204,7 @@ class PdfRenderer {
         type: IOC.PATTERN, url: '/OpenAction present',
         severity: 'medium', note: 'Action runs automatically on open'
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
     const aaCount = (raw.match(/\/AA\b/g) || []).length;
     if (aaCount) {
@@ -212,7 +212,7 @@ class PdfRenderer {
         type: IOC.PATTERN, url: `/AA additional-actions (${aaCount})`,
         severity: 'medium', note: 'Trigger on page/field events'
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // ── Embedded files (/EmbeddedFile streams, names only at this stage) ──
@@ -230,8 +230,8 @@ class PdfRenderer {
           severity: isDanger ? 'high' : 'medium',
           note: `/EmbeddedFile — ${e.mime || 'unknown MIME'}${e.size ? ', ' + this._fmtBytes(e.size) : ''}`
         });
-        if (isDanger) f.risk = 'high';
-        else if (f.risk === 'low') f.risk = 'medium';
+        if (isDanger) escalateRisk(f, 'high');
+        else if (f.risk === 'low') escalateRisk(f, 'medium');
       }
     }
 
@@ -245,8 +245,8 @@ class PdfRenderer {
         severity: xfa.dynamic ? 'high' : 'medium',
         note: 'XFA has been used for CVE-2018-4990-style exploitation'
       });
-      if (xfa.dynamic) f.risk = 'high';
-      else if (f.risk === 'low') f.risk = 'medium';
+      if (xfa.dynamic) escalateRisk(f, 'high');
+      else if (f.risk === 'low') escalateRisk(f, 'medium');
       f.metadata.xfa = xfa.dynamic ? 'dynamic' : 'static';
       // Retain XFA XML bodies for downstream extraction/download
       if (xfa.packets && xfa.packets.length) f.metadata.xfaPackets = xfa.packets;
@@ -256,14 +256,14 @@ class PdfRenderer {
         if (!uriSeen.has(url)) {
           uriSeen.add(url);
           f.externalRefs.push({ type: IOC.URL, url, severity: 'medium', note: 'XFA form URL' });
-          if (f.risk === 'low') f.risk = 'medium';
+          if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       }
       for (const note2 of xfa.scriptHints) {
         f.externalRefs.push({
           type: IOC.PATTERN, url: note2, severity: 'high', note: 'XFA suspicious script'
         });
-        f.risk = 'high';
+        escalateRisk(f, 'high');
       }
     }
 
@@ -274,7 +274,7 @@ class PdfRenderer {
         type: IOC.PATTERN, url: 'Encrypted PDF',
         severity: 'medium', note: 'Content may be obfuscated from static scanners'
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // ── T2.12: JBIG2 / CCITTFax filter chain flagging ──────────────────
@@ -286,7 +286,7 @@ class PdfRenderer {
         severity: 'medium',
         note: 'CVE-2021-30860 and related pdfium vulnerabilities use JBIG2'
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
     const ccittCount = (raw.match(/\/CCITTFaxDecode\b/g) || []).length;
     if (ccittCount) {
@@ -296,7 +296,7 @@ class PdfRenderer {
         severity: 'medium',
         note: 'CCITTFax combined with other filters has been used in PDF exploits'
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // ── T3.10: Object stream density abuse ──────────────────────────────
@@ -308,7 +308,7 @@ class PdfRenderer {
         severity: 'medium',
         note: 'Object streams compress multiple objects into single streams, making static analysis harder'
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // ── XMP metadata ──────────────────────────────────────────────────────
@@ -405,7 +405,7 @@ class PdfRenderer {
               note: '/OpenAction auto-navigates on document open',
               bucket: 'externalRefs',
             });
-            f.risk = 'high';
+            escalateRisk(f, 'high');
           } else if (oa.action && typeof oa.action === 'string' && oa.action !== 'JavaScript') {
             pushIOC(f, {
               type: IOC.PATTERN,
@@ -414,7 +414,7 @@ class PdfRenderer {
               note: 'non-JavaScript action fires on document open',
               bucket: 'externalRefs',
             });
-            if (f.risk === 'low') f.risk = 'medium';
+            if (f.risk === 'low') escalateRisk(f, 'medium');
           }
         }
       } catch (_) { /* no /OpenAction */ }
@@ -474,8 +474,8 @@ class PdfRenderer {
                 severity: isDanger ? 'high' : 'medium',
                 note: `/EmbeddedFile (via pdf.js)${entry.size ? ' — ' + this._fmtBytes(entry.size) : ''}`
               });
-              if (isDanger) f.risk = 'high';
-              else if (f.risk === 'low') f.risk = 'medium';
+              if (isDanger) escalateRisk(f, 'high');
+              else if (f.risk === 'low') escalateRisk(f, 'medium');
             }
           }
         }
@@ -522,7 +522,7 @@ class PdfRenderer {
                   type: IOC.URL, url: val, severity: 'medium',
                   note: `Annotation /URI (page ${p})`
                 });
-                if (f.risk === 'low') f.risk = 'medium';
+                if (f.risk === 'low') escalateRisk(f, 'medium');
               }
             }
             // Annotation actions (pdf.js exposes .action for Launch/Named etc.)
@@ -556,7 +556,7 @@ class PdfRenderer {
                   note: 'inline rich-media annotation (historical exploit surface)',
                   bucket: 'externalRefs',
                 });
-                f.risk = 'high';
+                escalateRisk(f, 'high');
               } else if (MEDIUM.has(sub)) {
                 pushIOC(f, {
                   type: IOC.PATTERN,
@@ -565,7 +565,7 @@ class PdfRenderer {
                   note: sub === 'FileAttachment' ? 'clickable embedded file' : 'inline media annotation',
                   bucket: 'externalRefs',
                 });
-                if (f.risk === 'low') f.risk = 'medium';
+                if (f.risk === 'low') escalateRisk(f, 'medium');
               }
             }
             // ─── AcroForm field fingerprints ────────────────────────────
@@ -583,7 +583,7 @@ class PdfRenderer {
                   note: `field on page ${p}`,
                   bucket: 'externalRefs',
                 });
-                if (f.risk === 'low') f.risk = 'medium';
+                if (f.risk === 'low') escalateRisk(f, 'medium');
               }
             }
 
@@ -840,7 +840,7 @@ class PdfRenderer {
     if (!final.length) return;
     f.metadata.pdfJavaScripts = final;
     // Any extracted JS implies high risk (same policy as XFA dynamic scripts).
-    f.risk = 'high';
+    escalateRisk(f, 'high');
     // Surface each script as a finding with a short preview so the IOC /
     // detections table reflects the extracted payload, not just a count.
     for (const s of final) {

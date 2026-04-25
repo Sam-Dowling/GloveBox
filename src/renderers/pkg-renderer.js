@@ -183,7 +183,7 @@ class PkgRenderer {
         url: `${modern.length} install script(s): ${modern.map(s => s.path.split('/').pop()).join(', ')}`,
         severity: 'high'
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
     }
     if (legacy.length) {
       f.externalRefs.push({
@@ -191,7 +191,7 @@ class PkgRenderer {
         url: `${legacy.length} legacy install script(s) (pre-PackageMaker delivery path): ${legacy.map(s => s.name).join(', ')}`,
         severity: 'medium'
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
     for (const s of scripts) {
       f.externalRefs.push({ type: IOC.FILE_PATH, url: s.path, severity: 'high' });
@@ -206,7 +206,7 @@ class PkgRenderer {
         url: 'Installer package is unsigned — cannot verify publisher',
         severity: 'medium'
       });
-      if (f.risk === 'low') f.risk = 'medium';
+      if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // Root auth + scripts = macOS malware's signature combo
@@ -216,7 +216,7 @@ class PkgRenderer {
         url: 'Scripts run as root (auth="Root") — elevated malware execution path',
         severity: 'high'
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
     }
 
     // LaunchDaemon / LaunchAgent payload drop — macOS persistence path
@@ -229,7 +229,7 @@ class PkgRenderer {
         url: `${launchPaths.length} LaunchDaemon/LaunchAgent plist(s) installed — macOS persistence mechanism`,
         severity: 'high'
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
       for (const lp of launchPaths.slice(0, 20)) {
         f.externalRefs.push({ type: IOC.FILE_PATH, url: lp.path, severity: 'high' });
       }
@@ -249,7 +249,7 @@ class PkgRenderer {
             url: `Install script "${s.name}" uses curl|bash / wget|sh download-and-execute`,
             severity: 'high'
           });
-          f.risk = 'high';
+          escalateRisk(f, 'high');
         }
         const urls = body.match(/https?:\/\/[^\s"'<>`]+/g) || [];
         for (const u of urls.slice(0, 20)) {

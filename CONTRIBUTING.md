@@ -417,11 +417,19 @@ subtly misbehave.
   bare strings like `type: 'url'`, `type: 'ip'`, `type: 'domain'`. The
   sidebar filters by exact type string; a bare string silently breaks
   filtering, sidebar grouping, STIX / MISP export mapping, and the
-  `ioc-conformity-audit` skill.
-- **Renderer `findings.risk` starts `'low'`.** Only escalate from evidence
-  pushed onto `externalRefs`. Pre-stamping `'high'` or `'medium'` produces
-  false-positive risk colouring on benign samples. See the **Risk Tier
-  Calibration** subsection for the canonical escalation tail.
+  `ioc-conformity-audit` skill. Enforced by a build-time grep gate in
+  `scripts/build.py` (paired with the risk-pre-stamp gate from B1) — any
+  line containing both `type: '<bare>'` and `severity:` outside
+  `src/constants.js` fails the build.
+- **Renderer `findings.risk` starts `'low'`.** Only escalate via
+  `escalateRisk(findings, tier)` from `src/constants.js`, which applies
+  the rank-monotonic ladder so later evidence only ever lifts the tier.
+  Direct `f.risk = 'high'` writes are rejected by a build-time grep gate
+  in `scripts/build.py` (allow-listed only for `src/constants.js`, where
+  the helper lives). Pre-stamping produces false-positive risk colouring
+  on benign samples. See the **Risk Tier Calibration** subsection for
+  the canonical escalation tail.
+
 - **Prefer `pushIOC()` over hand-rolling `interestingStrings.push(...)`.**
   `pushIOC` pins the on-wire shape and auto-emits a sibling `IOC.DOMAIN`
   when `tldts` resolves the URL to a registrable domain. If you already
@@ -1422,13 +1430,15 @@ of rules 4, 5, and the table that follows this preamble respectively.
    grep gate; until then, normalise inline (`text.replace(/\r\n?/g, '\n')`).
 
 4. **Never pre-stamp `findings.risk`.** Initialise `f.risk = 'low'` and
-   only escalate from evidence pushed onto `f.externalRefs` /
-   `f.interestingStrings`, using the rank-monotonic ladder spelled out in
-   [Risk Tier Calibration](#risk-tier-calibration). Pre-stamping
-   `'medium'` / `'high'` / `'critical'` produces false-positive risk
+   only escalate via `escalateRisk(findings, tier)` from
+   [`src/constants.js`](src/constants.js), which applies the rank-monotonic
+   ladder spelled out in [Risk Tier Calibration](#risk-tier-calibration).
+   Direct writes (`f.risk = 'high'`) are rejected by a build-time grep
+   gate in `scripts/build.py` (allow-listed only for `src/constants.js`,
+   where the helper lives) — pre-stamping produces false-positive risk
    colouring on benign samples and is the single most-flagged
-   `.clinerules` violation in code review. PLAN Track B1 will land an
-   `escalateRisk()` helper plus a build-time grep gate.
+   `.clinerules` violation in code review.
+
 
 5. **IOC `type` values must be `IOC.*` constants.** Bare strings
    (`type: 'url'`) silently break sidebar filtering — the read-side
@@ -1439,8 +1449,10 @@ of rules 4, 5, and the table that follows this preamble respectively.
    punycode/IDN homoglyph patterns) come along for free. The full
    per-field rules are in [IOC Push Checklist](#ioc-push-checklist);
    the helpers themselves in [IOC Push Helpers](#ioc-push-helpers).
-   PLAN Track B2 will land a build-time grep gate that fails on any
-   bare-string IOC type at an IOC push site.
+   Enforced by a build-time grep gate in `scripts/build.py` (paired
+   with the risk-pre-stamp gate from Track B1) — any line containing
+   both `type: '<bare>'` and `severity:` outside `src/constants.js`
+   fails the build.
 
 ### Click-to-highlight hooks
 
@@ -1479,13 +1491,20 @@ embedded PE is `'high'`.
    else if (highs >= 1)   f.risk = 'medium';
    else if (hasMed)       f.risk = 'low';
    ```
-3. **Never silently downgrade.** If your renderer already has a hand-rolled
-   escalation path, gate the calibration block with a monotonic rank check
-   so later evidence only ever lifts the tier:
+3. **Never silently downgrade — use `escalateRisk()`.** The canonical
+   helper in [`src/constants.js`](src/constants.js) applies the
+   rank-monotonic ladder
+   `{ info: 0, low: 1, medium: 2, high: 3, critical: 4 }` and is the
+   only path the build gate (see `scripts/build.py`) allows for writing
+   `findings.risk`:
    ```js
-   const rank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
-   if ((rank[tier] || 0) > (rank[f.risk] || 0)) f.risk = tier;
+   escalateRisk(f, tier);   // never lowers; safe to call repeatedly
    ```
+   The legacy hand-rolled rank-table pattern (`if ((rank[tier] || 0) >
+   (rank[f.risk] || 0)) f.risk = tier`) is equivalent in semantics but
+   is rejected by the build gate — every renderer now funnels through
+   `escalateRisk()`.
+
 4. **Detections must be mirrored first.** The calibration block only works
    if every `Detection` has already been pushed into `externalRefs` as an
    `IOC.PATTERN` (see item 5 in the IOC Push Checklist below). Otherwise a
@@ -1529,7 +1548,11 @@ Every IOC the renderer emits — whether onto `findings.externalRefs` or `findin
    `IOC.UNC_PATH`, `IOC.ATTACHMENT`, `IOC.YARA`, `IOC.PATTERN`, `IOC.INFO`,
    `IOC.HASH`, `IOC.COMMAND_LINE`, `IOC.PROCESS`, `IOC.HOSTNAME`,
    `IOC.USERNAME`, `IOC.REGISTRY_KEY`, `IOC.MAC`, `IOC.DOMAIN`, `IOC.GUID`,
-   `IOC.FINGERPRINT`.
+   `IOC.FINGERPRINT`. Enforced by a build-time grep gate in
+   `scripts/build.py` — any line containing both `type: '<bare>'` and
+   `severity:` outside `src/constants.js` fails the build, so a copy-pasted
+   `type: 'url'` is caught at `python make.py` time rather than silently
+   dropping out of the sidebar IOC filter.
 2. **Severity comes from `IOC_CANONICAL_SEVERITY`** (also in
    `src/constants.js`) unless you have a renderer-specific reason to
    escalate. Escalations must be *up* from the canonical floor, not

@@ -63,7 +63,6 @@ class EvtxRenderer {
         if (found.has(eid)) eidCounts[eid] = (eidCounts[eid] || 0) + 1;
       }
 
-      const riskRank = { low: 0, medium: 1, high: 2, critical: 3 };
       // Sysmon events (low EIDs 1-29) should only match when provider is Sysmon
       const sysmonEids = new Set([1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
 
@@ -81,12 +80,10 @@ class EvtxRenderer {
         const countSuffix = count > 1 ? ` (${count} events)` : '';
         f.externalRefs.push({ type: IOC.PATTERN, url: desc + countSuffix, severity, eventId: eid, count });
 
-        if (riskEsc && (riskRank[riskEsc] || 0) > (riskRank[f.risk] || 0)) {
-          f.risk = riskEsc;
-        }
+        if (riskEsc) escalateRisk(f, riskEsc);
       }
 
-      if (f.risk === 'low' && f.externalRefs.length > 0) f.risk = 'medium';
+      if (f.risk === 'low' && f.externalRefs.length > 0) escalateRisk(f, 'medium');
 
       // ── Extract IOCs from event data fields ─────────────────────────
       this._extractEvtxIOCs(events, f);

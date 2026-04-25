@@ -180,7 +180,7 @@ class PptxRenderer {
       const zip = await JSZip.loadAsync(buffer);
       const vba = zip.file('ppt/vbaProject.bin');
       if (vba || ['pptm', 'potm', 'ppam'].includes(ext)) {
-        f.hasMacros = true; f.risk = 'medium';
+        f.hasMacros = true; escalateRisk(f, 'medium');
         if (vba) {
           const d = await vba.async('uint8array');
           f.macroSize = d.length;
@@ -189,7 +189,7 @@ class PptxRenderer {
           for (const m of f.modules) {
             if (!m.source) continue;
             const pats = autoExecPatterns(m.source);
-            if (pats.length) { f.autoExec.push({ module: m.name, patterns: pats }); f.risk = 'high'; }
+            if (pats.length) { f.autoExec.push({ module: m.name, patterns: pats }); escalateRisk(f, 'high'); }
           }
         }
       }
@@ -204,8 +204,8 @@ class PptxRenderer {
       const relRefs = await OoxmlRelScanner.scan(zip);
       for (const r of relRefs) {
         f.externalRefs.push(r);
-        if (r.severity === 'high') f.risk = 'high';
-        else if (r.severity === 'medium' && f.risk === 'low') f.risk = 'medium';
+        if (r.severity === 'high') escalateRisk(f, 'high');
+        else if (r.severity === 'medium' && f.risk === 'low') escalateRisk(f, 'medium');
       }
 
     } catch (e) { }

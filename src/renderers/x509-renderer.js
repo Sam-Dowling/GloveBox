@@ -1400,7 +1400,7 @@ class X509Renderer {
       else findings.riskLevel = 'low';
 
       // Normalize to standard findings format for sidebar/copy compatibility
-      findings.risk = findings.riskLevel;
+      escalateRisk(findings, findings.riskLevel);
       findings.metadata = {};
       for (const fs of findings.formatSpecific) findings.metadata[fs.label] = fs.value;
       findings.externalRefs = findings.detections.map(d => ({
@@ -1430,7 +1430,7 @@ class X509Renderer {
 
     } catch (e) {
       findings.summary = `Analysis error: ${e.message}`;
-      findings.risk = findings.riskLevel;
+      escalateRisk(findings, findings.riskLevel);
       findings.metadata = {};
       findings.externalRefs = [];
     }

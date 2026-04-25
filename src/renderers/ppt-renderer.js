@@ -85,14 +85,14 @@ class PptBinaryRenderer {
       const vbaDir = cfb.streams.get('_vba_project_cur/vba/dir') || cfb.streams.get('vba/dir');
       const vbaProj = cfb.streams.get('_vba_project_cur/vbaproject.bin') || cfb.streams.get('vba/vbaproject.bin');
       if (vbaDir || vbaProj) {
-        f.hasMacros = true; f.risk = 'medium';
+        f.hasMacros = true; escalateRisk(f, 'medium');
       }
 
       // Try to extract VBA modules
       for (const [name, data] of cfb.streams.entries()) {
         if (/vba/i.test(name) && !name.endsWith('/')) {
           f.macroSize += data.length;
-          if (!f.hasMacros) { f.hasMacros = true; f.risk = 'medium'; }
+          if (!f.hasMacros) { f.hasMacros = true; escalateRisk(f, 'medium'); }
         }
       }
 

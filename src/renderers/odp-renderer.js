@@ -73,14 +73,14 @@ class OdpRenderer {
       const macroEntries = [];
       zip.forEach((path) => { if (path.startsWith('Basic/') && !path.endsWith('/')) macroEntries.push(path); });
       if (macroEntries.length) {
-        f.hasMacros = true; f.risk = 'medium';
+        f.hasMacros = true; escalateRisk(f, 'medium');
         for (const path of macroEntries) {
           try {
             const src = await zip.file(path).async('string');
             f.modules.push({ name: path.replace('Basic/', ''), source: src });
             f.macroSize += src.length;
             const pats = autoExecPatterns(src);
-            if (pats.length) { f.autoExec.push({ module: path, patterns: pats }); f.risk = 'high'; }
+            if (pats.length) { f.autoExec.push({ module: path, patterns: pats }); escalateRisk(f, 'high'); }
           } catch (e) { }
         }
       }

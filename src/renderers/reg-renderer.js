@@ -165,7 +165,6 @@ class RegRenderer {
 
     // Evidence-based risk calibration — see cross-renderer-sanity-check audit.
     // Keep the "3+ high warnings → critical" semantics via the rank check.
-    const rank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
     const highCount = analysis.warnings.filter(w => w.sev === 'high' || w.sev === 'critical').length;
     const highs = f.externalRefs.filter(r => r.severity === 'high').length;
     const hasCrit = f.externalRefs.some(r => r.severity === 'critical');
@@ -175,7 +174,7 @@ class RegRenderer {
     else if (highs >= 2) tier = 'high';
     else if (highs >= 1) tier = 'medium';
     else if (hasMed) tier = 'low';
-    if ((rank[tier] || 0) > (rank[f.risk] || 0)) f.risk = tier;
+    escalateRisk(f, tier);
 
     return f;
   }

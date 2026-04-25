@@ -1239,14 +1239,14 @@ class PlistRenderer {
     }
 
     // ── Risk assessment ──────────────────────────────────────────────────
-    if (criticalCount >= 1) findings.risk = 'critical';
-    else if (highCount >= 2 || (highCount >= 1 && mediumCount >= 2)) findings.risk = 'high';
-    else if (highCount >= 1 || mediumCount >= 3) findings.risk = 'medium';
-    else if (mediumCount >= 1 || findings.signatureMatches.length > 0) findings.risk = 'low';
+    if (criticalCount >= 1) escalateRisk(findings, 'critical');
+    else if (highCount >= 2 || (highCount >= 1 && mediumCount >= 2)) escalateRisk(findings, 'high');
+    else if (highCount >= 1 || mediumCount >= 3) escalateRisk(findings, 'medium');
+    else if (mediumCount >= 1 || findings.signatureMatches.length > 0) escalateRisk(findings, 'low');
 
     // Boost risk for LaunchDaemon (runs as root)
     if (classification.type === 'launchdaemon' && findings.risk === 'medium') {
-      findings.risk = 'high';
+      escalateRisk(findings, 'high');
     }
 
     // ── Augmented buffer for YARA scanning ───────────────────────────────

@@ -954,7 +954,7 @@ class SevenZRenderer {
         severity: 'high',
         bucket: 'externalRefs',
       });
-      f.risk = 'high';
+      escalateRisk(f, 'high');
     }
 
     if (parsed.encodedHeader) {
@@ -974,8 +974,8 @@ class SevenZRenderer {
     const warnings = this._checkWarnings(parsed);
     for (const w of warnings) {
       f.externalRefs.push({ type: IOC.PATTERN, url: w.msg, severity: w.sev });
-      if (w.sev === 'high') f.risk = 'high';
-      else if (w.sev === 'medium' && f.risk !== 'high') f.risk = 'medium';
+      if (w.sev === 'high') escalateRisk(f, 'high');
+      else if (w.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
     }
 
     // Surface executable/script paths (only available when listing succeeded)

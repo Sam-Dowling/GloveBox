@@ -260,8 +260,8 @@ class MsgRenderer {
       const msg = this._extract(cfb);
       f.metadata = { title: msg.subject, creator: msg.from, created: msg.date };
       for (const a of msg.attachments) {
-        if (/\.(exe|bat|cmd|vbs|js|ps1|hta|scr|msi|dll|com|jar)$/i.test(a.name)) { f.risk = 'high'; f.externalRefs.push({ type: IOC.ATTACHMENT, url: a.name, severity: 'high' }); }
-        else if (/\.(doc[mx]?|xls[mx]?|ppt[mx]?|doc|xls|ppt)$/i.test(a.name)) { if (f.risk === 'low') f.risk = 'medium'; f.externalRefs.push({ type: IOC.ATTACHMENT, url: a.name, severity: 'medium' }); }
+        if (/\.(exe|bat|cmd|vbs|js|ps1|hta|scr|msi|dll|com|jar)$/i.test(a.name)) { escalateRisk(f, 'high'); f.externalRefs.push({ type: IOC.ATTACHMENT, url: a.name, severity: 'high' }); }
+        else if (/\.(doc[mx]?|xls[mx]?|ppt[mx]?|doc|xls|ppt)$/i.test(a.name)) { if (f.risk === 'low') escalateRisk(f, 'medium'); f.externalRefs.push({ type: IOC.ATTACHMENT, url: a.name, severity: 'medium' }); }
       }
       if (msg.bodyHtml) {
         // Extract body URLs with a hard cap; emit _highlightText so the
@@ -343,12 +343,12 @@ class MsgRenderer {
         }
         // A decoded SafeLink in the body is a phishing-worthy signal on
         // its own — escalate risk past the baseline.
-        if (sawUnwrap && f.risk === 'low') f.risk = 'medium';
+        if (sawUnwrap && f.risk === 'low') escalateRisk(f, 'medium');
         if (/width=.{0,5}[01].{0,5}height=.{0,5}[01]/i.test(msg.bodyHtml))
           f.externalRefs.push({ type: IOC.PATTERN, url: '1x1 or 0x0 image detected', severity: 'medium' });
       }
 
-      if (f.externalRefs.some(r => r.severity !== 'info') && f.risk === 'low') f.risk = 'medium';
+      if (f.externalRefs.some(r => r.severity !== 'info') && f.risk === 'low') escalateRisk(f, 'medium');
 
       // Mirror classic-pivot metadata into the IOC table. For .msg the
       // `creator` field stores the From address — treat it as an email
