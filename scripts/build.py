@@ -59,6 +59,10 @@ highlight_js = read('vendor/highlight.min.js')
 utif_js      = read('vendor/utif.min.js')
 exifr_js     = read('vendor/exifr.min.js')
 tldts_js     = read('vendor/tldts.min.js')
+# Strip the sourceMappingURL comment — the map file doesn't exist inside the
+# single-file build, so the browser would 404 and log a console error.
+import re as _re
+tldts_js = _re.sub(r'\n?//[#@]\s*sourceMappingURL=\S+', '', tldts_js)
 pako_js      = read('vendor/pako.min.js')
 lzma_js      = read('vendor/lzma-d-min.js')
 jsqr_js      = read('vendor/jsqr.min.js')
@@ -398,7 +402,7 @@ HTML = f"""<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; frame-src blob:; worker-src blob:; form-action 'none'; base-uri 'none'; frame-ancestors 'none'; object-src 'none';">
+        content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; frame-src blob:; worker-src blob:; form-action 'none'; base-uri 'none'; object-src 'none';">
   <meta name="description" content="Loupe — a 100% offline, single-file security analyser for suspicious files. No server, no uploads, no tracking.">
   <title>Loupe</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🕵🏻</text></svg>">
