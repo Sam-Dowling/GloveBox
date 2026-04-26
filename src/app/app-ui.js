@@ -744,9 +744,13 @@ extendApp({
     this._yaraHighlightActiveView = null;
     this._iocCsvHighlightActiveView = null;
 
-    // Clear navigation stack and hide breadcrumbs
-    this._navStack = [];
-    if (this._renderBreadcrumbs) this._renderBreadcrumbs();
+    // Clear navigation stack and hide breadcrumbs. Routes through the
+    // single-owner reset (`_resetNavStack` in app-core.js, H6) so the
+    // breadcrumb repaint is centralised — we just need to ensure the
+    // post-clear repaint still picks up the now-null `_fileMeta` (the
+    // helper repaints internally; this duplicate call is the
+    // belt-and-braces no-op for any future helper short-circuit).
+    this._resetNavStack();
 
     // Remove pan cursor
     document.getElementById('viewer').classList.remove('pannable');

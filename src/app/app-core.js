@@ -44,6 +44,14 @@ class App {
     // no longer matches. See PLAN.md C1 + the "Render-epoch fence" block in
     // src/render-route.js.
     this._renderEpoch = 0;
+    // ── Drill-down navigation stack (single-owner, H6) ──────────────────
+    // Always an Array — initialised here so every read site can rely on
+    // the invariant without a `!this._navStack` guard. Mutated by the
+    // drill-down helpers in `app-load.js` (push) / `_navJumpTo` (pop)
+    // and cleared via `_resetNavStack()` (this file). Never overwritten
+    // with a fresh `[]` literal — clears go through `_resetNavStack` so
+    // breadcrumb repaint stays in lockstep.
+    this._navStack = [];
   }
 
   init() {
@@ -232,8 +240,10 @@ class App {
     fi.addEventListener('change', e => {
       const f = e.target.files[0];
       if (f) {
-        // Clear nav stack for fresh file loads (not drill-down into archives)
-        this._navStack = [];
+        // Clear nav stack for fresh file loads (not drill-down into archives).
+        // Routes through the single-owner reset so the breadcrumb trail
+        // is repainted in lockstep — see `_resetNavStack` (H6).
+        this._resetNavStack();
         this._loadFile(f);
       }
       fi.value = '';
@@ -662,8 +672,41 @@ class App {
   _handleFiles(files) {
     if (!files || !files.length) return;
     // Clear nav stack for fresh file loads (not drill-down into archives)
-    this._navStack = [];
+    this._resetNavStack();
     this._loadFile(files[0]);
+  }
+
+  // ── Single-owner nav-stack reset (H6) ───────────────────────────────
+  //
+  // Canonical entry point for clearing the drill-down navigation stack.
+  // Every "fresh load" surface (file picker, drag/drop, paste,
+  // `_handleFiles`, `_clearFile`) routes through here instead of writing
+  // `this._navStack = []` directly. Centralising the reset means:
+  //
+  //   * `_navStack` always exists as an Array — no later guard like
+  //     `if (!this._navStack) this._navStack = []` is necessary;
+  //   * the breadcrumb trail is repainted in lockstep with the clear,
+  //     so we cannot end up with a stale crumb pointing at a frame that
+  //     no longer has a backing entry on the stack;
+  //   * any future per-frame teardown (release detached DOM, drop
+  //     scrollSnapshot Maps, abort frame-scoped Workers) lands in one
+  //     place rather than four.
+  //
+  // Drill-down loads must NOT call this helper — they push the current
+  // frame via `_pushNavState` in `app-load.js` and rely on the stack
+  // surviving the subsequent `_loadFile` call.
+  _resetNavStack() {
+    // Defensive — always restore the invariant even if some code path
+    // nulled the stack out from under us.
+    if (!Array.isArray(this._navStack)) this._navStack = [];
+    if (this._navStack.length) this._navStack.length = 0;
+    // Repaint breadcrumbs so the trail can't visually outlive the
+    // frames it was describing. `_renderBreadcrumbs` is mixed in by
+    // `app-load.js` — guard for the (unlikely) case it loaded out of
+    // order.
+    if (typeof this._renderBreadcrumbs === 'function') {
+      try { this._renderBreadcrumbs(); } catch (_) { /* cosmetic */ }
+    }
   }
 
 }

@@ -1261,8 +1261,11 @@ extendApp({
   // mismatch), we fall back to re-rendering from the stored buffer via the
   // per-format helpers below.
   _pushNavState(parentName) {
-    if (!this._navStack) this._navStack = [];
-    // Enforce nesting depth limit to prevent recursive archive bombs
+    // `_navStack` is always present — initialised in the App constructor
+    // (`app-core.js`) and only reset via `_resetNavStack()`. The historic
+    // lazy `if (!this._navStack) this._navStack = []` was removed in H6;
+    // any path that lost the array now fails loudly here instead of
+    // silently re-creating it (which would orphan in-flight frames).
     if (this._navStack.length >= PARSER_LIMITS.MAX_DEPTH) {
       console.warn(`Nesting depth limit reached (${PARSER_LIMITS.MAX_DEPTH}) — refusing to open inner file`);
       const toast = document.getElementById('toast');
