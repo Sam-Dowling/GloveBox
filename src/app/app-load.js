@@ -69,6 +69,33 @@ function _refangString(str) {
 // ════════════════════════════════════════════════════════════════════════════
 extendApp({
 
+  // ── Single chokepoint for `currentResult` writes + epoch bump ──────────
+  //
+  // Every code path that swaps the App's render result (a fresh load, a
+  // back-navigation, a file close) must go through this helper so the
+  // `_renderEpoch` counter advances atomically with the slot it fences.
+  // The previous file's still-running renderer captured the *old* epoch
+  // when its `RenderRoute.run` invocation started; the moment we bump the
+  // counter here, the supersession guard at the end of `run()` flips its
+  // "do my writes still belong to the live UI" check from yes to no, and
+  // the old work returns a `_superseded` sentinel instead of clobbering
+  // the freshly-installed `currentResult` / `findings`.
+  //
+  // The only other write site is `RenderRoute._orphanInFlight` — it
+  // swaps in a fresh skeleton on a watchdog timeout / size-cap / thrown
+  // error inside the *same* `run()` invocation and explicitly does NOT
+  // bump the epoch (bumping mid-`run()` would trip the end-of-run guard
+  // on every fallback path and blank the page; see render-route.js
+  // header for the full reasoning).
+  //
+  // Returns the new epoch so callers can capture it for the eventual
+  // `RenderRoute.run(..., epoch)` call.
+  _setRenderResult(result) {
+    this._renderEpoch = (this._renderEpoch || 0) + 1;
+    this.currentResult = result;
+    return this._renderEpoch;
+  },
+
   async _loadFile(file, prefetchedBuffer /* optional – passed by Timeline fallback */) {
     // ── Stale-load token bump ───────────────────────────────
     // Monotonic per-`_loadFile` invocation. Async work queued by the
@@ -240,13 +267,16 @@ extendApp({
           return;
         }
       }
-      // Allocate the canonical `currentResult` skeleton up front so renderer
-      // dispatchers can stamp `binary` / `yaraBuffer` directly during their
-      // body. `RenderRoute.run` re-enters `_emptyResult` itself, but stamping
-      // here guarantees `currentResult.buffer` is live for any pre-dispatch
-      // consumer (the timeline sniff above already returned, so we know we're
-      // on the structured-renderer path).
-      this.currentResult = RenderRoute._emptyResult(buffer);
+      // Install a fresh `currentResult` skeleton and bump the render
+      // epoch in a single step. The bump is what gives us cross-load
+      // supersession: any prior `_loadFile` invocation that's still
+      // running (slow PE / EVTX / encoded-content scan after a quick
+      // back-to-back file swap) sees `epoch !== app._renderEpoch` at
+      // the end-of-`run()` guard and returns `{ _superseded: true }`,
+      // which the post-dispatch check below early-returns on. The
+      // captured `epoch` is threaded into `RenderRoute.run` so it
+      // doesn't have to mint its own; the caller owns the counter.
+      const epoch = this._setRenderResult(RenderRoute._emptyResult(buffer));
 
       // Reset YARA state from previous file to prevent stale results bleeding over
       this._yaraResults = null;
@@ -292,16 +322,15 @@ extendApp({
       //
       // The Timeline branch above is an analysis-bypass route and never
       // reaches `RenderRoute.run`.
-      const result = await RenderRoute.run(file, buffer, this);
+      const result = await RenderRoute.run(file, buffer, this, null, epoch);
       // Render-epoch supersession guard. `RenderRoute.run` returns a
-      // synthetic `{ _superseded: true }` shape if `app._renderEpoch`
-      // was bumped while the dispatch was running (Phase-2 fast file-
-      // swap). Phase-1 doesn't bump the epoch from outside `run()`, so
-      // this branch is dead code today; it's wired in now so the
-      // Phase-2 C3 fix needs zero changes here. A superseded dispatch
-      // means a *newer* `_loadFile` invocation already owns the UI —
-      // bail out silently rather than painting `null` into
-      // #page-container.
+      // synthetic `{ _superseded: true }` shape if a newer
+      // `_setRenderResult` call (a quick back-to-back file swap, a Back
+      // navigation, or `_clearFile`) bumped `app._renderEpoch` while
+      // the dispatch was running. A superseded dispatch means a newer
+      // load / state-change already owns the UI — bail out silently
+      // rather than painting `null` into #page-container or clobbering
+      // the new state's freshly-installed findings.
       if (result && result._superseded) {
         return;
       }
@@ -366,6 +395,12 @@ extendApp({
           encodedFindings = out.findings || [];
           usedWorker = true;
         } catch (workerErr) {
+          // A newer file load has bumped the encoded-channel token and
+          // aborted this scan. Re-throw so the outer catch can bail
+          // without running the synchronous fallback (which would burn
+          // CPU on a buffer the new load already replaced) and without
+          // overwriting `this.findings.encodedContent` mid-flight.
+          if (workerErr && workerErr.message === 'superseded') throw workerErr;
           if (workerErr && workerErr.message !== 'workers-unavailable') {
             // Worker path failed but the synchronous fallback below still
             // succeeds — silent:true keeps the IOC list clean while the
@@ -435,8 +470,16 @@ extendApp({
           }
         }
       } catch (encErr) {
-        this._reportNonFatal('encoded-content', encErr);
-        this.findings.encodedContent = [];
+        // Supersession is not an error — a newer load is already in
+        // flight and owns `this.findings.encodedContent`. Leaving the
+        // field untouched lets the new load populate it without a
+        // window where it briefly reads `[]`.
+        if (encErr && encErr.message === 'superseded') {
+          // intentional no-op
+        } else {
+          this._reportNonFatal('encoded-content', encErr);
+          this.findings.encodedContent = [];
+        }
       }
 
       // Bump overall risk if encoded content findings have high severity
@@ -1417,7 +1460,12 @@ extendApp({
     this.findings = state.findings;
     this.fileHashes = state.fileHashes;
     this._fileMeta = state.fileMeta;
-    this.currentResult = state.currentResult || null;
+    // Route through `_setRenderResult` so the epoch bump fences any prior
+    // dispatch that's still running. Without this, a back-navigation that
+    // lands while the inner-file's renderer is still inflating would let
+    // the inner file's late writes paint over the restored ancestor's
+    // `currentResult` / `findings`.
+    this._setRenderResult(state.currentResult || null);
     this._yaraResults = state.yaraResults;
 
     const pc = document.getElementById('page-container');

@@ -704,15 +704,17 @@ extendApp({
     // ArrayBuffer (for same-session paste round-trip). Without clearing
     // it, every load/clear cycle leaks the full buffer.
     this._lastCopiedMeta = null;
-    // ── currentResult teardown ────────────────────────────────────────────
+    // ── currentResult teardown + render-epoch fence ───────────────────────
     // Drop the entire RenderRoute result in one assignment. Every renderer
     // and per-format helper reads its file bytes / parsed binary / yara
     // buffer through `this.currentResult.{buffer, yaraBuffer, binary}`, so
     // nulling the wrapper transparently clears all four channels at once.
-    // Setting it to `null` (rather than a fresh skeleton) ensures any
-    // stale pre-render write race during the next file's bootstrap can't
-    // pick up dangling state from this one.
-    this.currentResult = null;
+    // Routing through `_setRenderResult` also bumps `_renderEpoch`, which
+    // fences any continued in-flight work from the just-cleared file's
+    // renderer (an EVTX chunk loop, an OneNote inflate) — when it finally
+    // checks the captured epoch it sees a stale value and no-ops on its
+    // `app.findings` / `currentResult` writes.
+    this._setRenderResult(null);
 
     // ── Stale-load guard reset ────────────────────────────────────────────
     // `_loadToken` is the monotonic counter `_loadFile` bumps on every
@@ -728,14 +730,6 @@ extendApp({
     // `_sbRefreshScheduled` are the microtask coalescing flags; clear so
     // a stale microtask doesn't try to repaint the sidebar after teardown.
     this._loadToken = 0;
-    // ── Render-epoch reset ────────────────────────────────────────────────
-    // The fence used by `RenderRoute.run` (and Phase-2 callers) to drop
-    // late writes from a superseded renderer. Reset to 0 here so that any
-    // continued in-flight work from the just-cleared file's renderer (an
-    // EVTX chunk loop, an OneNote inflate) sees a different value when it
-    // finally checks and no-ops on its `app.findings` / `currentResult`
-    // writes. The next `RenderRoute.run` call will bump it back to 1.
-    this._renderEpoch = 0;
     this._currentAnalyzer = null;
     this._pendingSbSections = null;
     this._sbRefreshScheduled = false;

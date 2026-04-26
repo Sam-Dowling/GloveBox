@@ -22,7 +22,17 @@
 //      messages from a superseded worker are dropped at receive time.
 //      The matching `cancel*()` helper bumps the token and terminates the
 //      active worker — `_loadFile` calls every canceller on entry so
-//      each new file abandons every previous in-flight job.
+//      each new file abandons every previous in-flight job. **Supersession
+//      releases the prior job's resources synchronously**: the pending
+//      `setTimeout`, the `reject` callback, and the captured payload
+//      buffer reference are all cleared, and the prior promise is rejected
+//      with `Error('superseded')`. Without this release the closure of a
+//      superseded job would pin a multi-megabyte buffer for up to
+//      `WORKER_TIMEOUT_MS` (5 min) until the timer fired with a spurious
+//      "watchdog timeout" toast for a job the user already moved past.
+//      Callers recognise the `'superseded'` message and exit silently
+//      (no sync fallback, no error UI) the same way they recognise
+//      `'workers-unavailable'`.
 //   4. **Timeout.** Every job is bracketed by a
 //      `PARSER_LIMITS.WORKER_TIMEOUT_MS` (5 min) deadline. On expiry the
 //      worker is `terminate()`-d (real preemption — the worker's JS
@@ -69,12 +79,16 @@ window.WorkerManager = (function () {
   // We supersede on each call — the most-recent scan is what the analyst
   // sees in the sidebar. The token-and-terminate pattern guarantees that a
   // stale `done` from a previous scan never overwrites the current results.
-  // Each channel has its own pair: an active-worker handle (or null) and a
-  // monotonic token that's bumped on supersession / cancellation.
+  // Each channel has its own slot: an active-worker handle (or null), a
+  // monotonic token that's bumped on supersession / cancellation, and a
+  // `currentJob` record carrying the per-call cleanup hook so a
+  // superseding call (or `_cancelChannel`) can release the prior job's
+  // `setTimeout`, `reject`, and captured payload reference instead of
+  // letting them sit in the closure for the full timeout window.
   const _channels = {
-    yara:     { active: null, token: 0 },
-    timeline: { active: null, token: 0 },
-    encoded:  { active: null, token: 0 },
+    yara:     { active: null, token: 0, currentJob: null },
+    timeline: { active: null, token: 0, currentJob: null },
+    encoded:  { active: null, token: 0, currentJob: null },
   };
 
   function _probe() {
@@ -167,6 +181,16 @@ window.WorkerManager = (function () {
 
     const myToken = ++ch.token;
     // Supersede any in-flight job from a previous call on this channel.
+    // Releasing the prior `currentJob` first clears its pending
+    // `setTimeout`, rejects its promise with `Error('superseded')`, and
+    // drops the closure's reference to the captured payload — without
+    // this the buffer would stay live (and the spurious 5-min watchdog
+    // timer would still be queued) until the prior timer fired naturally.
+    if (ch.currentJob) {
+      const prior = ch.currentJob;
+      ch.currentJob = null;
+      try { prior.abort(new Error('superseded')); } catch (_) {}
+    }
     if (ch.active) {
       try { ch.active.terminate(); } catch (_) {}
       ch.active = null;
@@ -196,11 +220,18 @@ window.WorkerManager = (function () {
     return new Promise((resolve, reject) => {
       let settled = false;
       let timer   = null;
+      // Holds the current job's externally-visible cleanup hook. Cleared
+      // on every terminal branch so the closure can release `spec.payload`
+      // (and therefore the transferred buffer view we still hold a name
+      // for here) immediately rather than waiting for the GC sweep that
+      // follows the next `_runWorkerJob` call.
+      let jobRecord = null;
 
       const cleanup = () => {
         if (timer !== null) { clearTimeout(timer); timer = null; }
         try { w.terminate(); } catch (_) {}
         if (ch.active === w) ch.active = null;
+        if (jobRecord && ch.currentJob === jobRecord) ch.currentJob = null;
       };
       const finish = (fn, val) => {
         if (settled) return;
@@ -208,6 +239,25 @@ window.WorkerManager = (function () {
         cleanup();
         fn(val);
       };
+
+      // Register the supersession / cancellation hook. Calling
+      // `abort(err)` clears the pending timer, terminates the worker,
+      // detaches the active-handle slot, and rejects this promise with
+      // `err` — releasing the closure's reference to `spec.payload` so
+      // a multi-megabyte transferred buffer is no longer pinned for the
+      // remainder of the timeout window. Callers that recognise
+      // `err.message === 'superseded'` should bail silently the same
+      // way they bail on `'workers-unavailable'`.
+      jobRecord = {
+        abort: (err) => {
+          if (settled) return;
+          // Bump the token so any in-flight onmessage / onerror that
+          // races us is treated as stale and dropped on arrival.
+          ch.token++;
+          finish(reject, err || new Error('superseded'));
+        },
+      };
+      ch.currentJob = jobRecord;
 
       // ── Timeout — real preemption via worker.terminate() ──
       // The error shape deliberately mirrors `ParserWatchdog.run`'s
@@ -300,6 +350,15 @@ window.WorkerManager = (function () {
     const ch = _channels[channel];
     if (!ch) return;
     ch.token++;
+    // Release the prior job synchronously — this rejects its promise
+    // with `Error('superseded')`, clears its pending timer, and drops
+    // the closure's reference to the captured payload so the buffer is
+    // no longer pinned for the remainder of the timeout window.
+    if (ch.currentJob) {
+      const prior = ch.currentJob;
+      ch.currentJob = null;
+      try { prior.abort(new Error('superseded')); } catch (_) {}
+    }
     if (ch.active) {
       try { ch.active.terminate(); } catch (_) {}
       ch.active = null;

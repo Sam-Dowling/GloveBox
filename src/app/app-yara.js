@@ -1369,6 +1369,10 @@ extendApp({
           onSuccess((out && out.results) || []);
         }).catch((err) => {
           if (err && err.message === 'workers-unavailable') { runSync(); return; }
+          // A newer scan superseded this one (or `_loadFile` cancelled
+          // the channel for a new file). Bail silently — the caller has
+          // already moved past these results.
+          if (err && err.message === 'superseded') return;
           this._yaraSetStatus('Scan error: ' + (err && err.message ? err.message : String(err)), 'error');
         });
         return;
@@ -1591,6 +1595,11 @@ extendApp({
             this._autoYaraScanSync(buf, source);
             return;
           }
+          // A newer file load (or `_loadFile`'s entry-point cancel) has
+          // already invalidated this scan's results. Bail silently — the
+          // newer load will trigger its own auto-scan; surfacing the
+          // supersession as a sidebar IOC.INFO would be noise.
+          if (err && err.message === 'superseded') return;
           this._reportAutoYaraError(err);
         });
         return;

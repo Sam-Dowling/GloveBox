@@ -72,26 +72,29 @@
 //      findings explaining what just happened so the analyst is never
 //      left wondering why a structured viewer didn't load.
 //
-//   6. **Render-epoch fence.** `RenderRoute.run` bumps
-//      `app._renderEpoch` exactly once per call (on entry) and captures
-//      the new value as a local `epoch`. On every fallback (watchdog
-//      timeout, size-cap, thrown error) it re-installs a fresh
-//      `currentResult` skeleton + `findings` object so the previous
-//      renderer's still-running async work keeps a stale reference to
-//      the *old* skeleton and old findings — its late writes
+//   6. **Render-epoch fence.** The caller (`App._loadFile`,
+//      `App._restoreNavFrame`, `App._clearFile`) owns the epoch — it
+//      bumps `app._renderEpoch` and installs the fresh `currentResult`
+//      skeleton in a single step via `App._setRenderResult(result)` and
+//      passes the captured epoch into `RenderRoute.run(file, buffer,
+//      app, rctx, epoch)`. `run()` itself never bumps the counter; it
+//      only reads it. On every fallback (watchdog timeout, size-cap,
+//      thrown error) `_orphanInFlight` swaps in a fresh `currentResult`
+//      skeleton + a fresh `findings` object so the previous renderer's
+//      still-running async work keeps a stale reference to the *old*
+//      skeleton and old findings — its late writes
 //      (`this.currentResult.binary = …`, `this.findings.X.push(…)`)
 //      land on orphan objects and never reach the live UI. The old
 //      `findings` is `Object.freeze`-d before being orphaned so any
 //      late `.push(...)` against it throws under strict mode and is
 //      caught by the global error handler / breadcrumb stream — turning
-//      a silent wrong-answer (PLAN.md C1) into either a no-op or a
-//      visible diagnostic. The epoch itself is NOT bumped on fallback —
-//      doing so would trip the end-of-run `epoch !== app._renderEpoch`
-//      supersession guard on every fallback path and `_loadFile` would
-//      early-return on the resulting `_superseded` sentinel, leaving
-//      the page blank instead of painting the plaintext view. The
-//      Phase-2 fast-file-swap fence is the only legitimate source of an
-//      epoch bump *outside* `run()`'s own entry.
+//      a silent wrong-answer into either a no-op or a visible
+//      diagnostic. The epoch is NOT bumped on fallback — doing so would
+//      trip the end-of-run `epoch !== app._renderEpoch` supersession
+//      guard on every fallback path and `_loadFile` would early-return
+//      on the resulting `_superseded` sentinel, leaving the page blank
+//      instead of painting the plaintext view. The only legitimate
+//      epoch bump is the caller's `_setRenderResult` call.
 
 //
 // What `RenderRoute.run` deliberately does NOT do:
@@ -221,27 +224,46 @@ const RenderRoute = {
    *                                renderer-side stamps).
    * @param {object?}     rctx    — optional pre-built RendererRegistry
    *                                context.
+   * @param {number?}     epoch   — caller-supplied epoch token, captured
+   *                                from `App._setRenderResult(...)`. The
+   *                                end-of-run guard compares this against
+   *                                the live `app._renderEpoch` and
+   *                                returns a `{ _superseded: true }`
+   *                                sentinel if a newer load has bumped
+   *                                the counter mid-flight. When omitted,
+   *                                the current value is captured (only
+   *                                callers that aren't already routing
+   *                                through `_setRenderResult` end up
+   *                                here, and they don't get cross-load
+   *                                fencing).
    * @returns {Promise<RenderResult>}
    */
-  async run(file, buffer, app, rctx = null) {
+  async run(file, buffer, app, rctx = null, epoch = null) {
     rctx = rctx || RendererRegistry.makeContext(file, buffer);
     const decision = RendererRegistry.detect(rctx);
     let dispatchId = decision.id;
     let handler = app._rendererDispatch[dispatchId] || app._rendererDispatch.plaintext;
 
-    // Bump the render epoch on entry so any stale async work from a
-    // *previous* `run()` call (still mid-execution after a quick file
-    // swap) sees a different epoch and can no-op. The current epoch is
-    // captured locally so the fallback path below can detect "did the
-    // hung renderer also abort us mid-flight?" if Phase-2 ever wires
-    // that signal up.
-    app._renderEpoch = (app._renderEpoch || 0) + 1;
-    const epoch = app._renderEpoch;
+    // The caller (`App._loadFile` / `_restoreNavFrame` / `_clearFile`)
+    // owns the epoch — they bump `app._renderEpoch` and install the
+    // fresh `currentResult` skeleton in a single step via
+    // `App._setRenderResult(...)` and pass the captured value here.
+    // `run()` only reads it. Callers that don't supply an epoch (defensive
+    // / legacy paths that bypass `_setRenderResult`) silently capture the
+    // current value — they get the in-flight orphan-on-fallback
+    // protection but no cross-load supersession fencing.
+    if (epoch == null) epoch = app._renderEpoch || 0;
 
-    // Allocate the currentResult skeleton before invoking the handler
-    // so per-renderer stamps (`this.currentResult.binary = …`,
-    // `this.currentResult.yaraBuffer = …`) have a live write target.
-    app.currentResult = RenderRoute._emptyResult(buffer);
+    // The caller already installed a fresh `currentResult` skeleton via
+    // `_setRenderResult`, so per-renderer stamps
+    // (`this.currentResult.binary = …`, `this.currentResult.yaraBuffer
+    // = …`) already have a live write target. Defensive top-up: if a
+    // legacy caller routed through `run()` without going through
+    // `_setRenderResult` first, install a skeleton now so the renderer
+    // doesn't NPE on the first stamp.
+    if (!app.currentResult) {
+      app.currentResult = RenderRoute._emptyResult(buffer);
+    }
 
     // ── Per-dispatch file-size cap ────────────────────────────────────
     // If the file exceeds the structured-renderer cap for this dispatch
@@ -366,13 +388,13 @@ const RenderRoute = {
       || '';
     const rawText = lfNormalize(rawTextSource);
 
-    // Final stale-epoch guard. If a fast file-swap (Phase-2 C3) bumped
-    // `app._renderEpoch` while this dispatch was running, the writes
-    // below would clobber the new file's freshly-installed
-    // `currentResult` / `findings`. Bail before touching them — the
-    // newer `run()` call owns those slots now. (Phase-1 doesn't bump
-    // the epoch from outside `run()`, so this guard is a no-op today;
-    // it's wired in now so Phase-2 needs zero changes here.)
+    // Final stale-epoch guard. If `App._setRenderResult` was called
+    // (fast file-swap, drill-down, Back navigation, file close) while
+    // this dispatch was still running, `app._renderEpoch` will have
+    // moved past the value the caller captured for us. The writes below
+    // would clobber the new state's freshly-installed `currentResult` /
+    // `findings` — bail with a `_superseded` sentinel and let the caller
+    // (`App._loadFile`) early-return without painting stale results.
     if (epoch !== app._renderEpoch) {
       // Return a synthetic result; the caller will see a non-null
       // skeleton it can ignore. The current epoch's `currentResult`

@@ -286,6 +286,16 @@ extendApp({
           view = this._buildTimelineViewFromWorker(
             file, workerKind, msg, transferOriginal ? null : buffer);
         } catch (e) {
+          // A newer file load has bumped the timeline-channel token and
+          // aborted this parse. Bail out entirely — `_loadFile` has
+          // already kicked off the new view, and falling through to the
+          // synchronous main-thread parse here would waste CPU on a
+          // file the user has already moved on from, then potentially
+          // mount a stale view over the new one.
+          if (e && e.message === 'superseded') {
+            this._setLoading(false);
+            return;
+          }
           if (!e || e.message !== 'workers-unavailable') {
             console.warn('[timeline] worker parse failed; falling back to main-thread parse:', e);
           }

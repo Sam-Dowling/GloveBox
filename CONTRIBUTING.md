@@ -252,19 +252,33 @@ ladder; pre-stamping `findings.risk = 'high'` is a `.clinerules` violation
 
 ### Render-epoch contract
 
-`RenderRoute.run` owns a monotonic counter on the `App` instance,
-`app._renderEpoch`, that fences each dispatch from late writes by an
-earlier one. The mechanism exists because every renderer's contract
-(see the table above) is **mutate `app.findings` and
-`app.currentResult` in place** — there is no return-value-only path, so
-any renderer that keeps running after the watchdog has given up will
-otherwise paint over the fallback view's state.
+`App` carries a monotonic counter, `app._renderEpoch`, that fences
+each renderer dispatch from late writes by an earlier one. The
+mechanism exists because every renderer's contract (see the table
+above) is **mutate `app.findings` and `app.currentResult` in place**
+— there is no return-value-only path, so any renderer that keeps
+running after the watchdog has given up will otherwise paint over the
+fallback view's state.
+
+The single chokepoint that bumps the counter is
+`App._setRenderResult(result)` (defined in `src/app/app-load.js`). It
+is the *only* place outside `RenderRoute._orphanInFlight` that writes
+`app.currentResult`, and it is the *only* place that writes
+`app._renderEpoch`. Any caller that wants to install a new render
+target must route through it; any caller that wants to fence
+in-flight work from a previous render must do so by calling it.
 
 **The lifecycle:**
 
-1. On entry, `RenderRoute.run` does `app._renderEpoch++` and captures
-   the new value as a local `epoch`. A fresh `currentResult` skeleton
-   is installed on `app` as the renderer's write target.
+1. The owning caller (`App._loadFile`, `App._restoreNavFrame`, or
+   `App._clearFile`) calls `this._setRenderResult(result)`, which
+   atomically increments `_renderEpoch` and swaps `currentResult` to
+   the supplied skeleton (or `null` for `_clearFile`). It returns the
+   new epoch value, which `_loadFile` captures and threads into
+   `RenderRoute.run(file, buffer, this, null, epoch)` as its 5th
+   argument. `RenderRoute.run` itself never mutates the counter — it
+   only reads the caller-supplied epoch and compares it against
+   `app._renderEpoch` later.
 2. The renderer is invoked under `ParserWatchdog.run(fn, …)`. The
    watchdog hands `fn` an `AbortSignal` as `fn({ signal })`; on
    timeout the controller is `abort()`-ed *before* the watchdog's
@@ -281,18 +295,21 @@ otherwise paint over the fallback view's state.
    - `app.findings` and `app.currentResult` are replaced with fresh
      empty objects so the hung renderer's late writes land on
      orphans never read by the live UI.
-   - The epoch is **not** bumped here — it was already bumped on
-     entry to `run()` and bumping it again would trip the
-     end-of-run supersession guard on every fallback path,
-     leaving the page blank instead of painting the plaintext
-     view. Epoch bumps from *outside* `run()` (fast
-     file-swap) are the only legitimate non-entry bumps.
+   - The epoch is **not** bumped here. It was bumped by the
+     caller's `_setRenderResult` before `run()` was even invoked,
+     and bumping it again would trip the end-of-run supersession
+     guard on every fallback path, leaving the page blank instead
+     of painting the plaintext view. `_orphanInFlight` is the
+     single sanctioned exception to the "all `currentResult`
+     writes go through `_setRenderResult`" rule, precisely because
+     it must *not* bump the epoch.
 
 4. Just before stamping the final `RenderResult`, `run()` checks
    `epoch !== app._renderEpoch` and, if a newer dispatch has bumped
-   the counter mid-flight, returns a `{ _superseded: true }`
-   sentinel. `App._loadFile` early-returns on that sentinel rather
-   than overwriting the new file's freshly installed state.
+   the counter mid-flight (i.e. another `_setRenderResult` call has
+   landed), returns a `{ _superseded: true }` sentinel.
+   `App._loadFile` early-returns on that sentinel rather than
+   overwriting the new file's freshly installed state.
 
 **What renderers may rely on today:**
 
