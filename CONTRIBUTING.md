@@ -2065,13 +2065,13 @@ Every IOC the renderer emits — whether onto `findings.externalRefs` or `findin
 ### Renderer Spread Matrix
 
 The contributor-facing dual of [FEATURES.md → Renderer Capability Matrix](FEATURES.md#-renderer-capability-matrix).
-FEATURES.md describes **what the analyst gets**;
-this table describes **what is left to fix per renderer** so a future agent
-session can pick a row and close a gap. Where FEATURES.md
-prints `✅` / `◐` / `—`, this matrix prints `✓` (compliant), `◐` (partial /
-opt-out by design / known gap with a tracking issue), or `✗` (gap a
-contributor should close). The columns deliberately diverge from FEATURES.md
-because the gap categories are not 1:1 with the user-visible capabilities:
+FEATURES.md describes **what the analyst gets**; this table records the
+per-renderer state of each soft contract so a contributor adding or
+upgrading a renderer can see at a glance which guarantees apply. Where
+FEATURES.md prints `✅` / `◐` / `—`, this matrix prints `✓` (compliant),
+`◐` (partial / opt-out by design), or `✗` (not wired). The columns
+deliberately diverge from FEATURES.md because the gap categories are not
+1:1 with the user-visible capabilities:
 
 | Column | What it measures | When to write `◐` / `✗` |
 |---|---|---|
@@ -2081,12 +2081,10 @@ because the gap categories are not 1:1 with the user-visible capabilities:
 | **Drill-down** | Forwards `open-inner-file` through `App.openInnerFile` **or** calls it directly with a synthetic File | `◐` for listing-only formats (7z / RAR / DMG — entries locked behind missing decompressors); `—` for terminal formats (text scripts, certificates, single-page documents) |
 | **Contract conformance** | What's broken or missing today under `scripts/check_renderer_contract.py` **plus** the soft contract items: `mirrorMetadataIOCs` adoption, no hand-rolled `interestingStrings.push(...)`, `escalateRisk()` for risk transitions, async findings via `app.updateFindings(patch, {token})` instead of post-snapshot mutation | `✓` when D5 passes and every soft item is satisfied; otherwise list the specific gap (e.g. `◐ no mirrorMetadataIOCs`, `◐ hand-rolls iS.push×N`, `◐ snapshot-only async`). Free-text by design — this column drives follow-ups. |
 
-**Source-of-truth note.** Cells were populated from a structured grep over
-`src/renderers/` on 2026-04-25 plus the FEATURES.md ◐ end-notes. Hand-rolled
-push counts are the literal `interestingStrings.push(` matches and may
-include legitimate truncation-marker emissions; treat them as an upper-bound
-audit list, not a bug count. The punch-list below the table records
-the known follow-ups.
+Cells reflect a structured grep over `src/renderers/` and the FEATURES.md
+◐ end-notes. Hand-rolled push counts are literal `interestingStrings.push(`
+matches and may include legitimate truncation-marker emissions; treat them
+as an upper-bound audit list, not a bug count.
 
 | Renderer | Verdict band | Encoded recursion | Click-to-focus | Drill-down | Contract conformance |
 |---|:-:|:-:|:-:|:-:|---|
@@ -2142,68 +2140,10 @@ exempt from per-format contract checks): `archive-tree.js`,
 `grid-viewer.js`, `ole-cfb-parser.js`, `protobuf-reader.js`. They have no
 per-format render contract — drill-down and grid viewer plumbing only.
 
-#### Highest-leverage punch-list
-
-A future Track / agent session should pick from the rows above in this
-order — chosen to maximise the breadth of analyst-visible improvement per
-hour of contributor time. Each bullet records the structural problem
-briefly so the audit trail stays in one place.
-
-1. **Verdict band for OOXML / OLE2 / DMG** (FEATURES.md `✗` /
-   `—` rows for `xlsx` / `pptx` / `doc` / `ppt` / `dmg`). Largest gap on
-   the table: five formats with active triage value but no Tier-A banner.
-   Requires generalising `binary-triage.js` from "PE/ELF/Mach-O only" to
-   "any format that exposes a parsed-struct + signature-evidence surface"
-   — a refactor on its own.
-2. **Hand-rolled `interestingStrings.push(...)` sweep.** (The build
-   gate covers the bare-string IOC `type:` shape but not the choice
-   to bypass `pushIOC()` itself). Hot spots: `jar-renderer` (×7),
-   `npm-renderer` (×4), `browserext-renderer` (×3), `msix-renderer`
-   (×2), `inf-renderer` / `reg-renderer` (×1 each). Each push is a
-   missed `tldts` registrable-domain sibling, a missed punycode/IDN
-   homoglyph flag, and a missed abuse-TLD pattern. Switch them to
-   `pushIOC()` and the IOC fan-out is automatic.
-3. **`mirrorMetadataIOCs()` adoption.** ~24 renderers ship
-   `findings.metadata` fields the user can see in the right pane but
-   cannot pivot from in the IOC list. Top candidates because their
-   metadata is rich and pivot-ready: `clickonce-renderer` (cert
-   subject + thumbprint), `hta-renderer` (`<HTA:APPLICATION>` GUID +
-   author + version), `wsf-renderer` (script-element id + language),
-   `osascript-renderer` (`OSA` author + bundle ids), `plist-renderer`
-   (bundle id + version + minimum OS + paths), `iqy-slk-renderer`
-   (target URL — already a real IOC), `json-renderer` (any leaf-detected
-   URL / hash / GUID), `xlsx` / `doc` / `ppt` family (already mirror
-   from the OOXML / OLE2 deep-walk in copy-analysis but not via the
-   helper).
-4. **Encoded-content recursion in script-like formats.** `osascript-renderer`, `iqy-slk-renderer`,
-   `inf-renderer`, `reg-renderer`, `json-renderer`, `sqlite-renderer`
-   all have a plaintext surface that today bypasses
-   `EncodedContentDetector`. Adding the worker call site is
-   one line per renderer once the surface text is in scope.
-5. **Async findings cutover via `App.updateFindings()`.** The four
-   binary-renderer continuations are already migrated; the remaining
-   sites are the `image-renderer` QR-decode continuation, the
-   `pdf-renderer` `/JS` body decode, the `onenote-renderer` inflate
-   continuation, the `eml-renderer` / `msg-renderer` attachment chain
-   when QR is enabled, and the `pe-renderer` / `elf-renderer` /
-   `macho-renderer` `EncodedContentDetector` worker call site after
-   the worker cutover). Each one is a 1-2 line tail-call replacing a
-   direct `findings.…` mutation that lands after the snapshot.
-6. **Click-to-focus precision in Office / MSI / OneNote / JAR** (see
-   the FEATURES.md ◐ end-note). All five render per-card
-   surfaces with no per-character text plane today — clicks scroll to
-   the right card but cannot land on a `<mark>`. Closing the gap
-   requires per-card `_rawText` slices wired into the sidebar's
-   `_findIOCMatches` helper; a single helper carrying `(card,
-   sliceText)` would let every member of this group adopt at once.
-7. **Listing-only archive drill-down (7z / RAR / DMG)** is **out of
-   scope** (no LZMA / LZSS / PPMd / native APFS decoders shipped).
-   These rows stay `◐` permanently; do not extend without re-opening
-   the underlying vendor decision.
-8. **Worker migration of remaining binary `EncodedContentDetector`
-   call sites.** PE / ELF / Mach-O still call the synchronous detector
-   path inside their `analyzeForSecurity` today — once the worker is the
-   default for PDF + EML, fold these three in next.
+**Listing-only archive drill-down** (`7z` / `rar` / `dmg`) is `◐` by
+design: Loupe ships no LZMA / LZSS / PPMd / native APFS decoder, so
+those rows can list entries but cannot extract them. Do not extend
+without re-opening the underlying vendor decision.
 
 The grade-against-rule helper for this matrix is the
 `cross-renderer-sanity-check` skill referenced after [Risk Tier
