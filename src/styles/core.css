@@ -1133,6 +1133,31 @@ body.dark .sb-details-summary:hover {
   font-size: 12px;
 }
 
+.sb-yara-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  margin: 8px 0;
+  color: var(--sb-muted, #888);
+  font-size: 12px;
+  font-style: italic;
+  background: var(--sb-bg-alt, rgba(0, 0, 0, 0.03));
+  border: 1px dashed var(--sb-border, #ddd);
+  border-radius: 3px;
+}
+
+.sb-yara-loading-spinner {
+  display: inline-block;
+  font-size: 14px;
+  animation: sb-yara-spin 1.2s linear infinite;
+}
+
+@keyframes sb-yara-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .sb-section {
   font-size: 10px;
   font-weight: 700;
@@ -4969,6 +4994,10 @@ body.has-timeline #sidebar-resize {
 body.has-timeline #timeline-root {
   display: flex;
   flex-direction: column;
+}
+
+body.has-timeline #btn-security {
+  display: none;
 }
 
 /* ════════════════════════════════════════════════════════════════════════

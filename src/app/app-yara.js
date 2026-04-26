@@ -1352,9 +1352,20 @@ extendApp({
       'info'
     );
 
+    // Mark scan in progress so the sidebar's Detections section can render
+    // a "scanning rules…" indicator until results land. The sidebar will
+    // already have painted by the time the analyst clicks Run Scan, so
+    // re-render explicitly here to surface the indicator immediately.
+    this._yaraScanInProgress = true;
+    if (this.findings) {
+      const fileName = (this._fileMeta && this._fileMeta.name) || '';
+      this._renderSidebar(fileName, null);
+    }
+
     const t0 = performance.now();
 
     const onSuccess = (results, scanErrors) => {
+      this._yaraScanInProgress = false;
       const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
       if (results.length === 0) {
         this._yaraSetStatus('\u2713 Scan complete in ' + elapsed + 's \u2014 no rules matched', 'success');
@@ -1380,7 +1391,13 @@ extendApp({
           const results = YaraEngine.scan(buf, rules, { errors: scanErrors });
           onSuccess(results, scanErrors);
         } catch (e) {
+          this._yaraScanInProgress = false;
           this._yaraSetStatus('Scan error: ' + e.message, 'error');
+          // Drop the loading indicator now that the scan has aborted.
+          if (this.findings) {
+            const fileName = (this._fileMeta && this._fileMeta.name) || '';
+            this._renderSidebar(fileName, null);
+          }
         }
       }, 50);
     };
@@ -1395,9 +1412,15 @@ extendApp({
           if (err && err.message === 'workers-unavailable') { runSync(); return; }
           // A newer scan superseded this one (or `_loadFile` cancelled
           // the channel for a new file). Bail silently — the caller has
-          // already moved past these results.
+          // already moved past these results. (The newer scan owns the
+          // in-progress flag now; don't clear it here.)
           if (err && err.message === 'superseded') return;
+          this._yaraScanInProgress = false;
           this._yaraSetStatus('Scan error: ' + (err && err.message ? err.message : String(err)), 'error');
+          if (this.findings) {
+            const fileName = (this._fileMeta && this._fileMeta.name) || '';
+            this._renderSidebar(fileName, null);
+          }
         });
         return;
       }
@@ -1663,22 +1686,43 @@ extendApp({
         copy = null;
       }
       if (copy) {
+        // Surface a "scanning rules…" indicator in the sidebar Detections
+        // section while the worker scan is in flight. Cleared on every
+        // terminal branch below (success, late-veto handoff to sync,
+        // supersession handoff, hard error). The sidebar has typically
+        // already painted from `_loadFile` by the time we reach here, so
+        // re-render explicitly to surface the indicator immediately.
+        this._yaraScanInProgress = true;
+        if (this.findings) {
+          const fileName = (this._fileMeta && this._fileMeta.name) || '';
+          this._renderSidebar(fileName, null);
+        }
         wm.runYara(copy, source).then((out) => {
+          this._yaraScanInProgress = false;
           const results = (out && out.results) || [];
           this._yaraResults = results;
+          // `_updateSidebarWithYara` re-renders the sidebar; no separate
+          // call needed here.
           if (this.findings) this._updateSidebarWithYara(results);
         }).catch((err) => {
           if (err && err.message === 'workers-unavailable') {
-            // Late veto — re-run synchronously below.
+            // Late veto — `_autoYaraScanSync` will own the in-progress
+            // flag from this point onwards.
             this._autoYaraScanSync(buf, source);
             return;
           }
           // A newer file load (or `_loadFile`'s entry-point cancel) has
           // already invalidated this scan's results. Bail silently — the
           // newer load will trigger its own auto-scan; surfacing the
-          // supersession as a sidebar IOC.INFO would be noise.
+          // supersession as a sidebar IOC.INFO would be noise. The newer
+          // scan owns the in-progress flag now, so don't clear it here.
           if (err && err.message === 'superseded') return;
+          this._yaraScanInProgress = false;
           this._reportAutoYaraError(err);
+          if (this.findings) {
+            const fileName = (this._fileMeta && this._fileMeta.name) || '';
+            this._renderSidebar(fileName, null);
+          }
         });
         return;
       }
@@ -1696,6 +1740,9 @@ extendApp({
   _autoYaraScanSync(buf, source) {
     const size = (buf && buf.byteLength) || 0;
     if (size > PARSER_LIMITS.SYNC_YARA_FALLBACK_MAX_BYTES) {
+      // Size-cap skip is a terminal branch — clear any in-progress flag
+      // set by the worker path before it handed off to us.
+      this._yaraScanInProgress = false;
       if (this.findings) {
         const mb = (PARSER_LIMITS.SYNC_YARA_FALLBACK_MAX_BYTES / (1024 * 1024)) | 0;
         pushIOC(this.findings, {
@@ -1708,14 +1755,40 @@ extendApp({
       }
       return;
     }
+    // Surface the "scanning rules…" indicator if the worker path didn't
+    // already set the flag (e.g. workers unavailable from the start). The
+    // synchronous scan below blocks the main thread, so the indicator
+    // really only paints when this method is reached via a worker
+    // late-veto handoff and an extra paint cycle squeezed in.
+    if (!this._yaraScanInProgress) {
+      this._yaraScanInProgress = true;
+      if (this.findings) {
+        const fileName = (this._fileMeta && this._fileMeta.name) || '';
+        this._renderSidebar(fileName, null);
+      }
+    }
     try {
       const { rules } = YaraEngine.parseRules(source);
-      if (!rules.length) return;
+      if (!rules.length) {
+        this._yaraScanInProgress = false;
+        if (this.findings) {
+          const fileName = (this._fileMeta && this._fileMeta.name) || '';
+          this._renderSidebar(fileName, null);
+        }
+        return;
+      }
       const results = YaraEngine.scan(buf, rules);
+      this._yaraScanInProgress = false;
       this._yaraResults = results;
+      // `_updateSidebarWithYara` re-renders the sidebar; no separate call.
       if (this.findings) this._updateSidebarWithYara(results);
     } catch (err) {
+      this._yaraScanInProgress = false;
       this._reportAutoYaraError(err);
+      if (this.findings) {
+        const fileName = (this._fileMeta && this._fileMeta.name) || '';
+        this._renderSidebar(fileName, null);
+      }
     }
   },
 
@@ -1753,6 +1826,10 @@ extendApp({
     h3.textContent = '\u{1F4D6} YARA Rule Reference';
     hdr.appendChild(h3);
     const closeBtn = document.createElement('button');
+    // Reuse the main YARA dialog's close-button styling so the info popup
+    // has the same rounded-square, red-tinted affordance as the parent
+    // dialog header.
+    closeBtn.className = 'yara-close';
     closeBtn.textContent = '\u2715';
     closeBtn.title = 'Close';
     closeBtn.addEventListener('click', () => ov.remove());

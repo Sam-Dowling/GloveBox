@@ -1405,11 +1405,42 @@ extendApp({
       body.appendChild(note);
     }
 
+    // ── Async YARA scan loading indicator ───────────────────────────────
+    // The auto-YARA scan runs in a Web Worker after `_loadFile` has already
+    // painted the sidebar (see `_autoYaraScan` in app-yara.js). Without
+    // this row the Detections section just shows "✅ No detections
+    // triggered." until the worker eventually delivers — visually
+    // indistinguishable from "scan finished, clean". The flag is owned by
+    // app-yara.js's three scan entry points (`_autoYaraScan`,
+    // `_autoYaraScanSync`, `_yaraRunScan`); each clears it on every
+    // terminal branch and re-renders the sidebar so this indicator
+    // disappears the moment results land. Rendered for the Detections
+    // section only — IOC extraction is synchronous within the parser
+    // pipeline so no equivalent indicator is needed there.
+    const _yaraScanning = (_sbKey === 'detections') && !!this._yaraScanInProgress;
+    if (_yaraScanning) {
+      const loading = document.createElement('div');
+      loading.className = 'sb-yara-loading';
+      const spinner = document.createElement('span');
+      spinner.className = 'sb-yara-loading-spinner';
+      spinner.textContent = '\u29D7'; // ⧗ — works without depending on an animated icon font
+      loading.appendChild(spinner);
+      const msg = document.createElement('span');
+      msg.className = 'sb-yara-loading-text';
+      msg.textContent = 'Scanning rules\u2026';
+      loading.appendChild(msg);
+      body.appendChild(loading);
+    }
+
     if (!refs.length) {
-      const p = document.createElement('p');
-      p.style.cssText = 'color:#888;text-align:center;margin-top:12px;font-size:12px;';
-      p.textContent = emptyMessage;
-      body.appendChild(p);
+      // Suppress the empty "no detections" line while a scan is still in
+      // flight — the indicator above already conveys "wait, results coming".
+      if (!_yaraScanning) {
+        const p = document.createElement('p');
+        p.style.cssText = 'color:#888;text-align:center;margin-top:12px;font-size:12px;';
+        p.textContent = emptyMessage;
+        body.appendChild(p);
+      }
       det.appendChild(body);
       container.appendChild(det);
       return;
