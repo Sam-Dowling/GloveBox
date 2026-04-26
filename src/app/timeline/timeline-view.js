@@ -1351,6 +1351,15 @@ class TimelineView {
     host.className = 'tl-host';
     root.appendChild(host);
 
+    // Mouse-wheel continuation: once the user is mid-scroll on the
+    // outer host, keep wheels going to it even if the cursor drifts
+    // over a nested scroller (GridViewer, top-value cards, etc.).
+    // See src/app/timeline/timeline-wheel.js for the rationale.
+    if (typeof window !== 'undefined' &&
+        typeof window.installTimelineWheelContinuation === 'function') {
+        window.installTimelineWheelContinuation(host);
+    }
+
     // Toolbar
     const toolbar = document.createElement('div');
     toolbar.className = 'tl-toolbar';

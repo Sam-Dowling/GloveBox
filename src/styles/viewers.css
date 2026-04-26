@@ -12212,6 +12212,13 @@ body.grid-timeline-dragging * {
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  /* Reserve a fixed gutter for the host's own scrollbar so it never
+     overlaps the GridViewer's vertical scrollbar at the right edge of
+     `.tl-grid` when the grid-drawer is closed. Without this, the two
+     scrollbars share the same x-coordinate and the inner one becomes
+     un-hittable. See timeline-wheel.js for the matching wheel-redirect
+     fix that keeps a mid-scroll gesture flowing through nested children. */
+  scrollbar-gutter: stable;
   display: flex;
   flex-direction: column;
 }

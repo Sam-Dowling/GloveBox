@@ -577,6 +577,10 @@ APP_JS_FILES = [
     'src/app/timeline/timeline-helpers.js',
     'src/app/timeline/timeline-query.js',
     'src/app/timeline/timeline-query-editor.js',
+    # timeline-wheel.js — outer-host scroll-continuation handler. Loads
+    # before timeline-view.js so the installer (`window.installTimeline-
+    # WheelContinuation`) is in scope when `_buildDOM` mounts `.tl-host`.
+    'src/app/timeline/timeline-wheel.js',
     'src/app/timeline/timeline-view.js',
     'src/app/timeline/timeline-detections.js',
     'src/app/timeline/timeline-summary.js',
