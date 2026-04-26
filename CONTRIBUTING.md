@@ -311,6 +311,30 @@ in-flight work from a previous render must do so by calling it.
    `App._loadFile` early-returns on that sentinel rather than
    overwriting the new file's freshly installed state.
 
+```mermaid
+flowchart TD
+    Caller["App._loadFile<br/>App._restoreNavFrame<br/>App._clearFile"]
+    SRR["App._setRenderResult(result)<br/>++_renderEpoch<br/>swap currentResult"]
+    Run["RenderRoute.run(file, buf, app, null, epoch)"]
+    PW["ParserWatchdog.run({timeout, name})<br/>parks AbortSignal on _activeSignal"]
+    Renderer["renderer.render(file, buf, app)<br/>throwIfAborted() in outer loops"]
+
+    Caller -->|"new epoch"| SRR
+    SRR --> Run
+    Run --> PW
+    PW --> Renderer
+
+    Renderer -->|"resolves"| Check{"epoch ===<br/>app._renderEpoch ?"}
+    Check -- yes --> OK["Object.freeze(findings)<br/>stamp final RenderResult"]
+    Check -- no --> SUP["return { _superseded: true }<br/>_loadFile early-returns"]
+
+    Renderer -->|"AbortError /<br/>watchdog timeout /<br/>thrown error"| Orphan["RenderRoute._orphanInFlight(app, buf)<br/>Object.freeze(old findings)<br/>swap fresh findings + currentResult<br/>(epoch NOT bumped)"]
+    Orphan --> PT["fall back to PlainTextRenderer"]
+
+    Caller -.->|"new file lands<br/>mid-flight"| SRR2["_setRenderResult<br/>(bumps epoch again)"]
+    SRR2 -.-> Check
+```
+
 **What renderers may rely on today:**
 
 - Their `static render(file, arrayBuffer, app)` signature is
@@ -520,7 +544,7 @@ from the original `File`.
 **Tripwire — worker-spawn allow-list.** `scripts/build.py` runs a
 build-time grep over every entry in `JS_FILES` and fails the build on any
 `new Worker(` reference outside the allow-list (`src/workers/*.worker.js`
-plus the future `src/worker-manager.js` spawner). pdf.js spawns its own
+plus the `src/worker-manager.js` spawner). pdf.js spawns its own
 worker from vendored code, which is read separately and not part of
 `JS_FILES`, so the gate doesn't false-positive on it. The gate also
 keeps premature `new Worker(...)` calls out of the tree.
@@ -545,6 +569,96 @@ on the synchronous main-thread fallback (Firefox `file://` denies
 `worker.terminate()` is true preemption, and is instead bracketed
 by the 5 min `PARSER_LIMITS.WORKER_TIMEOUT_MS` wall-clock deadline
 shared by every `WorkerManager.run*` channel.
+
+```mermaid
+flowchart LR
+    subgraph HOST["Main thread"]
+        Load["App._loadFile<br/>(buffer in memory)"]
+        WM["WorkerManager<br/>src/worker-manager.js"]
+        PDFJS["PdfRenderer<br/>(separate channel)"]
+    end
+
+    Load -->|"runYara(buffer, source)"| WM
+    Load -->|"runTimeline(buffer, kind, opts)"| WM
+    Load -->|"runEncoded(buffer, text, opts)"| WM
+    Load -->|"render PDF"| PDFJS
+
+    WM -->|"_runWorkerJob<br/>blob: URL"| Y["yara.worker.js<br/>(yara-engine bundle)"]
+    WM -->|"_runWorkerJob<br/>blob: URL"| T["timeline.worker.js<br/>(csv / tsv / evtx /<br/>sqlite parse halves)"]
+    WM -->|"_runWorkerJob<br/>blob: URL"| E["encoded.worker.js<br/>(EncodedContentDetector +<br/>pako + jszip)"]
+    PDFJS -->|"GlobalWorkerOptions"| P["vendor/pdf.worker.js"]
+
+    Y -->|"{event:'done'\|'error'}"| WM
+    T -->|"streaming<br/>{event:'rows', batch}<br/>then 'done'\|'error'"| WM
+    E -->|"{event:'done'\|'error'}"| WM
+
+    WM -.->|"WORKER_TIMEOUT_MS<br/>(5 min, scaled to 30 min<br/>for big Timeline)"| TERM["worker.terminate()<br/>+ active-token bump<br/>(supersedes late msgs)"]
+    TERM -.-> Y
+    TERM -.-> T
+    TERM -.-> E
+
+    WM -->|"workers unavailable<br/>OR worker error<br/>OR timeout reject"| FB["Main-thread fallback<br/>(sync YaraEngine /<br/>sync CSV/EVTX parse /<br/>sync EncodedContentDetector)"]
+    FB -.->|"size guard:<br/>Timeline ≥ 200 MB raises<br/>YARA ≥ 32 MiB skipped<br/>(SYNC_YARA_FALLBACK_MAX_BYTES)"| FBE["Hard error /<br/>IOC.INFO skip note"]
+
+    PDFJS -.->|"PdfRenderer.disposeWorker()<br/>(_loadFile / Back nav)"| P
+```
+
+### Encoded-content recursion
+
+`EncodedContentDetector` is the deepest single recursion in the codebase
+— it owns the nested base64 / hex / zlib / chararray / SafeLinks /
+PowerShell-mini chains every loaded file's text view is mined for. The
+class root in `src/encoded-content-detector.js` orchestrates the search;
+the per-encoding finders / decoders are split across the eleven files
+under `src/decoders/` documented above.
+
+```mermaid
+flowchart TD
+    Entry["scan(text, options)<br/>depth ≤ MAX_RECURSION_DEPTH<br/>aggressive? bruteforce?"]
+    Entry --> Pre["Pre-pass:<br/>safelinks.unwrapSafeLink<br/>whitelist (data:, PEM, MIME body, GUID, …)"]
+
+    Pre --> FindFan{"Run every finder<br/>over the buffer"}
+    FindFan --> F1["base64-hex<br/>(b64 / hex / b32)"]
+    FindFan --> F2["zlib<br/>(zlib / gzip / deflate)"]
+    FindFan --> F3["encoding-finders<br/>(URL-enc / HTML-ent /<br/>Unicode-esc / Char-Array /<br/>Octal / ROT13 / Reverse /<br/>Spaced / String-Concat /<br/>Comment-Stripped)"]
+    FindFan --> F4["interleaved-separator<br/>(wide-string Base64,<br/>dotted IDs)"]
+    FindFan --> F5["cmd-obfuscation<br/>(CMD caret / concat /<br/>PS concat / replace /<br/>backtick / format / reverse)"]
+    FindFan --> F6["ps-mini-evaluator<br/>(&(<expr>) <args>)"]
+
+    F1 --> Cands[("candidates[]<br/>each: {type, value,<br/>_collapsed?, _rawBytes?}")]
+    F2 --> Cands
+    F3 --> Cands
+    F4 --> Cands
+    F5 --> Cands
+    F6 --> Cands
+
+    Cands --> PC["_processCandidate(c, depth)"]
+    PC --> Decode["encoding-decoders._decodeCandidate<br/>(or zlib._processCompressedCandidate)"]
+    Decode --> XOR{"_hasXorContext?<br/>(or bruteforce mode)"}
+    XOR -- yes --> XB["xor-bruteforce<br/>L=1 (always) +<br/>L=2/3/4 (bruteforce)"]
+    XOR -- no --> Class["entropy._classify<br/>(UTF-8 / UTF-16LE /<br/>Shannon entropy)"]
+    XB --> Class
+    Class --> IocX["ioc-extract<br/>_extractIOCsFromDecoded<br/>(routes URLs through unwrapSafeLink)"]
+
+    IocX --> Recurse{"Decoded text looks<br/>encoded again?<br/>depth+1 ≤ cap?"}
+    Recurse -- yes --> Inner["new EncodedContentDetector(...)<br/>.scan(decodedText, depth+1)"]
+    Inner --> Pre
+    Recurse -- no --> Emit["Emit finding +<br/>nested innerFindings[]"]
+
+    Emit --> Out[("findings.encodedContent[]<br/>+ findings.interestingStrings[]<br/>(IOC.URL, IOC.IP, IOC.HASH,<br/>IOC.DOMAIN, IOC.PATTERN, …)")]
+```
+
+The recursion driver `_processCandidate` is the only place the detector
+re-enters `scan()` with `depth + 1`; every finder pre-transforms its
+candidate where it can (`Reversed`, `Spaced Tokens`, `String Concat`,
+`Comment-Stripped`, `Interleaved Separator` all stash `_collapsed` at find
+time) so the inner pass can collapse `'tt' + 'p://' + reverse('moc.lave')`
+→ `http://eval.com` in a single ply per round. The whole chain runs inside
+`encoded.worker.js` for `_loadFile`; **IOC merging back into
+`findings.interestingStrings` always stays on the main thread** so the
+host owns dedup, click-to-focus stamping (`_sourceOffset`,
+`_highlightText`, `_decodedFrom`, `_encodedFinding`), and `_rawBytes`
+re-attachment.
 
 ### Iframe sandbox helper
 
@@ -794,7 +908,8 @@ subtly misbehave.
   | `src/decoders/zlib.js` | `_findCompressedBlobCandidates`, `_processCompressedCandidate` | zlib / gzip / deflate stream finders + a sync `Decompressor` wrapper. |
   | `src/decoders/encoding-finders.js` | URL-enc / HTML-ent / Unicode-esc / JS `\xHH` hex-escape / Char-Array (8 flavours) / Octal / Script.Encode / space-hex / ROT13 / Split-Join / reverse-string (JS / PowerShell / Python `reversed()`) / Spaced Tokens / literal string-concat / Comment-Stripped (identifier-split-by-`/* … */`) finders | Per-encoding candidate scanners. The reverse-string, Spaced Tokens, string-concat, and Comment-Stripped finders pre-transform the candidate at find time so their decoders are trivial UTF-8 passes — the recursion driver re-feeds the result through the full finder set so nested layers (`'tt' + 'p://' + reverse('moc.lave')` →`http://eval.com`) collapse one ply per `_processCandidate` round. Every finder honours `this._aggressive`: when set, minimum-length / minimum-distinct-character thresholds are lowered so analyst-selected snippets surface single-line obfuscations the bulk scanner deliberately ignores. When `this._bruteforce` is also set (kitchen-sink "Decode Selection" path), `_findRot13Candidates` additionally fans out every quoted literal across all 25 Caesar shifts as `ROT-N` candidates so any rotation surfaces, not just classic ROT13. |
   | `src/decoders/encoding-decoders.js` | `_decodeCandidate` switch + per-encoding decoders (`_decodeJsHexEscape` for `\xHH` runs; trivial passthrough for Reversed / String Concat / Spaced Tokens / Comment-Stripped / Interleaved Separator) + `_decodeRot13` / `_decodeRotN` (any-shift Caesar) + `_decodeScriptEncoded` | Per-encoding decode routines, including the MS Script Encoder cipher tables. The `Interleaved Separator (…)` family dispatches by `candidate.type` prefix and reads the pre-stripped `candidate._collapsed` produced at find time. |
-  | `src/decoders/cmd-obfuscation.js` | `_findCommandObfuscationCandidates`, `_processCommandObfuscation` | CMD caret / concat / envvar de-obfuscation **and** PowerShell concat / replace / backtick / format / reverse de-obfuscation. |
+  | `src/decoders/cmd-obfuscation.js` | `_findCommandObfuscationCandidates`, `_processCommandObfuscation` | CMD caret / concat / envvar de-obfuscation **and** PowerShell concat / replace / backtick / format / reverse de-obfuscation. Env-var substring (`%COMSPEC:~14,1%`) resolves against a `KNOWN_ENV_VARS` table of stock Windows defaults (COMSPEC, PATHEXT, SYSTEMROOT, WINDIR, PROGRAMFILES, PROGRAMDATA, PUBLIC, OS, PROCESSOR_ARCHITECTURE, HOMEDRIVE, SYSTEMDRIVE) plus any prior `set VAR=…` script-locals; emits one of three confidence tiers — `CMD Env Var Substring` (every token resolved → real payload), `CMD Env Var Substring (partial)` (mixed; unknowns rendered as `⟨VAR:~start,length⟩`), `CMD Env Var Substring (structural)` (all unknown, e.g. `%PATH%` abuse — still surfaces the operation count and ordering instead of an apology line). The variable-concatenation branch reuses the same resolver so `set x=powershell` + `%x:~0,3%` decodes correctly. Substring regex accepts negative `start`, negative `length`, and missing `length` (`%V:~5%`, `%V:~0,-2%`). |
+
   | `src/decoders/xor-bruteforce.js` | `_tryXorBruteforce`, `_tryXorBruteforceMulti`, `_hasXorContext` | Single- and multi-byte XOR cipher recovery. `_tryXorBruteforce` brute-forces all 255 single-byte keys against decoded Char-Array / Base64 / Hex bytes when `_hasXorContext` matches the surrounding source (`^`, `bxor`, `-bxor`); a clear winner (top-key score > 1.5× 2nd-place) becomes a synthetic `XOR (key 0xNN)` inner finding emitted from `_processCandidate`. In bruteforce mode (`this._bruteforce`) the call site bypasses `_hasXorContext` and additionally invokes `_tryXorBruteforceMulti(bytes)` over a 16 KiB sample for L=2/3/4-byte keys with crib-driven scoring (`http`, `MZ`, `PK`, `<?xml`, `function`, `var ` …); winners surface as `XOR (key 0x<HEX>)` with the multi-byte key encoded as a hex string. Single-byte caps work at 64 KiB with dual-window head/tail sampling. |
   | `src/decoders/interleaved-separator.js` | `_findInterleavedSeparatorCandidates`, `_decodeInterleavedSeparator` | Two-pass finder for fixed-separator interleaving such as `$\x00W\x00C\x00=\x00…` → `$WC=…`, `a.b.c.d` → `abcd`, `f o o b a r` → `foobar`. Detects runs where every other byte is the same separator (`\x00`, space, tab, `.`, etc.), strips the infill, and emits a candidate whose `type` carries the separator (`Interleaved Separator (\\x00)`, `Interleaved Separator (.)`, …) and whose `_collapsed` field holds the cleaned string for the trivial UTF-8 decoder. The recursion driver then re-feeds the collapsed string through the full finder set so a wide-string-encoded Base64 blob still surfaces its inner layer. Only runs in aggressive / bruteforce mode to avoid false positives in normal scans of pretty-printed JSON / dotted module paths. |
 
@@ -2013,9 +2128,10 @@ because it is also the fallback target.
    `rawText` through `lfNormalize()` once (so renderers that emit only
    `docEl.textContent` and forget the per-write LF normalisation can no
    longer misalign click-to-focus offsets), and stamps `app.currentResult`
-   for downstream consumers. New renderers should still mutate
-   `app.findings` directly — migrating to a return-value-driven
-   `findings` happens in a follow-up cleanup.
+   for downstream consumers. Renderers mutate `app.findings` directly;
+   the return-value path is reserved for the canonical fields above
+   (`docEl`, `findings`, `rawText`, `binary`, `navTitle`, `analyzer`),
+   which `RenderRoute.run` reads back and stamps onto `app.currentResult`.
 
 2. **Required `app.*` writes.** `RenderRoute.run` stamps
    `app.currentResult = { docEl, findings, rawText, buffer, binary, yaraBuffer,
@@ -2208,72 +2324,69 @@ The contributor-facing dual of [FEATURES.md → Renderer Capability Matrix](FEAT
 FEATURES.md describes **what the analyst gets**; this table records the
 per-renderer state of each soft contract so a contributor adding or
 upgrading a renderer can see at a glance which guarantees apply. Where
-FEATURES.md prints `✅` / `◐` / `—`, this matrix prints `✓` (compliant),
+FEATURES.md prints `✅` / `◐` / `—`, this matrix prints `✓` (wired),
 `◐` (partial / opt-out by design), or `✗` (not wired). The columns
 deliberately diverge from FEATURES.md because the gap categories are not
 1:1 with the user-visible capabilities:
 
 | Column | What it measures | When to write `◐` / `✗` |
 |---|---|---|
-| **Verdict band** | Tier-A summary banner via `binary-triage.js` + `BinaryVerdict.summarize()` | `✓` when the renderer feeds the verdict band; `—` for non-binary formats; `✗` for binary-shaped formats that should but don't (e.g. OOXML / OLE2) |
-| **Encoded recursion** | Routes the rendered surface (or a derived buffer) through `EncodedContentDetector.scan()` so nested Base64 / hex / gzip / zlib / Base32 / SafeLinks layers are surfaced | `◐` when recursion runs per-row inside a grid (EVTX / CSV) instead of producing the full lineage view; `✗` when a script-like surface (`.iqy`, `.slk`, `.reg`, `.inf`, `.osascript`) would benefit but is not wired |
+| **Verdict band** | Tier-A summary banner via `binary-triage.js` + `BinaryVerdict.summarize()` | `✓` when the renderer feeds the verdict band; `—` for non-binary formats; `✗` for binary-shaped formats where the band is absent (e.g. OOXML / OLE2) |
+| **Encoded recursion** | Routes the rendered surface (or a derived buffer) through `EncodedContentDetector.scan()` so nested Base64 / hex / gzip / zlib / Base32 / SafeLinks layers are surfaced | `◐` when recursion runs per-row inside a grid (EVTX / CSV) instead of producing the full lineage view; `✗` when a script-like surface (`.iqy`, `.slk`, `.reg`, `.inf`, `.osascript`) is not wired |
 | **Click-to-focus** | `container._rawText` LF-normalised + plaintext-table backing **or** `_showSourcePane()` toggle | `◐` for renderers that scroll-to-card / -row / -page but cannot land a per-character `<mark>` (Office, MSI, OneNote, PDF, JAR); `✗` for surfaces with no text plane at all (image, archive listing) |
 | **Drill-down** | Forwards `open-inner-file` through `App.openInnerFile` **or** calls it directly with a synthetic File | `◐` for listing-only formats (7z / RAR / DMG — entries locked behind missing decompressors); `—` for terminal formats (text scripts, certificates, single-page documents) |
-| **Contract conformance** | What's broken or missing today under `scripts/check_renderer_contract.py` **plus** the soft contract items: `mirrorMetadataIOCs` adoption, no hand-rolled `interestingStrings.push(...)`, `escalateRisk()` for risk transitions, async findings via `app.updateFindings(patch, {token})` instead of post-snapshot mutation | `✓` when D5 passes and every soft item is satisfied; otherwise list the specific gap (e.g. `◐ no mirrorMetadataIOCs`, `◐ hand-rolls iS.push×N`, `◐ snapshot-only async`). Free-text by design — this column drives follow-ups. |
 
 Cells reflect a structured grep over `src/renderers/` and the FEATURES.md
-◐ end-notes. Hand-rolled push counts are literal `interestingStrings.push(`
-matches and may include legitimate truncation-marker emissions; treat them
-as an upper-bound audit list, not a bug count.
+◐ end-notes.
 
-| Renderer | Verdict band | Encoded recursion | Click-to-focus | Drill-down | Contract conformance |
-|---|:-:|:-:|:-:|:-:|---|
-| `pe-renderer` | ✓ | ✓ | ✓ | ✓ (resources, overlay) | ✓ |
-| `elf-renderer` | ✓ | ✓ | ✓ | ✓ (overlay) | ✓ |
-| `macho-renderer` | ✓ | ✓ | ✓ | ✓ (overlay) | ✓ |
-| `pdf-renderer` | — | ✓ | ◐ (page-anchored only) | ✓ (`/EmbeddedFile`, JS bodies, XFA) | ◐ snapshot-only async (cutover pending — QR / `/JS` bodies) |
-| `eml-renderer` | — | ✓ | ✓ | ✓ (attachments) | ✓ |
-| `msg-renderer` | — | ✓ | ✓ | ✓ (attachments) | ✓ |
-| `onenote-renderer` | — | ✓ | ◐ (FileDataStoreObject only) | ✓ (FileDataStoreObject blobs) | ◐ no `mirrorMetadataIOCs`; ◐ snapshot-only async (inflate continuation) |
-| `image-renderer` | — | ✓ (EXIF / chunks / QR) | — (no text plane) | — | ◐ snapshot-only async (QR decode continuation — cutover pending) |
-| `svg-renderer` | — | — (XML walker covers it) | ✓ (source toggle) | — | ✓ (uses `findings.augmentedBuffer` → `currentResult.yaraBuffer`) |
-| `html-renderer` | — | — | ✓ (source toggle) | — | ✓ (same `findings.augmentedBuffer` path as SVG) |
-| `xlsx-renderer` | ✗ (OOXML triage absent) | ✗ (no `EncodedContentDetector` over decoded sheet text) | ◐ (per-sheet / VBA cards) | ✓ (VBA, embeds) | ◐ no `mirrorMetadataIOCs` |
-| `doc-renderer` | ✗ (OLE2 triage absent) | ✗ | ◐ (per-stream cards) | ✓ (VBA streams) | ◐ no `pushIOC` adoption visible; ◐ no `mirrorMetadataIOCs` |
-| `pptx-renderer` | ✗ (OOXML triage absent) | ✗ | ◐ (per-slide cards) | ◐ (delegates to xlsx pipeline) | ◐ no `pushIOC` / no `mirrorMetadataIOCs` |
-| `ppt-renderer` | ✗ (OLE2 triage absent) | ✗ | ◐ (per-stream cards) | ◐ | ◐ no `pushIOC` / no `mirrorMetadataIOCs` |
-| `odp-renderer` | — | ✗ | ◐ | — | ◐ no `pushIOC` / no `mirrorMetadataIOCs` |
-| `odt-renderer` | — | ✗ | ◐ | — | ◐ no `pushIOC` / no `mirrorMetadataIOCs` |
-| `rtf-renderer` | — | ✗ | ✓ | ✓ (OLE objects) | ◐ no `pushIOC` / no `mirrorMetadataIOCs` |
-| `lnk-renderer` | — | — | — (binary view) | — | ✓ |
-| `hta-renderer` | — | — | ✓ | — | ◐ no `mirrorMetadataIOCs` |
-| `wsf-renderer` | — | — | ✓ | — | ◐ no `mirrorMetadataIOCs` |
-| `inf-renderer` | — | ✗ | ✓ | — | ◐ hand-rolls `iS.push×1`; no `pushIOC`; no `mirrorMetadataIOCs` |
-| `reg-renderer` | — | ✗ | ✓ | — | ◐ hand-rolls `iS.push×1`; no `pushIOC`; no `mirrorMetadataIOCs` |
-| `url-renderer` | — | — | ✓ (source toggle) | — | ◐ no `pushIOC` / no `mirrorMetadataIOCs` |
-| `msi-renderer` | — | ✗ | ◐ (per-row cards) | ✓ (CustomActions, embedded CAB / streams) | ◐ no `pushIOC` adoption; partial `mirrorMetadataIOCs` |
-| `clickonce-renderer` | — | — | ✓ | — | ◐ no `pushIOC` / no `mirrorMetadataIOCs` (cert subject + thumbprint should mirror) |
-| `msix-renderer` | — | — | ✓ | ✓ (inner files) | ◐ hand-rolls `iS.push×2` |
-| `browserext-renderer` | — | — | ✓ | ✓ (manifest, scripts, icons) | ◐ hand-rolls `iS.push×3`; no `pushIOC` |
-| `npm-renderer` | — | — | ✓ | ✓ (`package/*` entries) | ◐ hand-rolls `iS.push×4` |
-| `jar-renderer` | — | — | ◐ (per-class cards) | ✓ (class files, manifest) | ◐ hand-rolls `iS.push×7` (largest hand-roll site); no `pushIOC`; no `mirrorMetadataIOCs` |
-| `osascript-renderer` | — | ✗ (script bodies) | ✓ | — | ◐ no `mirrorMetadataIOCs` |
-| `plist-renderer` | — | — | ✓ | — | ◐ no `mirrorMetadataIOCs` |
-| `dmg-renderer` | ✗ (Apple disk image triage absent) | — | — | ◐ (partition listing; `.app` paths surfaced but not extracted) | ◐ no `pushIOC` / no `mirrorMetadataIOCs` |
-| `pkg-renderer` | — | — | — | ✓ (xar TOC entries, scripts) | ◐ no `pushIOC` adoption visible |
-| `x509-renderer` | — | — | — (structured view) | — | ✓ |
-| `pgp-renderer` | — | — | — (structured view) | — | ✓ |
-| `evtx-renderer` | — | ◐ (per-row EventData via Timeline route) | — (Timeline grid) | — | ◐ analysis-bypass route — guard preserved by design |
-| `sqlite-renderer` | — | ✗ (per-cell scan deferred) | ✓ | — | ◐ no `mirrorMetadataIOCs` |
-| `csv-renderer` | — | ◐ (per-cell via Timeline route) | — (Timeline grid) | — | ◐ analysis-bypass route — by design |
-| `json-renderer` | — | ✗ (per-leaf scan deferred) | ✓ | — | ◐ no `pushIOC` / no `mirrorMetadataIOCs` |
-| `iqy-slk-renderer` | — | ✗ | ✓ | — | ◐ no `pushIOC` / no `mirrorMetadataIOCs` |
-| `zip-renderer` | — | — (per-entry) | — (archive listing) | ✓ (per-entry) | ✓ |
-| `seven7-renderer` | — | — | — | ◐ (listing-only — out of scope) | ✓ |
-| `rar-renderer` | — | — | — | ◐ (listing-only — out of scope) | ✓ |
-| `cab-renderer` | — | — | — | ✓ (uncompressed / MSZIP) | ✓ |
-| `iso-renderer` | — | — | — | ✓ (ISO 9660 entries) | ◐ no `pushIOC` adoption visible |
-| `plaintext-renderer` | — | ✓ (catch-all surface) | ✓ | — | ◐ no `pushIOC` / no `mirrorMetadataIOCs` |
+| Renderer | Verdict band | Encoded recursion | Click-to-focus | Drill-down |
+|---|:-:|:-:|:-:|:-:|
+| `pe-renderer` | ✓ | ✓ | ✓ | ✓ (resources, overlay) |
+| `elf-renderer` | ✓ | ✓ | ✓ | ✓ (overlay) |
+| `macho-renderer` | ✓ | ✓ | ✓ | ✓ (overlay) |
+| `pdf-renderer` | — | ✓ | ◐ (page-anchored only) | ✓ (`/EmbeddedFile`, JS bodies, XFA) |
+| `eml-renderer` | — | ✓ | ✓ | ✓ (attachments) |
+| `msg-renderer` | — | ✓ | ✓ | ✓ (attachments) |
+| `onenote-renderer` | — | ✓ | ◐ (FileDataStoreObject only) | ✓ (FileDataStoreObject blobs) |
+| `image-renderer` | — | ✓ (EXIF / chunks / QR) | — (no text plane) | — |
+| `svg-renderer` | — | — (XML walker covers it) | ✓ (source toggle) | — |
+| `html-renderer` | — | — | ✓ (source toggle) | — |
+| `xlsx-renderer` | ✗ | ✗ | ◐ (per-sheet / VBA cards) | ✓ (VBA, embeds) |
+| `doc-renderer` | ✗ | ✗ | ◐ (per-stream cards) | ✓ (VBA streams) |
+| `pptx-renderer` | ✗ | ✗ | ◐ (per-slide cards) | ◐ (delegates to xlsx pipeline) |
+| `ppt-renderer` | ✗ | ✗ | ◐ (per-stream cards) | ◐ |
+| `odp-renderer` | — | ✗ | ◐ | — |
+| `odt-renderer` | — | ✗ | ◐ | — |
+| `rtf-renderer` | — | ✗ | ✓ | ✓ (OLE objects) |
+| `lnk-renderer` | — | — | — (binary view) | — |
+| `hta-renderer` | — | — | ✓ | — |
+| `wsf-renderer` | — | — | ✓ | — |
+| `inf-renderer` | — | ✗ | ✓ | — |
+| `reg-renderer` | — | ✗ | ✓ | — |
+| `url-renderer` | — | — | ✓ (source toggle) | — |
+| `msi-renderer` | — | ✗ | ◐ (per-row cards) | ✓ (CustomActions, embedded CAB / streams) |
+| `clickonce-renderer` | — | — | ✓ | — |
+| `msix-renderer` | — | — | ✓ | ✓ (inner files) |
+| `browserext-renderer` | — | — | ✓ | ✓ (manifest, scripts, icons) |
+| `npm-renderer` | — | — | ✓ | ✓ (`package/*` entries) |
+| `jar-renderer` | — | — | ◐ (per-class cards) | ✓ (class files, manifest) |
+| `osascript-renderer` | — | ✗ (script bodies) | ✓ | — |
+| `plist-renderer` | — | — | ✓ | — |
+| `dmg-renderer` | ✗ | — | — | ◐ (partition listing; `.app` paths surfaced but not extracted) |
+| `pkg-renderer` | — | — | — | ✓ (xar TOC entries, scripts) |
+| `x509-renderer` | — | — | — (structured view) | — |
+| `pgp-renderer` | — | — | — (structured view) | — |
+| `evtx-renderer` | — | ◐ (per-row EventData via Timeline route) | — (Timeline grid) | — |
+| `sqlite-renderer` | — | ✗ | ✓ | — |
+| `csv-renderer` | — | ◐ (per-cell via Timeline route) | — (Timeline grid) | — |
+| `json-renderer` | — | ✗ | ✓ | — |
+| `iqy-slk-renderer` | — | ✗ | ✓ | — |
+| `zip-renderer` | — | — (per-entry) | — (archive listing) | ✓ (per-entry) |
+| `seven7-renderer` | — | — | — | ◐ (listing-only — out of scope) |
+| `rar-renderer` | — | — | — | ◐ (listing-only — out of scope) |
+| `cab-renderer` | — | — | — | ✓ (uncompressed / MSZIP) |
+| `iso-renderer` | — | — | — | ✓ (ISO 9660 entries) |
+| `plaintext-renderer` | — | ✓ (catch-all surface) | ✓ | — |
 
 **Helper modules** (allow-listed by `scripts/check_renderer_contract.py`,
 exempt from per-format contract checks): `archive-tree.js`,
