@@ -1841,12 +1841,42 @@ class TimelineView {
       if (e.target.closest && e.target.closest('.grid-header-cell')) return;
       this._closePopover();
     };
+    // Double-tap Esc anywhere on the Timeline page clears the current
+    // query. Single Esc keeps the existing precedence: dialog → popover →
+    // event cursor. Each consumed press resets the double-tap window so
+    // an Esc that closes a popover never counts as the first half of a
+    // clear-query gesture. Window matches the OS double-click feel.
+    this._lastEscAt = 0;
+    this._DBL_ESC_MS = 500;
     this._onDocKey = (e) => {
-      if (e.key === 'Escape') {
-        if (this._openDialog) { this._closeDialog(); e.stopPropagation(); return; }
-        if (this._openPopover) { this._closePopover(); e.stopPropagation(); return; }
-        // Nothing open → clear the "you are here" cursor if it's active.
-        if (this._cursorDataIdx != null) { this._setCursorDataIdx(null); e.stopPropagation(); return; }
+      if (e.key !== 'Escape') return;
+      if (this._openDialog) { this._closeDialog(); e.stopPropagation(); this._lastEscAt = 0; return; }
+      if (this._openPopover) { this._closePopover(); e.stopPropagation(); this._lastEscAt = 0; return; }
+      // Nothing open → clear the "you are here" cursor if it's active.
+      if (this._cursorDataIdx != null) { this._setCursorDataIdx(null); e.stopPropagation(); this._lastEscAt = 0; return; }
+      // Nothing else consumed Esc — double-tap clears the query. The
+      // single-Esc-clears-when-textarea-focused behaviour lives in
+      // TimelineQueryEditor and is unaffected by this branch (its
+      // keydown handler runs on the textarea, not capture-phase doc).
+      const now = Date.now();
+      const within = this._lastEscAt && (now - this._lastEscAt) <= this._DBL_ESC_MS;
+      if (within && this._queryStr) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (this._queryEditor) this._queryEditor.setValue('');
+        this._applyQueryString('');
+        if (this._app && typeof this._app._toast === 'function') {
+          this._app._toast('Filter cleared', 'info');
+        }
+        this._lastEscAt = 0;
+        return;
+      }
+      // First Esc with nothing else to do — arm the double-tap window
+      // and (if there's actually a query to clear) toast a hint so the
+      // gesture is discoverable.
+      this._lastEscAt = now;
+      if (this._queryStr && this._app && typeof this._app._toast === 'function') {
+        this._app._toast('Press Esc again to clear filter', 'info');
       }
     };
     // Scrolling the main page (viewer, window, or any nested scroller)
