@@ -1290,14 +1290,18 @@ class JarRenderer {
       });
     }
 
-    // URLs (deduped — the same URL can appear in many constant pools)
+    // URLs (deduped — the same URL can appear in many constant pools).
+    // Route through `pushIOC()` so the auto-emitted IOC.DOMAIN sibling
+    // (and IOC.PATTERN punycode/abuse-suffix siblings) fire — without it
+    // the sidebar's domain filter silently drops legitimate JAR-embedded
+    // C2 hosts (M11).
     const seenUrls = new Set();
     const uniqueUrls = [];
     for (const url of analysis.urls) {
       if (seenUrls.has(url)) continue;
       seenUrls.add(url);
       uniqueUrls.push(url);
-      f.interestingStrings.push({ type: IOC.URL, url, severity: 'info' });
+      pushIOC(f, { type: IOC.URL, value: url, severity: 'info' });
     }
     f.externalRefs = uniqueUrls.map(u => ({ type: IOC.URL, url: u, severity: 'info' }));
 

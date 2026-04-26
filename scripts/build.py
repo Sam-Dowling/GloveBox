@@ -1116,6 +1116,74 @@ def _check_app_mixin_collisions():
 _check_app_mixin_collisions()
 
 
+# ── Build gate: no `*/` inside backtick spans of block comments ───────────────
+# Block comments in JS are terminated by `*/` regardless of what surrounds
+# them — backticks DO NOT make `*/` an inert sub-string. The H8 work added
+# JSDoc reference paragraphs that cite the YARA category marker as
+# `` `/*! @loupe-category: <NAME> */` ``; the `*/` inside that backtick
+# span closed the JSDoc early, the parser then read the rest of the line
+# as live code, hit the next backtick (a real template literal further
+# down the file), and bombed with
+#       `Uncaught SyntaxError: expected property name, got template literal`
+# at runtime. The build doesn't run a JS parser over the bundle, so all
+# four `make.py` steps stayed green while the emitted page was broken.
+#
+# This gate walks each JS source file with a tiny block-comment tracker
+# and bails on any line that, while inside a `/* … */` block comment,
+# contains a backtick-span (`…`) whose contents include `*/`. The
+# canonical fix is to escape one of the slashes (`*\/`) — readable in
+# editors and JSDoc tooling, not the comment terminator token.
+#
+# Escape hatch: `// loupe-allow:backtick-comment-term` on the offending
+# line. None today.
+_BACKTICK_COMMENT_TERM_RE = _re.compile(r"`[^`\n]*\*/[^`\n]*`")
+
+def _check_backtick_comment_terminator():
+    violations = []
+    for rel in EARLY_JS_FILES + APP_JS_FILES:
+        text = read(rel)
+        in_block = False
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            # Track block-comment open/close at line granularity. Good enough
+            # for this gate — multi-line block comments (the JSDoc shape that
+            # bit us) are exactly what we want to scan.
+            i = 0
+            line_in_block = in_block
+            while i < len(line):
+                if not in_block:
+                    j = line.find('/*', i)
+                    if j < 0:
+                        break
+                    in_block = True
+                    i = j + 2
+                else:
+                    j = line.find('*/', i)
+                    if j < 0:
+                        break
+                    in_block = False
+                    i = j + 2
+
+            # Was any portion of this line inside a block comment? If so,
+            # check it for the offending backtick-span pattern.
+            if (line_in_block or in_block) and _BACKTICK_COMMENT_TERM_RE.search(line):
+                if '// loupe-allow:backtick-comment-term' in line:
+                    continue
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
+    if violations:
+        msg = (
+            "Build gate failed — `*/` inside a backtick span within a block\n"
+            "comment closes the comment early and turns subsequent backticks\n"
+            "into a real template literal at runtime. Escape the slash so\n"
+            "the comment doesn't terminate (e.g. `*\\/` instead of `*/`).\n"
+            "See CONTRIBUTING.md → Tripwires & Build Gates → Backtick comment\n"
+            "terminator.\n"
+            "Offending sites:\n  " + "\n  ".join(violations)
+        )
+        raise SystemExit(msg)
+
+_check_backtick_comment_terminator()
+
+
 # File extensions accepted by the open-file input. Keep as a list for sanity.
 ACCEPT_EXTS = [
     '.docx','.docm','.xlsx','.xlsm','.xls','.ods','.pptx','.pptm','.ppt','.odt','.odp',

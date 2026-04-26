@@ -34,11 +34,21 @@
 // Soft caps (so a runaway paste can't blow the 5 MB localStorage quota):
 //   • Max 64 user lists
 //   • Max 10,000 entries per list
+//   • Max 25,000 entries across all lists in a single bulk import (M5)
 //   • Max 1 MB serialised JSON for the whole blob
 // On overflow we refuse the write and surface a console warning; the UI
 // layer shows a toast. The previous stored blob is never mutated on an
 // overflow write, so the user cannot corrupt their lists by pasting too
 // much.
+//
+// Read-side robustness (M5): a corrupt `loupe_nicelists_user` blob (manually
+// edited, partially written by a crashed tab, …) used to silently masquerade
+// as "no user lists at all". `_loadRaw` now distinguishes "absent" from
+// "present-but-corrupt" and on corruption (a) emits a single console warning
+// and (b) clears the bad key so subsequent reads start clean instead of
+// repeatedly tripping over the same poisoned blob. The warning is intentionally
+// console-only — the Settings UI surfaces a parallel banner via
+// `lastReadError()` when the user opens the Nicelists tab.
 
 (function (global) {
   'use strict';
@@ -50,6 +60,20 @@
   const MAX_ENTRIES_PER_LIST = 10000;
   const MAX_NAME_LEN = 80;
   const MAX_BLOB_BYTES = 1024 * 1024;
+  // M5 — bulk-import aggregate cap. A single `importAll(text, …)` call
+  // pulling in more than this many normalised entries (summed across every
+  // incoming list) is refused before the first write, to keep an "I dropped
+  // the wrong file" mistake from overwriting a healthy local store with
+  // 200k typo'd lines that then trip MAX_BLOB_BYTES on the next save.
+  const MAX_IMPORT_ENTRIES = 25000;
+
+  // ── M5 — read-side parse-failure tracking ────────────────────────────
+  // `safeStorage.getJSON` swallows parse failures (returns null) so a
+  // genuinely-corrupt blob is indistinguishable from "key absent". We
+  // re-do the read here using `safeStorage.get` + manual JSON.parse so we
+  // can latch the failure into `_lastReadError` and clear the bad key.
+  // Settings UI surfaces this through `lastReadError()` to show a banner.
+  let _lastReadError = '';
 
   // ── tiny utils ─────────────────────────────────────────────────────────
 
@@ -139,10 +163,44 @@
   // ── storage ────────────────────────────────────────────────────────────
 
   function _loadRaw() {
-    const j = safeStorage.getJSON(STORAGE_KEY, null);
-    if (!j || typeof j !== 'object' || !Array.isArray(j.lists)) return null;
+    // Hand-roll the read so we can distinguish "absent" (return null cleanly)
+    // from "present-but-corrupt" (latch `_lastReadError`, clear the bad key,
+    // and return null). `safeStorage.getJSON` collapses both into null and
+    // would silently drop the user's lists on every page load if a single
+    // bad write got through. See header — M5.
+    const raw = safeStorage.get(STORAGE_KEY);
+    if (raw == null || raw === '') { _lastReadError = ''; return null; }
+    let j;
+    try { j = JSON.parse(raw); }
+    catch (e) {
+      _lastReadError =
+        'Stored nicelists blob is corrupt JSON — your saved lists could not be ' +
+        'loaded and the bad blob has been cleared. Re-import from a backup if you ' +
+        'have one.';
+       
+      console.warn('[nicelist-user] corrupt blob; clearing key:', e && e.message);
+      // Clear the poisoned key so we don't repeat this work + warning every
+      // load. The user has already lost the data — keeping the bad blob
+      // around just makes the failure mode permanent.
+      try { safeStorage.remove(STORAGE_KEY); } catch (_) { /* best-effort */ }
+      return null;
+    }
+    if (!j || typeof j !== 'object' || !Array.isArray(j.lists)) {
+      // Shape is wrong but JSON parsed — treat as absent without warning;
+      // most likely an older / unrelated key value, not a corruption event.
+      _lastReadError = '';
+      return null;
+    }
+    _lastReadError = '';
     return j;
   }
+
+  /**
+   * Surface the most recent read-side parse-failure message (M5). Settings
+   * UI calls this when rendering the Nicelists tab to show a banner.
+   * Returns '' when the last read was clean.
+   */
+  function lastReadError() { return _lastReadError; }
 
   function _saveRaw(blob) {
     let s;
@@ -488,6 +546,31 @@
     else return { imported: 0, skipped: 0, error: 'no "lists" array found' };
 
     const normalised = incoming.map(_normaliseList).filter(Boolean);
+
+    // M5 — refuse the import outright if the aggregate entry count is
+    // larger than the cap. This guards both the (a) "I dropped the wrong
+    // gigabyte CSV" UX accident and (b) the deeper concern that a 200k-row
+    // import would hit `MAX_BLOB_BYTES` mid-write and leave the user with
+    // a "save succeeded" toast while only a partial blob (or nothing,
+    // depending on browser) actually persisted. We bail before the first
+    // write so the existing on-disk state is never touched.
+    let totalIncoming = 0;
+    for (const n of normalised) {
+      totalIncoming += (n.entries && n.entries.length) | 0;
+      if (totalIncoming > MAX_IMPORT_ENTRIES) break;
+    }
+    if (totalIncoming > MAX_IMPORT_ENTRIES) {
+      return {
+        imported: 0,
+        skipped: normalised.length,
+        error:
+          'import refused: aggregate entry count exceeds ' +
+          MAX_IMPORT_ENTRIES.toLocaleString() + ' (got ~' +
+          totalIncoming.toLocaleString() + '). Split the file into smaller ' +
+          'lists and import them separately.',
+      };
+    }
+
     if (mode === 'replace') {
       const ok = save(normalised);
       _invalidate();
@@ -537,7 +620,9 @@
     MAX_LISTS,
     MAX_ENTRIES_PER_LIST,
     MAX_NAME_LEN,
+    MAX_IMPORT_ENTRIES,
     load,
+    lastReadError,
     save: saveWrapped,
     createList: createWrapped,
     deleteList: deleteWrapped,

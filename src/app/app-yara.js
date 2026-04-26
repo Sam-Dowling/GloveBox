@@ -136,8 +136,12 @@ extendApp({
   // ═══════════════════════════════════════════════════════════════════════
 
   /** Parse DEFAULT_YARA_RULES into categorized, sorted rule groups.
-   *  @param {string} source — full YARA source with `/*! @loupe-category: <NAME> */`
+   *  @param {string} source — full YARA source with `/*! @loupe-category: <NAME> *\/`
    *                            block-comment markers injected by `scripts/build.py`.
+   *                            (The trailing `*\/` is escaped so this JSDoc
+   *                            block isn't terminated mid-sentence by the
+   *                            literal `*\/` inside the backtick span — the
+   *                            real marker is `*` followed by `/`.)
    *
    *  H8 — The marker is a block comment using a sentinel substring
    *  (`@loupe-category`) which `scripts/build.py` statically forbids
