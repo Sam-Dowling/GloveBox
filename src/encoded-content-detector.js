@@ -199,6 +199,7 @@ class EncodedContentDetector {
     const reverseCandidates      = _runFinder(this._findReverseStringCandidates);
     const concatCandidates       = _runFinder(this._findStringConcatCandidates);
     const spacedTokenCandidates  = _runFinder(this._findSpacedTokenCandidates);
+    const commentObfCandidates   = _runFinder(this._findCommentObfuscationCandidates);
     const cmdObfCandidates       = _runFinder(this._findCommandObfuscationCandidates);
 
     // Surface a single info-level finding so the analyst knows the
@@ -292,6 +293,10 @@ class EncodedContentDetector {
       if (result) findings.push(result);
     }
     for (const cand of spacedTokenCandidates) {
+      const result = await this._processCandidate(cand, 0);
+      if (result) findings.push(result);
+    }
+    for (const cand of commentObfCandidates) {
       const result = await this._processCandidate(cand, 0);
       if (result) findings.push(result);
     }

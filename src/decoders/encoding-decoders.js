@@ -39,6 +39,7 @@ Object.assign(EncodedContentDetector.prototype, {
       case 'Reversed':
       case 'String Concat':
       case 'Spaced Tokens':
+      case 'Comment-Stripped':
         try { return new TextEncoder().encode(candidate.raw); } catch (_) { return null; }
       // XOR candidates are SYNTHETIC — emitted from inside
       // `_processCandidate` after a Char-Array / Base64 / Hex decode hits

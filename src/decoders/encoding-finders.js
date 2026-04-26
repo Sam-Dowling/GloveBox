@@ -21,6 +21,7 @@
 //   * Reverse-string transforms (`.reverse()`, `[-1..-n]`, `[::-1]`)
 //   * Literal string-concat assembly (`'foo'+'bar'+'baz'`)
 //   * Token-spaced obfuscation (`W  r  i  t  e  -  O  u  t  p  u  t`)
+//   * Identifier-split-by-comments (`console /* x */ . /* y */ log /* z */ (…)`)
 //
 // Each finder caps results at `this.maxCandidatesPerType` to bound runtime on
 // large inputs. Mounted via `Object.assign(EncodedContentDetector.prototype, …)`.
@@ -832,6 +833,74 @@ Object.assign(EncodedContentDetector.prototype, {
         autoDecoded: true,
       });
       if (candidates.length >= this.maxCandidatesPerType) break;
+    }
+    return candidates;
+  },
+
+  /**
+   * Identifier-split-by-comments deobfuscation.
+   *
+   *   `/* *\/ console /* obf *\/ . /* layer *\/ log /* test *\/ ("Hello World")`
+   *
+   * No existing finder targets `<ident> /* … *\/ <op> /* … *\/ <ident>` runs.
+   * The token sequence reads as ordinary code with comments, so renderers
+   * never strip comments before scanning (intentionally — comments can
+   * carry payload). This finder targets the specific shape: an identifier
+   * followed by ≥ 2 alternations of `<C-style comment> <op> <ident>` and
+   * a trailing call/index, where `<op>` is `.`, `[`, or `(`.
+   *
+   * Strategy:
+   *   1. Anchored regex captures the whole run (≤ 240 chars to bound
+   *      backtracking; comment body is non-greedy so a stray `**` can't
+   *      blow the engine).
+   *   2. Strip every `/* … *\/` from the captured run.
+   *   3. Plausibility gate: the stripped form must contain one of the
+   *      execution-intent keywords; otherwise the finding is dropped
+   *      (legitimate JSDoc-decorated method chains pass the regex but
+   *      not this gate).
+   *
+   * The decoder is the trivial UTF-8 passthrough already used for
+   * Reversed / String Concat / Spaced Tokens — recursion in
+   * `_processCandidate` re-feeds the stripped text through every other
+   * finder so an `eval(…)` argument that itself contains a Base64 /
+   * char-array layer collapses one ply per round.
+   *
+   * In aggressive mode (selection-decode) the exec-keyword gate is
+   * dropped — the analyst has already opted into the noise.
+   */
+  _findCommentObfuscationCandidates(text, context) {
+    if (!text || text.length < 24) return [];
+    const candidates = [];
+    // ≥ 2 comment-separated `<op> <ident>` alternations, optional
+    // trailing comment + open paren / bracket. Length-capped at 240 to
+    // bound backtracking on adversarial inputs.
+    const re = /\b[a-zA-Z_$][\w$]{0,40}\s*(?:\/\*[^*]{0,200}?\*\/\s*[.\[(]\s*[a-zA-Z_$][\w$]{0,40}\s*){2,}(?:\/\*[^*]{0,200}?\*\/\s*)?[(\[]/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const raw = m[0];
+      if (raw.length > 240) continue;
+      // Strip every `/* … */` block, then collapse the residual
+      // whitespace runs so the assembled token sequence reads as code.
+      const stripped = raw.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\s+/g, '');
+      if (stripped.length < 6) continue;
+      if (!/^[\x20-\x7E]{6,}$/.test(stripped)) continue;
+      // Plausibility — gate on execution-intent keywords. Without this
+      // the finder false-positives on legitimate JSDoc-heavy method
+      // chains (`fooClient /* @returns Foo */ . /* see #42 */ get(...)`).
+      const looksExec = /(console|alert|eval|exec|invoke|iex|fetch|XMLHttpRequest|WScript|Shell\.Application|document|window|new\s+Function)/i.test(stripped);
+      if (!this._aggressive && !looksExec) continue;
+      candidates.push({
+        type: 'Comment-Stripped',
+        raw: stripped,                  // store the ALREADY-STRIPPED text
+        offset: m.index,
+        length: raw.length,
+        entropy: 0,
+        confidence: looksExec ? 'high' : 'normal',
+        hint: 'Identifier-split-by-comments deobfuscation',
+        autoDecoded: true,
+      });
     }
     return candidates;
   },
