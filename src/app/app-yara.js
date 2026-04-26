@@ -136,12 +136,27 @@ extendApp({
   // ═══════════════════════════════════════════════════════════════════════
 
   /** Parse DEFAULT_YARA_RULES into categorized, sorted rule groups.
-   *  @param {string} source — full YARA source with // @category: markers
+   *  @param {string} source — full YARA source with `/*! @loupe-category: <NAME> */`
+   *                            block-comment markers injected by `scripts/build.py`.
+   *
+   *  H8 — The marker is a block comment using a sentinel substring
+   *  (`@loupe-category`) which `scripts/build.py` statically forbids
+   *  from appearing anywhere in the rule source (no string literal,
+   *  identifier, or comment may contain it). That removes the pre-H8
+   *  attack window where a rule of the form
+   *      `$s = "// @category: Hacked"`
+   *  would silently truncate the previous category and start a new
+   *  one with the wrong name.
+   *
    *  @returns {Array<{name:string, rules:Array, isUploaded?:boolean}>} */
   _parseYaraCategories(source) {
     const sevOrder = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
     const validSevs = new Set(['critical', 'high', 'medium', 'low', 'info']);
-    const parts = source.split(/^\/\/\s*@category:\s*(.+)$/m);
+    // The marker is `/*! @loupe-category: <NAME> */`. The capturing
+    // group is the trimmed name. We don't anchor to line start (block
+    // comments may sit on the tail of a rule's closing `}` line).
+    const parts = source.split(/\/\*!\s*@loupe-category:\s*([^*]+?)\s*\*\//);
+
 
     // Fallback: no markers → one group
     if (parts.length <= 1) {

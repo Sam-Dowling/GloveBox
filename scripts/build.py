@@ -132,12 +132,53 @@ YARA_CATEGORIES = {
     'src/rules/npm-threats.yar': 'npm',
 }
 
+# H8 — Category-marker robustness.
+#
+# The pre-H8 marker was a `// @category: <NAME>` line comment matched
+# by `app-yara.js` with a free-text regex. Two failure modes:
+#
+#   1. A rule string literal (e.g. `$s = "// @category: Hacked"`) anywhere
+#      in any concatenated `.yar` file silently truncated the previous
+#      category and started a new one with the wrong name.
+#   2. A rule file added to `YARA_FILES` but missing from
+#      `YARA_CATEGORIES` was silently labelled `Other`.
+#
+# Fix: emit a sentinel block comment that the rule files are statically
+# verified not to contain (`@loupe-category` is a forbidden substring in
+# `.yar` source — `_check_yara_category_sentinel` enforces it), and make
+# the missing-category case a hard build failure.
+_YARA_CATEGORY_SENTINEL = '@loupe-category'  # must never appear in .yar source
+
+# Every file we concatenate must have an explicit category — silent fall-
+# back to "Other" hides bugs (file added to YARA_FILES but the contributor
+# forgot to add it to YARA_CATEGORIES). H8.
+_missing_categories = [f for f in YARA_FILES if f not in YARA_CATEGORIES]
+if _missing_categories:
+    raise SystemExit(
+        'YARA_CATEGORIES is missing entries for: '
+        + ', '.join(_missing_categories)
+        + '\nAdd a row to YARA_CATEGORIES in scripts/build.py.'
+    )
+
 yar_parts = []
 for f in YARA_FILES:
-    cat = YARA_CATEGORIES.get(f, 'Other')
-    yar_parts.append(f'// @category: {cat}')
-    yar_parts.append(read(f))
+    cat = YARA_CATEGORIES[f]
+    raw = read(f)
+    # Defence in depth: refuse to emit a bundle if any rule file already
+    # contains the sentinel substring (an attacker-authored rule with a
+    # `$s = "/*! @loupe-category: Spoofed */"` literal would otherwise
+    # spoof the category split). H8.
+    if _YARA_CATEGORY_SENTINEL in raw:
+        raise SystemExit(
+            f'{f} contains the reserved category sentinel '
+            f'"{_YARA_CATEGORY_SENTINEL}". Rule files must not embed '
+            'this token in any string, identifier, or (forbidden)'
+            ' comment — see scripts/build.py:_YARA_CATEGORY_SENTINEL.'
+        )
+    yar_parts.append(f'/*! @loupe-category: {cat} */')
+    yar_parts.append(raw)
 yar_rules = '\n'.join(yar_parts)
+
 # Escape backticks and backslashes for JS template literal
 yar_rules_escaped = yar_rules.replace('\\', '\\\\').replace('`', '\\`').replace('${', '\\${')
 default_yara_js = f'const DEFAULT_YARA_RULES = `{yar_rules_escaped}`;\n'
