@@ -3372,6 +3372,72 @@ body.dark .plaintext-table tr.enc-highlight-line>td {
   }
 }
 
+/* ── Encoded content inline mark ──
+   Companion to mark.yara-highlight: paints the exact byte span inside the
+   row-band added by tr.enc-highlight-line so the analyst can see *which
+   characters* belong to the deobfuscation finding (not just which rows).
+   Same zero-padding/zero-border invariant as the YARA mark so wrapping a
+   matched run never changes text metrics or causes surrounding code to
+   reflow. `box-decoration-break: clone` keeps the tint repeating across
+   line-box wrap boundaries when a long encoded blob is rendered with
+   `overflow-wrap: anywhere` (CSV detail cells, soft-wrapped plaintext). */
+mark.enc-highlight {
+  background: rgb(var(--accent-rgb) / .4);
+  color: inherit;
+  font: inherit;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+mark.enc-highlight-pulse {
+  animation: enc-highlight-pulse 2.5s ease-out forwards;
+}
+
+@keyframes enc-highlight-pulse {
+  0% {
+    background: rgb(var(--accent-rgb) / .7);
+    box-shadow: 0 0 8px rgb(var(--accent-rgb) / .5);
+  }
+
+  30% {
+    background: rgb(var(--accent-rgb) / .5);
+    box-shadow: 0 0 4px rgb(var(--accent-rgb) / .3);
+  }
+
+  100% {
+    background: rgb(var(--accent-rgb) / .25);
+    box-shadow: none;
+  }
+}
+
+body.dark mark.enc-highlight {
+  background: rgb(var(--accent-rgb) / .3);
+}
+
+body.dark mark.enc-highlight-pulse {
+  animation: enc-highlight-pulse-dark 2.5s ease-out forwards;
+}
+
+@keyframes enc-highlight-pulse-dark {
+  0% {
+    background: rgb(var(--accent-rgb) / .6);
+    box-shadow: 0 0 8px rgb(var(--accent-rgb) / .4);
+  }
+
+  30% {
+    background: rgb(var(--accent-rgb) / .4);
+    box-shadow: 0 0 4px rgb(var(--accent-rgb) / .2);
+  }
+
+  100% {
+    background: rgb(var(--accent-rgb) / .2);
+    box-shadow: none;
+  }
+}
+
 /* ── Encoded content card flash (bidirectional cross-link) ── */
 .enc-finding-card.enc-card-flash {
   animation: enc-card-flash-anim 1.5s ease-out;

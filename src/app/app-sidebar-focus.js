@@ -533,10 +533,21 @@ extendApp({
   // `data-yara-match="<idx>"` (or `data-ioc-match` for kind='ioc') so
   // _highlightMatchesInline can locate the focus match for scrolling.
   _highlightInHtmlNode(container, charPos, length, matchIdx, kind) {
-    const isIoc = kind === 'ioc';
-    const markClass  = isIoc ? 'ioc-highlight'       : 'yara-highlight';
-    const flashClass = isIoc ? 'ioc-highlight-flash' : 'yara-highlight-flash';
-    const datasetKey = isIoc ? 'iocMatch'            : 'yaraMatch';
+    // Three flavours share this routine: 'yara' (blue marks), 'ioc' (yellow
+    // marks) and 'enc' (accent-tinted marks for Deobfuscation findings).
+    // The enc-flash class is `enc-highlight-pulse` rather than
+    // `enc-highlight-flash` because the latter is already taken by the
+    // *row*-flash animation that runs alongside the inline marks — keeping
+    // the names distinct avoids tangled selectors and accidental restarts.
+    const markClass  = kind === 'ioc' ? 'ioc-highlight'
+                     : kind === 'enc' ? 'enc-highlight'
+                     :                  'yara-highlight';
+    const flashClass = kind === 'ioc' ? 'ioc-highlight-flash'
+                     : kind === 'enc' ? 'enc-highlight-pulse'
+                     :                  'yara-highlight-flash';
+    const datasetKey = kind === 'ioc' ? 'iocMatch'
+                     : kind === 'enc' ? 'encMatch'
+                     :                  'yaraMatch';
 
     // Collect every text node in the container with its running character
     // offset so we can locate which node(s) any match range intersects. This
@@ -762,6 +773,15 @@ extendApp({
   // the plaintext renderer soft-wraps one logical line across many <tr>s;
   // translate through `table._lineToFirstRow` so the highlighted range
   // covers every chunk row of the logical span.
+  //
+  // Two layers of paint, lifecycle-twinned:
+  //   1. Row-band tint (`tr.enc-highlight-line`, plus `enc-highlight-flash`
+  //      for 2 s on click) marks which lines belong to the finding.
+  //   2. Inline `<mark class="enc-highlight">` paints the exact byte span
+  //      `[finding.offset, finding.offset+finding.length)` so the analyst
+  //      can see *which characters* belong to the deobfuscation finding,
+  //      mirroring the YARA/IOC click flow. Pulse animation is applied on
+  //      click only (matches the row-band's flash semantics).
   _highlightEncodedInView(finding, flash) {
     this._clearEncodedHighlight();
     const pc = document.getElementById('page-container');
@@ -796,6 +816,108 @@ extendApp({
       if (flash) rows[i].classList.add('enc-highlight-flash');
     }
 
+    // ── Inline byte-span highlight ──────────────────────────────────────
+    // Mirrors the YARA/IOC inline-mark flow (see _highlightMatchesInline)
+    // but for a single match span. Skipped silently when the renderer
+    // doesn't expose `_rawText` (visual-only viewers) — the row-band has
+    // already drawn the analyst's eye so nothing more is needed.
+    const containerEl = pc.firstElementChild;
+    const sourceText = containerEl && containerEl._rawText;
+    if (sourceText && finding.offset != null && finding.length > 0) {
+      const wrapChunkSize = (lineMap && table._chunkSize) ? table._chunkSize : 0;
+
+      // Compute (logicalLine, charInLine) for the start of the byte span.
+      const before     = sourceText.substring(0, finding.offset);
+      const lineIndex  = (before.match(/\n/g) || []).length;
+      const lastNl     = before.lastIndexOf('\n');
+      const charInLine = lastNl === -1 ? finding.offset : finding.offset - lastNl - 1;
+
+      // Build per-row slices the same way _highlightMatchesInline does:
+      //   • soft-wrapped renderer → split the span across chunk rows.
+      //   • normal renderer       → one slice = (rowIdx, charInLine, length).
+      // For multi-line spans on normal renderers we still only mark the
+      // first line — the row-band already covers the rest, and computing
+      // per-line character offsets for a multi-line raw-text slice on a
+      // non-soft-wrapped table is the same bookkeeping as the YARA path
+      // does for a single match (which is always one logical line). The
+      // common multi-row deobfuscation case in practice is the soft-wrap
+      // path (single very long line of base64) — that's the path the
+      // chunk math below is doing the heavy lifting for.
+      const slices = [];
+      if (wrapChunkSize > 0) {
+        const firstRow = lineMap[lineIndex];
+        if (firstRow != null) {
+          let remaining = finding.length;
+          let cursor    = charInLine;
+          while (remaining > 0) {
+            const rowIdx    = firstRow + Math.floor(cursor / wrapChunkSize);
+            const charInRow = cursor % wrapChunkSize;
+            if (rowIdx >= rows.length) break;
+            const take = Math.min(remaining, wrapChunkSize - charInRow);
+            slices.push({ rowIdx, charPos: charInRow, length: take });
+            cursor    += take;
+            remaining -= take;
+          }
+        }
+      } else {
+        // Normal 1-row-per-line table. Cap the slice at the end of the
+        // first line — the band already covers any spillover rows.
+        const firstRow = lineIndex;
+        if (firstRow < rows.length) {
+          const nlInSpan = sourceText.indexOf('\n', finding.offset);
+          const firstLineEnd = nlInSpan === -1
+            ? finding.offset + finding.length
+            : Math.min(finding.offset + finding.length, nlInSpan);
+          const take = firstLineEnd - finding.offset;
+          if (take > 0) slices.push({ rowIdx: firstRow, charPos: charInLine, length: take });
+        }
+      }
+
+      const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const flashCls = flash ? ' enc-highlight-pulse' : '';
+      for (const sl of slices) {
+        const row = rows[sl.rowIdx];
+        if (!row) continue;
+        const codeCell = row.querySelector('.plaintext-code');
+        if (!codeCell) continue;
+
+        const hasHighlighting = codeCell.innerHTML !== codeCell.textContent;
+        if (hasHighlighting) {
+          // Syntax-highlighted HTML — go through the shared TreeWalker
+          // routine so spans tokenised across multiple text nodes get
+          // wrapped correctly.
+          this._highlightInHtmlNode(codeCell, sl.charPos, sl.length, 0, 'enc');
+          if (flash) {
+            // The shared routine already added enc-highlight-pulse via
+            // its kind switch.
+          }
+        } else {
+          const cellText = codeCell.textContent;
+          const startCh  = Math.min(sl.charPos, cellText.length);
+          const endCh    = Math.min(sl.charPos + sl.length, cellText.length);
+          if (endCh <= startCh) continue;
+          const head = esc(cellText.substring(0, startCh));
+          const mid  = esc(cellText.substring(startCh, endCh));
+          const tail = esc(cellText.substring(endCh));
+          codeCell.innerHTML =
+            head +
+            `<mark class="enc-highlight${flashCls}">${mid}</mark>` +
+            tail;
+        }
+      }
+
+      // Strip the pulse class after the animation window so the marks
+      // settle into the steady-state tint that twins with the row-band.
+      // Uses the same 2 s timeline as the row-flash teardown above so
+      // both layers calm down in lockstep.
+      if (flash) {
+        setTimeout(() => {
+          pc.querySelectorAll('mark.enc-highlight-pulse').forEach(m =>
+            m.classList.remove('enc-highlight-pulse'));
+        }, 2000);
+      }
+    }
+
     if (flash && start >= 0 && start < rows.length) {
       rows[start].scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
@@ -815,6 +937,17 @@ extendApp({
     const highlighted = pc.querySelectorAll('.enc-highlight-line');
     for (const el of highlighted) {
       el.classList.remove('enc-highlight-line', 'enc-highlight-flash');
+    }
+    // Strip inline encoded-content marks and merge adjacent text nodes so
+    // the next highlight starts from a clean cell. Mirrors the cleanup
+    // path in `_clearMatchHighlight` for YARA/IOC marks.
+    const marks = pc.querySelectorAll('mark.enc-highlight');
+    for (const mark of marks) {
+      const tn = document.createTextNode(mark.textContent);
+      mark.parentNode.replaceChild(tn, mark);
+    }
+    if (marks.length) {
+      pc.querySelectorAll('.plaintext-code').forEach(c => c.normalize());
     }
   },
 
