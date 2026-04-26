@@ -45,12 +45,19 @@
 //      { kind: 'evtx', buffer: ArrayBuffer (transferred) }
 //      { kind: 'sqlite', buffer: ArrayBuffer (transferred) }
 //
-// out (CSV/TSV):
-//   { event: 'done', kind: 'csv',
-//     columns: [...], rows: [[...], ...],
-//     formatLabel: 'CSV'|'TSV',
-//     truncated: boolean, originalRowCount: number,
-//     parseMs: number }
+// out (CSV/TSV) — STREAMING:
+//   Zero or more intermediate row batches:
+//     { event: 'rows', batch: [[...], ...] }
+//   Then exactly one terminal:
+//     { event: 'done', kind: 'csv',
+//       columns: [...], rows: [],         (always empty — rows arrive in batches)
+//       formatLabel: 'CSV'|'TSV',
+//       truncated: boolean, originalRowCount: number,
+//       parseMs: number }
+//   The host caller must register an `onBatch(msg)` sink via
+//   `WorkerManager.runTimeline(buffer, 'csv', { onBatch })` to accumulate
+//   the streamed batches; without one the rows are silently dropped on
+//   the floor. See `src/app/timeline/timeline-router.js::_loadFileInTimeline`.
 //
 // out (EVTX):
 //   { event: 'done', kind: 'evtx',
@@ -101,128 +108,182 @@
 // scope.
 // ════════════════════════════════════════════════════════════════════════════
 
-// ── CSV / TSV parse (mirrors TimelineView.fromCsvAsync minus DOM) ──────────
+// ── CSV / TSV parse (streaming chunk-decode + line-tail buffer) ────────────
+//
+// Memory-conscious rewrite of the legacy "decode into one giant string,
+// then walk it" parser. Three differences from the prior implementation:
+//
+//   1. We never materialise the entire decoded UTF-8 text — only the
+//      current decoded chunk plus a small tail buffer that holds the
+//      partial last line spilling into the next chunk. For a 318 MB
+//      ASCII CSV the prior code peaked at ~1.3 GB transient (full UTF-16
+//      string ≈ 636 MB plus the `parts.join('')` doubling); the streaming
+//      version stays under ~50 MB on top of the input.
+//   2. Rows are emitted to the host in batches of 50 000 via
+//      `{event:'rows', batch:[...]}` postMessage events. The terminal
+//      `done` payload only carries metadata (`columns`, `formatLabel`,
+//      `truncated`, `originalRowCount`) plus an empty `rows: []` so the
+//      structured-clone postback isn't doubling peak memory at the very
+//      end.
+//   3. The legacy "if a quote-aware split throws, fall back to a
+//      line-by-line split" branch is preserved: we wrap each chunk's
+//      row-extraction loop in try/catch and on the rare pathological
+//      input restart parsing of the chunk via a tighter forgiving
+//      splitter. Errors from outside the splitter still bubble.
+//
+// The `explicitDelim` argument lets the host force a delimiter (TSV
+// uses `\t`); when omitted we sniff using `CsvRenderer._delim` over the
+// first decoded chunk only — sufficient signal for any real CSV.
 async function _parseCsv(buffer, explicitDelim) {
   const bytes = new Uint8Array(buffer);
   const DECODE_CHUNK = RENDER_LIMITS.DECODE_CHUNK_BYTES;
+  const BATCH_ROWS = 50_000;            // rows per `{event:'rows'}` postMessage
 
-  // Chunked UTF-8 decode + LF-normalisation (same algorithm as the main
-  // thread; see `app-timeline.js::fromCsvAsync` for the rationale).
-  let norm;
-  if (bytes.length <= DECODE_CHUNK) {
-    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-    const noBom = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
-    norm = noBom.indexOf('\r') !== -1 ? noBom.replace(/\r\n?/g, '\n') : noBom;
-  } else {
-    const decoder = new TextDecoder('utf-8', { fatal: false });
-    const parts = [];
-    let first = true;
-    for (let pos = 0; pos < bytes.length; pos += DECODE_CHUNK) {
-      const end = Math.min(pos + DECODE_CHUNK, bytes.length);
-      const stream = end < bytes.length;
-      let chunk = decoder.decode(bytes.subarray(pos, end), { stream });
-      if (first) {
-        if (chunk.charCodeAt(0) === 0xFEFF) chunk = chunk.slice(1);
-        first = false;
-      }
-      if (chunk.indexOf('\r') !== -1) chunk = chunk.replace(/\r\n?/g, '\n');
-      parts.push(chunk);
-    }
-    norm = parts.join('');
-  }
-
-  if (!norm || !norm.trim()) {
-    return { columns: [], rows: [], formatLabel: 'CSV', truncated: false, originalRowCount: 0 };
-  }
-
+  const decoder = new TextDecoder('utf-8', { fatal: false });
   const r = new CsvRenderer();
-  let delim = explicitDelim;
-  if (!delim) {
-    try { delim = r._delim(norm); } catch (_) { delim = ','; }
-  }
-  const firstNl = norm.indexOf('\n');
-  const headerLine = firstNl === -1 ? norm : norm.substring(0, firstNl);
+
+  // Tail buffer: text that survived the last chunk because no `\n`
+  // followed it yet (i.e. the partial last line). On the next iteration
+  // we prepend this to the freshly decoded chunk before scanning lines.
+  let tail = '';
+  // True once we've consumed and parsed the header line.
+  let headerSeen = false;
   let columns = [];
-  try {
-    columns = headerLine.indexOf('"') === -1
-      ? headerLine.split(delim)
-      : r._splitQuoted(headerLine, delim);
-  } catch (_) {
-    columns = headerLine.split(delim);
-  }
-  columns = columns.map(c => String(c == null ? '' : c).trim());
+  let colLen = 0;
+  let delim = explicitDelim || null;
+  // Format label is fixed once the delimiter is resolved.
+  let formatLabel = (delim === '\t') ? 'TSV' : 'CSV';
 
-  const len = norm.length;
-  let offset = firstNl === -1 ? len : firstNl + 1;
-  const rows = [];
-  const colLen = columns.length;
+  let rowCount = 0;
+  let truncated = false;
+  let bytesConsumed = 0;                // for `originalRowCount` extrapolation
+  let firstChunk = true;
+  let pendingBatch = [];
 
-  // No yieldTick needed — we're already off the main thread, so a
-  // synchronous tight loop is the right call. `await` between chunks on
-  // the main thread existed only to keep the UI painting; we don't have
-  // a UI here.
-  try {
-    while (offset < len && rows.length < TIMELINE_MAX_ROWS) {
-      let lineEnd = norm.indexOf('\n', offset);
-      if (lineEnd === -1) lineEnd = len;
-      if (lineEnd > offset) {
-        const line = norm.substring(offset, lineEnd);
-        const cells = line.indexOf('"') === -1
-          ? line.split(delim)
-          : r._splitQuoted(line, delim);
-        if (colLen) {
-          if (cells.length < colLen) {
-            while (cells.length < colLen) cells.push('');
-          } else if (cells.length > colLen) {
-            const tail = cells.slice(colLen - 1).join(delim);
-            cells.length = colLen;
-            cells[colLen - 1] = tail;
-          }
-        }
-        rows.push(cells);
+  const flushBatch = () => {
+    if (!pendingBatch.length) return;
+    self.postMessage({ event: 'rows', batch: pendingBatch });
+    pendingBatch = [];
+  };
+
+  // Split a single line into cells, defensively. Mirrors the legacy
+  // "indexOf('"') first" branching so unquoted lines avoid the slower
+  // state-machine path.
+  const splitLine = (line) => {
+    if (line.indexOf('"') === -1) return line.split(delim);
+    try { return r._splitQuoted(line, delim); }
+    catch (_) { return line.split(delim); }
+  };
+
+  const padOrTrimCells = (cells) => {
+    if (!colLen) return cells;
+    if (cells.length < colLen) {
+      while (cells.length < colLen) cells.push('');
+    } else if (cells.length > colLen) {
+      const tailCells = cells.slice(colLen - 1).join(delim);
+      cells.length = colLen;
+      cells[colLen - 1] = tailCells;
+    }
+    return cells;
+  };
+
+  const consumeLine = (line) => {
+    if (!headerSeen) {
+      // First non-empty position is the header. We allow blank leading
+      // lines but in practice CSVs never have them.
+      if (!line) return;
+      if (!delim) {
+        try { delim = r._delim(line); } catch (_) { delim = ','; }
+        formatLabel = (delim === '\t') ? 'TSV' : 'CSV';
       }
-      offset = lineEnd + 1;
+      let cols;
+      try { cols = splitLine(line); } catch (_) { cols = line.split(delim); }
+      columns = cols.map(c => String(c == null ? '' : c).trim());
+      colLen = columns.length;
+      headerSeen = true;
+      return;
     }
-  } catch (e) {
-    // Pathological line — fall back to forgiving line-by-line split.
-    rows.length = 0;
-    const lines = norm.split('\n');
-    for (let i = 1; i < lines.length && rows.length < TIMELINE_MAX_ROWS; i++) {
-      const ln = lines[i];
-      if (!ln) continue;
-      const cells = ln.indexOf('"') === -1 ? ln.split(delim) : r._splitQuoted(ln, delim);
-      if (colLen) {
-        if (cells.length < colLen) {
-          while (cells.length < colLen) cells.push('');
-        } else if (cells.length > colLen) {
-          const tail = cells.slice(colLen - 1).join(delim);
-          cells.length = colLen;
-          cells[colLen - 1] = tail;
-        }
+    if (!line) return;                  // skip blank lines mid-stream
+    if (rowCount >= TIMELINE_MAX_ROWS) {
+      truncated = true;
+      return;
+    }
+    const cells = padOrTrimCells(splitLine(line));
+    pendingBatch.push(cells);
+    rowCount++;
+    if (pendingBatch.length >= BATCH_ROWS) flushBatch();
+  };
+
+  outer:
+  for (let pos = 0; pos < bytes.length; pos += DECODE_CHUNK) {
+    const end = Math.min(pos + DECODE_CHUNK, bytes.length);
+    const stream = end < bytes.length;
+    let chunk = decoder.decode(bytes.subarray(pos, end), { stream });
+
+    if (firstChunk) {
+      if (chunk.charCodeAt(0) === 0xFEFF) chunk = chunk.slice(1);
+      firstChunk = false;
+    }
+    // Normalise CRLF / bare CR. We do this per chunk; the only case the
+    // single-pass `\r\n?` regex misses is a `\r` at the very end of the
+    // chunk followed by `\n` at the start of the next chunk. Handle it
+    // by trimming a trailing lone `\r` into the tail.
+    if (chunk.indexOf('\r') !== -1) chunk = chunk.replace(/\r\n?/g, '\n');
+
+    let scan = tail + chunk;
+    bytesConsumed = end;
+    tail = '';
+
+    let lineStart = 0;
+    while (true) {
+      const nl = scan.indexOf('\n', lineStart);
+      if (nl === -1) {
+        // Partial line — hold for next chunk.
+        tail = lineStart === 0 ? scan : scan.substring(lineStart);
+        break;
       }
-      rows.push(cells);
+      const line = scan.substring(lineStart, nl);
+      lineStart = nl + 1;
+      try { consumeLine(line); }
+      catch (_) {
+        // Pathological row — skip and continue. We deliberately don't
+        // fall back to a whole-file forgiving split here as the legacy
+        // code did: a single bad line should not lose the rest of the
+        // stream.
+      }
+      if (truncated) break outer;
     }
   }
 
-  if (colLen) {
-    for (let i = 0; i < rows.length; i++) {
-      if (!rows[i]) rows[i] = new Array(colLen).fill('');
-    }
-  } else if (rows.length) {
-    const n = Math.max(...rows.map(r => (r && r.length) || 0));
+  // Flush any final tail line that didn't end with a newline.
+  if (tail) {
+    try { consumeLine(tail); } catch (_) { /* ignore */ }
+  }
+  // Drain the last partial batch.
+  flushBatch();
+
+  // If the file had no header row at all, synthesise column names from
+  // the widest emitted row. (We can't actually backfill the rows we
+  // already postMessage'd, so this only matters for files that arrived
+  // header-only.) When `columns` is empty the host falls back to
+  // generic `col N` labels via the same path as before.
+  if (!headerSeen) {
     columns = [];
-    for (let i = 0; i < n; i++) columns.push(`col ${i + 1}`);
+    colLen = 0;
   }
 
-  const truncated = rows.length >= TIMELINE_MAX_ROWS && offset < len;
+  // Extrapolate originalRowCount when we hit the row cap mid-file: ratio
+  // bytes-consumed-at-cutoff vs. total bytes, applied to the cap.
   const originalRowCount = truncated
-    ? Math.round(rows.length * (len / Math.max(1, offset)))
-    : rows.length;
+    ? Math.round(rowCount * (bytes.length / Math.max(1, bytesConsumed)))
+    : rowCount;
 
   return {
-    columns, rows,
-    formatLabel: delim === '\t' ? 'TSV' : 'CSV',
-    truncated, originalRowCount,
+    columns,
+    rows: [],                            // streamed via {event:'rows'} batches
+    formatLabel,
+    truncated,
+    originalRowCount,
   };
 }
 

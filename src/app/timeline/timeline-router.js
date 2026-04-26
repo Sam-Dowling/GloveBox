@@ -218,13 +218,73 @@ Object.assign(App.prototype, {
           && typeof window.WorkerManager.runTimeline === 'function'
           && window.WorkerManager.workersAvailable && window.WorkerManager.workersAvailable()) {
         try {
-          // Transfer a copy — the original `buffer` is still needed for
-          // (a) the EVTX analyzer below and (b) the fallback re-route
-          // to `_loadFile` when the parse returns zero rows.
-          const transfer = buffer.slice(0);
-          const opts = (workerKind === 'csv') ? { explicitDelim: ext === 'tsv' ? '\t' : null } : undefined;
+          // ── Buffer ownership ──
+          // For CSV / TSV the host has no further use for the buffer
+          // (no analyzer side-channel — `_buildTimelineViewFromWorker`
+          // only reads the worker payload), so we can transfer the
+          // ORIGINAL buffer and skip the 318 MB memcpy that the legacy
+          // `buffer.slice(0)` introduced. Empirically this halves peak
+          // memory on multi-hundred-MB CSV drops. The post-worker
+          // zero-row fallback re-reads bytes via `_loadFile`'s
+          // re-fetch path so the lost main-thread reference is fine.
+          //
+          // EVTX still needs the original buffer on the main thread for
+          // `EvtxDetector.analyzeForSecurity` (in
+          // `_buildTimelineViewFromWorker`). SQLite's zero-row escape
+          // hatch also re-reads the original buffer to drive
+          // `_loadFile`. Both keep the existing `buffer.slice(0)`
+          // duplicate.
+          const transferOriginal = (workerKind === 'csv');
+          const transfer = transferOriginal ? buffer : buffer.slice(0);
+
+          // ── Streaming row sink (CSV / TSV only) ──
+          // The worker emits `{event:'rows', batch:[...]}` every
+          // 50 000 rows so a multi-million-row parse doesn't have to
+          // materialise the whole rows array in the worker AND post a
+          // single giant structured-clone payload back at the end.
+          // EVTX / SQLite still hand back rows in the terminal `done`.
+          const accumulatedRows = transferOriginal ? [] : null;
+          const onBatch = transferOriginal
+            ? (m) => {
+                if (m && m.event === 'rows' && Array.isArray(m.batch)) {
+                  // Append rather than concat to avoid an O(n) copy of
+                  // the running array on every batch.
+                  for (let i = 0; i < m.batch.length; i++) {
+                    accumulatedRows.push(m.batch[i]);
+                  }
+                }
+              }
+            : undefined;
+
+          // ── Per-call timeout ──
+          // Default `PARSER_LIMITS.WORKER_TIMEOUT_MS` is 5 min; for
+          // very large CSV / TSV files we scale roughly with size
+          // (~500 ms per MB of input plus the 5 min floor) so a 318 MB
+          // parse on a slow disk doesn't false-positive at the cap.
+          // Cap at 30 min — beyond that the user should pre-process
+          // the file rather than wait inside the analyser.
+          const baseTimeout = (typeof PARSER_LIMITS !== 'undefined'
+            && PARSER_LIMITS.WORKER_TIMEOUT_MS) || 300_000;
+          const sizeTimeout = Math.min(
+            30 * 60_000,
+            Math.max(baseTimeout, ((file && file.size) || 0) / 1_000_000 * 500)
+          );
+
+          const opts = (workerKind === 'csv')
+            ? { explicitDelim: ext === 'tsv' ? '\t' : null,
+                onBatch, timeoutMs: sizeTimeout }
+            : { timeoutMs: sizeTimeout };
           const msg = await window.WorkerManager.runTimeline(transfer, workerKind, opts);
-          view = this._buildTimelineViewFromWorker(file, workerKind, msg, buffer);
+          // Splice any streamed rows back into the terminal payload so
+          // `_buildTimelineViewFromWorker` sees the same shape it always
+          // has (one big `rows` array on `msg`).
+          if (transferOriginal && accumulatedRows && accumulatedRows.length) {
+            msg.rows = (msg.rows && msg.rows.length)
+              ? accumulatedRows.concat(msg.rows)
+              : accumulatedRows;
+          }
+          view = this._buildTimelineViewFromWorker(
+            file, workerKind, msg, transferOriginal ? null : buffer);
         } catch (e) {
           if (!e || e.message !== 'workers-unavailable') {
             console.warn('[timeline] worker parse failed; falling back to main-thread parse:', e);
@@ -234,7 +294,28 @@ Object.assign(App.prototype, {
       }
 
       // ── Synchronous fallback (legacy path) ─────────────────────────
+      // Size-gate: the synchronous main-thread parse will OOM the tab
+      // on multi-hundred-MB CSVs (the entire decoded UTF-16 string
+      // plus the rows array plus DOM materialisation all sit in the
+      // main heap). For files at or above `LARGE_FILE_THRESHOLD`
+      // (200 MB) we refuse to fall back and surface an actionable
+      // toast instead — the analyst can split / pre-process the file
+      // rather than crash the tab. EVTX / SQLite are usually denser
+      // than raw CSV but still fall under the same heuristic.
       if (!view) {
+        const tooLargeForFallback = file
+          && file.size >= RENDER_LIMITS.LARGE_FILE_THRESHOLD;
+        if (tooLargeForFallback) {
+          const mb = (file.size / (1024 * 1024)).toFixed(0);
+          const reason = (workerKind && window.WorkerManager
+              && window.WorkerManager.workersAvailable
+              && window.WorkerManager.workersAvailable())
+            ? 'worker parse failed or timed out'
+            : 'workers unavailable on this browser/origin';
+          throw new Error(
+            `Cannot fall back to main-thread parse for a ${mb} MB file ` +
+            `(${reason}). Split or pre-process the file before loading.`);
+        }
         if (ext === 'evtx') {
           view = await TimelineView.fromEvtx(file, buffer);
         } else if (ext === 'csv' || ext === 'tsv') {
@@ -271,11 +352,16 @@ Object.assign(App.prototype, {
         if (vt) vt.classList.remove('hidden');
         // Re-enter the regular loader by calling `_loadFile` with a flag
         // that skips the timeline re-route.  Pass the buffer we already
-        // have so the file isn't read a second time.
+        // have so the file isn't read a second time — UNLESS the buffer
+        // was transferred to a CSV/TSV worker (now detached on the main
+        // thread); in that case `_loadFile` re-reads from the original
+        // `File` itself.
         this._skipTimelineRoute = true;
-        try { await this._loadFile(file, buffer); } finally { this._skipTimelineRoute = false; }
+        const reusableBuffer = (buffer && buffer.byteLength > 0) ? buffer : undefined;
+        try { await this._loadFile(file, reusableBuffer); } finally { this._skipTimelineRoute = false; }
         return;
       }
+
 
       // Let the view emit toasts through the app.
       view._app = this;

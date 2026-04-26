@@ -43,7 +43,7 @@ const PARSER_LIMITS = Object.freeze({
                                              // pointing the user at the manual
                                              // YARA tab (which is unrestricted on
                                              // both worker and fallback paths).
-  WORKER_TIMEOUT_MS:    120_000,             // 2 min — preemptive deadline on
+  WORKER_TIMEOUT_MS:    300_000,             // 5 min — preemptive deadline on
                                              // any `WorkerManager.run*` job
                                              //. On expiry the active
                                              // worker is `terminate()`-d (real

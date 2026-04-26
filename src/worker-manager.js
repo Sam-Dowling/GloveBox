@@ -24,7 +24,7 @@
 //      active worker — `_loadFile` calls every canceller on entry so
 //      each new file abandons every previous in-flight job.
 //   4. **Timeout.** Every job is bracketed by a
-//      `PARSER_LIMITS.WORKER_TIMEOUT_MS` (2 min) deadline. On expiry the
+//      `PARSER_LIMITS.WORKER_TIMEOUT_MS` (5 min) deadline. On expiry the
 //      worker is `terminate()`-d (real preemption — the worker's JS
 //      engine is killed mid-iteration, unlike the post-hoc main-thread
 //      `ParserWatchdog`) and the promise rejects with a watchdog-shaped
@@ -145,7 +145,18 @@ window.WorkerManager = (function () {
    *                                          from a `{event:'done', ...}` msg
    * @param {number}  [spec.timeoutMs]    deadline; defaults to
    *                                      `PARSER_LIMITS.WORKER_TIMEOUT_MS`
-   *                                      (2 min). Pass 0 / negative to opt out.
+   *                                      (5 min). Pass 0 / negative to opt out.
+   * @param {(batch:any)=>void} [spec.onBatch]  optional sink for streaming
+   *                                      worker events (e.g. `{event:'rows',
+   *                                      batch:[...]}` from the timeline
+   *                                      worker). Each non-terminal event
+   *                                      whose `event` is not `'done'` /
+   *                                      `'error'` is forwarded here so
+   *                                      large jobs can hand rows back in
+   *                                      pieces instead of one giant
+   *                                      structured-clone postback at the
+   *                                      end. The hook may throw — the job
+   *                                      is rejected with the thrown error.
    * @returns {Promise<*>}
    */
   function _runWorkerJob(spec) {
@@ -244,10 +255,15 @@ window.WorkerManager = (function () {
           finish(resolve, decoded);
         } else if (m.event === 'error') {
           finish(reject, new Error(m.message || 'worker reported error'));
+        } else if (typeof spec.onBatch === 'function') {
+          // Streaming non-terminal event (e.g. {event:'rows', batch:[...]}).
+          // Forward to the caller's sink. Sink errors abort the job.
+          try { spec.onBatch(m); }
+          catch (sinkErr) { finish(reject, sinkErr); return; }
         }
-        // Ignore other events (progress, etc.) — none defined today, but
-        // future channels may stream incremental updates without
-        // resolving the promise.
+        // Other events without an `onBatch` sink are silently ignored —
+        // future channels may emit progress updates that the host doesn't
+        // care to consume.
       };
       w.onerror = (e) => {
         if (myToken !== ch.token) {
@@ -346,12 +362,24 @@ window.WorkerManager = (function () {
     const explicitDelim = (opts && opts.explicitDelim) || undefined;
     const payload = { kind, buffer };
     if (explicitDelim) payload.explicitDelim = explicitDelim;
+    // `opts.onBatch(msg)` — optional sink for `{event:'rows', batch:[...]}`
+    // streaming events from the worker. The CSV path uses this to ship rows
+    // back in 50_000-row batches instead of one giant structured-clone
+    // postback at the end (which doubles peak memory for hundreds-of-MB
+    // inputs). EVTX / SQLite still hand back a single `done` payload.
+    //
+    // `opts.timeoutMs` — per-call override of `PARSER_LIMITS.WORKER_TIMEOUT_MS`.
+    // The Timeline router scales this with file size for multi-hundred-MB
+    // CSV / TSV files so legitimate large parses don't false-positive at the
+    // default 5 min cap.
     return _runWorkerJob({
       channel:   'timeline',
       bundleSrc: typeof __TIMELINE_WORKER_BUNDLE_SRC !== 'undefined' ? __TIMELINE_WORKER_BUNDLE_SRC : '',
       payload,
       transfers: [buffer],
       decodeDone: (m) => m,   // Timeline payload is forwarded verbatim
+      onBatch:   (opts && typeof opts.onBatch === 'function') ? opts.onBatch : undefined,
+      timeoutMs: (opts && typeof opts.timeoutMs === 'number') ? opts.timeoutMs : undefined,
     });
   }
   function cancelTimeline() { _cancelChannel('timeline'); }
