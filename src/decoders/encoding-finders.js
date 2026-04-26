@@ -31,6 +31,14 @@ Object.assign(EncodedContentDetector.prototype, {
   /**
    * URL-encoded strings: %70%6F%77%65%72%73%68%65%6C%6C
    * Requires ≥10 consecutive %XX sequences to avoid false positives.
+   *
+   * Threshold rationale (D4 in PLAN.md): real-world malware payloads such as
+   * `cmd.exe /c whoami` clear 10 sequences comfortably (17+), while ordinary
+   * URL query strings (`?p=%20%5B%5D%5B%5D`) sit at 4-6 and stay below the
+   * gate. Lower to 6 ONLY if real samples justify it — at 6 the existing
+   * `[?&=]$` lookback is insufficient and a stricter context check is
+   * required (reject runs preceded by `://` within 80 chars; reject runs
+   * followed by `#` / EOL / whitespace). See PLAN.md § D4 before changing.
    */
   _findUrlEncodedCandidates(text, context) {
     if (!text || text.length < 30) return [];
