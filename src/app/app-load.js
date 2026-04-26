@@ -67,7 +67,7 @@ function _refangString(str) {
 // ════════════════════════════════════════════════════════════════════════════
 // App — file loading, hashing, interesting-string extraction
 // ════════════════════════════════════════════════════════════════════════════
-Object.assign(App.prototype, {
+extendApp({
 
   async _loadFile(file, prefetchedBuffer /* optional – passed by Timeline fallback */) {
     // ── Stale-load token bump ───────────────────────────────
@@ -293,6 +293,18 @@ Object.assign(App.prototype, {
       // The Timeline branch above is an analysis-bypass route and never
       // reaches `RenderRoute.run`.
       const result = await RenderRoute.run(file, buffer, this);
+      // Render-epoch supersession guard. `RenderRoute.run` returns a
+      // synthetic `{ _superseded: true }` shape if `app._renderEpoch`
+      // was bumped while the dispatch was running (Phase-2 fast file-
+      // swap). Phase-1 doesn't bump the epoch from outside `run()`, so
+      // this branch is dead code today; it's wired in now so the
+      // Phase-2 C3 fix needs zero changes here. A superseded dispatch
+      // means a *newer* `_loadFile` invocation already owns the UI —
+      // bail out silently rather than painting `null` into
+      // #page-container.
+      if (result && result._superseded) {
+        return;
+      }
       docEl = result.docEl;
       analyzer = result.analyzer || null;
       // Stash the renderer-side analyzer (DOCX `SecurityAnalyzer` is the

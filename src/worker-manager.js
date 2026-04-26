@@ -184,11 +184,14 @@ window.WorkerManager = (function () {
     }
     ch.active = w;
 
+    // `PARSER_LIMITS.WORKER_TIMEOUT_MS` is defined unconditionally in
+    // `src/constants.js` and `worker-manager.js` already requires the rest
+    // of the constants bundle to be loaded at runtime — falling back to a
+    // hard-coded literal here was drift bait (the literal would silently
+    // diverge from the canonical constant). Read the constant directly.
     const timeoutMs = (typeof spec.timeoutMs === 'number')
       ? spec.timeoutMs
-      : (typeof PARSER_LIMITS !== 'undefined' && PARSER_LIMITS.WORKER_TIMEOUT_MS)
-        ? PARSER_LIMITS.WORKER_TIMEOUT_MS
-        : 120_000;
+      : PARSER_LIMITS.WORKER_TIMEOUT_MS;
 
     return new Promise((resolve, reject) => {
       let settled = false;

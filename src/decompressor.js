@@ -55,7 +55,11 @@ const Decompressor = {
           if (done) break;
           totalLen += value.byteLength;
           if (totalLen > Decompressor.MAX_OUTPUT) {
-            reader.cancel();
+            // Swallow the post-cancel rejection — `cancel()` returns a
+            // promise that may reject if the stream errored after we
+            // started cancelling, and we don't care: we're already on the
+            // failure path.
+            try { await reader.cancel(); } catch (_) { /* best-effort */ }
             return { success: false, data: null, format }; // zip-bomb guard
           }
           chunks.push(value);
@@ -70,7 +74,11 @@ const Decompressor = {
           const out = new Uint8Array(totalLen);
           let pos = 0;
           for (const c of chunks) { out.set(c, pos); pos += c.byteLength; }
-          if (out.every(b => b === 0)) return { success: false, data: null, format };
+          // NOTE: we used to treat all-zero output as failure here. That
+          // heuristic silently corrupted legitimate sparse / zero-padded
+          // payloads. The native `DecompressionStream` already throws on
+          // genuine format mismatch — if we got here without the catch
+          // firing, the bytes are real, even if they're all zero.
           return { success: true, data: out, format };
         }
       } catch (_) {
@@ -79,10 +87,14 @@ const Decompressor = {
     }
 
     // ── pako fallback ────────────────────────────────────────────────────
+    // pako throws on genuine format mismatch — we rely on the explicit
+    // try/catch to detect failure rather than the legacy all-zero
+    // heuristic (which silently corrupted legitimate sparse / zero-padded
+    // payloads).
     if (Decompressor._hasPako) {
       try {
         const out = Decompressor._pakoInflate(slice, format);
-        if (!out || out.length === 0 || out.every(b => b === 0)) {
+        if (!out || out.length === 0) {
           return { success: false, data: null, format };
         }
         if (out.length > Decompressor.MAX_OUTPUT) {
@@ -156,9 +168,12 @@ const Decompressor = {
     if (!compressedBytes || !compressedBytes.length) return null;
     try {
       const out = Decompressor._pakoInflate(compressedBytes, format);
+      // Rely on pako's own throw to distinguish failure from genuine
+      // empty / all-zero output. The legacy `out.every(b => b === 0)`
+      // gate silently corrupted legitimate sparse / zero-padded payloads
+      // (sparse files, freshly zero-stamped sections of binaries, etc.).
       if (!out || out.length === 0) return null;
       if (out.length > Decompressor.MAX_OUTPUT) return null;
-      if (out.every(b => b === 0)) return null;
       return out;
     } catch (_) {
       return null;

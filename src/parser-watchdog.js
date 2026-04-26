@@ -21,6 +21,17 @@
 //   err._watchdogTimeout    = true
 //   err._watchdogName       = <name from opts, or null>
 //   err._watchdogTimeoutMs  = <effective timeout in ms>
+//
+// AbortSignal plumbing
+// --------------------
+// The watchdog owns an `AbortController` per call. The signal is handed
+// to `fn` as `fn({ signal })` so signal-aware renderers can poll
+// `signal.aborted` between chunks/rows and bail early. Today no renderer
+// uses it (the contract is strictly additive — renderers that ignore the
+// arg keep working), but Phase-2 will migrate the long-running loops in
+// PE / ELF / Mach-O / EVTX / encoded-content to honour it. On timeout the
+// controller is `abort()`-ed *before* the watchdog rejects, so any
+// downstream `fetch`-shaped consumer wired to the signal also short-circuits.
 // ════════════════════════════════════════════════════════════════════════════
 
 const ParserWatchdog = {
@@ -28,7 +39,10 @@ const ParserWatchdog = {
   /**
    * Run a function with a timeout guard.
    *
-   * @param {Function} fn      — sync or async function to execute
+   * @param {Function} fn      — sync or async function. Invoked with one
+   *                             argument: `{ signal }` where `signal` is
+   *                             an `AbortSignal` aborted on timeout. Args-
+   *                             ignoring `() => …` callbacks remain valid.
    * @param {Object}  [opts]
    * @param {number}  [opts.timeout]   timeout in ms; defaults to
    *                                   `PARSER_LIMITS.TIMEOUT_MS` (60 s)
@@ -50,10 +64,17 @@ const ParserWatchdog = {
     const timeout = o.timeout || (typeof PARSER_LIMITS !== 'undefined' ? PARSER_LIMITS.TIMEOUT_MS : 60000);
     const name = o.name || null;
 
+    // Per-call AbortController. Always created (even on the skipOuter
+    // path) so the renderer-side contract is uniform: every invocation
+    // sees a `{ signal }` arg, regardless of whether a deadline is
+    // actually being enforced from this layer.
+    const controller = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+    const signal     = controller ? controller.signal : null;
+
     // skipOuter — caller has already arranged its own deadline; just run
     // fn and surface its result/exception verbatim.
     if (o.skipOuter) {
-      return Promise.resolve().then(fn);
+      return Promise.resolve().then(() => fn({ signal }));
     }
 
     return new Promise((resolve, reject) => {
@@ -61,6 +82,12 @@ const ParserWatchdog = {
       const timer = setTimeout(() => {
         if (!settled) {
           settled = true;
+          // Abort *before* rejecting so any signal-aware renderer code
+          // that races between the timer firing and the reject landing
+          // sees `signal.aborted === true` and bails instead of writing.
+          if (controller) {
+            try { controller.abort(); } catch (_) { /* best-effort */ }
+          }
           const where = name ? ` (${name})` : '';
           const err = new Error(`Parser timed out after ${(timeout / 1000).toFixed(0)}s${where} — file may be malicious or too complex.`);
           err._watchdogTimeout   = true;
@@ -71,7 +98,7 @@ const ParserWatchdog = {
       }, timeout);
 
       try {
-        const result = fn();
+        const result = fn({ signal });
         if (result && typeof result.then === 'function') {
           // Async path
           result.then(

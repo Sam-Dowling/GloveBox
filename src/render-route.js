@@ -6,7 +6,7 @@
 // `RenderRoute.run(file, buffer, app, rctx?)` is the single entry point that
 // connects `RendererRegistry.detect()` to the per-id handlers in
 // `App.prototype._rendererDispatch` (defined in `src/app/app-load.js`). It
-// owns five concerns that previously lived inline in `App._loadFile`:
+// owns six concerns that previously lived inline in `App._loadFile`:
 //
 //   1. **Parser-watchdog wrap.** Every renderer is invoked under
 //      `ParserWatchdog.run(..., { timeout: PARSER_LIMITS.RENDERER_TIMEOUT_MS,
@@ -15,9 +15,10 @@
 //      `app.currentResult.binary`, `app.currentResult.yaraBuffer`), hand
 //      the buffer to the `plaintext` handler, and surface a single
 //      `IOC.INFO` row explaining why the structured viewer didn't load.
-//      Genuine parser exceptions (i.e. errors that are NOT a watchdog
-//      timeout) bubble out to the caller's outer `catch` — the failure
-//      surface is unchanged.
+//      Genuine parser exceptions ALSO route through the same plaintext
+//      fallback (PLAN.md C4) — the failure surface used to be a bare
+//      "Failed to open file" toast, which is the wrong default for a
+//      tool whose job is to survive corrupt input gracefully.
 //
 //   2. **Per-dispatch file-size cap.** `PARSER_LIMITS
 //      .MAX_FILE_BYTES_BY_DISPATCH[id]` (with `_DEFAULT` fallback) is
@@ -66,10 +67,32 @@
 //      execution enters their body.
 //
 //   5. **Post-fallback IOC.INFO row.** Whichever path triggers the
-//      fallback (watchdog timeout or size-cap), a single visible
-//      `IOC.INFO` row is pushed onto the now-`plaintext` findings
-//      explaining what just happened so the analyst is never left
-//      wondering why a structured viewer didn't load.
+//      fallback (watchdog timeout, size-cap, or any thrown error), a
+//      single visible `IOC.INFO` row is pushed onto the now-`plaintext`
+//      findings explaining what just happened so the analyst is never
+//      left wondering why a structured viewer didn't load.
+//
+//   6. **Render-epoch fence.** `RenderRoute.run` bumps
+//      `app._renderEpoch` exactly once per call (on entry) and captures
+//      the new value as a local `epoch`. On every fallback (watchdog
+//      timeout, size-cap, thrown error) it re-installs a fresh
+//      `currentResult` skeleton + `findings` object so the previous
+//      renderer's still-running async work keeps a stale reference to
+//      the *old* skeleton and old findings — its late writes
+//      (`this.currentResult.binary = …`, `this.findings.X.push(…)`)
+//      land on orphan objects and never reach the live UI. The old
+//      `findings` is `Object.freeze`-d before being orphaned so any
+//      late `.push(...)` against it throws under strict mode and is
+//      caught by the global error handler / breadcrumb stream — turning
+//      a silent wrong-answer (PLAN.md C1) into either a no-op or a
+//      visible diagnostic. The epoch itself is NOT bumped on fallback —
+//      doing so would trip the end-of-run `epoch !== app._renderEpoch`
+//      supersession guard on every fallback path and `_loadFile` would
+//      early-return on the resulting `_superseded` sentinel, leaving
+//      the page blank instead of painting the plaintext view. The
+//      Phase-2 fast-file-swap fence is the only legitimate source of an
+//      epoch bump *outside* `run()`'s own entry.
+
 //
 // What `RenderRoute.run` deliberately does NOT do:
 //
@@ -112,19 +135,64 @@ const RenderRoute = {
     };
   },
 
+  /** Build a fresh, empty `findings` object. Shape mirrors the constructor
+   *  state expected by `_renderSidebar` and `pushIOC()`. */
+  _emptyFindings() {
+    return { risk: 'low', externalRefs: [], interestingStrings: [], metadata: {} };
+  },
+
+  /** Orphan the hung/failed renderer's write targets so its late writes
+   *  can never reach the live UI. Called from `_fallbackToPlaintext`
+   *  *within the same `run()` invocation* — the epoch was already
+   *  bumped on entry to `run()` and must not be bumped again here, or
+   *  the end-of-run `epoch !== app._renderEpoch` supersession guard
+   *  would fire on every fallback path and `App._loadFile` would early-
+   *  return on the resulting `_superseded` sentinel, leaving the page
+   *  blank instead of painting the plaintext view.
+   *
+   *  Mechanics (PLAN.md C1 Phase 1):
+   *    1. The previous `app.findings` is `Object.freeze`-d before being
+   *       replaced so any continued `findings.X.push(...)` from the
+   *       hung renderer throws under strict mode. The throw is caught
+   *       by the global error handler and turned into a breadcrumb;
+   *       the worst case is "no-op", never "silent corruption".
+   *    2. `app.findings` and `app.currentResult` are replaced with
+   *       fresh empty objects so continued `currentResult.binary = …` /
+   *       `findings.X = …` writes from the hung renderer land on the
+   *       orphaned references and never reach the live UI.
+   *
+   *  Returns the (unchanged) current epoch for callers that want it.
+   */
+  _orphanInFlight(app, buffer) {
+    if (app.findings && typeof Object.freeze === 'function') {
+      try { Object.freeze(app.findings); } catch (_) { /* best-effort */ }
+    }
+    app.findings = RenderRoute._emptyFindings();
+    app.currentResult = RenderRoute._emptyResult(buffer);
+    return app._renderEpoch;
+  },
+
+
   /** Reset partial render state (findings + binary/yaraBuffer stamps),
    *  hand the buffer to the plaintext renderer, and push a sidebar
-   *  `IOC.INFO` row explaining the fallback. Shared by both fallback
-   *  triggers (watchdog timeout + per-dispatch size cap) so they
-   *  produce identical sidebar state. Returns the plaintext renderer's
-   *  raw return value (HTMLElement or `{docEl, analyzer?}`). */
+   *  `IOC.INFO` row explaining the fallback. Shared by all three
+   *  fallback triggers (watchdog timeout, per-dispatch size cap, and
+   *  generic renderer exception) so they produce identical sidebar
+   *  state. Returns the plaintext renderer's raw return value
+   *  (HTMLElement or `{docEl, analyzer?}`). */
   async _fallbackToPlaintext(app, file, buffer, rctx, infoMessage) {
-    // Reset partial state from the bypassed renderer so it can't bleed
-    // into the sidebar (findings.risk pre-stamps, half-built IOC arrays,
-    // binary-triage stamps from a half-parsed PE/ELF/Mach-O).
-    app.findings = { risk: 'low', externalRefs: [], interestingStrings: [], metadata: {} };
-    app.currentResult.binary = null;
-    app.currentResult.yaraBuffer = null;
+    // Orphan the hung/failed renderer's write targets BEFORE invoking
+    // the plaintext handler. This freezes the previous findings (so any
+    // late `.push(...)` throws and is caught upstream rather than
+    // silently corrupting the plaintext view's sidebar) and swaps in a
+    // fresh skeleton for the plaintext renderer to write into. The
+    // render epoch is *not* bumped here — it was already bumped on
+    // entry to `run()` and bumping again would trip the end-of-run
+    // supersession guard (`epoch !== app._renderEpoch`) on every
+    // fallback path, returning `_superseded: true` and leaving the
+    // page blank instead of painting the plaintext view.
+    RenderRoute._orphanInFlight(app, buffer);
+
 
     const raw = await app._rendererDispatch.plaintext.call(app, file, buffer, rctx);
 
@@ -160,6 +228,15 @@ const RenderRoute = {
     const decision = RendererRegistry.detect(rctx);
     let dispatchId = decision.id;
     let handler = app._rendererDispatch[dispatchId] || app._rendererDispatch.plaintext;
+
+    // Bump the render epoch on entry so any stale async work from a
+    // *previous* `run()` call (still mid-execution after a quick file
+    // swap) sees a different epoch and can no-op. The current epoch is
+    // captured locally so the fallback path below can detect "did the
+    // hung renderer also abort us mid-flight?" if Phase-2 ever wires
+    // that signal up.
+    app._renderEpoch = (app._renderEpoch || 0) + 1;
+    const epoch = app._renderEpoch;
 
     // Allocate the currentResult skeleton before invoking the handler
     // so per-renderer stamps (`this.currentResult.binary = …`,
@@ -207,15 +284,36 @@ const RenderRoute = {
     if (raw === undefined) {
       try {
         raw = await ParserWatchdog.run(
+          // The watchdog hands us `{ signal }` as the sole arg; ignored
+          // by every renderer today (the contract is strictly additive).
+          // Phase-2 will migrate the long-running loops in
+          // PE/ELF/Mach-O/EVTX/encoded-content to honour `signal.aborted`.
           () => handler.call(app, file, buffer, rctx),
           { timeout: PARSER_LIMITS.RENDERER_TIMEOUT_MS, name: dispatchId }
         );
       } catch (renderErr) {
-        // Watchdog timeout → graceful PlainTextRenderer fallback. Skip the
-        // fallback if the dispatcher we just timed out on was already
-        // `plaintext` (degenerate case — let the caller render the
-        // "Failed to open file" box).
-        if (renderErr && renderErr._watchdogTimeout && dispatchId !== 'plaintext') {
+        // Two fallback shapes:
+        //   • Watchdog timeout (`err._watchdogTimeout`) → user-facing
+        //     "this took too long" message.
+        //   • Anything else (RangeError from a bad header, OleCfbParser
+        //     bounds exception, JSZip rejection, ...) → graceful
+        //     plaintext fallback with the original error attached as a
+        //     visible sidebar warning. PLAN.md C4: a security analyser
+        //     whose job is to *survive* corrupt input must not paint
+        //     "Failed to open file" on a truncated PE / EVTX / SQLite.
+        //
+        // Both paths route through the same `_fallbackToPlaintext`
+        // helper so the sidebar state is identical regardless of the
+        // trigger.
+        if (dispatchId === 'plaintext') {
+          // Degenerate case — plaintext itself failed. Let the caller
+          // paint the "Failed to open file" box.
+          throw renderErr;
+        }
+
+        const isTimeout = !!(renderErr && renderErr._watchdogTimeout);
+        let message;
+        if (isTimeout) {
           const secs = (PARSER_LIMITS.RENDERER_TIMEOUT_MS / 1000) | 0;
           console.warn(
             `[loupe] Renderer "${dispatchId}" timed out after ${secs}s — falling back to plain-text view`
@@ -223,19 +321,30 @@ const RenderRoute = {
           if (typeof app._breadcrumb === 'function') {
             app._breadcrumb('watchdog', dispatchId, { timeoutMs: PARSER_LIMITS.RENDERER_TIMEOUT_MS });
           }
-          const message =
+          message =
             `Parser "${dispatchId}" timed out after ${secs}s — falling back to ` +
             `plain-text view. Open the YARA tab for a manual deep scan.`;
-          const timedOutId = dispatchId;
-          dispatchId = 'plaintext';
-          raw = await RenderRoute._fallbackToPlaintext(app, file, buffer, rctx, message);
-          analyzer = null;
-          // Surface the timed-out renderer name for downstream telemetry
-          // (e.g. dev-mode breadcrumb display).
-          rctx._timedOutDispatchId = timedOutId;
         } else {
-          throw renderErr;
+          const errMsg = (renderErr && renderErr.message) ? renderErr.message : String(renderErr);
+          console.warn(
+            `[loupe] Renderer "${dispatchId}" threw "${errMsg}" — falling back to plain-text view`
+          );
+          if (typeof app._breadcrumb === 'function') {
+            app._breadcrumb('renderer-error', dispatchId, { message: errMsg });
+          }
+          message =
+            `Parser "${dispatchId}" failed (${errMsg}) — falling back to plain-text view. ` +
+            `The file may be truncated or malformed. Open the YARA tab for a manual deep scan.`;
         }
+
+        const failedId = dispatchId;
+        dispatchId = 'plaintext';
+        raw = await RenderRoute._fallbackToPlaintext(app, file, buffer, rctx, message);
+        analyzer = null;
+        // Surface the failed renderer name for downstream telemetry
+        // (e.g. dev-mode breadcrumb display).
+        rctx._timedOutDispatchId = isTimeout ? failedId : null;
+        rctx._failedDispatchId   = isTimeout ? null     : failedId;
       }
     }
 
@@ -256,6 +365,31 @@ const RenderRoute = {
       || (docEl && docEl.textContent)
       || '';
     const rawText = lfNormalize(rawTextSource);
+
+    // Final stale-epoch guard. If a fast file-swap (Phase-2 C3) bumped
+    // `app._renderEpoch` while this dispatch was running, the writes
+    // below would clobber the new file's freshly-installed
+    // `currentResult` / `findings`. Bail before touching them — the
+    // newer `run()` call owns those slots now. (Phase-1 doesn't bump
+    // the epoch from outside `run()`, so this guard is a no-op today;
+    // it's wired in now so Phase-2 needs zero changes here.)
+    if (epoch !== app._renderEpoch) {
+      // Return a synthetic result; the caller will see a non-null
+      // skeleton it can ignore. The current epoch's `currentResult`
+      // is unaffected.
+      return {
+        docEl: null,
+        findings: app.findings,
+        rawText: '',
+        buffer: buffer || null,
+        binary: null,
+        yaraBuffer: null,
+        navTitle: file.name,
+        analyzer: null,
+        dispatchId: dispatchId,
+        _superseded: true,
+      };
+    }
 
     // Fill in the remaining fields of the in-flight currentResult. The
     // skeleton already holds `buffer` and any `binary` / `yaraBuffer`

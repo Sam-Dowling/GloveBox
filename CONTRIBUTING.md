@@ -250,6 +250,69 @@ See [Risk Tier Calibration](#risk-tier-calibration) for the formal escalation
 ladder; pre-stamping `findings.risk = 'high'` is a `.clinerules` violation
 (false-positive risk colouring on benign samples).
 
+### Render-epoch contract
+
+`RenderRoute.run` owns a monotonic counter on the `App` instance,
+`app._renderEpoch`, that fences each dispatch from late writes by an
+earlier one. The mechanism exists because every renderer's contract
+(see the table above) is **mutate `app.findings` and
+`app.currentResult` in place** — there is no return-value-only path, so
+any renderer that keeps running after the watchdog has given up will
+otherwise paint over the fallback view's state.
+
+**The lifecycle:**
+
+1. On entry, `RenderRoute.run` does `app._renderEpoch++` and captures
+   the new value as a local `epoch`. A fresh `currentResult` skeleton
+   is installed on `app` as the renderer's write target.
+2. The renderer is invoked under `ParserWatchdog.run(fn, …)`. The
+   watchdog hands `fn` an `AbortSignal` as `fn({ signal })`; on
+   timeout the controller is `abort()`-ed *before* the watchdog's
+   promise rejects, then `fn`'s late writes (if any) keep running
+   against the captured-by-closure `app.findings` / `app.currentResult`
+   references it grabbed on entry.
+3. On any fallback (watchdog timeout, size-cap, or thrown error)
+   `RenderRoute._orphanInFlight(app, buffer)` is called *before* the
+   plaintext handler runs:
+   - `Object.freeze(app.findings)` — any continued
+     `findings.X.push(...)` from the hung renderer throws under
+     strict mode; the throw is caught by the global error handler
+     and turned into a breadcrumb.
+   - `app.findings` and `app.currentResult` are replaced with fresh
+     empty objects so the hung renderer's late writes land on
+     orphans never read by the live UI.
+   - The epoch is **not** bumped here — it was already bumped on
+     entry to `run()` and bumping it again would trip the
+     end-of-run supersession guard on every fallback path,
+     leaving the page blank instead of painting the plaintext
+     view. Epoch bumps from *outside* `run()` (fast
+     file-swap) are the only legitimate non-entry bumps.
+
+4. Just before stamping the final `RenderResult`, `run()` checks
+   `epoch !== app._renderEpoch` and, if a newer dispatch has bumped
+   the counter mid-flight, returns a `{ _superseded: true }`
+   sentinel. `App._loadFile` early-returns on that sentinel rather
+   than overwriting the new file's freshly installed state.
+
+**What renderers may rely on today:**
+
+- Their `static render(file, arrayBuffer, app)` signature is
+  unchanged. The `{ signal }` arg goes to the watchdog wrapper, not
+  to the renderer itself, so renderers that ignore it keep working.
+- `app.findings` and `app.currentResult` are guaranteed live (and
+  writable) for the duration of the renderer's *first* synchronous
+  pass and any awaited microtasks that resolve before the watchdog
+  fires. After a watchdog timeout there is no guarantee — see C1
+  above.
+
+**What signal-aware renderers must do** (PE / ELF / Mach-O /
+EVTX / encoded-content long-running loops): plumb the watchdog's
+`{ signal }` through to their inner loops, poll `signal.aborted`
+between chunks/rows, and bail with `return` (no throw) when set.
+Worker-driven renderers should additionally capture the
+`app._renderEpoch` value at job-dispatch time and discard any
+`onmessage` payload whose captured epoch differs from the live one.
+
 ### IOC entry shape
 
 The canonical pusher is `pushIOC(findings, opts)` at `src/constants.js`. Its
