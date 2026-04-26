@@ -29,6 +29,17 @@ Object.assign(EncodedContentDetector.prototype, {
       case 'Hex (space-delimited)': return this._decodeSpaceDelimitedHex(candidate.raw);
       case 'ROT13': return this._decodeRot13(candidate.raw);
       case 'Split-Join': return this._decodeSplitJoin(candidate.raw, candidate._separator);
+      case 'JS Hex Escape': return this._decodeJsHexEscape(candidate.raw);
+      // Reverse-string, string-concat, and spaced-token finders all
+      // pre-transform the text and store the already-decoded form in
+      // `candidate.raw`, so the decoder is a trivial UTF-8 encode pass —
+      // recursion in `_processCandidate` re-feeds the result through
+      // every other finder to pick up nested layers (Base64-after-reverse,
+      // command-after-spaced-tokens, etc.).
+      case 'Reversed':
+      case 'String Concat':
+      case 'Spaced Tokens':
+        try { return new TextEncoder().encode(candidate.raw); } catch (_) { return null; }
       default: return null;
     }
   },
@@ -196,6 +207,25 @@ Object.assign(EncodedContentDetector.prototype, {
     try {
       if (!separator) separator = ' ';
       const decoded = str.split(separator).join('');
+      return new TextEncoder().encode(decoded);
+    } catch (_) { return null; }
+  },
+
+  /**
+   * JS `\xHH` hex-escape decoder.
+   *   "\x48\x65\x6c\x6c\x6f"  →  "Hello"
+   *
+   * Strips the `\x` prefix from every two-hex-digit pair and emits the
+   * resulting bytes as UTF-8. Any non-`\xHH` characters that appear
+   * between the escapes (e.g. a stray quote or `+` from the surrounding
+   * source) are preserved verbatim — the caller's `raw` is generally
+   * already the contiguous escape run captured by the finder.
+   */
+  _decodeJsHexEscape(str) {
+    try {
+      const decoded = str.replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) =>
+        String.fromCharCode(parseInt(hex, 16))
+      );
       return new TextEncoder().encode(decoded);
     } catch (_) { return null; }
   },

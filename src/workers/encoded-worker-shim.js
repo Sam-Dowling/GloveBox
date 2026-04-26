@@ -94,3 +94,18 @@ function _trimPathExtGarbage(path) {
   const extM = tail.match(_KNOWN_EXT_RE);
   return extM ? path.slice(0, ls + 1 + dot + extM[0].length) : path;
 }
+
+// ── throwIfAborted no-op (mirrors src/workers/timeline-worker-shim.js) ──────
+//
+// `throwIfAborted` is the render-epoch / watchdog poll site defined in
+// `src/constants.js` for the host thread. Decoder helpers
+// (`src/decoders/encoding-finders.js`, `src/decoders/cmd-obfuscation.js`)
+// call it between candidate scans so the host can preempt long parses on
+// supersession / watchdog timeout. Workers never participate in the host's
+// render-epoch fence — they're terminated wholesale by `worker.terminate()`
+// — so this is a no-op stub. Without it the finder helpers would throw
+// `ReferenceError: throwIfAborted is not defined`, and the
+// secondary-scan `catch` would surface the failure as the misleading
+// "finder-budget — throwIfAborted is not defined" Info row.
+function throwIfAborted() { /* no-op in worker */ }
+

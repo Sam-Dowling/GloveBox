@@ -17,6 +17,10 @@
 //   * Space/colon/dash-delimited hex (`57 72 69 74…`)
 //   * ROT13 (only when the surrounding code mentions ROT13 / charCodeAt+13)
 //   * `.split('X').join('')` / `-split 'X' -join ''` reassembly
+//   * JS `\xHH` hex-escape sequences inside string literals
+//   * Reverse-string transforms (`.reverse()`, `[-1..-n]`, `[::-1]`)
+//   * Literal string-concat assembly (`'foo'+'bar'+'baz'`)
+//   * Token-spaced obfuscation (`W  r  i  t  e  -  O  u  t  p  u  t`)
 //
 // Each finder caps results at `this.maxCandidatesPerType` to bound runtime on
 // large inputs. Mounted via `Object.assign(EncodedContentDetector.prototype, …)`.
@@ -232,8 +236,14 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
     // Bare comma-separated integers assigned to a variable (PowerShell allows $x = 1,2,3)
-    // Match: = N,N,N,N,N,... with 10+ entries in printable ASCII range
-    const bareArrayRe = /=\s*(\d{1,3}(?:\s*,\s*\d{1,3}){9,})\s*$/gm;
+    // Match: = N,N,N,N,N,... with 10+ entries in printable ASCII range.
+    //
+    // The previous form anchored to `\s*$` (multiline EOL), which silently
+    // dropped the very common one-liner shape
+    //   $chars = 87,114,105,…,100; iex ([string]::Join('', [char[]]$chars))
+    // because the `; iex …` after the array meant the run never reached EOL.
+    // Allow any non-digit terminator (`;`, `)`, `]`, whitespace, EOL).
+    const bareArrayRe = /=\s*(\d{1,3}(?:\s*,\s*\d{1,3}){9,})(?=\s*(?:[;)\]\r\n]|$))/g;
     while ((m = bareArrayRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
@@ -508,6 +518,320 @@ Object.assign(EncodedContentDetector.prototype, {
         autoDecoded: true,
         _separator: sep,
       });
+    }
+    return candidates;
+  },
+
+  /**
+   * JS `\xHH` hex-escape sequences inside string literals.
+   *   "\x48\x65\x6c\x6c\x6f"   →   "Hello"
+   *
+   * The base64-hex finder catches `\xNN` runs of ≥ 16 entries inside ANY
+   * source position (including outside quotes), but the much more common
+   * malware shape is a string of 4–15 escapes embedded inside an
+   * `eval(…)` / `Function(…)` / `IEX(…)` argument with extra quoted
+   * fragments before/after. This finder targets that case: ≥ 4 contiguous
+   * `\xNN` escapes anywhere in the text. Lower threshold than the
+   * base64-hex variant because the value here is in catching short
+   * obfuscated method/property names (`window["\x63\x6f…"]`) that the
+   * 16-escape gate misses entirely.
+   *
+   * The aggressive-mode (selection-decode) variant lowers the threshold
+   * further to 2 escapes — the user has already opted into the noise.
+   */
+  _findJsHexEscapeCandidates(text, context) {
+    if (!text || text.length < 12) return [];
+    const candidates = [];
+    const minRun = this._aggressive ? 2 : 4;
+    const re = new RegExp(`(?:\\\\x[0-9a-fA-F]{2}){${minRun},}`, 'g');
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const raw = m[0];
+      // Skip if the base64-hex finder will already match this run (≥ 16
+      // escapes is its threshold) — avoids duplicate findings on the
+      // long-form shellcode case.
+      const escapeCount = raw.length / 4; // each \xNN = 4 chars
+      if (!this._aggressive && escapeCount >= 16) continue;
+      candidates.push({
+        type: 'JS Hex Escape',
+        raw,
+        offset: m.index,
+        length: raw.length,
+        entropy: 0,
+        confidence: 'high',
+        hint: `JS \\xHH escape sequence (${escapeCount} bytes)`,
+        autoDecoded: true,
+      });
+    }
+    return candidates;
+  },
+
+  /**
+   * Reverse-string transforms.
+   *   PowerShell: $s[-1..-$s.Length] -join ''
+   *               $s[-1..-($s.Length)] -join ''
+   *   JS:         […].reverse().join('')
+   *               s.split('').reverse().join('')
+   *   Python:     s[::-1]
+   *
+   * Strategy: find a quoted string literal in close proximity (±200 chars)
+   * to a reverse-operator marker, reverse it, and check whether the
+   * reversed form contains an execution-intent keyword. If yes, emit the
+   * REVERSED string as a "Reversed" candidate that gets re-fed through
+   * the candidate pipeline (so the reversed Base64 / hex / etc. is
+   * picked up by recursion).
+   */
+  _findReverseStringCandidates(text, context) {
+    if (!text || text.length < 20) return [];
+    const candidates = [];
+
+    // Trigger patterns — any of these in the surrounding context flags
+    // a quoted string nearby as a reverse-decode candidate.
+    const reverseMarkers = [
+      /\[-1\.\.-(?:\$?[a-zA-Z_][\w]*\.Length|\d+|\([^)]*\))\]\s*-join/i, // PS: $s[-1..-$s.Length] -join
+      /\.reverse\s*\(\s*\)\s*\.\s*join\s*\(/i,                            // JS: .reverse().join(
+      /\.split\s*\(\s*['"]['"]\s*\)\s*\.\s*reverse\s*\(/i,                 // JS: .split('').reverse(
+      /\[\s*::\s*-\s*1\s*\]/,                                               // Py: s[::-1]
+      /\breversed\s*\(/i,                                                   // Py: reversed("…") / reversed(s)
+      /\bstrrev\s*\(/i,                                                     // PHP / Perl
+    ];
+
+    // Find quoted literals (single or double quotes), 8..400 chars.
+    const quotedRe = /["']([^"'\\\n\r]{8,400})["']/g;
+    let m;
+    while ((m = quotedRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const raw = m[1];
+      const offset = m.index;
+
+      // Look ±200 chars either side for any reverse-marker.
+      const winStart = Math.max(0, offset - 200);
+      const winEnd   = Math.min(text.length, offset + raw.length + 200);
+      const region   = text.substring(winStart, winEnd);
+      const hasMarker = reverseMarkers.some(rx => rx.test(region));
+      if (!hasMarker) continue;
+
+      // Reverse the literal.
+      const reversed = [...raw].reverse().join('');
+      // Plausibility: the reversed form should look textual (printable
+      // ASCII, no NULs) AND either contain an exec keyword OR look like
+      // a Base64 / hex blob the recursion can pick up.
+      if (!/^[\x20-\x7E]{8,}$/.test(reversed)) continue;
+      const looksExec = /(eval|exec|invoke|iex|console|alert|powershell|cmd\.exe|http|shell|write|import|require|fromCharCode)/i.test(reversed);
+      const looksB64  = /^[A-Za-z0-9+\/=_\-]{20,}$/.test(reversed);
+      const looksHex  = /^[0-9a-fA-F]{20,}$/.test(reversed);
+      if (!(looksExec || looksB64 || looksHex)) continue;
+
+      candidates.push({
+        type: 'Reversed',
+        raw: reversed,                  // store the ALREADY-REVERSED text
+        offset,
+        length: raw.length + 2,         // +2 for the quotes
+        entropy: 0,
+        confidence: 'high',
+        hint: 'Reverse-string transform (reversed candidate fed to decoder pipeline)',
+        autoDecoded: true,
+      });
+    }
+    return candidates;
+  },
+
+  /**
+   * Literal string-concatenation assembly.
+   *   ('Inv'+'oke'+'-Exp'+'ression')   →   "Invoke-Expression"
+   *   "Po" + "wer" + "Shell"            →   "PowerShell"
+   *
+   * Detects ≥ 3 quoted-string fragments joined by `+` (JS/PS) and emits
+   * the assembled string as a "String Concat" candidate. The recursion
+   * then re-feeds the assembled text through every other finder so a
+   * `('TVqQ'+'AAMA…')` chain ends up classified as Base64 → PE.
+   *
+   * Lives as a SECONDARY finder (subject to the wall-clock budget) so
+   * adversarial inputs full of harmless string-concat in normal code can
+   * never blow the worker budget.
+   */
+  _findStringConcatCandidates(text, context) {
+    if (!text || text.length < 20) return [];
+    const candidates = [];
+    const minFrags = this._aggressive ? 2 : 3;
+
+    // Match 3+ quoted fragments joined by + (allow single OR double quotes).
+    // Cap each fragment at 80 chars to keep regex backtracking bounded.
+    // We capture the WHOLE chain and post-process out the literal pieces.
+    // Built via `new RegExp(...)` because the `{minFrags - 1},` repetition
+    // bound is dynamic (varies with this._aggressive).
+    const reSrc = `(?:["'][^"'\\\\\\n\\r]{0,80}["']\\s*\\+\\s*){${minFrags - 1},}["'][^"'\\\\\\n\\r]{0,80}["']`;
+    const re = new RegExp(reSrc, 'g');
+
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const raw = m[0];
+      // Pull every literal fragment out (single OR double quoted).
+      const fragRe = /["']([^"'\\\n\r]{0,80})["']/g;
+      const parts = [];
+      let f;
+      while ((f = fragRe.exec(raw)) !== null) parts.push(f[1]);
+      if (parts.length < minFrags) continue;
+      const assembled = parts.join('');
+      // Plausibility — at least 6 chars, mostly printable, and either
+      // contains an exec keyword OR looks like a Base64 / hex blob the
+      // recursion can pick up.
+      if (assembled.length < 6) continue;
+      if (!/^[\x20-\x7E]{6,}$/.test(assembled)) continue;
+      // Plausibility regex includes Python wrapper-side keywords (`print`,
+      // `raise`, `os.system`) so chains like `exec("pri" + "nt" +
+      // "('Hello, World!')")` — where the assembled fragments form
+      // `print('Hello, World!')` — pass the gate. Without `print`, the
+      // assembled side is rejected and the chain is silently dropped.
+      const looksExec = /(eval|exec|invoke|iex|console|alert|powershell|cmd\.exe|http|shell|write|import|require|fromCharCode|Output|Download|print|raise|os\.system|subprocess|popen)/i.test(assembled);
+      const looksB64  = /^[A-Za-z0-9+\/=_\-]{20,}$/.test(assembled);
+      const looksHex  = /^[0-9a-fA-F]{20,}$/.test(assembled);
+      // In normal mode require one of the strong signals; in aggressive
+      // mode (selection-decode) accept any printable assembly.
+      if (!this._aggressive && !(looksExec || looksB64 || looksHex)) continue;
+
+      candidates.push({
+        type: 'String Concat',
+        raw: assembled,
+        offset: m.index,
+        length: m[0].length,
+        entropy: 0,
+        confidence: looksExec ? 'high' : 'normal',
+        hint: `Literal string concatenation (${parts.length} fragments)`,
+        autoDecoded: true,
+      });
+    }
+    return candidates;
+  },
+
+  /**
+   * Token-spaced obfuscation — every printable character separated by 1+
+   * spaces, with no Split-Join wrapper.
+   *
+   *   `W  r  i  t  e   -  O  u  t  p  u  t     ' H e l l o     W o r l d '`
+   *
+   * Distinct from `_findSplitJoinCandidates` (which requires an explicit
+   * `.split(' ').join('')` reassembly call) and from
+   * `_findSpaceDelimitedHexCandidates` (which operates on `[0-9a-fA-F]`
+   * pairs). This finder targets the bare token-spacing trick where the
+   * attacker relies on the analyst's eye to read the characters but the
+   * obfuscation breaks string-search and naive grep-based detections.
+   *
+   * Strategy: scan whole lines. A line qualifies when ≥ 70 % of its
+   * non-whitespace characters are themselves single characters separated
+   * from each-other by ≥ 1 space (i.e. the run-length of single-char
+   * tokens is at least 16, and the line has ≤ 2 tokens longer than 1
+   * char). Collapse the spaces (preserving multi-space gaps as a single
+   * literal space — the token-spacing trick uses double-spaces to encode
+   * a real space) and re-emit. The recursion driver then re-feeds the
+   * collapsed text through every other finder, so a token-spaced Base64
+   * payload still gets classified as Base64.
+   *
+   * Threshold tuned to avoid matching ASCII-art and prose with
+   * occasional initialisms (`U S A`, `F B I`) — those are very rarely
+   * 16+ tokens long and rarely span ≥ 70 % of a line.
+   */
+  _findSpacedTokenCandidates(text, context) {
+    if (!text || text.length < 24) return [];
+    const candidates = [];
+
+    // Scan line-by-line so the regex backtracking is bounded by line
+    // length, not file length. The split() materialises the array once
+    // — fine for the multi-MB input cap enforced by the secondary
+    // finder budget.
+    const lines = text.split(/\r?\n/);
+    let cursor = 0;
+    const minTokens = this._aggressive ? 8 : 16;
+
+    for (let li = 0; li < lines.length; li++) {
+      const line = lines[li];
+      // Walk forward to the next line; record this line's offset.
+      const lineOffset = cursor;
+      cursor += line.length + 1; // +1 for the consumed \n
+
+      if (line.length < minTokens * 2) continue;
+      // Tokenise on whitespace runs so multi-space gaps stay attached to
+      // their word boundaries — we use the raw whitespace runs as
+      // sentinels for "real" spaces in the cleartext. A double-space
+      // between two single-char tokens becomes one space; a single-space
+      // becomes nothing.
+      const trimmed = line.replace(/^\s+|\s+$/g, '');
+      if (trimmed.length < minTokens * 2) continue;
+
+      // Quick reject: if the trimmed line has any sequence of 4+
+      // non-whitespace chars, it's almost certainly normal code/prose
+      // (the spaced-token form is by definition all 1-char tokens).
+      // Allow ONE such "long" run (a quoted phrase ' H e l l o ' counts
+      // as a single 8-char token after the prelim split because the
+      // outer quotes hug whitespace on each side); cap at two for the
+      // aggressive path.
+      const longRunCap = this._aggressive ? 3 : 2;
+      const longRuns = (trimmed.match(/\S{4,}/g) || []).length;
+      if (longRuns > longRunCap) continue;
+
+      // Tokenise on whitespace; count single-char tokens.
+      const toks = trimmed.split(/\s+/);
+      if (toks.length < minTokens) continue;
+      const singleCount = toks.filter(t => t.length === 1).length;
+      if (singleCount < minTokens) continue;
+      if (singleCount < toks.length * 0.7) continue;
+
+      // Reject lines that are mostly digits (tabular numeric data).
+      const digitTokens = toks.filter(t => /^\d$/.test(t)).length;
+      if (digitTokens > toks.length * 0.5) continue;
+
+      // Collapse: walk the trimmed line, copying every non-space
+      // character; collapse runs of 2+ consecutive spaces to a single
+      // space (the encoded form uses 2+ spaces to mean "real space"),
+      // and drop runs of exactly 1 space (the inter-character padding).
+      let collapsed = '';
+      for (let i = 0; i < trimmed.length; ) {
+        const ch = trimmed[i];
+        if (ch === ' ' || ch === '\t') {
+          let runLen = 0;
+          while (i < trimmed.length && (trimmed[i] === ' ' || trimmed[i] === '\t')) {
+            runLen++;
+            i++;
+          }
+          if (runLen >= 2) collapsed += ' ';
+          // runLen === 1 → drop (it's just inter-character padding)
+        } else {
+          collapsed += ch;
+          i++;
+        }
+      }
+
+      if (collapsed.length < 8) continue;
+      if (!/^[\x20-\x7E]{8,}$/.test(collapsed)) continue;
+
+      // Plausibility — the collapsed result should look like a real
+      // command, URL, or known-suspicious shape. We deliberately mirror
+      // the keyword set used elsewhere (string-concat / reversed) so a
+      // benign spaced phrase like "T h i s   i s   a   t e s t"
+      // doesn't generate a finding.
+      const looksCmd = /(write-output|write-host|invoke|iex|powershell|cmd\.exe|console|eval|exec|http:|https:|shell|net\.webclient|frombase64string|downloadstring|downloadfile|new-object|start-process)/i.test(collapsed);
+      if (!this._aggressive && !looksCmd) continue;
+
+      // Offset = start of the line plus its leading-whitespace run, so
+      // the sidebar's source-anchor click lands on the first encoded
+      // character (not on the indentation).
+      const leadingWs = line.length - line.replace(/^\s+/, '').length;
+      candidates.push({
+        type: 'Spaced Tokens',
+        raw: collapsed,                 // store the ALREADY-COLLAPSED text
+        offset: lineOffset + leadingWs,
+        length: trimmed.length,
+        entropy: 0,
+        confidence: looksCmd ? 'high' : 'normal',
+        hint: `Token-spaced obfuscation (${toks.length} tokens)`,
+        autoDecoded: true,
+      });
+      if (candidates.length >= this.maxCandidatesPerType) break;
     }
     return candidates;
   },

@@ -116,6 +116,10 @@ self.onmessage = async function (ev) {
     const detector = new EncodedContentDetector({
       maxRecursionDepth:    options.maxRecursionDepth,
       maxCandidatesPerType: options.maxCandidatesPerType,
+      // Aggressive mode (selection-driven decode in app-selection-decode.js)
+      // lowers finder thresholds — see EncodedContentDetector constructor
+      // and the per-finder `this._aggressive` reads in encoding-finders.js.
+      aggressive:           !!options.aggressive,
     });
 
     const findings = await detector.scan(textContent, rawBytes, {

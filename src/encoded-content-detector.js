@@ -35,6 +35,13 @@ class EncodedContentDetector {
   constructor(opts = {}) {
     this.maxRecursionDepth = opts.maxRecursionDepth || 4;
     this.maxCandidatesPerType = opts.maxCandidatesPerType || 50;
+    // Aggressive mode lowers finder thresholds for selection-driven
+    // decode (the analyst has explicitly highlighted a region they
+    // suspect is encoded — accept higher noise in exchange for catching
+    // shorter chains: 2-escape `\xHH` runs, 2-fragment string-concat,
+    // etc.). Threaded through to nested detectors via the recursion
+    // constructor calls inside `_processCandidate`.
+    this._aggressive = !!opts.aggressive;
   }
 
   // ── Helper: propagate severity & IOCs from inner findings ────────────────
@@ -178,6 +185,10 @@ class EncodedContentDetector {
     const spaceHexCandidates     = _runFinder(this._findSpaceDelimitedHexCandidates);
     const rot13Candidates        = _runFinder(this._findRot13Candidates);
     const splitJoinCandidates    = _runFinder(this._findSplitJoinCandidates);
+    const jsHexEscCandidates     = _runFinder(this._findJsHexEscapeCandidates);
+    const reverseCandidates      = _runFinder(this._findReverseStringCandidates);
+    const concatCandidates       = _runFinder(this._findStringConcatCandidates);
+    const spacedTokenCandidates  = _runFinder(this._findSpacedTokenCandidates);
     const cmdObfCandidates       = _runFinder(this._findCommandObfuscationCandidates);
 
     // Surface a single info-level finding so the analyst knows the
@@ -255,6 +266,22 @@ class EncodedContentDetector {
       if (result) findings.push(result);
     }
     for (const cand of splitJoinCandidates) {
+      const result = await this._processCandidate(cand, 0);
+      if (result) findings.push(result);
+    }
+    for (const cand of jsHexEscCandidates) {
+      const result = await this._processCandidate(cand, 0);
+      if (result) findings.push(result);
+    }
+    for (const cand of reverseCandidates) {
+      const result = await this._processCandidate(cand, 0);
+      if (result) findings.push(result);
+    }
+    for (const cand of concatCandidates) {
+      const result = await this._processCandidate(cand, 0);
+      if (result) findings.push(result);
+    }
+    for (const cand of spacedTokenCandidates) {
       const result = await this._processCandidate(cand, 0);
       if (result) findings.push(result);
     }
@@ -357,6 +384,7 @@ class EncodedContentDetector {
               const innerDet = new EncodedContentDetector({
                 maxRecursionDepth: this.maxRecursionDepth,
                 maxCandidatesPerType: this.maxCandidatesPerType,
+                aggressive: this._aggressive,
               });
               decompInner = await innerDet.scan(decompText, decompData, { fileType: '' });
               for (const f of decompInner) {
@@ -427,6 +455,7 @@ class EncodedContentDetector {
         const innerDetector = new EncodedContentDetector({
           maxRecursionDepth: this.maxRecursionDepth,
           maxCandidatesPerType: this.maxCandidatesPerType,
+          aggressive: this._aggressive,
         });
         innerFindings = await innerDetector.scan(decodedText, decoded, { fileType: '' });
         // Add parent chain to inner findings
