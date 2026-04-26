@@ -17,8 +17,80 @@
 //     finding, scores severity from dangerous-keyword hits, attaches IOCs
 //     extracted from the deobfuscated text.
 //
+// CMD env-var substring resolution uses a small table of well-known
+// Windows defaults (`KNOWN_ENV_VARS`) plus any `set VAR=…` assignments
+// observed earlier in the same buffer. When every token in a line
+// resolves we emit the fully-decoded payload; mixed lines emit a partial
+// decode with `⟨VAR[a..b]⟩` placeholders for the unknown slots; all-
+// unknown lines (e.g. abuse of user-controlled `%PATH%`) still emit a
+// structural rendering rather than a useless apology string, so the
+// analyst sees the operation count and ordering at a glance.
+//
 // Mounted via `Object.assign(EncodedContentDetector.prototype, …)`.
 // ════════════════════════════════════════════════════════════════════════════
+
+// Default values of well-known Windows environment variables, used when
+// resolving `%VAR:~N,M%` tokens. These are the values cmd.exe reports on
+// a stock English-locale Windows install; attackers lean on them
+// (especially COMSPEC and PATHEXT) precisely because they are
+// predictable, so a static table covers a large fraction of real-world
+// CMD obfuscation. Casing is preserved exactly because substring
+// indices into these strings are what the obfuscator is actually
+// computing — `%COMSPEC:~14,1%` indexes into the literal byte sequence
+// "C:\\Windows\\System32\\cmd.exe".
+const KNOWN_ENV_VARS = Object.freeze({
+  COMSPEC: 'C:\\Windows\\System32\\cmd.exe',
+  PATHEXT: '.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC',
+  SYSTEMROOT: 'C:\\Windows',
+  WINDIR: 'C:\\Windows',
+  PROGRAMFILES: 'C:\\Program Files',
+  'PROGRAMFILES(X86)': 'C:\\Program Files (x86)',
+  PROGRAMW6432: 'C:\\Program Files',
+  PROGRAMDATA: 'C:\\ProgramData',
+  ALLUSERSPROFILE: 'C:\\ProgramData',
+  PUBLIC: 'C:\\Users\\Public',
+  OS: 'Windows_NT',
+  PROCESSOR_ARCHITECTURE: 'AMD64',
+  HOMEDRIVE: 'C:',
+  SYSTEMDRIVE: 'C:',
+  NUMBER_OF_PROCESSORS: '8',
+});
+
+/**
+ * Resolve a single CMD `%VAR:~start[,length]%` substring operation
+ * against a known string value. Mirrors cmd.exe semantics:
+ *   - start ≥ 0: index from the front, clamped to [0, len]
+ *   - start < 0: index from the end (len + start), floored at 0
+ *   - length missing: take everything from `start` to the end
+ *   - length ≥ 0: take that many chars (clamped)
+ *   - length < 0: stop |length| chars before the end (slice[start, len+length])
+ *
+ * Returns the resolved substring (possibly empty), or `null` if the
+ * indices are pathological (e.g. start past end with positive length).
+ */
+function _resolveCmdSubstring(value, start, length) {
+  if (typeof value !== 'string') return null;
+  const len = value.length;
+  let s = (start < 0) ? Math.max(0, len + start) : Math.min(start, len);
+  let e;
+  if (length === null || length === undefined) {
+    e = len;
+  } else if (length < 0) {
+    e = Math.max(s, len + length);
+  } else {
+    e = Math.min(s + length, len);
+  }
+  if (e < s) return '';
+  return value.slice(s, e);
+}
+
+/** Build a structural placeholder for an unresolved substring op. */
+function _formatUnresolvedSub(varName, start, length) {
+  const lenStr = (length === null || length === undefined) ? '' : `,${length}`;
+  return `⟨${varName}:~${start}${lenStr}⟩`;
+}
+// ════════════════════════════════════════════════════════════════════════════
+
 
 Object.assign(EncodedContentDetector.prototype, {
   /**
@@ -56,22 +128,49 @@ Object.assign(EncodedContentDetector.prototype, {
       throwIfAborted();
       vars[m[1].toLowerCase()] = { value: m[2].trim(), offset: m.index };
     }
+    // Lookup helper used by both the concat and substring branches:
+    // user-defined `set VAR=…` first (script-local), then the
+    // KNOWN_ENV_VARS fallback table for stock Windows defaults.
+    const _lookupVar = (vname) => {
+      const userVal = vars[vname.toLowerCase()];
+      if (userVal && typeof userVal.value === 'string') return userVal.value;
+      const known = KNOWN_ENV_VARS[vname.toUpperCase()];
+      return (typeof known === 'string') ? known : null;
+    };
+
     if (Object.keys(vars).length >= 2) {
-      // Look for variable concatenation: %var1%%var2% or !var1!!var2! or %var1:~N,M%
-      const concatRe = /(?:%(\w+)%|!(\w+)!){2,}/g;
+      // Look for variable concatenation: %var1%%var2%, !var1!!var2!, or
+      // %var1:~N[,M]%%var2:~N[,M]% (a popular CMD obfuscation that combines
+      // user-defined `set` vars with substring slicing).
+      const concatRe = /(?:%(?:\w+(?::~-?\d+(?:,-?\d+)?)?)%|!(?:\w+(?::~-?\d+(?:,-?\d+)?)?)!){2,}/g;
       while ((m = concatRe.exec(text)) !== null) {
         throwIfAborted();
         if (candidates.length >= this.maxCandidatesPerType) break;
         let resolved = m[0];
         let anyResolved = false;
-        // Resolve %var% references
-        resolved = resolved.replace(/%(\w+)%/gi, (full, vname) => {
+        // Resolve %var:~N,M% (substring) before bare %var% so the bare
+        // form doesn't greedily eat the inner colon-anchored variant.
+        const subResolver = (full, vname, startStr, lenStr) => {
+          const val = _lookupVar(vname);
+          if (val === null) return full;
+          const start = parseInt(startStr, 10);
+          const len = (lenStr === undefined) ? null : parseInt(lenStr, 10);
+          const sliced = _resolveCmdSubstring(val, start, len);
+          if (sliced === null) return full;
+          anyResolved = true;
+          return sliced;
+        };
+        resolved = resolved.replace(/%(\w+):~(-?\d+)(?:,(-?\d+))?%/g, subResolver);
+        resolved = resolved.replace(/!(\w+):~(-?\d+)(?:,(-?\d+))?!/g, subResolver);
+        // Resolve bare %var% / !var! references against user-defined vars
+        // only — substituting in KNOWN_ENV_VARS for plain %COMSPEC% etc.
+        // would replace far too much (every legitimate `%PATH%` echo, …).
+        resolved = resolved.replace(/%(\w+)%/g, (full, vname) => {
           const v = vars[vname.toLowerCase()];
           if (v) { anyResolved = true; return v.value; }
           return full;
         });
-        // Resolve !var! references (delayed expansion)
-        resolved = resolved.replace(/!(\w+)!/gi, (full, vname) => {
+        resolved = resolved.replace(/!(\w+)!/g, (full, vname) => {
           const v = vars[vname.toLowerCase()];
           if (v) { anyResolved = true; return v.value; }
           return full;
@@ -91,30 +190,88 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
     // ── CMD environment variable substring abuse: %COMSPEC:~-7,1% ──
-    const envSubRe = /%\w+:~-?\d+(?:,\d+)?%/g;
+    //
+    // Three confidence tiers:
+    //   • Full   — every token resolves against KNOWN_ENV_VARS or a prior
+    //              `set VAR=…` assignment; the deobfuscated string is the
+    //              actual payload that would have run.
+    //   • Partial — at least one token resolved; unknown ones are rendered
+    //               as `⟨VAR:~start,length⟩` placeholders so the analyst
+    //               can see exactly which slot is missing.
+    //   • Structural — nothing resolved (e.g. abuse of user-controlled
+    //                  `%PATH%`); we still emit the full structural
+    //                  rendering with placeholders for every token, so the
+    //                  analyst sees the operation count and ordering at a
+    //                  glance instead of a useless apology line.
+    //
+    // The regex now also accepts negative `length` and missing `length`,
+    // both of which are legal cmd.exe substring forms (`%VAR:~5%`,
+    // `%VAR:~0,-2%`) that show up in real malware.
+    const envSubReFull = /%(\w+):~(-?\d+)(?:,(-?\d+))?%/g;
     const envSubMatches = [];
-    while ((m = envSubRe.exec(text)) !== null) {
+    while ((m = envSubReFull.exec(text)) !== null) {
       throwIfAborted();
       envSubMatches.push({ match: m[0], offset: m.index });
     }
     if (envSubMatches.length >= 3) {
-      // Find the line(s) containing these, treat entire line as obfuscated command
-      const lineRe = /^.*%\w+:~-?\d+(?:,\d+)?%.*$/gm;
+      // Find the line(s) containing these substring tokens, treat each
+      // such line as one obfuscated command.
+      const lineRe = /^.*%\w+:~-?\d+(?:,-?\d+)?%.*$/gm;
       while ((m = lineRe.exec(text)) !== null) {
         throwIfAborted();
         if (candidates.length >= this.maxCandidatesPerType) break;
-        const subCount = (m[0].match(/%\w+:~-?\d+(?:,\d+)?%/g) || []).length;
-        if (subCount < 3) continue;
+        const line = m[0];
+        const tokens = [...line.matchAll(/%(\w+):~(-?\d+)(?:,(-?\d+))?%/g)];
+        if (tokens.length < 3) continue;
+
+        let resolvedCount = 0;
+        let unresolvedCount = 0;
+        const decoded = line.replace(
+          /%(\w+):~(-?\d+)(?:,(-?\d+))?%/g,
+          (_full, vname, startStr, lenStr) => {
+            const val = _lookupVar(vname);
+            const start = parseInt(startStr, 10);
+            const len = (lenStr === undefined) ? null : parseInt(lenStr, 10);
+            if (val !== null) {
+              const sliced = _resolveCmdSubstring(val, start, len);
+              if (sliced !== null) {
+                resolvedCount++;
+                return sliced;
+              }
+            }
+            unresolvedCount++;
+            return _formatUnresolvedSub(vname, start, len);
+          }
+        );
+
+        let technique;
+        if (unresolvedCount === 0) {
+          technique = 'CMD Env Var Substring';
+        } else if (resolvedCount > 0) {
+          technique = 'CMD Env Var Substring (partial)';
+        } else {
+          technique = 'CMD Env Var Substring (structural)';
+        }
+
+        // Sanity floor: the decoded line still has to be substantive
+        // enough to be worth surfacing. We keep the original 3-token
+        // gate above and don't over-filter here so structural decodes
+        // of short payloads still surface.
+        if (!decoded || decoded.length < 3) continue;
+
         candidates.push({
           type: 'cmd-obfuscation',
-          technique: 'CMD Env Var Substring',
-          raw: m[0],
+          technique,
+          raw: line,
           offset: m.index,
-          length: m[0].length,
-          deobfuscated: `[${subCount} env var substring operations — partial decode not reliable without runtime]`,
+          length: line.length,
+          deobfuscated: decoded,
+          _envSubResolvedCount: resolvedCount,
+          _envSubUnresolvedCount: unresolvedCount,
         });
       }
     }
+
 
     // ── PowerShell string concatenation: ('Down'+'loadStr'+'ing') ──
     const psConcat = /\(\s*'[^']{1,40}'\s*(?:\+\s*'[^']{1,40}'\s*){2,}\)/g;
