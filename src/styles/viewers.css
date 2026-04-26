@@ -14959,6 +14959,26 @@ body.dark .grid-cell.tl-stack-text-35 {
   color: var(--risk-high) !important;
 }
 
+/* ── Timeline ⚡ Summarize button ──────────────────────────────────────────
+   Accent variant of `.tl-tb-btn` that mirrors the global analyser-mode
+   `#btn-copy-analysis` (`.tb-accent-btn` in core.css) so both buttons
+   read as the same primary "produce a Markdown summary for AI / SOC
+   consumption" action across the two surfaces. EVTX-only — wired in
+   `timeline-view.js::_wireEvents` and only un-hidden when
+   `this._evtxFindings` is non-null. */
+.timeline-view .tl-summarize-btn {
+  background: rgb(var(--accent-rgb) / .12);
+  border-color: rgb(var(--accent-rgb) / .35);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.timeline-view .tl-summarize-btn:hover {
+  background: rgb(var(--accent-rgb) / .22) !important;
+  border-color: rgb(var(--accent-rgb) / .5) !important;
+  color: var(--accent) !important;
+}
+
 /* ── Sus chip variant (additions to .tl-chip family) ──────────────────── */
 .timeline-view .tl-chip-sus {
   background: rgb(var(--risk-high-rgb) / .12);

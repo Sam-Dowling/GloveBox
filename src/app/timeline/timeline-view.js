@@ -1370,6 +1370,7 @@ class TimelineView {
         <select class="tl-field-select" data-field="bucket"></select>
       </label>
       <span class="tl-spacer"></span>
+      <button class="tl-tb-btn tl-summarize-btn" type="button" data-act="summarize" hidden title="Copy AI-ready Markdown summary of this EVTX timeline (events, detections, entities, relationships, ATT&amp;CK, beacon cadence) to clipboard. Honours the global ⚡ Summarize target setting.">⚡ Summarize</button>
       <button class="tl-tb-btn" type="button" data-act="extract" title="Extract values (URLs, hostnames, Key=Value fields, regex) into new columns">ƒx Extract values</button>
       <button class="tl-reset-btn" type="button" title="Reset view: clear query, range window, column hides, 🚩 Suspicious marks, stack column, pivot, extracted columns, AND every saved Timeline preference (grid/chart heights, bucket, section collapse, card widths, query history, drawer width, grid column widths)">↺ Reset</button>
 
@@ -1583,6 +1584,7 @@ class TimelineView {
       bucketSelect: toolbar.querySelector('[data-field="bucket"]'),
       resetBtn: toolbar.querySelector('.tl-reset-btn'),
       extractBtn: toolbar.querySelector('[data-act="extract"]'),
+      summarizeBtn: toolbar.querySelector('[data-act="summarize"]'),
       chartCanvas: chart.body.querySelector('.tl-chart-canvas'),
       chartLegend: chart.body.querySelector('.tl-chart-legend'),
       chartEmpty: chart.body.querySelector('.tl-chart-empty'),
@@ -1763,6 +1765,16 @@ class TimelineView {
     });
     els.resetBtn.addEventListener('click', () => this._reset());
     els.extractBtn.addEventListener('click', () => this._openExtractionDialog(null));
+
+    // Summarize button — EVTX-only. Hidden in _buildDOM via the `hidden`
+    // attribute; we only un-hide and wire the click when this view actually
+    // has EVTX findings attached. CSV/TSV/SQLite timelines never see it.
+    if (els.summarizeBtn) {
+      if (this._evtxFindings) {
+        els.summarizeBtn.hidden = false;
+        els.summarizeBtn.addEventListener('click', () => this._summarizeAndCopy());
+      }
+    }
 
     // Range-banner Clear button — matches the old range-chip ⊗ semantics:
     // window-only change, no filter re-run, fast path via
