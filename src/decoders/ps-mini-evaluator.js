@@ -32,7 +32,34 @@
 // already handles severity, IOC extraction, and dangerous-keyword scoring).
 // ════════════════════════════════════════════════════════════════════════════
 
+// Default values of well-known PowerShell *automatic* variables — the
+// engine-managed `$Foo` symbols that exist before any user assignment.
+// Attackers obfuscate cmdlets by indexing into the well-known string
+// values of these variables (e.g.
+// `$VerbosePreference.toString()[1,3]+'x' -join ''`
+// → `['i','e']+'x'` → `'iex'` — characters 1 and 3 of `SilentlyContinue`).
+//
+// Casing in the keys is irrelevant (PowerShell auto-vars are
+// case-insensitive); we lower-case the lookup key. The values are the
+// stable defaults reported by `Get-Variable -Name <auto>` on a stock
+// Windows PowerShell 5.1 / pwsh install — the values an attacker is
+// counting on when they hard-code `[i,j,k]` index sequences.
+const KNOWN_PS_AUTO_VARS = Object.freeze({
+  verbosepreference:     'SilentlyContinue',
+  debugpreference:       'SilentlyContinue',
+  warningpreference:     'Continue',
+  progresspreference:    'Continue',
+  informationpreference: 'SilentlyContinue',
+  erroractionpreference: 'Continue',
+  confirmpreference:     'High',
+  pshome:                'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+  shellid:               'Microsoft.PowerShell',
+  psedition:             'Desktop',
+  psversiontable:        '',  // hashtable in real PS, treated as opaque
+});
+
 Object.assign(EncodedContentDetector.prototype, {
+
   /**
    * Find PowerShell `&(<expr>) <args>` invocations whose `<expr>` resolves
    * via a one-pass symbol table. Emits `cmd-obfuscation` candidates that
@@ -498,39 +525,96 @@ Object.assign(EncodedContentDetector.prototype, {
     if (varM) {
       const name = varM[1];
       const tail = varM[2];
-      const v = vars.get(name);
-      if (!v) return null;
+      let v = vars.get(name);
+      if (!v) {
+        // Fall back to PowerShell's well-known automatic variables. The
+        // value is exposed as a string-kind entry so `[i]`, `[i,j,k]`,
+        // and `.toString()` chains all work uniformly.
+        const auto = KNOWN_PS_AUTO_VARS[name.toLowerCase()];
+        if (typeof auto === 'string' && auto.length > 0) {
+          v = { kind: 'string', value: auto };
+        } else {
+          return null;
+        }
+      }
       return this._psApplyAccessors(v, tail, vars, envVars);
     }
 
     return null;
   },
 
+
   /**
-   * Apply a chain of `[i]` / `.k` accessors against a symbol-table entry.
-   * Returns `string | string[]` or `null` on any failure.
+   * Apply a chain of `[i]` / `[i,j,k]` / `.k` / `.toString()` accessors
+   * against a symbol-table entry. Returns `string | string[]` or `null`
+   * on any failure.
+   *
+   * String-kind entries support character indexing — `'abc'[1]` → `'b'`,
+   * `'abc'[0,2]` → `['a','c']` — because real-world obfuscation uses
+   * exactly that form on the well-known `$VerbosePreference`,
+   * `$PSHOME`, etc. automatic-variable string values to fish out
+   * cmdlet-name characters.
    */
   _psApplyAccessors(entry, tail, vars, envVars) {
     let cur = entry; // { kind, value }
     let rest = tail.trim();
     while (rest) {
-      // [i] — integer indexing into an array.
+      // [i] / [i,j,k] — integer indexing. For an *array* this picks
+      // elements; for a *string* it picks characters. `[i,j,k]` returns
+      // a fresh array kind that downstream `-join` can collapse.
       const idxM = /^\[\s*([^\]]+?)\s*\](.*)$/.exec(rest);
       if (idxM) {
         const idxSrc = idxM[1].trim();
         rest = idxM[2].trim();
-        if (!cur || cur.kind !== 'array') return null;
-        let i;
-        if (/^-?\d+$/.test(idxSrc)) i = parseInt(idxSrc, 10);
-        else {
-          // Allow `[$j]` indirection through a string-kind variable.
-          const v = this._psResolveExpression(idxSrc, vars, envVars);
-          if (typeof v !== 'string' || !/^-?\d+$/.test(v)) return null;
-          i = parseInt(v, 10);
+        if (!cur) return null;
+        // Treat the index list as comma-separated; honour quoted /
+        // bracket nesting via _psSplitTopLevel.
+        const idxParts = this._psSplitTopLevel(idxSrc, ',').map(p => p.trim()).filter(Boolean);
+        const indices = [];
+        for (const ip of idxParts) {
+          let i;
+          if (/^-?\d+$/.test(ip)) i = parseInt(ip, 10);
+          else {
+            const v = this._psResolveExpression(ip, vars, envVars);
+            if (typeof v !== 'string' || !/^-?\d+$/.test(v)) return null;
+            i = parseInt(v, 10);
+          }
+          indices.push(i);
         }
-        if (i < 0) i += cur.value.length;
-        if (i < 0 || i >= cur.value.length) return null;
-        cur = { kind: 'string', value: cur.value[i] };
+        if (indices.length === 0) return null;
+
+        // Source we can index into — array elements, or the codepoints
+        // of a string. Hashtables aren't indexable; bail.
+        let srcArr;
+        if (cur.kind === 'array') srcArr = cur.value.slice();
+        else if (cur.kind === 'string') srcArr = String(cur.value).split('');
+        else return null;
+
+        const picked = [];
+        for (let i of indices) {
+          if (i < 0) i += srcArr.length;
+          if (i < 0 || i >= srcArr.length) return null;
+          picked.push(srcArr[i]);
+        }
+        cur = (picked.length === 1)
+          ? { kind: 'string', value: picked[0] }
+          : { kind: 'array', value: picked };
+        continue;
+      }
+      // .toString() — no-op for string-kind entries; collapse an array
+      // into a space-joined string (`[object[]].ToString()` actually
+      // returns "System.Object[]" in real PowerShell, but the
+      // obfuscation form `$X.toString()[i,j]` is only ever applied to
+      // already-string-shaped automatic variables — treating it as
+      // identity is the right thing for the analyst's view).
+      const tsM = /^\.\s*toString\s*\(\s*\)(.*)$/i.exec(rest);
+      if (tsM) {
+        rest = tsM[1].trim();
+        if (!cur) return null;
+        if (cur.kind === 'array') {
+          cur = { kind: 'string', value: cur.value.join('') };
+        }
+        // string-kind passes through unchanged.
         continue;
       }
       // .k — hashtable property lookup.
@@ -550,6 +634,7 @@ Object.assign(EncodedContentDetector.prototype, {
     if (cur.kind === 'array') return cur.value.slice();
     return String(cur.value);
   },
+
 
   /**
    * Resolve an argument list — everything from the close-paren of `&(…)`

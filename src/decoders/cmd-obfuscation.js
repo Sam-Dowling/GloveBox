@@ -89,7 +89,32 @@ function _formatUnresolvedSub(varName, start, length) {
   const lenStr = (length === null || length === undefined) ? '' : `,${length}`;
   return `⟨${varName}:~${start}${lenStr}⟩`;
 }
+
+/**
+ * Strip literal carets from a CMD token. cmd.exe treats `^` as the
+ * line-continuation / generic escape character, so `Co^m^S^p^Ec` is
+ * semantically identical to `ComSpEc` / `COMSPEC`. Used both to
+ * normalise variable names captured from `%…%` / `!…!` and to clean up
+ * `set` LHS / RHS values before they enter the symbol table.
+ */
+function _stripCarets(s) {
+  return (typeof s === 'string') ? s.replace(/\^/g, '') : s;
+}
+
+/**
+ * Sensitive-keyword regex used to gate the inline single-token
+ * substring finder. We only surface a candidate from a single
+ * `%VAR:~N,M%` in the middle of a word when the resolved word spells
+ * something an attacker would obfuscate — otherwise every legitimate
+ * `prefix%COMSPEC:~0,2%suffix` echo in a help banner would emit a
+ * finding. Kept in sync with the dangerous-pattern list in
+ * `_processCommandObfuscation`; both lists exist because this gate
+ * applies pre-decode (decides whether to *emit*) and the other
+ * applies post-decode (decides *severity*).
+ */
+const SENSITIVE_CMD_KEYWORDS = /(?:powershell|pwsh|cmd\.exe|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|schtasks|wmic|forfiles|reg(?:\.exe)?\s+add|net(?:\.exe)?\s+(?:user|localgroup)|netstat|tasklist|whoami|nltest|systeminfo|invoke-expression|invoke-webrequest|downloadstring|downloadfile|new-object|frombase64string|encodedcommand|iex|iwr|irm)/i;
 // ════════════════════════════════════════════════════════════════════════════
+
 
 
 Object.assign(EncodedContentDetector.prototype, {
@@ -121,28 +146,59 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
     // ── CMD set variable concatenation ──
-    // Pattern: multiple "set X=..." followed by %X%%Y%%Z% or !X!!Y!!Z!
-    const setRe = /(?:^|\n)\s*set\s+["']?(\w+)["']?\s*=\s*([^\r\n]*)/gim;
+    //
+    // Capture every `set VAR=…` assignment in the buffer, including
+    // forms attackers use to bypass naive `^/\n`-anchored finders:
+    //
+    //   * Statement separators other than newline:
+    //       cmd /c "set com=netstat /ano&&call %com%"
+    //                                ^^ same line, separated by &&
+    //
+    //   * Indirect-name syntax:
+    //       set %CdjPuLtXi%=p
+    //     The literal %…% wrapper is part of the LHS — the var being
+    //     written to is named CdjPuLtXi, not "%CdjPuLtXi%".
+    //
+    //   * Carets inside the LHS (cmd.exe escape):
+    //       set Co^m=…    ←→  set Com=…
+    //
+    // We accept any of `^`, `\n`, `&`, `&&`, `|`, `||`, `(`, `)` or a
+    // statement-terminating `"` as the boundary before `set`.
+    const setRe = /(?:^|[\r\n&|()"\s])set\s+["']?(?:%([\w^]+)%|!([\w^]+)!|([\w^]+))["']?\s*=\s*([^\r\n&|"]*)/gim;
     const vars = {};
     while ((m = setRe.exec(text)) !== null) {
       throwIfAborted();
-      vars[m[1].toLowerCase()] = { value: m[2].trim(), offset: m.index };
+      const rawName = m[1] || m[2] || m[3] || '';
+      const name = _stripCarets(rawName).trim();
+      if (!name) continue;
+      const rawVal = (m[4] || '').trim();
+      // Strip a trailing `"` if the LHS came from `set "VAR=val"`-style
+      // quoting where our boundary character ate the opening quote.
+      const value = _stripCarets(rawVal.replace(/"+\s*$/, '').trim());
+      if (!value) continue;
+      vars[name.toLowerCase()] = { value, offset: m.index };
     }
     // Lookup helper used by both the concat and substring branches:
     // user-defined `set VAR=…` first (script-local), then the
     // KNOWN_ENV_VARS fallback table for stock Windows defaults.
-    const _lookupVar = (vname) => {
+    // The `vname` we receive may have inline carets (`Co^m^S^p^Ec`) —
+    // strip them first so `%Co^m^S^p^Ec%` resolves as `COMSPEC`.
+    const _lookupVar = (rawVname) => {
+      const vname = _stripCarets(rawVname);
       const userVal = vars[vname.toLowerCase()];
       if (userVal && typeof userVal.value === 'string') return userVal.value;
       const known = KNOWN_ENV_VARS[vname.toUpperCase()];
       return (typeof known === 'string') ? known : null;
     };
 
-    if (Object.keys(vars).length >= 2) {
+    if (Object.keys(vars).length >= 1) {
+
       // Look for variable concatenation: %var1%%var2%, !var1!!var2!, or
       // %var1:~N[,M]%%var2:~N[,M]% (a popular CMD obfuscation that combines
-      // user-defined `set` vars with substring slicing).
-      const concatRe = /(?:%(?:\w+(?::~-?\d+(?:,-?\d+)?)?)%|!(?:\w+(?::~-?\d+(?:,-?\d+)?)?)!){2,}/g;
+      // user-defined `set` vars with substring slicing). The `[\w^]` class
+      // in each variable name accepts inline carets (`%Co^m^S^p^Ec%`)
+      // because cmd.exe strips them at parse time.
+      const concatRe = /(?:%(?:[\w^]+(?::~-?\d+(?:,-?\d+)?)?)%|!(?:[\w^]+(?::~-?\d+(?:,-?\d+)?)?)!){2,}/g;
       while ((m = concatRe.exec(text)) !== null) {
         throwIfAborted();
         if (candidates.length >= this.maxCandidatesPerType) break;
@@ -160,19 +216,29 @@ Object.assign(EncodedContentDetector.prototype, {
           anyResolved = true;
           return sliced;
         };
-        resolved = resolved.replace(/%(\w+):~(-?\d+)(?:,(-?\d+))?%/g, subResolver);
-        resolved = resolved.replace(/!(\w+):~(-?\d+)(?:,(-?\d+))?!/g, subResolver);
+        resolved = resolved.replace(/%([\w^]+):~(-?\d+)(?:,(-?\d+))?%/g, subResolver);
+        resolved = resolved.replace(/!([\w^]+):~(-?\d+)(?:,(-?\d+))?!/g, subResolver);
         // Resolve bare %var% / !var! references against user-defined vars
         // only — substituting in KNOWN_ENV_VARS for plain %COMSPEC% etc.
         // would replace far too much (every legitimate `%PATH%` echo, …).
-        resolved = resolved.replace(/%(\w+)%/g, (full, vname) => {
-          const v = vars[vname.toLowerCase()];
+        resolved = resolved.replace(/%([\w^]+)%/g, (full, vname) => {
+          const v = vars[_stripCarets(vname).toLowerCase()];
           if (v) { anyResolved = true; return v.value; }
           return full;
         });
-        resolved = resolved.replace(/!(\w+)!/g, (full, vname) => {
-          const v = vars[vname.toLowerCase()];
+        // Delayed-expansion indirection: `!%X%!` first resolves the inner
+        // `%X%` to a value, then the outer `!…!` re-looks-up that value
+        // as a variable name. We approximate this with a single round of
+        // re-lookup against the now-expanded string.
+        resolved = resolved.replace(/!([\w^]+)!/g, (full, vname) => {
+          const cleaned = _stripCarets(vname);
+          const v = vars[cleaned.toLowerCase()];
           if (v) { anyResolved = true; return v.value; }
+          // If the bang-name itself is the result of a previous %X%
+          // expansion (i.e. cleaned now contains characters %, !, ^,
+          // we don't see them at this stage; but a bare token like
+          // "binkOHOTJcSMBkQ" coming through after the %…% expansion
+          // would already be the var name we want).
           return full;
         });
         if (anyResolved && resolved !== m[0] && resolved.length >= 3) {
@@ -187,7 +253,147 @@ Object.assign(EncodedContentDetector.prototype, {
           });
         }
       }
+
+      // ── Delayed-expansion indirection: `!%X%!!%Y%!!%Z%!` ──
+      //
+      // A specific construct seen in the wild that the generic concat
+      // resolver above can't unwind in one pass:
+      //
+      //   set %X%=p
+      //   set %Y%=ow
+      //   set %Z%=er
+      //   !%X%!!%Y%!!%Z%!
+      //
+      // The outer `!…!` is delayed expansion; the inner `%X%` is
+      // immediate. cmd.exe first expands `%X%` to the *literal var name*
+      // ("X" in this trivial case but a randomised garbage string in
+      // real obfuscators) and then `!X!` looks that up to yield "p".
+      //
+      // We model this by scanning for runs of 2+ `!%word%!` tokens,
+      // performing the immediate-expansion step (which here is just
+      // unwrapping the outer `%…%` to the inner literal name — there is
+      // no separate var-table for the inner side; in practice the
+      // attacker's `set %X%=…` already wrote to the symbol table under
+      // `X`), then resolving against `vars[X]`. This catches the
+      // pathological "every var name is random base64" case in the big
+      // wmic blob without needing a full cmd.exe simulator.
+      const indirectRe = /(?:!%([\w^]+)%!){2,}/g;
+      while ((m = indirectRe.exec(text)) !== null) {
+        throwIfAborted();
+        if (candidates.length >= this.maxCandidatesPerType) break;
+        let resolved = '';
+        let anyResolved = false;
+        const inner = /!%([\w^]+)%!/g;
+        let im;
+        while ((im = inner.exec(m[0])) !== null) {
+          const cleaned = _stripCarets(im[1]);
+          const v = vars[cleaned.toLowerCase()];
+          if (v) { resolved += v.value; anyResolved = true; }
+          else { resolved += `⟨!${cleaned}!⟩`; }
+        }
+        if (anyResolved && resolved.length >= 3) {
+          candidates.push({
+            type: 'cmd-obfuscation',
+            technique: 'CMD Delayed-Expansion Indirection',
+            raw: m[0],
+            offset: m.index,
+            length: m[0].length,
+            deobfuscated: resolved,
+          });
+        }
+      }
     }
+
+    // ── Inline single-token env-var substring abuse: ──
+    //   PoWe%ALLUSERSPROFILE:~4,1%Shell.exe → PoWerShell.exe (4="r")
+    //
+    // The 3+-token line finder below misses single tokens welded into
+    // the middle of a word — but that's the modern variant. Gate
+    // emission on the resolved word matching SENSITIVE_CMD_KEYWORDS so
+    // benign banner echoes don't false-positive. We only fire when the
+    // token sits between non-space characters (i.e. it's spliced *into*
+    // a word, not flanked by whitespace), which is itself a strong
+    // obfuscation signal.
+    const inlineSubRe = /(?<![ \t\r\n])(%([\w^]+):~(-?\d+)(?:,(-?\d+))?%|!([\w^]+):~(-?\d+)(?:,(-?\d+))?!)(?![ \t\r\n])/g;
+    while ((m = inlineSubRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const vname = _stripCarets(m[2] || m[5] || '');
+      const startStr = m[3] || m[6];
+      const lenStr = m[4] || m[7];
+      const val = _lookupVar(vname);
+      if (val === null) continue;
+      const start = parseInt(startStr, 10);
+      const len = (lenStr === undefined) ? null : parseInt(lenStr, 10);
+      const sliced = _resolveCmdSubstring(val, start, len);
+      if (sliced === null) continue;
+
+      // Locate the surrounding "word" so we have a coherent raw/decoded
+      // pair. Stop at whitespace, statement separators, or quote chars.
+      const stopBefore = /[\s"&|()<>]/;
+      let lo = m.index;
+      while (lo > 0 && !stopBefore.test(text[lo - 1])) lo--;
+      let hi = m.index + m[0].length;
+      while (hi < text.length && !stopBefore.test(text[hi])) hi++;
+      const wordRaw = text.substring(lo, hi);
+      const wordResolved = wordRaw.substring(0, m.index - lo)
+        + sliced
+        + wordRaw.substring(m.index - lo + m[0].length);
+
+      if (!SENSITIVE_CMD_KEYWORDS.test(wordResolved)) continue;
+
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'CMD Env Var Substring (inline)',
+        raw: wordRaw,
+        offset: lo,
+        length: hi - lo,
+        deobfuscated: wordResolved,
+      });
+    }
+
+    // ── Bare `%COMSPEC%` / `%SystemRoot%\System32\…` in argv[0] position ──
+    //
+    // The variable-concat branch deliberately refuses to resolve a bare
+    // `%COMSPEC%` (resolving every `%PATH%` echo would be noisy). But
+    // when `%COMSPEC%` is the *first* token of a command — i.e. it's
+    // about to fork a shell — that's a different signal: an attacker is
+    // trying to invoke `cmd.exe` without writing the literal string. We
+    // accept the resolution only when the token is in argv[0] position,
+    // which we approximate as "right after start-of-line, `&`, `&&`,
+    // `|`, `||`, `(`, `)`, `cmd /c "`, or `start `". Caret-stripping
+    // applies so `%Co^m^S^p^Ec%` works too.
+    const argv0Re = /(?:^|[\r\n;&|()"]|\bstart\s+|\bcall\s+|\bcmd(?:\.exe)?\s+(?:\/[a-z]\s+)?["']?)(%([\w^]+)%)([^\r\n]*)/gim;
+    while ((m = argv0Re.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const vname = _stripCarets(m[2] || '');
+      // Only resolve well-known shell-launcher env vars in this
+      // position. Anything else is too noisy.
+      if (!/^(COMSPEC|SYSTEMROOT|WINDIR)$/i.test(vname)) continue;
+      const val = _lookupVar(vname);
+      if (val === null) continue;
+      const tail = m[3] || '';
+      const tokenStart = m.index + m[0].length - m[1].length - tail.length;
+      const fullStart = tokenStart;
+      const fullEnd = tokenStart + m[1].length + tail.length;
+      const raw = text.substring(fullStart, fullEnd);
+      const resolved = (val + tail).trim();
+      if (resolved.length < 5) continue;
+      // Require some additional command shape to fire — bare
+      // "C:\Windows\System32\cmd.exe" with no args is a documentation
+      // line, not an attack.
+      if (!/\s+(?:\/[a-z]|-[a-z])/i.test(tail)) continue;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'CMD Env Var (argv0)',
+        raw,
+        offset: fullStart,
+        length: fullEnd - fullStart,
+        deobfuscated: resolved,
+      });
+    }
+
 
     // ── CMD environment variable substring abuse: %COMSPEC:~-7,1% ──
     //
