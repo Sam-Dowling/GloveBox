@@ -63,19 +63,6 @@ SOC analysts, MDR responders, phishing teams, and DFIR practitioners need a way 
 
 ---
 
-## 🔭 How It Works (At a Glance)
-
-```mermaid
-flowchart LR
-    F[Drop a file] --> D[Detect format<br/>magic + extension + sniff]
-    D --> R[Render & analyse<br/>per-format renderer]
-    R --> S[Sidebar<br/>IOCs · Detections · YARA hits]
-```
-
-See [CONTRIBUTING.md → Architecture & Signal Chain](CONTRIBUTING.md#architecture--signal-chain) for the full picture.
-
----
-
 ## 🛡 Supported Formats
 
 | Category | Extensions |
