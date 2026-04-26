@@ -1335,7 +1335,7 @@ extendApp({
 
     const t0 = performance.now();
 
-    const onSuccess = (results) => {
+    const onSuccess = (results, scanErrors) => {
       const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
       if (results.length === 0) {
         this._yaraSetStatus('\u2713 Scan complete in ' + elapsed + 's \u2014 no rules matched', 'success');
@@ -1345,6 +1345,10 @@ extendApp({
         this._yaraRenderResults(results);
       }
       this._yaraResults = results;
+      // Surface per-string scan diagnostics (invalid regex, iter cap, time
+      // cap) in the YARA results header. Hidden when nothing tripped so
+      // ordinary clean scans don't sprout a "0 errors" line.
+      this._yaraRenderScanErrors(scanErrors || []);
       if (this.findings) this._updateSidebarWithYara(results);
     };
 
@@ -1353,8 +1357,9 @@ extendApp({
       // synchronous scan blocks the main thread.
       setTimeout(() => {
         try {
-          const results = YaraEngine.scan(buf, rules);
-          onSuccess(results);
+          const scanErrors = [];
+          const results = YaraEngine.scan(buf, rules, { errors: scanErrors });
+          onSuccess(results, scanErrors);
         } catch (e) {
           this._yaraSetStatus('Scan error: ' + e.message, 'error');
         }
@@ -1366,7 +1371,7 @@ extendApp({
       try { copy = buf.slice(0); } catch (_) { copy = null; }
       if (copy) {
         wm.runYara(copy, source).then((out) => {
-          onSuccess((out && out.results) || []);
+          onSuccess((out && out.results) || [], (out && out.scanErrors) || []);
         }).catch((err) => {
           if (err && err.message === 'workers-unavailable') { runSync(); return; }
           // A newer scan superseded this one (or `_loadFile` cancelled
@@ -1463,8 +1468,62 @@ extendApp({
   },
 
 
+  /** Render the per-string scan diagnostics emitted by `YaraEngine.scan(...,
+   *  { errors })` (invalid regex, iteration cap, wall-clock cap). One row
+   *  per failed string is rendered into a banner that sits above the
+   *  results card list; nothing is rendered when the diagnostics list is
+   *  empty so a clean scan still looks clean.
+   *
+   *  Without this surface every one of these failures would be silently
+   *  swallowed by the `catch(_)` blocks in `_findString`, so a single
+   *  pathological rule could produce zero matches with no UI signal at
+   *  all. */
+  _yaraRenderScanErrors(scanErrors) {
+    const container = document.getElementById('yara-results');
+    if (!container) return;
+    // Clear any stale banner from a previous scan.
+    const stale = container.querySelector('.yara-scan-errors');
+    if (stale) stale.remove();
+    if (!scanErrors || !scanErrors.length) return;
+
+    const banner = document.createElement('div');
+    banner.className = 'yara-scan-errors';
+
+    const heading = document.createElement('div');
+    heading.className = 'yara-scan-errors-heading';
+    heading.textContent = '\u26A0 ' + scanErrors.length +
+      ' rule string(s) hit a runtime budget or failed to compile';
+    banner.appendChild(heading);
+
+    const list = document.createElement('ul');
+    list.className = 'yara-scan-errors-list';
+    // Cap the on-screen list so a buggy ruleset that emits thousands of
+    // diagnostics doesn't blow out the dialog. The full list is still in
+    // memory (`this._yaraResults` consumers can walk it) — this is purely
+    // a presentation cap.
+    const MAX_SHOWN = 50;
+    const shown = scanErrors.slice(0, MAX_SHOWN);
+    for (const e of shown) {
+      const li = document.createElement('li');
+      const head = (e.ruleName ? e.ruleName + ' ' : '') + (e.stringId || '');
+      const tail = e.reason ? ' [' + e.reason + ']' : '';
+      li.textContent = head + tail + ' \u2014 ' + (e.message || '');
+      list.appendChild(li);
+    }
+    banner.appendChild(list);
+    if (scanErrors.length > MAX_SHOWN) {
+      const more = document.createElement('div');
+      more.className = 'yara-scan-errors-more';
+      more.textContent = '\u2026and ' + (scanErrors.length - MAX_SHOWN) + ' more';
+      banner.appendChild(more);
+    }
+    // Insert at top of the results panel so it precedes the result cards.
+    container.insertBefore(banner, container.firstChild);
+  },
+
   /** Render YARA scan results into the results panel. */
   _yaraRenderResults(results) {
+
     const container = document.getElementById('yara-results');
     if (!container) return;
     container.innerHTML = '';

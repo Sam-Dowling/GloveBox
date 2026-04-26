@@ -417,6 +417,31 @@ cost is the scheduling, not the parser. The size gate
 (`SYNC_YARA_FALLBACK_MAX_BYTES`) and the worker path together prevent the
 main-thread freeze on multi-megabyte files.
 
+**Per-string regex budgets and diagnostics sink.** `_findString` enforces
+three independent caps when evaluating a `regex`-typed string definition:
+`MAX` (1 000 retained match objects per string, for display), `MAX_REGEX_ITERS`
+(10 000 total `rx.exec` iterations before the inner loop bails out), and
+`TIME_BUDGET_MS` (250 ms wall-clock per string, sampled once every 256
+iterations to keep the clock check cheap). Compiled `RegExp` instances are
+memoised on the parsed-rule object itself as `strDef._compiledRx`; on
+compile failure the slot is set to `null` so subsequent scans don't retry
+the same broken pattern. Because the `RegExp` is shared across scans,
+`rx.lastIndex` is reset to `0` before every buffer.
+
+`YaraEngine.scan(buffer, rules, opts)` accepts an optional fourth `opts`
+argument carrying a diagnostics sink: `{ errors: [] }`. When present, any
+per-string failure is appended as a structured row
+`{ ruleName, stringId, reason, message }` where `reason` is one of
+`'invalid-regex'` (compile failure), `'iter-cap'` (`MAX_REGEX_ITERS`
+reached), `'time-cap'` (`TIME_BUDGET_MS` exceeded), or `'exec-error'`
+(thrown from `rx.exec`). Callers that pass three args get the legacy
+silent-skip behaviour. The YARA worker forwards the sink contents through
+the `done` postMessage payload as a `scanErrors` field, and
+`app-yara.js` renders them as a banner above the manual-scan results so a
+single pathological rule can no longer produce zero matches with no UI
+signal.
+
+
 ### Worker subsystem
 
 Loupe ships a single HTML file but still moves a few CPU-heavy passes off

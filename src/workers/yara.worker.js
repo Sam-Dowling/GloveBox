@@ -72,12 +72,14 @@ self.onmessage = function (ev) {
       return;
     }
 
-    const results = YaraEngine.scan(buffer, rules);
+    const scanErrors = [];
+    const results = YaraEngine.scan(buffer, rules, { errors: scanErrors });
     const t2 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
 
     self.postMessage({
       event:   'done',
       results: results || [],
+      scanErrors,
       parseMs: Math.max(0, t1 - t0),
       scanMs:  Math.max(0, t2 - t1),
       ruleCount: rules.length,

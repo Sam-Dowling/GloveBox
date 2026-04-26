@@ -240,11 +240,20 @@ class YaraEngine {
 
   /**
    * Scan a buffer against parsed YARA rules.
+   *
+   * The optional fourth `opts` arg is a diagnostics sink — when present, any
+   * per-string failure (invalid regex, iteration cap, wall-clock cap) is
+   * appended to `opts.errors` as
+   * `{ ruleName, stringId, reason: 'invalid-regex'|'iter-cap'|'time-cap', message }`.
+   * Callers that pass three args (the legacy shape) get the historical
+   * silent-skip behaviour, since `_findString` no-ops on a missing sink.
+   *
    * @param {ArrayBuffer|Uint8Array} buffer  File content
    * @param {object[]} rules  Parsed rule objects from parseRules()
+   * @param {object?}  opts   Optional `{ errors: [] }` diagnostics sink.
    * @returns {{ ruleName: string, tags: string, meta: object, condition: string, matches: { id: string, value: string, matches: {offset: number, length: number}[] }[] }[]}
    */
-  static scan(buffer, rules) {
+  static scan(buffer, rules, opts) {
     const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
     // Decode as latin-1 for string matching
     const textChunks = [];
@@ -254,12 +263,14 @@ class YaraEngine {
     }
     const text = textChunks.join('');
 
+    const errorSink = (opts && Array.isArray(opts.errors)) ? opts.errors : null;
+
     const results = [];
     for (const rule of rules) {
       const stringMatches = {};
       // Evaluate each string definition
       for (const strDef of rule.strings) {
-        const matchList = YaraEngine._findString(text, bytes, strDef);
+        const matchList = YaraEngine._findString(text, bytes, strDef, errorSink, rule.name);
         stringMatches[strDef.id] = matchList;
 
       }
@@ -362,11 +373,39 @@ class YaraEngine {
   }
 
   // ── Internal: Find all matches of a string in the buffer ───────────────────
-  // Returns array of { offset, length } objects for precise highlighting
-
-  static _findString(text, bytes, strDef) {
+  // Returns array of { offset, length } objects for precise highlighting.
+  //
+  // Regex strings are bounded by three independent budgets — all three were
+  // historically absent, so a single pathological pattern (e.g. nested
+  // quantifiers over a 200 KB head) could stall the entire scan:
+  //   • `MAX` (1000)        — match objects retained per string (display cap)
+  //   • `MAX_REGEX_ITERS`   — total `rx.exec` iterations before giving up
+  //   • `TIME_BUDGET_MS`    — wall-clock cap per string for regex matching
+  // Compile failures, hits on either runtime budget, and exec exceptions
+  // are appended to `errorSink` (when non-null) as a structured record so
+  // `app-yara.js` can surface them to the user instead of silently
+  // dropping the rule.
+  //
+  // Compiled `RegExp` instances are memoised on the strDef itself
+  // (`_compiledRx`) — `parseRules()` is called once per scan but the same
+  // parsed-rule objects survive across the auto-scan, manual scan, and
+  // filter passes, so the cache is a real win.
+  static _findString(text, bytes, strDef, errorSink, ruleName) {
     const matches = [];
     const MAX = 1000; // cap matches per string
+    const MAX_REGEX_ITERS = 10000;
+    const TIME_BUDGET_MS = 250;
+
+    const recordError = (reason, message) => {
+      if (!errorSink) return;
+      errorSink.push({
+        ruleName: ruleName || '',
+        stringId: strDef.id,
+        reason,
+        message,
+      });
+    };
+
 
     if (strDef.type === 'text') {
       const pattern = strDef.pattern;
@@ -424,15 +463,54 @@ class YaraEngine {
         }
       }
     } else if (strDef.type === 'regex') {
-      try {
-        const rx = new RegExp(strDef.pattern, 'g' + (strDef.nocase ? 'i' : ''));
-        let rm;
-        while ((rm = rx.exec(text)) !== null && matches.length < MAX) {
-          matches.push({ offset: rm.index, length: rm[0].length });
-          if (rm.index === rx.lastIndex) rx.lastIndex++; // avoid infinite loop on zero-width
+      // Compile-once cache. The same parsed-rule objects are reused across
+      // the auto-scan, manual scan, and post-match filter passes; recompiling
+      // each time is pure waste. `_compiledRx` is `null` after a failed
+      // compile so we don't retry every scan.
+      let rx = strDef._compiledRx;
+      if (rx === undefined) {
+        try {
+          rx = new RegExp(strDef.pattern, 'g' + (strDef.nocase ? 'i' : ''));
+        } catch (e) {
+          rx = null;
+          recordError('invalid-regex', (e && e.message) ? e.message : String(e));
         }
-      } catch (_) { /* invalid regex — skip */ }
+        strDef._compiledRx = rx;
+      }
+      if (rx) {
+        // Reset the global flag's lastIndex — the cached `rx` is shared
+        // across scans so a previous run could leave it past the end of
+        // the new buffer's text.
+        rx.lastIndex = 0;
+        const t0 = Date.now();
+        let iters = 0;
+        let stopped = null;
+        try {
+          let rm;
+          while ((rm = rx.exec(text)) !== null && matches.length < MAX) {
+            iters++;
+            if (iters >= MAX_REGEX_ITERS) { stopped = 'iter-cap'; break; }
+            // Cheap clock check: only sample once every 256 iters.
+            if ((iters & 0xff) === 0 && (Date.now() - t0) > TIME_BUDGET_MS) {
+              stopped = 'time-cap';
+              break;
+            }
+            matches.push({ offset: rm.index, length: rm[0].length });
+            if (rm.index === rx.lastIndex) rx.lastIndex++; // avoid infinite loop on zero-width
+          }
+        } catch (e) {
+          recordError('exec-error', (e && e.message) ? e.message : String(e));
+        }
+        if (stopped === 'iter-cap') {
+          recordError('iter-cap',
+            'regex iteration cap reached (' + MAX_REGEX_ITERS + ') — pattern truncated');
+        } else if (stopped === 'time-cap') {
+          recordError('time-cap',
+            'regex time budget exceeded (' + TIME_BUDGET_MS + 'ms) — pattern truncated');
+        }
+      }
     }
+
 
     return matches;
   }

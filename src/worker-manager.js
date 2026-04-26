@@ -372,7 +372,10 @@ window.WorkerManager = (function () {
   // `PARSER_LIMITS.WORKER_TIMEOUT_MS` for every channel.
 
   /** Run a YARA scan in a worker. Returns a Promise.
-   *  Resolves with `{ results, parseMs, scanMs, ruleCount }`.
+   *  Resolves with `{ results, scanErrors, parseMs, scanMs, ruleCount }`.
+   *  `scanErrors` is the optional per-string diagnostics list emitted by
+   *  `YaraEngine.scan(..., { errors })` (invalid regex, iteration cap,
+   *  wall-clock cap). Empty array when nothing tripped.
    *  Rejects with `Error('workers-unavailable')` when the probe failed
    *  (caller falls back to the synchronous path), `Error(...)` with
    *  `_watchdogTimeout=true` on timeout, or with the worker's reported
@@ -386,10 +389,11 @@ window.WorkerManager = (function () {
       payload:   { buffer, source },
       transfers: [buffer],
       decodeDone: (m) => ({
-        results:   m.results   || [],
-        parseMs:   m.parseMs   || 0,
-        scanMs:    m.scanMs    || 0,
-        ruleCount: m.ruleCount || 0,
+        results:    m.results    || [],
+        scanErrors: m.scanErrors || [],
+        parseMs:    m.parseMs    || 0,
+        scanMs:     m.scanMs     || 0,
+        ruleCount:  m.ruleCount  || 0,
       }),
     });
   }
