@@ -94,6 +94,14 @@ class GridViewer {
     // Timeline Mode uses this to attach a multi-line Event-ID → human name +
     // MITRE ATT&CK tooltip to the EVTX "Event ID" column.
     this._cellTitleFn = typeof opts.cellTitle === 'function' ? opts.cellTitle : null;
+    // Optional per-cell augment hook. Runs AFTER `textContent` / class /
+    // title setup with the live `<td>` element so callers can append
+    // decorative children (e.g. an Event-ID summary + MITRE pill in the
+    // EVTX grid). Signature:
+    //   cellAugment(dataIdx, colIdx, rawCell, td) → void
+    // Like `detailAugment` it must be cheap — it fires per visible row on
+    // every scroll. Exceptions are swallowed (decorative only).
+    this._cellAugmentFn = typeof opts.cellAugment === 'function' ? opts.cellAugment : null;
     // Optional per-drawer-row augment hook. Called AFTER the default drawer
     // key/value row has been populated, with the key + value DOM elements so
     // callers can append decorative pills (e.g. an Event-ID summary + MITRE
@@ -1636,6 +1644,14 @@ class GridViewer {
       if (this._cellClassFn) {
         const extra = this._cellClassFn(dataIdx, c, rawCell);
         if (extra) td.classList.add(...String(extra).split(/\s+/).filter(Boolean));
+      }
+      // Optional per-cell augment hook — runs AFTER textContent / class /
+      // title setup so callers can append decorative children (e.g. an
+      // EVTX Event-ID summary + ATT&CK pill in the visible grid cell).
+      // Mirrors the drawer-side `detailAugment` hook.
+      if (this._cellAugmentFn) {
+        try { this._cellAugmentFn(dataIdx, c, rawCell, td); }
+        catch (_) { /* decorative only */ }
       }
       tr.appendChild(td);
     }

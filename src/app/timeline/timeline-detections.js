@@ -148,9 +148,11 @@ Object.assign(TimelineView.prototype, {
     const decorated = refs.map(r => {
       const eid = r.eventId == null ? '' : String(r.eventId);
       const raw = String(r.url || '');
-      // The raw `url` field holds "<description> (N match(es))" — strip the
-      // trailing count suffix; we show it in its own column.
-      const desc = raw.replace(/\s*\((\d+)\s+match(?:es)?\)\s*$/i, '');
+      // The raw `url` field holds "<description> (N match(es))" or
+      // "<description> (N events)" / "(N hit(s))" depending on which
+      // detector populated it — strip every trailing-count variant so
+      // the count never repeats next to the dedicated Hits column.
+      const desc = raw.replace(/\s*\((\d+)\s+(?:match(?:es)?|event(?:s)?|hit(?:s)?)\)\s*$/i, '');
       let rec = null;
       if (Reg && eid) { try { rec = Reg.lookup(eid, ''); } catch (_) { rec = null; } }
       const mitre = rec && Array.isArray(rec.mitre) ? rec.mitre : [];
@@ -183,7 +185,8 @@ Object.assign(TimelineView.prototype, {
     });
 
     // Severity tally for the summary strip (uses every detection,
-    // regardless of grouping / sort state).
+    // regardless of grouping / sort / filter state — the strip is the
+    // analyst's read-out of what's available, not what's being shown).
     const sevTally = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
     for (const d of decorated) {
       if (sevTally[d.severity] != null) sevTally[d.severity]++;
@@ -191,6 +194,13 @@ Object.assign(TimelineView.prototype, {
     }
     const totalDistinct = decorated.length;
     const totalHits = decorated.reduce((a, d) => a + (d.count || 0), 0);
+
+    // Severity-filter state — null = show all tiers; a string ('critical',
+    // 'high', 'medium', 'low', 'info') restricts both the flat-table
+    // body and the per-tactic groups to that tier. Click the same pill
+    // twice to clear. Session-only (no localStorage) — this is a
+    // momentary lens, not a persistent preference.
+    const sevFilter = this._detectionsSevFilter || null;
 
     // ── Header strip ────────────────────────────────────────────────
     body.innerHTML = '';
@@ -205,24 +215,33 @@ Object.assign(TimelineView.prototype, {
       if (!n) continue;
       const pill = document.createElement('span');
       pill.className = 'tl-detections-summary-pill tl-det-sev-' + sev;
+      const isActive = sevFilter === sev;
+      if (isActive) pill.classList.add('tl-detections-summary-pill-active');
       pill.innerHTML = `<span class="tl-detections-summary-pill-label">${sevLabels[sev]}</span><span class="tl-detections-summary-pill-count">${n.toLocaleString()}</span>`;
-      pill.title = `Click to filter to ${sevLabels[sev]} severity rows`;
+      pill.title = isActive
+        ? `Click to clear severity filter (currently showing ${sevLabels[sev]} only)`
+        : `Click to filter table to ${sevLabels[sev]} severity rows`;
       pill.addEventListener('click', () => {
-        // Toggle sort to severity; this is the simplest "show me this
-        // tier first" UX without inventing a separate filter state.
-        if (this._detectionsSort && this._detectionsSort.col === 'severity'
-          && this._detectionsSort.dir === 'desc') {
-          this._detectionsSort = { col: 'severity', dir: 'asc' };
-        } else {
-          this._detectionsSort = { col: 'severity', dir: 'desc' };
-        }
+        // Toggle: same pill → off; different pill → switch.
+        this._detectionsSevFilter = (this._detectionsSevFilter === sev) ? null : sev;
         this._renderDetections();
       });
       stripLeft.appendChild(pill);
     }
     const stripStat = document.createElement('span');
     stripStat.className = 'tl-detections-summary-stat';
-    stripStat.textContent = `${totalDistinct.toLocaleString()} detection${totalDistinct === 1 ? '' : 's'} · ${totalHits.toLocaleString()} hit${totalHits === 1 ? '' : 's'}`;
+    if (sevFilter) {
+      const shownDistinct = decorated.filter(d => d.severity === sevFilter).length;
+      const shownHits = decorated
+        .filter(d => d.severity === sevFilter)
+        .reduce((a, d) => a + (d.count || 0), 0);
+      stripStat.textContent =
+        `${shownDistinct.toLocaleString()} of ${totalDistinct.toLocaleString()} detection${totalDistinct === 1 ? '' : 's'} · `
+        + `${shownHits.toLocaleString()} of ${totalHits.toLocaleString()} hit${totalHits === 1 ? '' : 's'} `
+        + `(filter: ${sevLabels[sevFilter]})`;
+    } else {
+      stripStat.textContent = `${totalDistinct.toLocaleString()} detection${totalDistinct === 1 ? '' : 's'} · ${totalHits.toLocaleString()} hit${totalHits === 1 ? '' : 's'}`;
+    }
     stripLeft.appendChild(stripStat);
     strip.appendChild(stripLeft);
 
@@ -272,12 +291,30 @@ Object.assign(TimelineView.prototype, {
       });
     };
 
+    // Apply session-only severity filter (set by clicking a summary
+    // pill). Done after the tally + total counts so the strip always
+    // shows the full available set, not just what's currently visible.
+    const visible = sevFilter
+      ? decorated.filter(d => d.severity === sevFilter)
+      : decorated;
+
+    // If the active filter has no rows (rare — the pill only shows for
+    // tiers with `n > 0`, but a future race could expose this), emit a
+    // friendly empty state instead of an empty `<table>`.
+    if (!visible.length) {
+      const empty = document.createElement('div');
+      empty.className = 'tl-detections-empty';
+      empty.textContent = `No ${sevLabels[sevFilter] || ''} detections — click the active pill to clear the filter.`;
+      body.appendChild(empty);
+      return;
+    }
+
     if (this._detectionsGroup) {
       // Bucket detections by primary tactic; render one sub-table per
       // bucket. Detections without a resolvable tactic land in
       // "Unmapped".
       const buckets = new Map();
-      for (const d of decorated) {
+      for (const d of visible) {
         const key = d.primaryTactic || '__unmapped__';
         if (!buckets.has(key)) buckets.set(key, []);
         buckets.get(key).push(d);
@@ -307,8 +344,8 @@ Object.assign(TimelineView.prototype, {
         body.appendChild(grp);
       }
     } else {
-      sortRows(decorated);
-      body.appendChild(this._buildDetectionsTable(decorated, sort, eventIdCol, channelCol));
+      sortRows(visible);
+      body.appendChild(this._buildDetectionsTable(visible, sort, eventIdCol, channelCol));
     }
   },
 
@@ -360,21 +397,23 @@ Object.assign(TimelineView.prototype, {
       sevTd.innerHTML = `<span class="tl-det-sev-badge">${_tlEsc(d.severity.toUpperCase())}</span>`;
       tr.appendChild(sevTd);
 
-      // Event ID cell — value plus the registry summary pill so analysts
-      // can read the meaning without opening the drawer.
+      // Event ID cell — bare value plus the shared summary / ATT&CK
+      // pill set produced by `_evtxEidPillsFor`. The pill was removed
+      // in an earlier round to fix inconsistent row heights; the
+      // single-line ellipsis treatment in `viewers.css`
+      // (`.tl-evtx-eid-pill { white-space: nowrap; overflow: hidden;
+      // text-overflow: ellipsis; max-width: 360px }`) plus the wider
+      // `.tl-detections-table .tl-det-eid` column lets the pill live
+      // here again without re-introducing the row-height bug. The
+      // pill carries its own `title` (full Microsoft summary +
+      // category, formatted by `EvtxEventIds.formatTooltip`), so no
+      // separate `eidTd.title` is needed.
       const eidTd = document.createElement('td');
       eidTd.className = 'tl-det-eid';
       eidTd.innerHTML = `<span class="tl-det-eid-val">${_tlEsc(d.eid)}</span>`;
-      // Append the EID summary pill (no MITRE pill — that gets its own column).
-      if (d.rec && d.rec.summary) {
-        const pill = document.createElement('span');
-        pill.className = 'tl-evtx-eid-pill';
-        pill.textContent = d.rec.summary;
-        try {
-          const Reg = (typeof window !== 'undefined' && window.EvtxEventIds) || null;
-          if (Reg && typeof Reg.formatTooltip === 'function') pill.title = Reg.formatTooltip(d.rec);
-        } catch (_) { /* ignore */ }
-        eidTd.appendChild(pill);
+      if (this._evtxEidPillsFor) {
+        const pillFrag = this._evtxEidPillsFor(d.eid, d.channel || '');
+        if (pillFrag && pillFrag.childNodes.length) eidTd.appendChild(pillFrag);
       }
       tr.appendChild(eidTd);
 
@@ -727,10 +766,13 @@ Object.assign(TimelineView.prototype, {
           row.className = 'tl-entity-row';
           row.title = `Filter rows containing "${e.value}"`;
           const pct = topVal > 0 ? Math.max(2, Math.round((e.count / topVal) * 100)) : 0;
+          // Per-row count column intentionally omitted — the bar's width
+          // already encodes relative frequency and the unique-count subtitle
+          // in the card header carries the cardinality. Cosmetic
+          // simplification (commit follow-up to fb053a7).
           row.innerHTML = `
             <span class="tl-col-bar" style="width:${pct}%"></span>
-            <span class="tl-entity-val">${_tlEsc(e.value)}</span>
-            <span class="tl-entity-hits">${e.count ? e.count.toLocaleString() : ''}</span>`;
+            <span class="tl-entity-val">${_tlEsc(e.value)}</span>`;
           row.addEventListener('click', () => this._pivotOnEntity(t, e.value));
           list.appendChild(row);
         }

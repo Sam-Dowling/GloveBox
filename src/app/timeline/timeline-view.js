@@ -488,6 +488,11 @@ class TimelineView {
     // Detections "Group by ATT&CK tactic" toggle — global, not per-file
     // (analysts who turn it on once tend to want it on every file).
     this._detectionsGroup = TimelineView._loadDetectionsGroup();
+    // Detections severity-filter — `null` means "show all tiers"; clicking
+    // a summary pill toggles this between `null` and one of
+    // 'critical' | 'high' | 'medium' | 'low' | 'info'. Session-only
+    // (no localStorage) — this is a momentary lens, not a saved preference.
+    this._detectionsSevFilter = null;
     this._pendingCtrlSelect = null; // { colIdx, values: Set, rows: [] }
 
 
@@ -3515,6 +3520,39 @@ class TimelineView {
       const frag = this._evtxEidPillsFor(eid, ch);
       if (frag.childNodes.length) valEl.appendChild(frag);
     } : null;
+    // Visible-cell variant — fires per visible row in the EVTX grid
+    // body and appends the same Microsoft summary + ATT&CK pills next
+    // to the bare Event-ID number, so the analyst gets the at-a-glance
+    // context without having to hover for the tooltip or open the
+    // drawer. Mirrors the Detections-table EID column. Uses the
+    // GridViewer `cellAugment` hook (sibling to `detailAugment`); the
+    // `.tl-evtx-eid-pill` single-line / max-width / ellipsis CSS keeps
+    // the cell on a single 28 px row regardless of summary length.
+    const cellAugment = (evtxEidCol >= 0) ? (dataIdx, colIdx, _raw, td) => {
+      if (colIdx !== evtxEidCol) return;
+      const row = rowsConcat[dataIdx];
+      if (!row) return;
+      const eid = row[evtxEidCol];
+      if (eid === '' || eid == null) return;
+      const ch = evtxChannelCol >= 0 ? row[evtxChannelCol] : '';
+      const frag = this._evtxEidPillsFor(eid, ch);
+      // Wrap the bare EID number in a fixed-width, tabular-numeric span
+      // so the trailing `.tl-evtx-eid-pill` summary chip starts at the
+      // same X coordinate on every row regardless of digit count
+      // (3-digit `624` next to 5-digit `12345` would otherwise make
+      // the pill column visually jagged and hard to scan). The wrapper
+      // is also what `.grid-cell:has(.tl-evtx-eid-num)` keys off to
+      // override GridViewer's numeric-column right-alignment, so it
+      // must be applied *unconditionally* — including rows whose EID
+      // has no descriptive pill in `_evtxEidPillsFor` — otherwise those
+      // cells would still right-align and the column would look ragged.
+      const num = document.createElement('span');
+      num.className = 'tl-evtx-eid-num';
+      num.textContent = td.textContent;
+      td.textContent = '';
+      td.appendChild(num);
+      if (frag.childNodes.length) td.appendChild(frag);
+    } : null;
 
 
     const existing = (role === 'main' ? this._grid : null);
@@ -3529,6 +3567,7 @@ class TimelineView {
         rowClass,
         cellClass,
         cellTitle,
+        cellAugment,
         detailAugment,
         detailCellClass,
 
@@ -3740,6 +3779,11 @@ class TimelineView {
       existing.columns = this.columns;
       existing._rowClassFn = rowClass;
       existing._cellClassFn = cellClass;
+      // Re-bind the EVTX EID `cellAugment` closure too — it captures the
+      // current `rowsConcat` reference, so without re-assignment the hook
+      // would keep appending pills based on a stale row array after a
+      // filter / sort re-render.
+      existing._cellAugmentFn = cellAugment;
       // Rows are pre-sorted by _timeMs — skip the expensive re-sort in
       // setRows that would call _sortByColumn → Date.parse per comparison.
       existing.setRows(rowsConcat, null, null, { preSorted: true });
@@ -3976,13 +4020,18 @@ class TimelineView {
             <span class="tl-col-bar" style="${barStyle}"></span>
             ${swatchHtml}<span class="tl-col-val" title="${_tlEsc(val)}">${_tlEsc(val === '' ? '(empty)' : val)}</span>
             <span class="tl-col-count">${count.toLocaleString()}</span>`;
-          // EVTX-only: append Microsoft summary + ATT&CK pills to each
-          // value row in the Event-ID Top-values card so analysts can
-          // read the meaning without opening the drawer.  `tlEvtxEidCol`
-          // is -1 for non-EVTX schemas, suppressing the lookup.
+          // EVTX-only: insert Microsoft summary + ATT&CK pills BETWEEN the
+          // value and the count so each row reads as
+          // `4624 (Successful logon) … 77` instead of putting the count
+          // between the EID and its description. `tlEvtxEidCol` is -1
+          // for non-EVTX schemas, suppressing the lookup.
           if (c === tlEvtxEidCol && val !== '' && this._evtxEidPillsFor) {
             const pillFrag = this._evtxEidPillsFor(val, '');
-            if (pillFrag && pillFrag.childNodes.length) row.appendChild(pillFrag);
+            if (pillFrag && pillFrag.childNodes.length) {
+              const countEl = row.querySelector('.tl-col-count');
+              if (countEl) row.insertBefore(pillFrag, countEl);
+              else row.appendChild(pillFrag);
+            }
           }
           sizer.appendChild(row);
         }
