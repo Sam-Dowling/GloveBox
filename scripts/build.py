@@ -408,6 +408,17 @@ APP_JS_FILES = [
     'src/renderers/odp-renderer.js',
     'src/renderers/ppt-renderer.js',
     'src/renderers/rtf-renderer.js',
+    # archive-budget.js — aggregate archive-expansion budget shared across
+    # every archive renderer in the recursive drill-down chain (PLAN H5).
+    # Each renderer consults `app._archiveBudget` before pushing each row;
+    # when the entry-count or aggregate-decompressed-bytes cap fires the
+    # renderer breaks its enumeration loop and surfaces a single
+    # `IOC.INFO` row. Reset by `App._handleFiles` (top-level loads only —
+    # drill-downs intentionally share the budget). Must load AFTER
+    # constants.js (reads PARSER_LIMITS) and BEFORE every archive
+    # renderer (archive-tree.js + cab/rar/seven7/zip/jar/msix/browserext/
+    # npm/iso/dmg/pkg).
+    'src/archive-budget.js',
     # archive-tree.js — shared collapsible / searchable / sortable archive
     # browser. Must load BEFORE every renderer that uses `ArchiveTree`
     # (zip, jar, msix, browserext) so the class exists at construction time.

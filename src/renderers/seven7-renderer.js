@@ -475,7 +475,24 @@ class SevenZRenderer {
   _parseFilesInfo(p, out) {
     const PROP = SevenZRenderer.PROP;
     const numFiles = p.readVarNum();
-    const cap = Math.min(numFiles, PARSER_LIMITS.MAX_ENTRIES);
+    // Aggregate archive-expansion budget shared across the recursive
+    // drill-down chain (H5). We pre-clip `cap` against the remaining
+    // entry budget so a hostile 7z that nests inside a deeper chain can't
+    // inflate the aggregate count past the cross-renderer ceiling.
+    const aggBudget = (typeof window !== 'undefined' && window.app)
+      ? window.app._archiveBudget
+      : null;
+    let cap = Math.min(numFiles, PARSER_LIMITS.MAX_ENTRIES);
+    if (aggBudget) {
+      const entryRoom = Math.max(0, PARSER_LIMITS.MAX_AGGREGATE_ENTRIES - aggBudget.entries);
+      cap = Math.min(cap, entryRoom);
+      // Charge the budget upfront for the entries we're about to allocate.
+      // Per-entry uncompressed bytes are charged later in `_assignEntries`
+      // (best effort — 7z's solid blocks make per-file sizes only
+      // approximate without unpack).
+      if (cap > 0) aggBudget.consume(cap, 0);
+      if (cap < numFiles) out.aggExhausted = true;
+    }
     const files = new Array(cap);
     for (let i = 0; i < cap; i++) {
       files[i] = { path: '', size: 0, mtime: null, isDir: false, isEmpty: false };
@@ -881,6 +898,11 @@ class SevenZRenderer {
     if (parsed.hasEncryption) {
       w.push({ sev: 'high', msg: '🔐 Archive uses AES-256 encryption — file content cannot be inspected without the password' });
     }
+    if (parsed.aggExhausted) {
+      const aggBudget = (typeof window !== 'undefined' && window.app)
+        ? window.app._archiveBudget : null;
+      w.push({ sev: 'high', msg: `⚠ ${aggBudget && aggBudget.reason ? aggBudget.reason : 'Aggregate archive-expansion budget exhausted — entry listing was truncated'}` });
+    }
 
     if (files.length) {
       const execs = files.filter(e => !e.isDir && SevenZRenderer.EXEC_EXTS.has((e.path || '').split('.').pop().toLowerCase()));
@@ -965,6 +987,17 @@ class SevenZRenderer {
       pushIOC(f, {
         type: IOC.INFO,
         value: msg,
+        severity: 'info',
+        bucket: 'externalRefs',
+      });
+    }
+
+    if (parsed.aggExhausted) {
+      const aggBudget = (typeof window !== 'undefined' && window.app)
+        ? window.app._archiveBudget : null;
+      pushIOC(f, {
+        type: IOC.INFO,
+        value: aggBudget && aggBudget.reason ? aggBudget.reason : 'Aggregate archive-expansion budget exhausted — 7z entry listing was truncated',
         severity: 'info',
         bucket: 'externalRefs',
       });

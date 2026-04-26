@@ -52,6 +52,32 @@ class App {
     // with a fresh `[]` literal — clears go through `_resetNavStack` so
     // breadcrumb repaint stays in lockstep.
     this._navStack = [];
+    // ── Aggregate archive-expansion budget (single owner, H5) ───────────
+    // Shared across every archive renderer in the recursive drill-down
+    // chain. Reset only on top-level loads via `_handleFiles` —
+    // drill-down loads (which call `_loadFile` directly) intentionally
+    // share the budget so the recursion is bounded as a whole. See
+    // `src/archive-budget.js` for the contract.
+    this._archiveBudget = (typeof ArchiveBudget !== 'undefined')
+      ? new ArchiveBudget()
+      : null;
+    // ── Single global App handle ───────────────────────────────────────
+    // A handful of long-lived async tasks (PE/ELF/Mach-O overlay-hash
+    // post-paint, worker-manager timeout breadcrumbs) need to reach back
+    // into the App without threading a parameter through every layer.
+    // They probe `window.app && typeof window.app.X === 'function'` and
+    // no-op when the handle is missing — but until H5 nothing actually
+    // assigned the handle, so those probes were silently always-false.
+    // H5 also needs a stable reach-up so archive renderers can query
+    // `window.app._archiveBudget` from inside their static `render()`
+    // entry points without changing every renderer signature.
+    //
+    // The constructor is the right place: `new App().init()` is invoked
+    // exactly once at the bottom of `app-breadcrumbs.js`, every consumer
+    // runs strictly after `init()` returns, and overwriting on a
+    // hypothetical second `new App()` is harmless because the old
+    // instance has no live references by that point.
+    if (typeof window !== 'undefined') window.app = this;
   }
 
   init() {
@@ -700,6 +726,16 @@ class App {
     // nulled the stack out from under us.
     if (!Array.isArray(this._navStack)) this._navStack = [];
     if (this._navStack.length) this._navStack.length = 0;
+    // Reset the aggregate archive-expansion budget alongside the nav
+    // stack — the two have identical lifetimes (top-level loads only;
+    // drill-downs share both). Co-locating the resets here means every
+    // existing call site (file picker, drag/drop, paste, _handleFiles,
+    // _clearFile, …) inherits the budget reset for free, and a future
+    // refactor cannot accidentally clear one without the other. See
+    // `src/archive-budget.js` (H5).
+    if (this._archiveBudget && typeof this._archiveBudget.reset === 'function') {
+      this._archiveBudget.reset();
+    }
     // Repaint breadcrumbs so the trail can't visually outlive the
     // frames it was describing. `_renderBreadcrumbs` is mixed in by
     // `app-load.js` — guard for the (unlikely) case it loaded out of

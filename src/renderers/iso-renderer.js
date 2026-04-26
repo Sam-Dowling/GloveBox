@@ -210,18 +210,25 @@ class IsoRenderer {
 
     const result = {
       _vol: { id: volId, system: sysId, size: volSize },
-      files: []
+      files: [],
+      aggExhausted: false,
     };
 
     // Read directory tree
-    this._readDirectory(bytes, rootLba * (blockSize || 2048), rootLen, '', result.files, blockSize || 2048, 0);
+    this._readDirectory(bytes, rootLba * (blockSize || 2048), rootLen, '', result, blockSize || 2048, 0);
 
     return result;
   }
 
-  _readDirectory(bytes, offset, length, prefix, files, blockSize, depth) {
+  _readDirectory(bytes, offset, length, prefix, result, blockSize, depth) {
+    const files = result.files;
     if (depth > PARSER_LIMITS.MAX_DEPTH) return; // prevent infinite recursion
     if (files.length >= PARSER_LIMITS.MAX_ENTRIES) return; // entry count cap
+    // Aggregate archive-expansion budget shared across the recursive
+    // drill-down chain (H5).
+    const aggBudget = (typeof window !== 'undefined' && window.app)
+      ? window.app._archiveBudget : null;
+    if (aggBudget && aggBudget.exhausted) { result.aggExhausted = true; return; }
     let pos = offset;
     const end = offset + length;
 
@@ -262,13 +269,21 @@ class IsoRenderer {
       const path = prefix ? prefix + '/' + name : name;
       const date = this._readDate(bytes, pos + 18);
 
+      // Charge each emitted entry against the aggregate cross-renderer
+      // budget. `consume` returns false when either cap trips.
+      if (aggBudget && !aggBudget.consume(1, isDir ? 0 : (size | 0))) {
+        result.aggExhausted = true;
+        return;
+      }
+
       // `_lba` / `_blockSize` are kept for `_extractFile` to slice the raw
       // file bytes back out of the ISO buffer on drill-down.
       files.push({ name, path, size, dir: isDir, date, _lba: lba, _blockSize: blockSize });
 
       // Recurse into subdirectories
       if (isDir && lba > 0 && size > 0) {
-        this._readDirectory(bytes, lba * blockSize, size, path, files, blockSize, depth + 1);
+        this._readDirectory(bytes, lba * blockSize, size, path, result, blockSize, depth + 1);
+        if (result.aggExhausted) return;
       }
 
       pos += recLen;

@@ -549,10 +549,17 @@ class JarRenderer {
     const configEntries = [];
     let manifestText = null;
     let totalSize = 0;
+    // Aggregate archive-expansion budget (H5) — shared with every other
+    // renderer in the drill-down chain. Once exhausted we stop appending
+    // rows; the analyse pass surfaces an IOC.INFO with the cap reason.
+    const aggBudget = (typeof window !== 'undefined' && window.app)
+      ? window.app._archiveBudget
+      : null;
 
     // Collect all entries
     zip.forEach((path, entry) => {
       const info = { path, dir: entry.dir, size: entry._data ? (entry._data.uncompressedSize || 0) : 0, date: entry.date, compressedSize: entry._data ? (entry._data.compressedSize || 0) : 0 };
+      if (aggBudget && !aggBudget.consume(1, info.size)) return;
       entries.push(info);
       if (!entry.dir) {
         totalSize += info.size;
@@ -1151,13 +1158,23 @@ class JarRenderer {
     let totalSize = 0;
     let manifestText = null;
 
+    // Aggregate archive-expansion budget (H5). Mirrors `_renderJarContents`.
+    const aggBudget = (typeof window !== 'undefined' && window.app)
+      ? window.app._archiveBudget
+      : null;
+    let aggExhausted = false;
     zip.forEach((path, entry) => {
-      entries.push({ path, dir: entry.dir, size: entry._data ? (entry._data.uncompressedSize || 0) : 0 });
+      const sz = entry._data ? (entry._data.uncompressedSize || 0) : 0;
+      if (aggBudget && !aggBudget.consume(1, sz)) { aggExhausted = true; return; }
+      entries.push({ path, dir: entry.dir, size: sz });
       if (!entry.dir) {
-        totalSize += entry._data ? (entry._data.uncompressedSize || 0) : 0;
+        totalSize += sz;
         if (path.toLowerCase().endsWith('.class')) classEntries.push({ path });
       }
     });
+    if (aggExhausted && aggBudget && aggBudget.exhausted) {
+      pushIOC(f, { type: IOC.INFO, value: aggBudget.reason, severity: 'info', bucket: 'externalRefs' });
+    }
 
     // Detect type
     const hasWebInf = entries.some(e => e.path.startsWith('WEB-INF/'));

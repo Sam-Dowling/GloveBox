@@ -10,6 +10,44 @@ const PARSER_LIMITS = Object.freeze({
   MAX_UNCOMPRESSED:     50 * 1024 * 1024,    // 50 MB — max decompressed output
   MAX_RATIO:            100,                 // Per-entry compression ratio abort
   MAX_ENTRIES:          10_000,              // Max archive entries before truncation
+                                             // (PER-archive cap — a single
+                                             // ZIP / JAR / MSIX / 7z central
+                                             // directory will never enumerate
+                                             // more rows than this. The
+                                             // aggregate-across-nested-archives
+                                             // cap below is independent.)
+
+  // ── Aggregate archive-expansion budget (H5) ──────────────
+  // The per-archive `MAX_ENTRIES` cap above is a single-renderer
+  // invariant: one ZIP central directory cannot enumerate more rows
+  // than this. It does NOT bound the *recursive* drill-down case where
+  // a top-level ZIP contains a JAR that contains an MSIX that contains
+  // a 7z — each level individually within its 10k cap, but the user's
+  // memory and patience burn through the chain. These two budgets
+  // close that gap by aggregating across every drill-down inside one
+  // top-level load:
+  //
+  //   MAX_AGGREGATE_ENTRIES — total archive entries enumerated across
+  //     every renderer in the recursion. When exhausted, archive
+  //     renderers stop appending rows and surface a single
+  //     `IOC.INFO` row pointing at the cap. Same fail-graceful posture
+  //     as `MAX_ENTRIES`.
+  //
+  //   MAX_AGGREGATE_DECOMPRESSED_BYTES — sum of every entry's declared
+  //     uncompressed size enumerated across the recursion. A
+  //     billion-row "tar bomb" with each entry at 1 byte still trips
+  //     the entry cap; this sibling trips on the inverse — a small
+  //     number of entries that each declare gigabytes. Both caps
+  //     trigger the same banner + IOC.INFO.
+  //
+  // Reset by `App._handleFiles` (top-level load entry only — drill-
+  // downs intentionally do NOT reset, so the recursion shares a
+  // single budget). Threaded through `App._archiveBudget` for every
+  // wired-in archive renderer.
+  MAX_AGGREGATE_ENTRIES:           50_000,
+  MAX_AGGREGATE_DECOMPRESSED_BYTES: 256 * 1024 * 1024,
+
+
   TIMEOUT_MS:           60_000,              // Buffer-read cap (`file.arrayBuffer()`)
                                              // — also the default for any
                                              // `ParserWatchdog.run(fn)` call site

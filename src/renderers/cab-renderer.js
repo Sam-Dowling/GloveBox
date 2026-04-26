@@ -93,6 +93,14 @@ class CabRenderer {
 
     // Per-archive warnings (reuses the same grammar as the ZIP renderer)
     const warnings = this._checkWarnings(parsed.files);
+    if (parsed.aggExhausted) {
+      const aggBudget = (typeof window !== 'undefined' && window.app)
+        ? window.app._archiveBudget : null;
+      warnings.unshift({
+        sev: 'high',
+        msg: `⚠ ${aggBudget && aggBudget.reason ? aggBudget.reason : 'Aggregate archive-expansion budget exhausted — entry listing was truncated'}`,
+      });
+    }
     if (warnings.length) {
       const warnDiv = document.createElement('div');
       warnDiv.className = 'zip-warnings';
@@ -215,7 +223,19 @@ class CabRenderer {
     // CFFILE entries — starts at `coffFiles`.
     let fp = coffFiles;
     const files = [];
-    const maxFiles = Math.min(cFiles, PARSER_LIMITS.MAX_ENTRIES);
+    // Aggregate archive-expansion budget shared across the recursive
+    // drill-down chain (H5). Pre-clip the file enumeration cap so a
+    // hostile CAB nested inside a deeper chain can't inflate the
+    // aggregate count past the cross-renderer ceiling.
+    const aggBudget = (typeof window !== 'undefined' && window.app)
+      ? window.app._archiveBudget : null;
+    let maxFiles = Math.min(cFiles, PARSER_LIMITS.MAX_ENTRIES);
+    let aggExhausted = false;
+    if (aggBudget) {
+      const room = Math.max(0, PARSER_LIMITS.MAX_AGGREGATE_ENTRIES - aggBudget.entries);
+      if (maxFiles > room) { maxFiles = room; aggExhausted = true; }
+      if (maxFiles > 0) aggBudget.consume(maxFiles, 0);
+    }
     for (let i = 0; i < maxFiles; i++) {
       if (fp + 16 > bytes.length) throw new Error('Truncated CFFILE table');
       const size     = dv.getUint32(fp + 0, true);
@@ -282,6 +302,7 @@ class CabRenderer {
       },
       folders,
       files,
+      aggExhausted,
       _bytes: bytes,
       _cbCFData: cbCFData,
     };
@@ -479,6 +500,17 @@ class CabRenderer {
       pushIOC(f, {
         type: IOC.INFO,
         value: `Reserve area present (CFHEADER ${parsed.header.cbCFHeader} B · CFFOLDER ${parsed.header.cbCFFolder} B · CFDATA ${parsed.header.cbCFData} B)`,
+        severity: 'info',
+        bucket: 'externalRefs',
+      });
+    }
+
+    if (parsed.aggExhausted) {
+      const aggBudget = (typeof window !== 'undefined' && window.app)
+        ? window.app._archiveBudget : null;
+      pushIOC(f, {
+        type: IOC.INFO,
+        value: aggBudget && aggBudget.reason ? aggBudget.reason : 'Aggregate archive-expansion budget exhausted — CAB entry listing was truncated',
         severity: 'info',
         bucket: 'externalRefs',
       });

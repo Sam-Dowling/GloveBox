@@ -159,6 +159,14 @@ class RarRenderer {
     let encryptedHeaders = false;
     let recoveryRecord = false;
     let passedMainHeader = false;
+    // H5: aggregate archive-expansion budget shared across the recursive
+    // drill-down chain (top-level ZIP → JAR → MSIX → 7z → RAR…). When
+    // exhausted, we stop appending entries and surface the cap upstream.
+    const aggBudget = (typeof window !== 'undefined' && window.app)
+      ? window.app._archiveBudget
+      : null;
+    let aggExhausted = false;
+
 
     const MAX_BLOCKS = PARSER_LIMITS.MAX_ENTRIES * 2;
     for (let iter = 0; iter < MAX_BLOCKS; iter++) {
@@ -252,6 +260,15 @@ class RarRenderer {
         const dir2 = (method === 0x30 && unpSize === 0 && !!(attr & 0x10));
         const date = this._dosDate(ftime);
         if (encrypted) encryptedHeaders = encryptedHeaders || encrypted;
+        // H5: gate the push against the shared aggregate budget. The
+        // per-archive `MAX_ENTRIES` cap below still fires for a single
+        // pathological RAR; this consult fires when the *recursion*
+        // through nested archives has already burned through the
+        // shared budget.
+        if (aggBudget && !aggBudget.consume(1, unpSize | 0)) {
+          aggExhausted = true;
+          break;
+        }
         files.push({
           path,
           size: unpSize,
@@ -264,6 +281,7 @@ class RarRenderer {
           isDir: dir2 || isDir,
         });
         if (files.length >= PARSER_LIMITS.MAX_ENTRIES) break;
+
       } else if (headType === 0x7B) {
         // END_ARC
         break;
@@ -280,8 +298,11 @@ class RarRenderer {
       version: '4',
       solid, multiVolume, encryptedHeaders, recoveryRecord,
       files,
+      aggExhausted,
+      aggReason: aggExhausted && aggBudget ? aggBudget.reason : '',
     };
   }
+
 
   // ── RAR5 parser ───────────────────────────────────────────────────────
   //
@@ -303,6 +324,12 @@ class RarRenderer {
     let encryptedHeaders = false;
     let recoveryRecord = false;
     const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    // H5: aggregate archive-expansion budget — see `_parseV4` for context.
+    const aggBudget = (typeof window !== 'undefined' && window.app)
+      ? window.app._archiveBudget
+      : null;
+    let aggExhausted = false;
+
 
     const readVuint = (p) => {
       let shift = 0, result = 0, count = 0;
@@ -376,6 +403,11 @@ class RarRenderer {
             const t = new Date(mtime * 1000);
             if (!isNaN(t.getTime()) && t.getFullYear() > 1980 && t.getFullYear() < 2200) date = t;
           }
+          // H5: shared aggregate budget consult before push (see _parseV4).
+          if (aggBudget && !aggBudget.consume(1, unpSize | 0)) {
+            aggExhausted = true;
+            break;
+          }
           files.push({
             path,
             size: unpSize,
@@ -386,6 +418,7 @@ class RarRenderer {
           });
           if (files.length >= PARSER_LIMITS.MAX_ENTRIES) break;
         }
+
       } else if (headerType === 5) {
         // End of archive
         break;
@@ -401,8 +434,11 @@ class RarRenderer {
       version: '5',
       solid, multiVolume, encryptedHeaders, recoveryRecord,
       files,
+      aggExhausted,
+      aggReason: aggExhausted && aggBudget ? aggBudget.reason : '',
     };
   }
+
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -462,8 +498,13 @@ class RarRenderer {
       w.push({ sev: 'high', msg: `⚠ Path traversal attempt detected — ${traversal.length} entry/entries with suspicious paths` });
     }
 
+    if (parsed.aggExhausted) {
+      w.push({ sev: 'info', msg: `ℹ ${parsed.aggReason || 'Aggregate archive-expansion budget exhausted — listing truncated'}` });
+    }
+
     return w;
   }
+
 
   _isDoubleExt(path) {
     const name = (path || '').split('/').pop();
@@ -534,6 +575,19 @@ class RarRenderer {
       if (w.sev === 'high') escalateRisk(f, 'high');
       else if (w.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
     }
+
+    // H5: surface aggregate-budget exhaustion as a clean IOC.INFO row so
+    // sidebar filtering can pick it up without trawling the PATTERN
+    // warning blob.
+    if (parsed.aggExhausted) {
+      pushIOC(f, {
+        type: IOC.INFO,
+        value: parsed.aggReason || 'Aggregate archive-expansion budget exhausted — listing truncated',
+        severity: 'info',
+        bucket: 'externalRefs',
+      });
+    }
+
 
     // Surface executable/script paths as FILE_PATH IOCs
     const dangerous = parsed.files.filter(e => !e.isDir && RarRenderer.EXEC_EXTS.has((e.path || '').split('.').pop().toLowerCase()));

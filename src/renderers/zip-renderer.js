@@ -368,6 +368,13 @@ class ZipRenderer {
   _renderZipContents(wrap, zip, buffer, fileName) {
     const entries = [];
     let truncated = false;
+    // Aggregate archive-expansion budget — shared across every renderer
+    // in the recursive drill-down chain (H5). When exhausted we stop
+    // appending rows and the analyse pass surfaces a single IOC.INFO.
+    const aggBudget = (typeof window !== 'undefined' && window.app)
+      ? window.app._archiveBudget
+      : null;
+    let aggExhausted = false;
     zip.forEach((path, entry) => {
       if (entries.length >= PARSER_LIMITS.MAX_ENTRIES) { truncated = true; return; }
       const uncompSize = entry._data ? (entry._data.uncompressedSize || 0) : 0;
@@ -375,6 +382,14 @@ class ZipRenderer {
       // Per-entry compression ratio check — skip entries with ratio > MAX_RATIO
       if (compSize > 0 && uncompSize / compSize > PARSER_LIMITS.MAX_RATIO) {
         truncated = true; // flag that some entries were skipped
+        return;
+      }
+      // Aggregate-budget gate. JSZip exposes no early-exit from `.forEach`
+      // so we just stop pushing once the budget is gone — the iterator
+      // still drains, but at O(1) per entry.
+      if (aggBudget && !aggBudget.consume(1, uncompSize)) {
+        truncated = true;
+        aggExhausted = true;
         return;
       }
       entries.push({
@@ -391,7 +406,11 @@ class ZipRenderer {
       warnDiv.className = 'zip-warnings';
       const d = document.createElement('div');
       d.className = 'zip-warning zip-warning-high';
-      d.textContent = `⚠ Archive processing was limited — entry count capped at ${PARSER_LIMITS.MAX_ENTRIES.toLocaleString()} or entries with compression ratio > ${PARSER_LIMITS.MAX_RATIO}× were skipped (potential zip bomb).`;
+      if (aggExhausted && aggBudget && aggBudget.exhausted) {
+        d.textContent = `⚠ ${aggBudget.reason}`;
+      } else {
+        d.textContent = `⚠ Archive processing was limited — entry count capped at ${PARSER_LIMITS.MAX_ENTRIES.toLocaleString()} or entries with compression ratio > ${PARSER_LIMITS.MAX_RATIO}× were skipped (potential zip bomb).`;
+      }
       warnDiv.appendChild(d);
       wrap.appendChild(warnDiv);
     }

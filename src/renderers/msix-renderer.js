@@ -628,6 +628,13 @@ class MsixRenderer {
     sec.appendChild(h);
 
     const entries = [];
+    // Aggregate archive-expansion budget shared across every renderer in
+    // the recursive drill-down chain (H5). When exhausted we stop pushing
+    // entries and surface a small notice in this section.
+    const aggBudget = (typeof window !== 'undefined' && window.app)
+      ? window.app._archiveBudget
+      : null;
+    let aggExhausted = false;
     // Cap package entry enumeration at PARSER_LIMITS.MAX_ENTRIES to keep a
     // hostile MSIX / APPX (hand-crafted 1 M-entry central directory) from
     // chewing through the main thread here — the rest of the renderer is
@@ -636,8 +643,15 @@ class MsixRenderer {
       if (entries.length >= PARSER_LIMITS.MAX_ENTRIES) return;
       const uncompSize = entry._data ? (entry._data.uncompressedSize || 0) : 0;
       const compSize = entry._data ? (entry._data.compressedSize || 0) : 0;
+      if (aggBudget && !aggBudget.consume(1, uncompSize)) { aggExhausted = true; return; }
       entries.push({ path, dir: entry.dir, size: uncompSize, compressed: compSize, date: entry.date || null });
     });
+    if (aggExhausted && aggBudget && aggBudget.exhausted) {
+      const warn = document.createElement('div');
+      warn.className = 'zip-warning zip-warning-high';
+      warn.textContent = `⚠ ${aggBudget.reason}`;
+      sec.appendChild(warn);
+    }
 
     // Shared ArchiveTree component — tree + flat + search + column sort.
     const EXEC_EXTS = new Set(['exe', 'dll', 'scr', 'sys', 'msi', 'ps1', 'bat', 'cmd', 'vbs', 'js', 'hta']);
