@@ -1787,5 +1787,24 @@ Object.assign(App.prototype, {
 
 });
 
-document.addEventListener('DOMContentLoaded', () => new App().init());
+// NOTE: The `new App().init();` kick-off used to live here but had to move
+// to the END of the App bundle (now at the bottom of
+// `src/app/app-breadcrumbs.js` — the last entry in `APP_JS_FILES`).
+//
+// Why: the bundle is concatenated in `JS_FILES` order and emitted as a
+// single inline `<script>`. `Object.assign(App.prototype, …)` runs at
+// statement-time (not hoisted), so calling `new App().init()` from the
+// middle of the bundle triggers `init()` *before* later mixin files
+// (`app-copy-analysis.js`, `app-settings.js`, `app-breadcrumbs.js`) have
+// landed their methods on the prototype. `App.init()` calls
+// `this._initSettings()` (defined in `app-settings.js`) directly, so a
+// mid-bundle kick-off threw `TypeError: this._initSettings is not a
+// function`, which in turn aborted `App.init()` between
+// `BgCanvas.setTheme()` (called from `_initTheme`) and `BgCanvas.init()`
+// — leaving the background canvas running on an unsized 0×0 surface.
+//
+// Putting the kick-off in the LAST mixin preserves the Tier 3 property
+// (App `<script>` runs ahead of the heavy renderer vendors) while
+// guaranteeing every `Object.assign` mixin has executed first. See
+// `src/app/app-breadcrumbs.js` for the actual call site.
 

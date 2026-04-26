@@ -165,10 +165,61 @@ _DETECTOR_FILES = [
     'src/decoders/cmd-obfuscation.js',
 ]
 
-# JS files concatenated in dependency order
-JS_FILES = [
+# ── Three-group JS load order (Tier 3 reorder) ───────────────────────────────
+# The bundle is emitted as **three** separate `<script>` blocks (instead of
+# one mega-block sitting after every vendor) so the App's drag-and-drop
+# listeners can be wired before the slowest vendor compiles. The breakdown:
+#
+#   • EARLY_JS_FILES   — pre-App essentials. Capture-phase drag/drop/paste
+#                        glue that buffers files into
+#                        `window.__loupePendingDrop` /
+#                        `window.__loupePendingPaste` during the cold-load
+#                        window. Must beat every other inline `<script>` to
+#                        the parser. Today the only entry is
+#                        `src/app/early-drop-bootstrap.js`.
+#   • APP_JS_FILES     — the App bundle itself (constants, helpers, every
+#                        renderer, the App class + Object.assign mixins).
+#                        `Object.assign(App.prototype, …)` ordering is
+#                        load-bearing inside this list — see the comments
+#                        on individual entries. The trailing
+#                        `new App().init();` call lives at the end of
+#                        `app-breadcrumbs.js` — the LAST file in this list
+#                        (synchronous — no DOMContentLoaded wrapper, see
+#                        comment there) so it fires after every
+#                        `Object.assign(App.prototype, …)` mixin has
+#                        landed its methods on the prototype.
+#   • Group C — heavy renderer-only vendors (JSZip / SheetJS / pdf.js /
+#                        highlight.js / UTIF / exifr / tldts / pako / LZMA
+#                        / jsQR). Emitted *after* the App `<script>` so
+#                        their compile cost no longer blocks
+#                        `App._setupDrop()` from binding listeners. They
+#                        live as plain `read()` constants in this file —
+#                        see the HTML template at the bottom for ordering.
+#                        `pushIOC` and the renderer dispatch are the only
+#                        consumers and both fire post-load (asynchronous
+#                        FileReader → RenderRoute pipeline), so by the
+#                        time any of them reach into a vendor global
+#                        every Group C `<script>` has parsed.
+#
+# Build gates iterate `EARLY_JS_FILES + APP_JS_FILES` so coverage is
+# preserved across the split.
+EARLY_JS_FILES = [
+    # early-drop-bootstrap.js — pre-App drag-and-drop / paste capture.
+    # Tiny IIFE (≈ 60 LOC of pure event-listener glue, < 1 ms compile)
+    # that registers capture-phase `dragover` / `drop` / `paste` listeners
+    # **before** the heavy vendor inlines (JSZip / SheetJS / pdf.js) and
+    # the App `<script>` compile. Drops captured during the cold-load
+    # window land on `window.__loupePendingDrop` (or `__loupePendingPaste`)
+    # and are drained by `App._setupDrop()` once the constructor runs.
+    # MUST stay the only entry in EARLY_JS_FILES — the whole point is to
+    # beat every other inline `<script>` to the parser. See file header
+    # for the contract and `App._setupDrop()` for the drain.
+    'src/app/early-drop-bootstrap.js',
+]
 
+APP_JS_FILES = [
     'src/constants.js',
+
     # nicelist.js — known-good global infrastructure (NICELIST) used by the
     # sidebar IOC table to demote / hide benign cloud / registry / CA /
     # XML-namespace surfaces. Pure data + string helpers, no dependencies,
@@ -201,7 +252,6 @@ JS_FILES = [
     # dependencies — pure DOM + closures.
     'src/sandbox-preview.js',
     # hashes.js — shared non-cryptographic fingerprint hashes (imphash
-
     # helpers, Rich-header hash, Mach-O symhash). Must load BEFORE any
     # native-binary renderer (pe/elf/macho) so they can call
     # `computeImportHashFromList`, `computeRichHash`, `computeSymHash`
@@ -484,7 +534,12 @@ JS_FILES = [
     'src/app/app-breadcrumbs.js',
 ]
 
-app_js = '\n'.join(read(f) for f in JS_FILES)
+# Group A — pre-App essentials. Emitted as a standalone <script> block
+# *before* the heavy renderer vendors so its drag/drop/paste handlers
+# beat the slowest vendor compile to the parser. See EARLY_JS_FILES
+# above for the contract.
+early_drop_js = '\n'.join(read(f) for f in EARLY_JS_FILES)
+
 
 # ── Worker bundles ───────────────────────────────────────────────────────────
 # `src/workers/*.worker.js` modules run inside `WorkerGlobalScope` (no DOM,
@@ -503,6 +558,9 @@ app_js = '\n'.join(read(f) for f in JS_FILES)
 # Worker source itself is still subject to the same `.clinerules` ban on
 # `eval` / `new Function` / network — review at the file level, not via a
 # build gate.
+#
+# These are defined here (before the Tier 5 block split below) so the
+# `_block_srcs[0]` prepend sequence can reference them.
 #
 # See CONTRIBUTING.md → Worker subsystem.
 def _esc_for_template(s: str) -> str:
@@ -564,11 +622,99 @@ encoded_worker_js = (
     + '`;\n'
 )
 
-# Stamp the worker bundle constants before the main app bundle so
-# `worker-manager.js` (which reads them) finds them defined at module-eval
-# time. All three live in the same `<script>` block, but the order of
-# declarations matters for top-level `const` references resolved at run.
-app_js = yara_worker_js + timeline_worker_js + encoded_worker_js + app_js
+
+# ── Tier 5 — split the App bundle into FOUR inline `<script>` blocks ─────────
+
+# Browsers can yield to layout / paint / event delivery **between**
+# `<script>` tags. Splitting the App into four smaller blocks keeps total
+# CPU the same but eliminates the single ≥50 ms compile task that drags
+# TBT. Same load order as before — only the **emission shape** changes
+# (one `<script>` per block instead of one mega-block).
+#
+# Boundary rules:
+#   • Block 1 (primitives & shared helpers) — every entry up to but not
+#     including the first docx renderer dep. Gets the worker-bundle
+#     constants (`__YARA_WORKER_BUNDLE_SRC` / `__TIMELINE_WORKER_BUNDLE_SRC`
+#     / `__ENCODED_WORKER_BUNDLE_SRC`), `LOUPE_VERSION`, and
+#     `DEFAULT_YARA_RULES` prepended at the very top so `worker-manager.js`
+#     and `app-core.js` find them at module-eval time.
+#   • Block 2 (renderers + dispatch) — every renderer plus the docx
+#     helper chain (`docx-parser.js`, `style-resolver.js`,
+#     `numbering-resolver.js`, `content-renderer.js`,
+#     `security-analyzer.js`), `renderer-registry.js`, `render-route.js`.
+#   • Block 3 (App shell, part 1) — `app-bg.js`, `app-core.js`, every
+#     `src/app/timeline/*.js`, `app-load.js`, `app-sidebar.js`,
+#     `app-sidebar-focus.js`.
+#   • Block 4 (App shell, part 2 + kick-off) — `app-yara.js`,
+#     `app-ui.js`, `app-copy-analysis.js`, `app-settings.js`,
+#     `app-breadcrumbs.js`. The trailing `new App().init();` lives at the
+#     end of `app-breadcrumbs.js` — the LAST file in `APP_JS_FILES` and
+#     therefore the LAST line of Block 4 — so every
+#     `Object.assign(App.prototype, …)` mixin has landed its methods on
+#     the prototype before `App.init()` runs.
+#
+# `Object.assign(App.prototype, …)` ordering invariants preserved by
+# construction: every override sits **later** in `APP_JS_FILES` than the
+# methods it overrides, and `APP_JS_FILES` is split here by **index range**
+# (not re-ordered), so the across-block sequence is identical to today's
+# single-block sequence. The block boundaries are aligned to natural
+# subsystem seams so no Object.assign mixin straddles a boundary in a way
+# that matters: `app-bg.js` (defines `BgCanvas`) is the first entry of
+# Block 3; `app-core.js` and `app-ui.js` (both call into `BgCanvas`) are
+# in Blocks 3 and 4 respectively, both after Block 3 starts. ✅
+#
+# Build gates (`_check_risk_pre_stamping`, `_check_bare_ioc_types`,
+# `_check_raw_text_normalisation`, `_check_worker_spawn_allowlist`)
+# iterate `EARLY_JS_FILES + APP_JS_FILES` so coverage is preserved across
+# the split — they read the source list, not the emitted blocks.
+def _index_of(rel):
+    """Locate a file in `APP_JS_FILES`. Fails the build if missing — keeps
+    the boundary anchors honest if a future refactor removes / renames
+    one of the boundary files."""
+    try:
+        return APP_JS_FILES.index(rel)
+    except ValueError:
+        raise SystemExit(
+            f"Tier-5 block split: boundary anchor {rel!r} missing from "
+            "APP_JS_FILES. Re-pick a boundary or update _index_of() callers."
+        )
+
+_BLOCK2_START = _index_of('src/docx-parser.js')
+_BLOCK3_START = _index_of('src/app/app-bg.js')
+_BLOCK4_START = _index_of('src/app/app-yara.js')
+
+APP_BLOCKS = [
+    APP_JS_FILES[:_BLOCK2_START],                # Block 1 — primitives
+    APP_JS_FILES[_BLOCK2_START:_BLOCK3_START],   # Block 2 — renderers + dispatch
+    APP_JS_FILES[_BLOCK3_START:_BLOCK4_START],   # Block 3 — App shell, part 1
+    APP_JS_FILES[_BLOCK4_START:],                # Block 4 — App shell, part 2 + kick-off
+]
+
+# Sanity check — the four slices must cover every entry exactly once.
+_covered = APP_BLOCKS[0] + APP_BLOCKS[1] + APP_BLOCKS[2] + APP_BLOCKS[3]
+assert _covered == APP_JS_FILES, (
+    "Tier-5 block split: APP_BLOCKS slices don't cover APP_JS_FILES exactly."
+)
+
+_block_srcs = ['\n'.join(read(f) for f in g) for g in APP_BLOCKS]
+
+# Stamp `LOUPE_VERSION`, the YARA-rules constant, and the three worker-
+# bundle constants at the top of Block 1. Order matters at runtime:
+# `worker-manager.js` (inside Block 1) reads the bundle constants at
+# module-eval time, and `app-core.js` (inside Block 3) reads
+# `LOUPE_VERSION` and `DEFAULT_YARA_RULES`.
+_block_srcs[0] = (
+    f"const LOUPE_VERSION = '{VERSION}';\n"
+    + default_yara_js
+    + yara_worker_js
+    + timeline_worker_js
+    + encoded_worker_js
+    + _block_srcs[0]
+)
+
+# Emit one `<script>` tag per block. The `\n` padding around each block's
+# content keeps the rendered HTML legible without affecting JS semantics.
+app_blocks_html = '\n'.join(f'  <script>\n{src}\n  </script>' for src in _block_srcs)
 
 
 # ── Build gate: risk pre-stamping ─────────────────────────────────────────────
@@ -582,7 +728,7 @@ _RISK_GATE_ALLOWLIST = { 'src/constants.js' }
 
 def _check_risk_pre_stamping():
     violations = []
-    for rel in JS_FILES:
+    for rel in EARLY_JS_FILES + APP_JS_FILES:
         if rel in _RISK_GATE_ALLOWLIST:
             continue
         text = read(rel)
@@ -640,7 +786,7 @@ _IOC_GATE_ALLOWLIST = { 'src/constants.js' }
 
 def _check_bare_ioc_types():
     violations = []
-    for rel in JS_FILES:
+    for rel in EARLY_JS_FILES + APP_JS_FILES:
         if rel in _IOC_GATE_ALLOWLIST:
             continue
         text = read(rel)
@@ -690,7 +836,7 @@ _RAW_TEXT_GATE_ALLOWLIST = { 'src/constants.js' }
 
 def _check_raw_text_normalisation():
     violations = []
-    for rel in JS_FILES:
+    for rel in EARLY_JS_FILES + APP_JS_FILES:
         if rel in _RAW_TEXT_GATE_ALLOWLIST:
             continue
         text = read(rel)
@@ -741,7 +887,7 @@ def _is_worker_allowlisted(rel: str) -> bool:
 
 def _check_worker_spawn_allowlist():
     violations = []
-    for rel in JS_FILES:
+    for rel in EARLY_JS_FILES + APP_JS_FILES:
         if _is_worker_allowlisted(rel):
             continue
         text = read(rel)
@@ -815,8 +961,6 @@ _check_silent_catches()
 
 
 # File extensions accepted by the open-file input. Keep as a list for sanity.
-
-
 ACCEPT_EXTS = [
     '.docx','.docm','.xlsx','.xlsm','.xls','.ods','.pptx','.pptm','.ppt','.odt','.odp',
     '.csv','.tsv','.doc','.msg','.eml','.lnk','.hta','.rtf','.pdf',
@@ -1067,6 +1211,52 @@ HTML = f"""<!DOCTYPE html>
     </div>
   </noscript>
 
+  <!-- ── Group A: pre-App essentials (Tier 3 reorder) ────────────────────
+        Capture-phase drag/drop/paste glue. Buffers files into
+        `window.__loupePendingDrop` / `window.__loupePendingPaste` during
+        the cold-load window so a drop arriving before the App's own
+        listeners are wired isn't lost to the browser's default
+        navigate-to-file behaviour. Drained + torn down by
+        `App._setupDrop()` once the constructor runs. Must beat every
+        other inline `<script>` to the parser — see EARLY_JS_FILES in
+        scripts/build.py and the file header in
+        src/app/early-drop-bootstrap.js. -->
+  <script>
+{early_drop_js}
+  </script>
+
+  <!-- ── Application — emitted as FOUR `<script>` blocks (Tier 5 split) ───
+        The App bundle is split into four inline `<script>` tags so the
+        browser can yield to layout / paint / event delivery between
+        compiles. Same load order as before — only the emission shape
+        changed (one `<script>` per block instead of one mega-block).
+        Block 1 prepends `LOUPE_VERSION`, `DEFAULT_YARA_RULES`, and the
+        three `__*_WORKER_BUNDLE_SRC` constants so `worker-manager.js`
+        (also in Block 1) and `app-core.js` (Block 3) find them at
+        module-eval time.
+        These blocks are emitted AHEAD of the heavy renderer vendors
+        below (JSZip / SheetJS / pdf.js / pako / LZMA / jsQR / tldts /
+        utif / exifr / hljs) — Tier 3 invariant — so the App owns
+        drag/drop end-to-end before any vendor compiles. The trailing
+        `new App().init();` lives at the end of `app-breadcrumbs.js`,
+        the LAST entry in `APP_JS_FILES` and therefore the last line of
+        Block 4, so every `Object.assign(App.prototype, …)` mixin has
+        landed its methods on the prototype before `App.init()` fires.
+        Synchronous call (no DOMContentLoaded wrapper) — every DOM id
+        the App queries is already in the document above. -->
+{app_blocks_html}
+
+
+  <!-- ── Group C: heavy renderer-only vendors (Tier 3 reorder) ────────────
+        These compiled AHEAD of the App before Tier 3, blocking
+        `App._setupDrop()` from binding listeners until the slowest
+        vendor (SheetJS, ~30 ms) finished parsing. Now they trail the
+        App `<script>` so the App owns drag/drop end-to-end before any
+        of them touch the parser. The early-drop bootstrap above
+        remains as defence-in-depth for the sub-millisecond gap
+        between the App `<script>` parsing and `_setupDrop()`
+        running. -->
+
   <!-- ── JSZip (inlined) ─────────────────────────────────────────────── -->
   <script>
 {jszip}
@@ -1130,13 +1320,6 @@ HTML = f"""<!DOCTYPE html>
         / interestingStrings as IOCs via pushIOC()) ─────────────── -->
   <script>
 {jsqr_js}
-  </script>
-
-  <!-- ── Application ─────────────────────────────────────────────────── -->
-  <script>
-const LOUPE_VERSION = '{VERSION}';
-{default_yara_js}
-{app_js}
   </script>
 </body>
 </html>"""

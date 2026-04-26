@@ -344,9 +344,7 @@ the main thread by spawning Web Workers from inline `blob:` URLs. The
 CSP `worker-src blob:` directive (see [SECURITY.md → Full
 Content-Security-Policy](SECURITY.md#full-content-security-policy)) is
 the only relaxation needed. Today `pdf.js`, the in-tree YARA scanner,
-the Timeline parser, the EncodedContentDetector, and the binary-string
-extractor (opt-in via `BinaryStrings.extractStringsAsync`) all run in
-workers.
+the Timeline parser, and the EncodedContentDetector all run in workers.
 
 **Module shape — `src/workers/<name>.worker.js`.** A worker module runs
 inside `WorkerGlobalScope`. It has **no DOM, no `window`, no `document`,
@@ -398,7 +396,7 @@ takes ownership and the main thread loses access. If the host needs the
 bytes again (e.g. for a re-scan after Back navigation), it re-reads them
 from the original `File`.
 
-**Timeout & preemption.** Every `WorkerManager.run*` call is bracketed by a `PARSER_LIMITS.WORKER_TIMEOUT_MS` (2 min) deadline. On expiry, `worker.terminate()` is called — real preemption, since the worker's JS engine is killed mid-iteration, unlike the post-hoc main-thread `ParserWatchdog` which only kills the wrapping promise — and the call's promise rejects with a `ParserWatchdog`-shaped error (`err._watchdogTimeout = true`, `err._watchdogName` = the channel name such as `'yara'` / `'timeline'` / `'encoded'` / `'strings'`, `err._watchdogTimeoutMs`). The active-token bump that runs alongside `terminate()` prevents any in-flight `done` / `error` message from a superseded worker from reaching the host. The host's caller-side fallback contract is unchanged: any rejection (workers-unavailable, worker-reported `error`, watchdog timeout) drops the call to the synchronous main-thread path. The 2 min budget is intentionally larger than `RENDERER_TIMEOUT_MS` (30 s) because workerised work is off-main-thread — the UI stays responsive during long scans, so legitimate large-file YARA / encoded / timeline / strings jobs don't false-positive at 30 s — and is enforced uniformly across all four channels by the private `_runWorkerJob(spec)` helper in `src/worker-manager.js`.
+**Timeout & preemption.** Every `WorkerManager.run*` call is bracketed by a `PARSER_LIMITS.WORKER_TIMEOUT_MS` (2 min) deadline. On expiry, `worker.terminate()` is called — real preemption, since the worker's JS engine is killed mid-iteration, unlike the post-hoc main-thread `ParserWatchdog` which only kills the wrapping promise — and the call's promise rejects with a `ParserWatchdog`-shaped error (`err._watchdogTimeout = true`, `err._watchdogName` = the channel name such as `'yara'` / `'timeline'` / `'encoded'`, `err._watchdogTimeoutMs`). The active-token bump that runs alongside `terminate()` prevents any in-flight `done` / `error` message from a superseded worker from reaching the host. The host's caller-side fallback contract is unchanged: any rejection (workers-unavailable, worker-reported `error`, watchdog timeout) drops the call to the synchronous main-thread path. The 2 min budget is intentionally larger than `RENDERER_TIMEOUT_MS` (30 s) because workerised work is off-main-thread — the UI stays responsive during long scans, so legitimate large-file YARA / encoded / timeline jobs don't false-positive at 30 s — and is enforced uniformly across the three channels by the private `_runWorkerJob(spec)` helper in `src/worker-manager.js`.
 
 **Tripwire — worker-spawn allow-list.** `scripts/build.py` runs a
 build-time grep over every entry in `JS_FILES` and fails the build on any
@@ -415,7 +413,6 @@ keeps premature `new Worker(...)` calls out of the tree.
 | `src/workers/yara.worker.js` | `src/worker-manager.js` (`WorkerManager.runYara(buffer, source)` / `WorkerManager.cancelYara()` / `WorkerManager.workersAvailable()`) | Auto-YARA on every successful `_loadFile` and the manual YARA-tab scan. The bundle is concatenated `yara-engine.js` + worker glue, inlined as the `__YARA_WORKER_BUNDLE_SRC` string constant by `scripts/build.py`, materialised at runtime via `Blob` → `URL.createObjectURL` → `new Worker(url)`. Buffers cross as transferable `ArrayBuffer`; the host re-derives bytes from the original `File` for any subsequent re-scan. | Inbound: `{buffer, source}`. Outbound: `{event:'done', results, parseMs, scanMs, ruleCount}` or `{event:'error', message}`. Exactly one terminal event per scan; the worker never throws. Cancellation is `worker.terminate()` on the next `_loadFile`. |
 | `src/workers/timeline.worker.js` | `src/worker-manager.js` (`WorkerManager.runTimeline(buffer, kind, options)` / `WorkerManager.cancelTimeline()`) | **Parse-only** off-thread loader for the four timeline-tab kinds — `csv`, `tsv`, `evtx`, `sqlite` (Chrome history). The worker is composed by `scripts/build.py` from `src/workers/timeline-worker-shim.js` (stubs out `IOC`/`escalateRisk`/`pushIOC`/`lfNormalize`/`EVTX_EVENT_DESCRIPTIONS` so renderer code parses cleanly outside the App context) + the parse halves of `csv-renderer.js`, `sqlite-renderer.js`, and `evtx-renderer.js`, then `timeline.worker.js` itself, inlined as `__TIMELINE_WORKER_BUNDLE_SRC` and materialised the same `Blob` → `URL.createObjectURL` → `new Worker(url)` way as the YARA worker. **Analysis stays on the main thread:** the EVTX path runs `EvtxDetector.analyzeForSecurity(buffer, fileName, prebuiltEvents)` on the host after the rows arrive (the worker emits `events` alongside `rows` so the analyzer can reuse them without re-parsing); CSV/TSV obvious-malware sweeps and the per-cell `EncodedContentDetector` pass also stay host-side. The worker bundle deliberately excludes `EvtxDetector`, `EncodedContentDetector`, IOC plumbing, and any DOM. | Inbound: `{kind, buffer, options}` (one transferable `ArrayBuffer`; `options` carries kind-specific knobs such as the CSV delimiter override or the SQLite history `tableHint`). Outbound: a single terminal `{event:'done', kind, columns, rows, formatLabel, truncated, originalRowCount, parseMs, ...kindExtras}` (e.g. EVTX adds `events` for the main-thread analyzer; SQLite adds the resolved `tableHint`) or `{event:'error', message}`. Cancellation is `worker.terminate()` from `_loadFile` (alongside `cancelYara()`) and on the next `runTimeline` call. |
 | `src/workers/encoded.worker.js` | `src/worker-manager.js` (`WorkerManager.runEncoded(buffer, textContent, options)` / `WorkerManager.cancelEncoded()`) | Off-thread `EncodedContentDetector.scan()` — the 2,114-line recursion that mines nested base64 / hex / zlib / chararray / Python-`bytes()` chains out of every loaded file's text view. The worker bundle is composed by `scripts/build.py` from `src/workers/encoded-worker-shim.js` (a tight prelude that defines just the `IOC.*` constants, the `PARSER_LIMITS.MAX_UNCOMPRESSED` cap, and `_trimPathExtGarbage` that the detector reads at module load) + `vendor/pako.min.js` (sync zlib fallback when `DecompressionStream` is missing) + `vendor/jszip.min.js` (used by the detector to validate embedded ZIP candidates and prune false-positive zlib hits) + `src/decompressor.js` + `src/encoded-content-detector.js`, then `encoded.worker.js` itself, inlined as `__ENCODED_WORKER_BUNDLE_SRC`. The worker eagerly drives `lazyDecode()` on every cheap finding before posting so the sidebar can render decoded previews without a second round-trip. **IOC merging stays on the main thread** — the host's `_loadFile` post-scan loop owns deduping decoded IOCs against `findings.interestingStrings`, stamping `_sourceOffset` / `_highlightText` / `_decodedFrom` / `_encodedFinding` back-references for click-to-focus, and re-attaching `_rawBytes` (stripped before postMessage to avoid detaching the host's buffer copy) on compressed findings whose decompression is deferred to user click. | Inbound: `{textContent, rawBytes (transferred ArrayBuffer), options:{fileType, mimeAttachments, maxRecursionDepth?, maxCandidatesPerType?}}`. Outbound: `{event:'done', findings, parseMs}` (findings have `_rawBytes` stripped — host re-stamps from its retained copy) or `{event:'error', message}`. Exactly one terminal event per scan. Cancellation is `worker.terminate()` from `_loadFile` (alongside `cancelYara()` / `cancelTimeline()`) and on the next `runEncoded` call. |
-| `src/workers/strings.worker.js` | `src/worker-manager.js` (`WorkerManager.runStrings(buffer, opts)` / `WorkerManager.cancelStrings()`) | Off-thread ASCII + UTF-16LE printable-string extractor — the same two-pass sweep `extractAsciiAndUtf16leStrings()` performs on the main thread for PE / ELF / Mach-O / DMG. The worker bundle is composed by `scripts/build.py` from `src/workers/strings-worker-shim.js` (carries a verbatim copy of the extractor — the worker has no access to `src/constants.js`) + `strings.worker.js` itself, inlined as `__STRINGS_WORKER_BUNDLE_SRC`. **No in-tree caller migration ships today** — the three native-binary renderers and DMG still call `extractAsciiAndUtf16leStrings()` synchronously because their `static render(file, buffer, app)` paths cannot `await` without the canonical `RenderResult` shape from `renderRoute`. The worker is exposed today as the opt-in `BinaryStrings.extractStringsAsync(buffer, opts)` helper so renderers can adopt it as soon as they go async; the helper falls back to the synchronous `extractAsciiAndUtf16leStrings()` whenever the worker probe fails or the worker rejects. The `cancelStrings()` cancellation hook is wired into `_loadFile` alongside the YARA / Timeline / Encoded hooks so nothing leaks across file loads once callers do migrate. | Inbound: `{buffer (transferred ArrayBuffer), opts:{start?, end?, asciiMin?, utf16Min?, cap?}}`. Outbound: `{event:'done', ascii, utf16, asciiCount, utf16Count, parseMs}` (same shape as the synchronous helper plus timing) or `{event:'error', message}`. Exactly one terminal event per scan. Cancellation is `worker.terminate()` from `_loadFile` (alongside `cancelYara()` / `cancelTimeline()` / `cancelEncoded()`) and on the next `runStrings` call. |
 | `vendor/pdf.worker.js` | `pdfjsLib` (vendored); cancellation via `PdfRenderer.disposeWorker()` from `_loadFile` | Worker-side PDF page rendering for `PdfRenderer`. Spawns its own worker from the vendored bundle independently of `worker-manager.js`; `PdfRenderer._activeDocs` tracks every open `PDFDocumentProxy` from `render()` + `analyzeForSecurity()` so a Back-then-forward navigation calls `pdf.destroy()` on each one to preempt in-flight `getPage()` / `page.render()` / `getJSActions()`. Both call sites recognise the resulting `Worker was destroyed` / `AbortException` rejection as benign supersession and return a partial wrap / partial findings instead of bubbling a "Failed to open file" toast. The global `pdfjsLib.GlobalWorkerOptions.workerPort` is intentionally NOT torn down — pdf.js re-uses it cheaply for the next document. | Internal pdf.js `postMessage` protocol — opaque to Loupe. |
 
 The YARA worker is the canonical reference for new
@@ -524,8 +521,30 @@ subtly misbehave.
   `.gitignore`; do not commit it.
 - **`CODEMAP.md` is auto-generated.** Regenerate with
   `python scripts/generate_codemap.py` after code changes.
-- **The `JS_FILES` order in `scripts/build.py` is load-bearing.** The
-  `Object.assign(App.prototype, …)` pattern means later files override
+- **The JS load order in `scripts/build.py` is load-bearing and split
+  into three groups (Tier 3 reorder).** The bundle is emitted as three
+  separate `<script>` blocks instead of one mega-block:
+  (A) `EARLY_JS_FILES` — capture-phase drag/drop/paste glue
+  (`src/app/early-drop-bootstrap.js`); (B) `APP_JS_FILES` — the App
+  bundle itself (constants, helpers, every renderer, `App` + every
+  `Object.assign(App.prototype, …)` mixin); (C) the heavy renderer-only
+  vendors (JSZip, SheetJS, pdf.js, highlight.js, UTIF, exifr, tldts,
+  pako, LZMA, jsQR), now emitted **after** the App `<script>` so their
+  compile cost no longer blocks `App._setupDrop()` from binding
+  listeners. Build gates (`_check_risk_pre_stamping`,
+  `_check_bare_ioc_types`, `_check_raw_text_normalisation`,
+  `_check_worker_spawn_allowlist`) iterate
+  `EARLY_JS_FILES + APP_JS_FILES` so coverage is preserved across the
+  split. The trailing `new App().init();` lives at the end of
+  `app-breadcrumbs.js` — the LAST entry in `APP_JS_FILES` and
+  therefore the last line of Block 4 — so every
+  `Object.assign(App.prototype, …)` mixin has landed its methods on
+  the prototype before `App.init()` fires. Synchronous call, no
+  `DOMContentLoaded` wrapper: every DOM id the App queries is already
+  in the document by the time the App `<script>` blocks parse, and a
+  wrapper would only fire after the Group C vendor compile blocks
+  finish, erasing the Tier 3 win.
+  The `Object.assign(App.prototype, …)` pattern means later files override
   earlier ones' methods. `app-copy-analysis.js` holds the 28 per-format
   `_copyAnalysisXxx` markdown builders and must load **after** `app-ui.js`
   (it consumes `_formatMetadataValue` / `_sCaps` defined there).
@@ -542,7 +561,13 @@ subtly misbehave.
   `window.BgCanvas` singleton that `App.init()` and `_setTheme()` both
   invoke — the two call sites are guarded (`if (window.BgCanvas) …`) so
   the cosmetic background is optional, but the load order keeps that
-  guard a no-op in production. The Timeline route lives under
+  guard a no-op in production. **`early-drop-bootstrap.js` must be the
+  very first entry in `JS_FILES`** so its capture-phase
+  `dragover`/`drop`/`paste` listeners are wired before the heavy vendor
+  inlines (JSZip / SheetJS / pdf.js) compile; it buffers files into
+  `window.__loupePendingDrop` / `window.__loupePendingPaste` and exposes
+  `window.__loupeEarlyDropTeardown()` for `App._setupDrop()` to drain
+  and remove once the App owns drag-and-drop. The Timeline route lives under
   `src/app/timeline/` (split out of the legacy `app-timeline.js`
   10,061-LOC monolith into seven cohesive modules:
   `timeline-helpers.js` for the `TIMELINE_*` constants and the `_tl*`
@@ -836,7 +861,7 @@ subtly misbehave.
   Timeline intercept so even Timeline routes get a crumb),
   `src/render-route.js` (size-cap bypass + watchdog timeout), and
   `src/worker-manager.js` (worker-side timeouts across
-  YARA / Timeline / Encoded / Strings channels). Every call site is
+  YARA / Timeline / Encoded channels). Every call site is
   guarded with `typeof this._breadcrumb === 'function'` — the mixin
   is the **last** entry in `JS_FILES` (see `scripts/build.py`) so
   load order relative to the other late mixins doesn't matter, only

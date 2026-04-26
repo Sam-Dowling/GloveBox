@@ -203,3 +203,33 @@ Object.assign(App.prototype, {
   },
 
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// App bundle kick-off — must remain the LAST line of the LAST file in
+// `APP_JS_FILES`.
+//
+// Why here, and not at the bottom of `app-ui.js` (its previous home):
+// `Object.assign(App.prototype, …)` runs at statement-time (not hoisted),
+// so calling `new App().init()` from anywhere mid-bundle would fire
+// `App.init()` before the later mixin files have landed their methods
+// onto the prototype. `App.init()` calls `this._initSettings()` directly
+// (defined in `app-settings.js`, two files after `app-ui.js` in
+// `APP_JS_FILES`) — a mid-bundle kick-off threw
+// `TypeError: this._initSettings is not a function`, aborting `init()`
+// between `BgCanvas.setTheme()` (already invoked from `_initTheme`) and
+// `BgCanvas.init()`, which left the background canvas running on an
+// unsized 0×0 surface (the visible "janky starburst" symptom).
+//
+// Putting the kick-off at the END of the bundle preserves the Tier 3
+// property — the App `<script>` block still parses *before* the heavy
+// renderer vendors below it in the HTML template, so `App._setupDrop()`
+// still wires drag/drop ahead of JSZip / SheetJS / pdf.js / pako / LZMA
+// / jsQR / tldts / utif / exifr / hljs compiling — while guaranteeing
+// every `Object.assign(App.prototype, …)` mixin has executed first.
+//
+// Synchronous call (no `DOMContentLoaded` wrapper) by design — see the
+// comment in `scripts/build.py`'s HTML template above the App `<script>`
+// for the rationale: every DOM id App.init queries is already present
+// in the document above this `<script>` block.
+new App().init();
+

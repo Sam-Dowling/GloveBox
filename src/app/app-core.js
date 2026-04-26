@@ -23,12 +23,27 @@ class App {
     // Lives in its own module (`app-bg.js`) and exposes a tiny
     // `window.BgCanvas` singleton. Safe to no-op if the module failed to
     // load for any reason (we never want a cosmetic effect to break init).
-    // Defer canvas init to the next animation frame so the first paint
-    // (toolbar + drop-zone) is never blocked by the tiling/network build.
+    //
+    // Deferred via `requestIdleCallback` (with a `setTimeout` fallback for
+    // browsers without the API) so the canvas tiling/network build never
+    // shares a task with the App constructor. Profiler markers showed the
+    // dots-animation paint was acting as the visual "ready" cue for users,
+    // who would attempt drag-and-drop just before it appeared and miss the
+    // App's drop handlers — see `early-drop-bootstrap.js` for the other
+    // half of that fix. Pushing the cosmetic build off the construct task
+    // makes the page genuinely interactive ahead of the dots, removing
+    // the misleading visual gate.
     try {
-      if (window.BgCanvas) requestAnimationFrame(() => {
-        try { window.BgCanvas.init(); } catch (_) { /* background is cosmetic */ }
-      });
+      if (window.BgCanvas) {
+        const startBg = () => {
+          try { window.BgCanvas.init(); } catch (_) { /* background is cosmetic */ }
+        };
+        if (typeof window.requestIdleCallback === 'function') {
+          window.requestIdleCallback(startBg, { timeout: 500 });
+        } else {
+          setTimeout(startBg, 0);
+        }
+      }
     } catch (_) { /* background is cosmetic */ }
     this._setupDrop();
 
@@ -185,6 +200,33 @@ class App {
       }
       fi.value = '';
     });
+
+    // ── Drain pending early-bootstrap drops/pastes ─────────────────────
+    // `src/app/early-drop-bootstrap.js` runs before the heavy vendor
+    // inlines and the App constructor. Any file the user dropped (or
+    // pasted) during the cold-load window lands on
+    // `window.__loupePendingDrop` / `window.__loupePendingPaste` as a
+    // plain array of `File` objects. Now that the App owns drag/drop,
+    // tear the bootstrap down and feed any captured files through the
+    // normal load path. Drop wins over paste — a deliberate drag is the
+    // stronger user intent and we don't want a stale clipboard to
+    // override it. Both buffers are cleared so nothing leaks across
+    // future loads.
+    try {
+      const earlyDrop = window.__loupePendingDrop;
+      const earlyPaste = window.__loupePendingPaste;
+      if (typeof window.__loupeEarlyDropTeardown === 'function') {
+        window.__loupeEarlyDropTeardown();
+      }
+      window.__loupePendingDrop = null;
+      window.__loupePendingPaste = null;
+      if (Array.isArray(earlyDrop) && earlyDrop.length) {
+        // Use _handleFiles so the nav-stack clear lives in one place.
+        this._handleFiles(earlyDrop);
+      } else if (Array.isArray(earlyPaste) && earlyPaste.length) {
+        this._handleFiles(earlyPaste);
+      }
+    } catch (_) { /* early-drop drain is cosmetic — never break boot */ }
   }
 
   _setupToolbar() {

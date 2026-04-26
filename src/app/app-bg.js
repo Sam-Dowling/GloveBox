@@ -690,6 +690,14 @@
     _state = null;
 
     if (!_canvas) _ensureCanvas();
+    // Self-bootstrap when called before `init()` (e.g. App._initTheme runs
+    // BgCanvas.setTheme directly) or any other path where the canvas
+    // hasn't been sized yet. Without this, the engine would build its
+    // node / rhomb cache against a 0×0 viewport and the canvas would
+    // keep its default 300×150 intrinsic size — visually that's a tiny
+    // starburst pinned to the top-left corner of the viewport instead
+    // of an evenly-spread ambient layer.
+    if (!_w || !_h) _resize();
     if (_ctx) _ctx.clearRect(0, 0, _w, _h);
     if (_reducedMotion()) return;
     const engineId = THEME_ENGINES.hasOwnProperty(themeId) ? THEME_ENGINES[themeId] : 'penroseLight';
