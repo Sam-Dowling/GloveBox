@@ -34,6 +34,7 @@ Object.assign(EncodedContentDetector.prototype, {
     const caretRe = /\b[a-zA-Z]\^[a-zA-Z](?:\^?[a-zA-Z]){3,}\b/g;
     let m;
     while ((m = caretRe.exec(text)) !== null) {
+      throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       const deobfuscated = m[0].replace(/\^/g, '');
       if (deobfuscated.length < 3) continue;
@@ -52,12 +53,14 @@ Object.assign(EncodedContentDetector.prototype, {
     const setRe = /(?:^|\n)\s*set\s+["']?(\w+)["']?\s*=\s*([^\r\n]*)/gim;
     const vars = {};
     while ((m = setRe.exec(text)) !== null) {
+      throwIfAborted();
       vars[m[1].toLowerCase()] = { value: m[2].trim(), offset: m.index };
     }
     if (Object.keys(vars).length >= 2) {
       // Look for variable concatenation: %var1%%var2% or !var1!!var2! or %var1:~N,M%
       const concatRe = /(?:%(\w+)%|!(\w+)!){2,}/g;
       while ((m = concatRe.exec(text)) !== null) {
+        throwIfAborted();
         if (candidates.length >= this.maxCandidatesPerType) break;
         let resolved = m[0];
         let anyResolved = false;
@@ -91,12 +94,14 @@ Object.assign(EncodedContentDetector.prototype, {
     const envSubRe = /%\w+:~-?\d+(?:,\d+)?%/g;
     const envSubMatches = [];
     while ((m = envSubRe.exec(text)) !== null) {
+      throwIfAborted();
       envSubMatches.push({ match: m[0], offset: m.index });
     }
     if (envSubMatches.length >= 3) {
       // Find the line(s) containing these, treat entire line as obfuscated command
       const lineRe = /^.*%\w+:~-?\d+(?:,\d+)?%.*$/gm;
       while ((m = lineRe.exec(text)) !== null) {
+        throwIfAborted();
         if (candidates.length >= this.maxCandidatesPerType) break;
         const subCount = (m[0].match(/%\w+:~-?\d+(?:,\d+)?%/g) || []).length;
         if (subCount < 3) continue;
@@ -114,6 +119,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // ── PowerShell string concatenation: ('Down'+'loadStr'+'ing') ──
     const psConcat = /\(\s*'[^']{1,40}'\s*(?:\+\s*'[^']{1,40}'\s*){2,}\)/g;
     while ((m = psConcat.exec(text)) !== null) {
+      throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       const parts = [...m[0].matchAll(/'([^']*)'/g)].map(p => p[1]);
       const joined = parts.join('');
@@ -130,6 +136,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // Also match with double quotes
     const psConcatDQ = /\(\s*"[^"]{1,40}"\s*(?:\+\s*"[^"]{1,40}"\s*){2,}\)/g;
     while ((m = psConcatDQ.exec(text)) !== null) {
+      throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       const parts = [...m[0].matchAll(/"([^"]*)"/g)].map(p => p[1]);
       const joined = parts.join('');
@@ -147,6 +154,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // ── PowerShell -replace chain: 'XYZ'.replace('X','a').replace('Y','b') ──
     const psReplace = /'[^']{2,80}'(?:\s*\.\s*replace\s*\(\s*'[^']*'\s*,\s*'[^']*'\s*\)){2,}/gi;
     while ((m = psReplace.exec(text)) !== null) {
+      throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       let result = m[0].match(/^'([^']*)'/)[1];
       const replacements = [...m[0].matchAll(/\.replace\s*\(\s*'([^']*)'\s*,\s*'([^']*)'\s*\)/gi)];
@@ -168,6 +176,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // Match words with 2+ backticks that form known cmdlets/keywords
     const backtickRe = /[a-zA-Z`]{4,}(?:-[a-zA-Z`]{3,})?/g;
     while ((m = backtickRe.exec(text)) !== null) {
+      throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       const raw = m[0];
       if ((raw.match(/`/g) || []).length < 2) continue;
@@ -188,6 +197,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // ── PowerShell format operator: '{0}{1}' -f 'Inv','oke-Expression' ──
     const fmtRe = /'(\{[0-9]\}[^']{0,60})'\s*-f\s*'([^']+)'(?:\s*,\s*'([^']+)')*(?:\s*,\s*'([^']+)')*/gi;
     while ((m = fmtRe.exec(text)) !== null) {
+      throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       // Capture the full expression including all arguments
       const fullExpr = m[0];
@@ -213,6 +223,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // ── PowerShell reverse string: 'sserpxE-ekovnI'[-1..-100] -join '' ──
     const revRe = /'([^']{4,80})'\s*\[\s*-1\s*\.\.\s*-\d+\s*\]\s*-join\s*['"]['"]['"]/gi;
     while ((m = revRe.exec(text)) !== null) {
+      throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       const reversed = m[1].split('').reverse().join('');
       candidates.push({

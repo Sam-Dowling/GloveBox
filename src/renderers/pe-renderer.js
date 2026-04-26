@@ -539,6 +539,7 @@ class PeRenderer {
     const secOff = optOff + optHeaderSize;
     pe.sections = [];
     for (let i = 0; i < numSections; i++) {
+      throwIfAborted();
       const so = secOff + i * 40;
       if (so + 40 > bytes.length) break;
       const name = this._str(bytes, so, 8);
@@ -990,6 +991,7 @@ class PeRenderer {
     let descOff = impOff;
 
     for (let d = 0; d < maxDlls; d++) {
+      throwIfAborted();
       if (descOff + 20 > bytes.length) break;
 
       const iltRva = this._u32(bytes, descOff);
@@ -1078,6 +1080,7 @@ class PeRenderer {
     let descOff = delayOff;
 
     for (let d = 0; d < maxDlls; d++) {
+      throwIfAborted();
       if (descOff + 32 > bytes.length) break;
 
       const grAttrs    = this._u32(bytes, descOff);
@@ -1161,6 +1164,7 @@ class PeRenderer {
 
     const maxNames = Math.min(numNames, 4096);
     for (let i = 0; i < maxNames; i++) {
+      if ((i & 0xFF) === 0) throwIfAborted();
       const nOff = namesOff + i * 4;
       if (nOff + 4 > bytes.length) break;
       const nRva = this._u32(bytes, nOff);
@@ -1194,6 +1198,7 @@ class PeRenderer {
     const expRvaEnd = dataDirs[0].rva + dataDirs[0].size;
     const maxFns = Math.min(numFunctions, 4096);
     for (let i = 0; i < maxFns; i++) {
+      if ((i & 0xFF) === 0) throwIfAborted();
       const fOff = funcsOff + i * 4;
       if (fOff + 4 > bytes.length) break;
       const fnRva = this._u32(bytes, fOff);

@@ -306,11 +306,34 @@ const RenderRoute = {
     if (raw === undefined) {
       try {
         raw = await ParserWatchdog.run(
-          // The watchdog hands us `{ signal }` as the sole arg; ignored
-          // by every renderer today (the contract is strictly additive).
-          // Phase-2 will migrate the long-running loops in
-          // PE/ELF/Mach-O/EVTX/encoded-content to honour `signal.aborted`.
-          () => handler.call(app, file, buffer, rctx),
+          // The watchdog hands us `{ signal }` as the sole arg. Park it
+          // on `ParserWatchdog._activeSignal` for the duration of the
+          // renderer call so the long-running loops in
+          // PE/ELF/Mach-O/EVTX/encoded-content can poll it via
+          // `throwIfAborted()` (defined in `constants.js`) without
+          // having to thread the signal through every helper. The
+          // previous slot value is restored in `.finally()` so
+          // hypothetical nested invocations would unwind cleanly. The
+          // slot is `null` outside of any `RenderRoute.run` call (manual
+          // YARA tab, sidebar drill-downs, early bootstrap), making
+          // `throwIfAborted()` a contractual no-op there.
+          ({ signal }) => {
+            const prevSignal = ParserWatchdog._activeSignal;
+            ParserWatchdog._activeSignal = signal || null;
+            try {
+              const out = handler.call(app, file, buffer, rctx);
+              if (out && typeof out.then === 'function') {
+                return out.finally(() => {
+                  ParserWatchdog._activeSignal = prevSignal;
+                });
+              }
+              ParserWatchdog._activeSignal = prevSignal;
+              return out;
+            } catch (e) {
+              ParserWatchdog._activeSignal = prevSignal;
+              throw e;
+            }
+          },
           { timeout: PARSER_LIMITS.RENDERER_TIMEOUT_MS, name: dispatchId }
         );
       } catch (renderErr) {

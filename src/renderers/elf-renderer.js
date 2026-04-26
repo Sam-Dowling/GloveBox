@@ -439,6 +439,7 @@ class ElfRenderer {
     elf.segments = [];
     const maxSegments = Math.min(elf.phnum, 256); // Safety cap
     for (let i = 0; i < maxSegments; i++) {
+      throwIfAborted();
       const off = elf.phoff + i * elf.phentsize;
       if (off + elf.phentsize > bytes.length) break;
 
@@ -493,6 +494,7 @@ class ElfRenderer {
     }
 
     for (let i = 0; i < maxSections; i++) {
+      throwIfAborted();
       const off = elf.shoff + i * elf.shentsize;
       if (off + elf.shentsize > bytes.length) break;
 
@@ -571,6 +573,7 @@ class ElfRenderer {
 
       // First pass: find STRTAB
       for (let i = 0; i < maxDynEntries; i++) {
+        throwIfAborted();
         const eoff = dynSeg.offset + i * entSize;
         if (eoff + entSize > bytes.length) break;
         const tag = this._is64 ? this._u64(bytes, eoff) : this._u32(bytes, eoff);
@@ -604,6 +607,7 @@ class ElfRenderer {
 
       // Second pass: parse all entries
       for (let i = 0; i < maxDynEntries; i++) {
+        throwIfAborted();
         const eoff = dynSeg.offset + i * entSize;
         if (eoff + entSize > bytes.length) break;
         const tag = this._is64 ? this._u64(bytes, eoff) : this._u32(bytes, eoff);
@@ -793,6 +797,7 @@ class ElfRenderer {
     const maxSyms = Math.min(count, 20000); // Safety cap
 
     for (let i = 0; i < maxSyms; i++) {
+      if ((i & 0xFF) === 0) throwIfAborted();
       const off = symSec.offset + i * entSize;
       if (off + entSize > bytes.length) break;
 

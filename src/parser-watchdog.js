@@ -26,15 +26,31 @@
 // --------------------
 // The watchdog owns an `AbortController` per call. The signal is handed
 // to `fn` as `fn({ signal })` so signal-aware renderers can poll
-// `signal.aborted` between chunks/rows and bail early. Today no renderer
-// uses it (the contract is strictly additive — renderers that ignore the
-// arg keep working), but Phase-2 will migrate the long-running loops in
-// PE / ELF / Mach-O / EVTX / encoded-content to honour it. On timeout the
+// `signal.aborted` between chunks/rows and bail early. On timeout the
 // controller is `abort()`-ed *before* the watchdog rejects, so any
 // downstream `fetch`-shaped consumer wired to the signal also short-circuits.
+//
+// Renderer-side polling uses `throwIfAborted()` from `constants.js`, which
+// reads `ParserWatchdog._activeSignal` — a per-process slot that
+// `RenderRoute.run` sets to the active signal for the duration of the
+// per-renderer dispatch and restores in `.finally()`. Storing the signal on
+// a shared slot means renderers don't have to thread `{ signal }` through
+// every helper call to be cancellation-aware: a single one-line poll inside
+// any chunk / row / section loop is enough. The slot is `null` outside of a
+// dispatch (manual YARA tab, sidebar drill-downs, early bootstrap), so
+// `throwIfAborted()` is a contractual no-op there.
 // ════════════════════════════════════════════════════════════════════════════
 
 const ParserWatchdog = {
+
+  // The currently-active `AbortSignal`, if any. Set by `RenderRoute.run`
+  // around the per-renderer dispatch and restored to its previous value
+  // in `.finally()` (so nested invocations — though unused today — would
+  // still unwind cleanly). Read by `throwIfAborted()` in `constants.js`.
+  // `null` means no enforced deadline is in flight; renderer polls become
+  // no-ops in that case.
+  _activeSignal: null,
+
 
   /**
    * Run a function with a timeout guard.

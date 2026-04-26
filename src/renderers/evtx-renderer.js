@@ -43,6 +43,7 @@ class EvtxRenderer {
     const maxEvents = RENDER_LIMITS.MAX_EVTX_EVENTS; // Safety limit
 
     for (let ci = 0; ci < chunkCount && events.length < maxEvents; ci++) {
+      throwIfAborted();
       const chunkOff = headerSize + ci * chunkSize;
       if (chunkOff + chunkSize > bytes.length) break;
 
@@ -124,6 +125,7 @@ class EvtxRenderer {
     });
 
     for (let ci = 0; ci < chunkCount && events.length < maxEvents; ci++) {
+      throwIfAborted();
       const chunkOff = headerSize + ci * chunkSize;
       if (chunkOff + chunkSize > bytes.length) break;
 

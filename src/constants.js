@@ -520,6 +520,48 @@ function lfNormalize(s) {
   return typeof s === 'string' ? s.replace(/\r\n?/g, '\n') : '';
 }
 
+// ── Renderer cancellation poll ────────────────────────────────────────────────
+// Long-running renderer loops (PE / ELF / Mach-O section walks, EVTX chunk
+// decode, encoded-content candidate scan, …) call `throwIfAborted()` between
+// chunks / rows / candidates so a watchdog timeout — or any future
+// caller-initiated abort — can short-circuit the loop instead of burning CPU
+// to completion on a buffer whose result will be orphaned anyway.
+//
+// `RenderRoute.run` parks the active `AbortSignal` on
+// `ParserWatchdog._activeSignal` for the duration of the per-renderer
+// dispatch, then restores the previous value in `.finally()`. The watchdog
+// `abort()`s that signal the moment its deadline fires (see
+// `parser-watchdog.js` — abort happens *before* the timeout reject lands so a
+// renderer racing the timer always sees `signal.aborted === true`).
+//
+// This helper is contractually a no-op when:
+//   • `ParserWatchdog` isn't loaded yet (early bootstrap);
+//   • no signal is active (renderer invoked outside `RenderRoute.run`, e.g.
+//     from the manual YARA tab or a sidebar drill-down);
+//   • the signal exists but hasn't been aborted.
+//
+// On abort it throws a `DOMException('aborted', 'AbortError')` (with a
+// plain-`Error` fallback). `RenderRoute.run`'s catch already routes any
+// thrown error through `_fallbackToPlaintext`, so an `AbortError` from
+// inside a renderer paints the plaintext view + an `IOC.INFO` row exactly
+// like the existing watchdog-timeout-from-outside-the-renderer path does.
+//
+// Renderers SHOULD poll once per chunk / row / section — never per byte.
+// The cost of one property read + one branch is negligible at the cadence
+// of a section header or BinXml template; sprinkled inside an inner byte
+// loop it would dwarf the actual parsing.
+function throwIfAborted() {
+  const sig = (typeof ParserWatchdog !== 'undefined' && ParserWatchdog)
+    ? ParserWatchdog._activeSignal
+    : null;
+  if (sig && sig.aborted) {
+    const err = (typeof DOMException !== 'undefined')
+      ? new DOMException('Renderer aborted', 'AbortError')
+      : Object.assign(new Error('Renderer aborted'), { name: 'AbortError' });
+    throw err;
+  }
+}
+
 /**
  * Canonical IOC pusher. Every renderer that emits IOCs should route through
  * this helper so:

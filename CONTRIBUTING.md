@@ -323,12 +323,26 @@ in-flight work from a previous render must do so by calling it.
   above.
 
 **What signal-aware renderers must do** (PE / ELF / Mach-O /
-EVTX / encoded-content long-running loops): plumb the watchdog's
-`{ signal }` through to their inner loops, poll `signal.aborted`
-between chunks/rows, and bail with `return` (no throw) when set.
-Worker-driven renderers should additionally capture the
-`app._renderEpoch` value at job-dispatch time and discard any
-`onmessage` payload whose captured epoch differs from the live one.
+EVTX / encoded-content long-running loops): call
+`throwIfAborted()` (defined in `src/constants.js`) at the top of
+each outer parse loop — section / segment / chunk / candidate
+iterations. For tight inner loops with large cardinality (PE
+exports, ELF / Mach-O symbol tables) amortise the check with
+`if ((i & 0xFF) === 0) throwIfAborted();` so the cost stays in
+the noise. **Never** poll per-byte. The helper reads its signal
+from `ParserWatchdog._activeSignal`, a slot that
+`RenderRoute.run` parks the live `AbortSignal` on for the
+duration of each watchdog-wrapped dispatch and restores
+afterwards, so renderer signatures stay
+`static render(file, arrayBuffer, app)`. When the signal is
+aborted `throwIfAborted()` raises a
+`DOMException('aborted', 'AbortError')` (with a plain-`Error`
+fallback for engines without `DOMException`) — let it propagate;
+`render-route.js` and `parser-watchdog.js` already classify it as
+the supersession path. Worker-driven renderers should
+additionally capture the `app._renderEpoch` value at
+job-dispatch time and discard any `onmessage` payload whose
+captured epoch differs from the live one.
 
 ### IOC entry shape
 

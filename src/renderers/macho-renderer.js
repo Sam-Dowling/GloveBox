@@ -595,6 +595,7 @@ class MachoRenderer {
     const maxCmds = Math.min(mo.ncmds, 512); // Safety cap
 
     for (let i = 0; i < maxCmds; i++) {
+      throwIfAborted();
       if (cmdOff + 8 > b.length) break;
       const cmd = this._u32(b, cmdOff);
       const cmdsize = this._u32(b, cmdOff + 4);
@@ -819,6 +820,7 @@ class MachoRenderer {
     const maxSects = Math.min(seg.nsects, 256);
 
     for (let j = 0; j < maxSects; j++) {
+      throwIfAborted();
       const soff = secStart + j * secHeaderSize;
       if (soff + secHeaderSize > b.length) break;
 
@@ -867,6 +869,7 @@ class MachoRenderer {
     const maxSyms = Math.min(cmd.nsyms, 20000); // Safety cap
 
     for (let i = 0; i < maxSyms; i++) {
+      if ((i & 0xFF) === 0) throwIfAborted();
       const off = cmd.symoff + i * entSize;
       if (off + entSize > b.length) break;
 
