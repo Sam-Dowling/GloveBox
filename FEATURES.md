@@ -336,8 +336,10 @@ Every CSV / TSV / EVTX file — and SQLite browser history databases (Chrome / E
 | **Detections (EVTX)** | Sortable detection table with severity badge, rule description, Event ID (hover for the plain-English summary), channel / category, ATT&CK technique pills (linked to attack.mitre.org), and hit count. Severity summary strip aggregates totals — click any tier pill to filter the table to that severity, click again to clear. "Group by ATT&CK tactic" reorganises rows under tactic headers. Right-click any detection for filter / mark-sus / docs actions. Nicelisted rows stay demoted; detections feed the overall risk tier. |
 | **Entities (EVTX)** | Extracted hosts, users, filenames, processes, hashes, IPs, URLs, UNC paths, registry keys, domains, emails, and command-lines — grouped by IOC type with per-card search / sort-cycle / pin / drag-to-reorder controls mirroring the Top-values cards. Click any entity to pivot. |
 | **ATT&CK annotation** | Top-values "Event ID" cards, the EVTX detail drawer, the Detections table, and (where applicable) Entities all surface human-readable Event-ID summaries plus MITRE ATT&CK technique pills from the bundled offline EID → technique map — no network lookups, every link opens via `noopener,noreferrer`. |
+| **⚡ Summarize (EVTX)** | EVTX-only toolbar button that copies a Markdown summary tuned for AI / LLM consumption — file header, risk roll-up, detections with timestamps + ATT&CK, notable Event-ID activity, entities (hosts / users / processes / hashes / IPs / domains), relationships (process trees, failed → success logon transitions, beacon cadence), time clusters, and a cross-reference appendix. The whole-file view is always included; the analyst's currently active query / time window / 🚩 sus marks are surfaced as a separate sub-section. Honours the global ⚡ Summarize target setting. |
 
 ---
+
 
 ## 📤 Exports
 

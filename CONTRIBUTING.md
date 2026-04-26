@@ -688,7 +688,8 @@ subtly misbehave.
   `window.__loupeEarlyDropTeardown()` for `App._setupDrop()` to drain
   and remove once the App owns drag-and-drop. The Timeline route lives under
   `src/app/timeline/` (split out of the legacy `app-timeline.js`
-  10,061-LOC monolith into seven cohesive modules:
+  10,061-LOC monolith into eight cohesive modules:
+
   `timeline-helpers.js` for the `TIMELINE_*` constants and the `_tl*`
   pure helpers; `timeline-query.js` for the DSL tokeniser / parser /
   compiler / suggester; `timeline-query-editor.js` for the
@@ -697,7 +698,11 @@ subtly misbehave.
   scrubber, stacked-bar histogram, top-values cards, pivot table — plus
   the `static fromCsvAsync` / `fromEvtx` / `fromSqlite` factories;
   `timeline-detections.js` for the EVTX-only Detections + Entities
-  prototype mixin; `timeline-drawer.js` for the JSON-leaf and
+  prototype mixin; `timeline-summary.js` for the EVTX-only
+  ⚡ Summarize toolbar action that aggregates the whole file plus the
+  active query/window/sus state into a Markdown brief sized to the
+  user's `_getSummaryCharBudget()` target;
+  `timeline-drawer.js` for the JSON-leaf and
   extracted-column prototype mixin; and `timeline-router.js` for the
   `App.prototype` mixin that owns `_timelineTryHandle` /
   `_loadFileInTimeline` / `_buildTimelineViewFromWorker` /

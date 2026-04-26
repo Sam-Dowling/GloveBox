@@ -538,9 +538,14 @@ APP_JS_FILES = [
     #                                  fromSqlite` factories
     #   5. timeline-detections.js    — TimelineView.prototype mixin: Detections
     #                                  + Entities (EVTX-only, in-view only)
-    #   6. timeline-drawer.js        — TimelineView.prototype mixin: JSON
+    #   6. timeline-summary.js       — TimelineView.prototype mixin: AI/LLM-ready
+    #                                  Markdown "⚡ Summarize" export covering
+    #                                  the whole EVTX file (entities, detections,
+    #                                  relationships, time clusters, plus an
+    #                                  active-view sub-section). EVTX-only.
+    #   7. timeline-drawer.js        — TimelineView.prototype mixin: JSON
     #                                  drawer + extracted-column helpers
-    #   7. timeline-router.js        — App.prototype mixin: `_timelineTryHandle`
+    #   8. timeline-router.js        — App.prototype mixin: `_timelineTryHandle`
     #                                  / `_loadFileInTimeline` /
     #                                  `_clearTimelineFile` (the analyser-bypass
     #                                  routing entrypoint).
@@ -554,6 +559,7 @@ APP_JS_FILES = [
     'src/app/timeline/timeline-query-editor.js',
     'src/app/timeline/timeline-view.js',
     'src/app/timeline/timeline-detections.js',
+    'src/app/timeline/timeline-summary.js',
     'src/app/timeline/timeline-drawer.js',
     'src/app/timeline/timeline-router.js',
 
