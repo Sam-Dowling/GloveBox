@@ -395,6 +395,7 @@
     ctx.clearRect(0, 0, w, h);
     const maxDist = cfg.maxDist;
     const maxDist2 = maxDist * maxDist;
+    const N = nodes.length;
 
     // Move nodes and wrap around viewport edges.
     for (const n of nodes) {
@@ -404,6 +405,28 @@
       else if (n.x > w) n.x -= w;
       if (n.y < 0) n.y += h;
       else if (n.y > h) n.y -= h;
+    }
+
+    // Spatial hash: bucket every node into a cell of size `maxDist`, then
+    // each node only tests its own cell + the 8 neighbouring cells. Drops
+    // the proximity check from O(N²) to roughly O(N) for the densities we
+    // care about, which is what lets us scale node count with viewport
+    // area without the CPU hit.
+    const cellSize = maxDist;
+    const cols = Math.max(1, Math.ceil(w / cellSize));
+    const rows = Math.max(1, Math.ceil(h / cellSize));
+    const grid = new Array(cols * rows);
+    for (let i = 0; i < grid.length; i++) grid[i] = null;
+    for (let i = 0; i < N; i++) {
+      const n = nodes[i];
+      let cx = (n.x / cellSize) | 0;
+      let cy = (n.y / cellSize) | 0;
+      if (cx < 0) cx = 0; else if (cx >= cols) cx = cols - 1;
+      if (cy < 0) cy = 0; else if (cy >= rows) cy = rows - 1;
+      const k = cy * cols + cx;
+      const cell = grid[k];
+      if (cell === null) grid[k] = [i];
+      else cell.push(i);
     }
 
     // Draw connections between nearby nodes.
@@ -416,16 +439,53 @@
     const BUCKETS = 8;
     const buckets = new Array(BUCKETS);
     for (let b = 0; b < BUCKETS; b++) buckets[b] = [];
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const dx = nodes[i].x - nodes[j].x;
-        const dy = nodes[i].y - nodes[j].y;
-        const d2 = dx * dx + dy * dy;
-        if (d2 < maxDist2) {
-          const d = Math.sqrt(d2);
-          const t = 1 - d / maxDist;                   // 0..1 proximity
-          const b = Math.min(BUCKETS - 1, (t * BUCKETS) | 0);
-          buckets[b].push(i, j);
+    for (let cy = 0; cy < rows; cy++) {
+      for (let cx = 0; cx < cols; cx++) {
+        const cell = grid[cy * cols + cx];
+        if (!cell) continue;
+        // Visit this cell + the four "forward" neighbours (E, SE, S, SW)
+        // so each unordered pair of cells is processed exactly once.
+        for (let ni = 0; ni < cell.length; ni++) {
+          const i = cell[ni];
+          // Pairs within the same cell — only j > i to avoid duplicates.
+          for (let nj = ni + 1; nj < cell.length; nj++) {
+            const j = cell[nj];
+            const dx = nodes[i].x - nodes[j].x;
+            const dy = nodes[i].y - nodes[j].y;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < maxDist2) {
+              const d = Math.sqrt(d2);
+              const tt = 1 - d / maxDist;
+              const b = Math.min(BUCKETS - 1, (tt * BUCKETS) | 0);
+              buckets[b].push(i, j);
+            }
+          }
+        }
+        // Pairs across to forward neighbour cells.
+        const NEIGHBOURS = [[1, 0], [-1, 1], [0, 1], [1, 1]];
+        for (let nb = 0; nb < NEIGHBOURS.length; nb++) {
+          const ox = NEIGHBOURS[nb][0];
+          const oy = NEIGHBOURS[nb][1];
+          const nx = cx + ox;
+          const ny = cy + oy;
+          if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
+          const other = grid[ny * cols + nx];
+          if (!other) continue;
+          for (let ni = 0; ni < cell.length; ni++) {
+            const i = cell[ni];
+            for (let nj = 0; nj < other.length; nj++) {
+              const j = other[nj];
+              const dx = nodes[i].x - nodes[j].x;
+              const dy = nodes[i].y - nodes[j].y;
+              const d2 = dx * dx + dy * dy;
+              if (d2 < maxDist2) {
+                const d = Math.sqrt(d2);
+                const tt = 1 - d / maxDist;
+                const b = Math.min(BUCKETS - 1, (tt * BUCKETS) | 0);
+                buckets[b].push(i, j);
+              }
+            }
+          }
         }
       }
     }
@@ -459,22 +519,44 @@
   // no cursor interaction. Throttled to ~24 fps like the Penrose engines.
   function _initNetworkDark() {
     const pal = PALETTES.dark;
-    const NODE_COUNT = 60;
     const SPEED_MIN = 6;
     const SPEED_MAX = 14;
+    // Density-driven node count. The old fixed 60 nodes scaled badly:
+    // invisible on a 4K display, dense on a 720p laptop. We now target a
+    // roughly constant **visible density** (~1 node per 24 000 CSS px²)
+    // with a floor so a tiny window stays alive, and a cap so a 5K /
+    // ultrawide doesn't run away. The O(N²) all-pairs proximity check
+    // that used to make N=60 already noticeable has been replaced by the
+    // spatial hash in `_drawNetworkFrame`, so even N≈250 is cheap at the
+    // engine's 24 fps cadence.
+    const NODE_FLOOR = 40;
+    const NODE_CEIL = 250;
+    const PX_PER_NODE = 24000;
+    function _targetNodeCount(w, h) {
+      const target = Math.round((w * h) / PX_PER_NODE);
+      if (target < NODE_FLOOR) return NODE_FLOOR;
+      if (target > NODE_CEIL) return NODE_CEIL;
+      return target;
+    }
     const cfg = {
       nodeColor: pal.nodeColor,
       lineColor: pal.lineColor,
-      nodeRadius: 1.8,
-      nodeAlpha: 0.08,
-      lineAlpha: 0.045,
-      lineWidth: 0.6,
+      // Bumped from (1.8, 0.08, 0.045, 0.6) — the old values were
+      // invisible on bright HDR / matte 4K panels. New numbers still sit
+      // well below the cute / Penrose engines' alpha (cute uses 0.13,
+      // light Penrose 0.045 × hundreds of overlapping fills) so it
+      // remains a watermark, not a pattern.
+      nodeRadius: 2.0,
+      nodeAlpha: 0.18,
+      lineAlpha: 0.10,
+      lineWidth: 0.7,
       maxDist: 160,
     };
 
     let nodes = [];
     function rebuild() {
-      nodes = _buildNetworkNodes(NODE_COUNT, _w, _h, SPEED_MIN, SPEED_MAX);
+      const count = _targetNodeCount(_w, _h);
+      nodes = _buildNetworkNodes(count, _w, _h, SPEED_MIN, SPEED_MAX);
     }
     rebuild();
 
