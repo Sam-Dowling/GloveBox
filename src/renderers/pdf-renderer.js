@@ -778,6 +778,7 @@ class PdfRenderer {
    */
   async _resolveIndirectScript(raw, rawBytes, id, gen) {
     // Locate the object header. PDF allows flexible whitespace.
+    /* safeRegex: builtin */
     const hdrRe = new RegExp(`\\b${id}\\s+${gen}\\s+obj\\b`, 'g');
     const hdr = hdrRe.exec(raw);
     if (!hdr) return null;

@@ -617,6 +617,7 @@ class ArchiveTree {
           // Highlight operates on the *escaped* text, so the needle must be
           // escaped with the same transform to line up — otherwise a query
           // containing '<' would fail to highlight a filename containing '<'.
+          /* safeRegex: builtin */
           const markRe = new RegExp(escapeRegex(escHtml(q)), 'ig');
           files.forEach(li => {
             const path = (li.getAttribute('data-arch-file-path') || '').toLowerCase();
@@ -664,6 +665,7 @@ class ArchiveTree {
         // Highlight regex operates on *escaped* text (so the needle is also
         // escaped) — guarantees that a filename containing HTML
         // meta-characters can never be re-interpreted as markup.
+        /* safeRegex: builtin */
         const markRe = hasQuery ? new RegExp(escapeRegex(escHtml(q)), 'ig') : null;
         const rows = flat.querySelectorAll('tbody tr');
         rows.forEach(tr => {
