@@ -3529,7 +3529,13 @@ class PeRenderer {
       // DER SEQUENCE tag (0x30 = ASCII '0') and following length/tag bytes
       // frequently fuse onto URLs extracted from binary string dumps.
       // Clean each match before dedup and before the cert-URL prefix guard.
-      const _derJunkRx = /([^0-9])0[\d]{0,2}[^a-zA-Z0-9]{0,3}$/;
+      // The trailing `[^a-zA-Z0-9]{1,3}` requires at least one non-alnum
+      // byte after the `0` tag — DER tails always carry the 0x82/0x83/0x84
+      // length-of-length byte (or further structural bytes) before the
+      // string terminator, so the `{1,N}` floor is safe and prevents the
+      // regex from over-stripping legitimate URL paths that legitimately
+      // end in `<non-digit>0` (e.g. `…/v1.0`, `…/foo0`).
+      const _derJunkRx = /([^0-9])0[\d]{0,2}[^a-zA-Z0-9]{1,3}$/;
       const urlMatches = [...new Set(
         [...allStrings.matchAll(_urlRx)].map(m => m[0].replace(_derJunkRx, '$1')),
       )];

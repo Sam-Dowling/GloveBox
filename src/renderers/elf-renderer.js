@@ -2186,7 +2186,10 @@ class ElfRenderer {
       const URL_CAP = 100, UNC_CAP = 40;
       // DER SEQUENCE tag (0x30 = ASCII '0') and following length/tag bytes
       // frequently fuse onto URLs extracted from binary string dumps.
-      const _derJunkRx = /([^0-9])0[\d]{0,2}[^a-zA-Z0-9]{0,3}$/;
+      // The trailing `{1,3}` quantifier requires at least one non-alnum
+      // byte after the `0` tag so the regex never strips legitimate paths
+      // ending in `<non-digit>0` (e.g. `…/v1.0`, `…/foo0`).
+      const _derJunkRx = /([^0-9])0[\d]{0,2}[^a-zA-Z0-9]{1,3}$/;
       const urlMatches = [...new Set(
         [...allStrings.matchAll(_urlRx)].map(m => m[0].replace(_derJunkRx, '$1')),
       )];

@@ -1454,11 +1454,14 @@ class X509Renderer {
    * bytes that happen to be printable ASCII.  Require a non-digit
    * immediately before the spurious '0' so that legitimate paths
    * ending in multi-digit numbers (e.g. /file20) are never shortened.
+   * The trailing `{1,3}` quantifier requires at least one non-alnum
+   * byte after the `0` tag so URLs ending in `<non-digit>0` (e.g.
+   * `/v1.0`) are preserved — DER tails always carry a length byte.
    * @param {string} s  The raw decoded URI string
    * @returns {string}  The cleaned URI
    */
   static _cleanDerUri(s) {
-    return s.replace(/([^0-9])0[\d]{0,2}[^a-zA-Z0-9]{0,3}$/, '$1');
+    return s.replace(/([^0-9])0[\d]{0,2}[^a-zA-Z0-9]{1,3}$/, '$1');
   }
 
   static parseCertificatesFromCMS(cmsBytes) {
