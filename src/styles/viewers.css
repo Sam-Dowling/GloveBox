@@ -12449,7 +12449,8 @@ body.tl-chart-resizing * {
   font-size: 10.5px;
   color: var(--text-muted);
   max-height: 40px;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .timeline-view .tl-legend-hdr {
