@@ -938,6 +938,45 @@ subtly misbehave.
   their own inner `default-src 'none'` CSP. Don't assume a preview iframe
   can load any resource that the host page can — it can't.
 
+### Regex Safety
+
+Loupe's threat model includes catastrophic-backtracking regex (ReDoS) on
+both **user-supplied** patterns (Timeline DSL filters, Timeline regex-
+extract, YARA rule editor, archive-tree search) and **built-in** patterns
+that compile against attacker-controlled input. Two policies enforce the
+guarantee that a single pattern can never freeze the tab:
+
+1. **Every user-input regex compile must route through `safeRegex(...)`**
+   defined in `src/constants.js`. The harness rejects patterns longer
+   than 2 KB or containing the duplicate-adjacent-quantified-group shape,
+   warns on nested unbounded quantifiers, and provides
+   `safeExec` / `safeTest` / `safeMatchAll` wrappers with a wall-clock
+   budget and a guaranteed `lastIndex` advance on zero-width matches.
+   See `SECURITY.md § Parser limits` for the threat-model framing.
+
+2. **Every other `new RegExp(...)` callsite must carry**
+   `/* safeRegex: builtin */` within 3 lines above the constructor.
+   This makes it explicit in review whether each site is user-input
+   (must route through `safeRegex`) or builtin (the annotation suffices).
+   The check is enforced by `scripts/check_regex_safety.py`, run as part
+   of `python make.py` — a CI failure points to the offending file/line
+   with the same message format other build gates use.
+
+Current user-regex compile sites (must use `safeRegex`):
+
+| Site | Budget | Failure mode |
+|------|--------|--------------|
+| Timeline regex-extract preview (`src/app/timeline/timeline-view.js`) | 50 ms `safeExec` per row, 200-row sample, 100 ms input debounce | "Pattern timed out" status in the dialog |
+| Timeline regex-extract commit (`src/app/timeline/timeline-view.js`) | 1 K-row dry run via `safeExec` | Toast + refuse to commit |
+| Timeline DSL filter compile (`src/app/timeline/timeline-query.js`) | `safeRegex` shape rejection at compile | Toast on filter apply |
+| Timeline drawer highlighter (`src/app/timeline/timeline-drawer.js`) | `safeRegex` compile | Silent disable for that drawer |
+| YARA editor rule import (`src/yara-engine.js`) | 2 KB pattern length cap | Validation error in editor |
+
+When adding a **new user-regex compile**, add it to this table and route
+through `safeRegex` — do not bypass the harness with a raw `new RegExp`
+even with the `/* safeRegex: builtin */` annotation. The annotation is
+reserved for compiles whose source is hardcoded or escape-sanitised.
+
 ### YARA rule files
 
 - **YARA rule files contain no comments.** `scripts/build.py` concatenates
