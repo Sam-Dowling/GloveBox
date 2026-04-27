@@ -2050,9 +2050,26 @@ class GridViewer {
   // row width) string-materialisation cost. Cancelled and re-scheduled on
   // every `setRows`. Skipped on tables <5 K rows (the lazy fallback in
   // `_rowMatchesQuery` is fast enough at that size).
+  //
+  // The per-cell `if (this.rowSearchText[i]) continue` check is what makes
+  // this safe to re-schedule mid-build, but it ALSO means stale entries
+  // from a previous `setRows` are silently retained — `setRows` MUST drop
+  // the cache (`this.rowSearchText = null`) when the caller doesn't supply
+  // a fresh array, otherwise filtering reads stale text from the prior
+  // dataset and silently filters the wrong rows.
   _scheduleIdleSearchTextBuild() {
+    // Pair the schedule and cancel API choices so a handle scheduled via
+    // `requestIdleCallback` is always cancelled via `cancelIdleCallback`
+    // (and the `setTimeout` / `clearTimeout` fallback likewise). Selecting
+    // each independently risks calling the wrong canceller on a handle in
+    // the (vanishingly rare) browser that ships one without the other.
+    const useIdle  = (typeof requestIdleCallback === 'function');
+    const schedule = useIdle
+      ? (fn) => requestIdleCallback(fn, { timeout: 250 })
+      : (fn) => setTimeout(fn, 0);
+    const cancel   = useIdle ? cancelIdleCallback : clearTimeout;
+
     if (this._idleBuildHandle != null) {
-      const cancel = (typeof cancelIdleCallback === 'function') ? cancelIdleCallback : clearTimeout;
       try { cancel(this._idleBuildHandle); } catch (_e) { /* ignore */ }
       this._idleBuildHandle = null;
     }
@@ -2061,9 +2078,6 @@ class GridViewer {
     let i = 0;
     const total = this.rows.length;
     const BATCH = 5000;
-    const schedule = (typeof requestIdleCallback === 'function')
-      ? (fn) => requestIdleCallback(fn, { timeout: 250 })
-      : (fn) => setTimeout(fn, 0);
     const step = () => {
       this._idleBuildHandle = null;
       const end = Math.min(i + BATCH, total);
@@ -2232,7 +2246,16 @@ class GridViewer {
    */
   setRows(rows, rowSearchText, rowOffsets, opts) {
     this.rows = rows;
-    this.rowSearchText = rowSearchText || this.rowSearchText;
+    // Drop the cache when the caller doesn't supply a fresh `rowSearchText`.
+    // The previous code retained the prior dataset's array
+    // (`rowSearchText || this.rowSearchText`); the idle-rebuild's
+    // `if (this.rowSearchText[i]) continue` check would then skip
+    // refilling those slots, and `_rowMatchesQuery` would silently filter
+    // against stale text from the old rows. EVTX / Timeline supply
+    // their own `rowSearchText` and are unaffected; the lazy build below
+    // re-populates from the new rows for every other caller. See review
+    // notes #3 from the 2026-04-27 audit.
+    this.rowSearchText = rowSearchText || null;
     this.rowOffsets = rowOffsets || this.rowOffsets;
     // Schedule a background pre-build of `rowSearchText` so the first
     // filter keystroke doesn't pay the materialisation cost row-by-row.
