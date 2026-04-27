@@ -109,3 +109,70 @@ function _trimPathExtGarbage(path) {
 // "finder-budget — throwIfAborted is not defined" Info row.
 function throwIfAborted() { /* no-op in worker */ }
 
+// ── safeRegex helpers (mirror src/constants.js) ─────────────────────────────
+//
+// Workers don't share globals with the host bundle, so the safeRegex /
+// safeTest / safeMatchAll / looksRedosProne primitives — used by encoded-
+// content finders, cmd-obfuscation, and YARA worker-side regex — must be
+// inlined here. Keep the bodies byte-equivalent with `src/constants.js`; the
+// build's verify pass diffs them.
+const SAFE_REGEX_MAX_PATTERN_LEN = 2048;
+const _REDOS_NESTED_QUANT_RE =
+  /\((?:\?[:=!]|\?<[=!])?[^()]*(?:[+*]|\{\d+,\}|\{,\d+\})[^()]*\)\s*(?:[+*]|\{\d+,\}|\{,\d+\})/;
+const _REDOS_DUPLICATE_GROUP_RE =
+  /(\([^()]{2,80}\)[+*])\s*\1/;
+function looksRedosProne(src) {
+  if (typeof src !== 'string') return { warn: false, reject: false };
+  if (src.length > SAFE_REGEX_MAX_PATTERN_LEN) {
+    return { warn: false, reject: true, reason: 'pattern too long' };
+  }
+  if (_REDOS_DUPLICATE_GROUP_RE.test(src)) {
+    return { warn: false, reject: true, reason: 'duplicate adjacent quantified groups' };
+  }
+  if (_REDOS_NESTED_QUANT_RE.test(src)) {
+    return { warn: true, reject: false, reason: 'nested unbounded quantifier' };
+  }
+  return { warn: false, reject: false };
+}
+function safeRegex(pattern, flags) {
+  const src = String(pattern == null ? '' : pattern);
+  const heur = looksRedosProne(src);
+  if (heur.reject) {
+    return { ok: false, regex: null, warning: null, error: heur.reason };
+  }
+  let regex;
+  try {
+    /* safeRegex: builtin */
+    regex = new RegExp(src, flags || '');
+  } catch (e) {
+    return { ok: false, regex: null, warning: null, error: e && e.message || 'invalid regex' };
+  }
+  return { ok: true, regex, warning: heur.warn ? heur.reason : null, error: null };
+}
+function safeMatchAll(re, str, budgetMs, maxMatches) {
+  const matches = [];
+  if (!re || typeof str !== 'string') return { matches, truncated: false, timedOut: false };
+  let rx = re;
+  if (!rx.global) {
+    /* safeRegex: builtin */
+    try { rx = new RegExp(rx.source, rx.flags + 'g'); }
+    catch (_e) { return { matches, truncated: false, timedOut: false }; }
+  }
+  rx.lastIndex = 0;
+  const cap = maxMatches || 10000;
+  const budget = budgetMs || 100;
+  const start = Date.now();
+  let truncated = false, timedOut = false;
+  let i = 0;
+  let m;
+  try {
+    while ((m = rx.exec(str)) !== null) {
+      matches.push(m);
+      if (m.index === rx.lastIndex) rx.lastIndex++;
+      if (matches.length >= cap) { truncated = true; break; }
+      if ((++i & 0xFF) === 0 && Date.now() - start > budget) { timedOut = true; break; }
+    }
+  } catch (_e) { /* swallow */ }
+  return { matches, truncated, timedOut };
+}
+

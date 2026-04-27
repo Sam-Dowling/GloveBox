@@ -71,6 +71,44 @@ function lfNormalize(s) { return typeof s === 'string' ? s.replace(/\r\n?/g, '\n
 // analyser pipeline, defeating the "EVTX always opens in Timeline" rule.
 function throwIfAborted() { /* no-op in worker */ }
 
+// ── safeRegex helpers (mirror src/constants.js) ─────────────────────────────
+// Inlined into the worker because workers don't share globals with the host
+// bundle. Used by the Timeline DSL regex compile path. Keep in lockstep with
+// `src/constants.js` and `src/workers/encoded-worker-shim.js`.
+const SAFE_REGEX_MAX_PATTERN_LEN = 2048;
+const _REDOS_NESTED_QUANT_RE =
+  /\((?:\?[:=!]|\?<[=!])?[^()]*(?:[+*]|\{\d+,\}|\{,\d+\})[^()]*\)\s*(?:[+*]|\{\d+,\}|\{,\d+\})/;
+const _REDOS_DUPLICATE_GROUP_RE =
+  /(\([^()]{2,80}\)[+*])\s*\1/;
+function looksRedosProne(src) {
+  if (typeof src !== 'string') return { warn: false, reject: false };
+  if (src.length > SAFE_REGEX_MAX_PATTERN_LEN) {
+    return { warn: false, reject: true, reason: 'pattern too long' };
+  }
+  if (_REDOS_DUPLICATE_GROUP_RE.test(src)) {
+    return { warn: false, reject: true, reason: 'duplicate adjacent quantified groups' };
+  }
+  if (_REDOS_NESTED_QUANT_RE.test(src)) {
+    return { warn: true, reject: false, reason: 'nested unbounded quantifier' };
+  }
+  return { warn: false, reject: false };
+}
+function safeRegex(pattern, flags) {
+  const src = String(pattern == null ? '' : pattern);
+  const heur = looksRedosProne(src);
+  if (heur.reject) {
+    return { ok: false, regex: null, warning: null, error: heur.reason };
+  }
+  let regex;
+  try {
+    /* safeRegex: builtin */
+    regex = new RegExp(src, flags || '');
+  } catch (e) {
+    return { ok: false, regex: null, warning: null, error: e && e.message || 'invalid regex' };
+  }
+  return { ok: true, regex, warning: heur.warn ? heur.reason : null, error: null };
+}
+
 // ── EVTX event-id table stub ────────────────────────────────────────────────
 //
 // `evtx-event-ids.js` defines `EVTX_EVENT_DESCRIPTIONS` — view-only data
