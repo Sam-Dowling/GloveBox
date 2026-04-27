@@ -192,7 +192,9 @@ extendApp({
    *  @private */
   _extractRulesFromSource(catSource, sevOrder, validSevs) {
     const { rules: parsed } = YaraEngine.parseRules(catSource);
-    const rawRx = /\brule\s+\w+\s*(?::\s*[\w\s]+?)?\s*\{[\s\S]*?\n\}/g;
+    // Bounded lazy classes (mirror src/yara-engine.js): tag list ≤128 chars,
+    // body ≤64 KB, to prevent quadratic backtracking on malformed rules.
+    const rawRx = /\brule\s+\w+\s*(?::\s*[\w\s]{1,128}?)?\s*\{[\s\S]{0,65536}?\n\}/g;
     const rawBlocks = [];
     let m;
     while ((m = rawRx.exec(catSource)) !== null) rawBlocks.push(m[0]);
@@ -231,7 +233,8 @@ extendApp({
   _removeUploadedRule(ruleName) {
     const src = this._getUploadedYaraRules();
     if (!src) return false;
-    const rx = new RegExp('\\brule\\s+' + ruleName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*(?::\\s*[\\w\\s]+?)?\\s*\\{[\\s\\S]*?\\n\\}', 'g');
+    /* safeRegex: builtin */
+    const rx = new RegExp('\\brule\\s+' + ruleName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*(?::\\s*[\\w\\s]{1,128}?)?\\s*\\{[\\s\\S]{0,65536}?\\n\\}', 'g');
     const newSrc = src.replace(rx, '').trim();
     this._setUploadedYaraRules(newSrc || '');
     return newSrc !== src;

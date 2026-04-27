@@ -30,7 +30,11 @@ class YaraEngine {
     );
 
     // Match rule blocks:  rule <name> [: <tags>] { ... }
-    const ruleRx = /\brule\s+(\w+)\s*(?::\s*([\w\s]+?))?\s*\{([\s\S]*?)\n\}/g;
+    // Bounded lazy classes: tag list capped at 128 chars (a YARA rule with
+    // more than ~30 tags is already absurd) and rule body capped at 64 KB
+    // (the largest bundled rule is well under 16 KB). The bounds prevent
+    // quadratic backtracking on malformed rule files (missing `}`, etc.).
+    const ruleRx = /\brule\s+(\w+)\s*(?::\s*([\w\s]{1,128}?))?\s*\{([\s\S]{0,65536}?)\n\}/g;
     let m;
     while ((m = ruleRx.exec(cleaned)) !== null) {
       try {
@@ -58,7 +62,7 @@ class YaraEngine {
 
     // Re-parse rule blocks for structural validation on raw body text
     // Use original source (not comment-stripped) to avoid corrupting URL strings containing //
-    const ruleRx2 = /\brule\s+(\w+)\s*(?::\s*([\w\s]+?))?\s*\{([\s\S]*?)\n\}/g;
+    const ruleRx2 = /\brule\s+(\w+)\s*(?::\s*([\w\s]{1,128}?))?\s*\{([\s\S]{0,65536}?)\n\}/g;
     let m;
     while ((m = ruleRx2.exec(source)) !== null) {
       const sv = YaraEngine._validateRuleStructure(m[1], m[3]);
@@ -230,7 +234,15 @@ class YaraEngine {
     // ── Regex compilation check ──────────────────────────────────────────
     for (const s of rule.strings) {
       if (s.type === 'regex') {
-        try { new RegExp(s.pattern, (s.flags || '').replace(/[^gimsuy]/g, '')); }
+        // Hard cap regex pattern length at 2 KB at validation time. Combined
+        // with the `safeRegex` length / shape guards used at scan time, this
+        // refuses pathological patterns at the earliest entry point so they
+        // can't propagate to the worker scan loop.
+        if ((s.pattern || '').length > 2048) {
+          errors.push(p + 'regex ' + s.id + ' too long (>2048 chars)');
+          continue;
+        }
+        try { /* safeRegex: builtin */ new RegExp(s.pattern, (s.flags || '').replace(/[^gimsuy]/g, '')); }
         catch (e) { errors.push(p + 'invalid regex ' + s.id + ': ' + e.message); }
       }
     }
@@ -470,6 +482,7 @@ class YaraEngine {
       let rx = strDef._compiledRx;
       if (rx === undefined) {
         try {
+          /* safeRegex: builtin */
           rx = new RegExp(strDef.pattern, 'g' + (strDef.nocase ? 'i' : ''));
         } catch (e) {
           rx = null;
