@@ -2983,7 +2983,10 @@ class PeRenderer {
     // interesting categories match the corpus.
     try {
       if (typeof BinaryStrings !== 'undefined' && BinaryStrings.renderCategorisedStringsTable) {
-        const catCard = BinaryStrings.renderCategorisedStringsTable(allStrings);
+        // Reuse the cats stash from analyzeForSecurity when available
+        // so the render path doesn't re-run every classifier regex over
+        // the same corpus. See `_stringCats` assignment below.
+        const catCard = BinaryStrings.renderCategorisedStringsTable(this._stringCats || allStrings);
         if (catCard) div.appendChild(catCard);
       }
     } catch (_) { /* best-effort */ }
@@ -3578,7 +3581,14 @@ class PeRenderer {
       // very first triage pass.
       try {
         if (typeof BinaryStrings !== 'undefined' && BinaryStrings.emit) {
-          const strCounts = BinaryStrings.emit(findings, allStrings);
+          // Classify once and stash on the instance so render()'s
+          // categorised-strings card can reuse the result rather than
+          // re-running every regex over the same corpus on the render
+          // path. Mirrors the ELF/Mach-O renderers.
+          this._stringCats = (typeof BinaryStrings.classify === 'function')
+            ? BinaryStrings.classify(allStrings)
+            : null;
+          const strCounts = BinaryStrings.emit(findings, this._stringCats || allStrings);
           if (strCounts.mutexes)       findings.metadata['Mutex Names']      = String(strCounts.mutexes);
           if (strCounts.namedPipes)    findings.metadata['Named Pipes']      = String(strCounts.namedPipes);
           if (strCounts.pdbPaths)      findings.metadata['PDB Paths (str)']  = String(strCounts.pdbPaths);

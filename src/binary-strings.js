@@ -61,6 +61,35 @@ const BinaryStrings = (() => {
   // Each regex matches the *whole* occurrence on a string that may be
   // surrounded by any amount of printable padding. We use `gm` so the
   // `^` / `$` anchors are per-line (strings are `\n`-joined).
+  //
+  // ⚠ ReDoS invariant — read before editing
+  //
+  // Several patterns below use the shape `(X+ SEP)+ X+ tail` (e.g. PDB
+  // path matching). The textbook catastrophic-backtracking trap is to let
+  // the inner character class `X` include `SEP` — the engine then has to
+  // enumerate every split between the nested `+` quantifiers before
+  // failing a non-matching anchor, and the cost explodes super-linearly
+  // on long path-rich corpora (an 11 MB ELF whose strings dump contains
+  // many slash-rich paths without `.pdb` is more than enough to trip the
+  // 30 s renderer-watchdog deadline). Any new pattern with this shape
+  // MUST exclude the separator from the inner negated class so each
+  // segment has exactly one parse.
+  //
+  // Audit summary (kept in sync with this file):
+  //   PDB_WIN_RX     — safe: inner class excludes `\` and `/`.
+  //   PDB_NIX_RX     — safe: inner class excludes `/` (was vulnerable
+  //                    pre-fix; the slash was added to the negation in
+  //                    the same change that introduced this comment).
+  //   USER_WIN_RX    — safe: single bounded `{3,200}` quantifier, no
+  //                    nested `+`.
+  //   USER_NIX_RX    — safe: single bounded `{3,200}` quantifier.
+  //   MUTEX_RX       — safe: single bounded `{2,120}` quantifier.
+  //   PIPE_RX        — safe: single bounded `{2,120}` quantifier.
+  //   REGISTRY_RX    — safe: outer `{1,12}` × inner `{1,80}`, both
+  //                    bounded; inner class excludes `\`.
+  //   RUST_PANIC_RX  — safe: anchored on the literal `panicked at ` and
+  //                    on the trailing `:\d+:\d+` line/column suffix; no
+  //                    nested unbounded quantifiers.
 
   // Mutexes: `Global\Foo`, `Local\Bar`, `Session\N\Baz`. The backslash
   // may also appear doubled (`Global\\Foo`) when the string was embedded
@@ -81,8 +110,14 @@ const BinaryStrings = (() => {
   //
   // Windows: `C:\proj\foo\bar.pdb`
   // POSIX  : `/home/build/foo/bar.pdb`
+  //
+  // INVARIANT: the *inner* character class (used inside the `(?:…SEP)+`
+  // group) MUST exclude the path separator. PDB_WIN_RX already excludes
+  // both `\` and `/`; PDB_NIX_RX excludes `/`. See the ReDoS audit
+  // comment above the regex block — relaxing this makes the pattern
+  // catastrophically-backtracking on path-rich corpora.
   const PDB_WIN_RX = /\b[A-Za-z]:\\(?:[^\\\/<>:"|?*\r\n\x00]+\\)+[^\\\/<>:"|?*\r\n\x00]+\.pdb\b/g;
-  const PDB_NIX_RX = /(?:^|[\s"'>:])(\/(?:[^\s"'<>|?*\r\n\x00]+\/)+[^\s"'<>|?*\r\n\x00]+\.pdb)\b/g;
+  const PDB_NIX_RX = /(?:^|[\s"'>:])(\/(?:[^\s"'<>|?*\r\n\x00\/]+\/)+[^\s"'<>|?*\r\n\x00]+\.pdb)\b/g;
 
   // User-home / build-host Windows paths — strong attribution signal.
   // The PDB rx picks up `*.pdb`; this one picks up everything else in the
@@ -125,9 +160,24 @@ const BinaryStrings = (() => {
   const RUST_PANIC_RX = /panicked at (?:'[^'\n]{0,200}', )?((?:\/|[A-Za-z]:\\)?[^\s"'<>|?*\r\n\x00]{1,200}\.rs):\d+:\d+/g;
 
   // ── Helpers ─────────────────────────────────────────────────────────
+
+  // Defence-in-depth backstop against any future regex regression that
+  // reintroduces a super-linear pattern. The renderer-side string
+  // extractor caps at 20 000 strings (`_extractStrings` in each
+  // renderer), and a typical native-binary string corpus is well under
+  // 1 MiB — 4 MiB is comfortably above the realistic ceiling and an
+  // order of magnitude below the level at which even a linear-time
+  // regex run starts to feel sluggish. When the cap fires we silently
+  // truncate; the renderer-side extractor already pushes its own
+  // truncation IOC.INFO row so the analyst is not left in the dark.
+  const MAX_CORPUS_BYTES = 4 * 1024 * 1024;
+
   function _normLines(strings) {
-    if (Array.isArray(strings)) return strings.join('\n');
-    return String(strings || '');
+    let s;
+    if (Array.isArray(strings)) s = strings.join('\n');
+    else s = String(strings || '');
+    if (s.length > MAX_CORPUS_BYTES) s = s.slice(0, MAX_CORPUS_BYTES);
+    return s;
   }
 
   function _collect(corpus, rx, opts) {
@@ -170,6 +220,20 @@ const BinaryStrings = (() => {
     };
   }
 
+  // Treat the `strings` arg as a precomputed cats hint when it has the
+  // shape `classify()` returns. Renderers that already classified once
+  // during `analyzeForSecurity` stash the result on `this._stringCats`
+  // and pass it to both `emit()` and `renderCategorisedStringsTable()`
+  // below to avoid the second regex pass on the render path.
+  function _isCats(x) {
+    return !!(x && typeof x === 'object' && !Array.isArray(x)
+      && Array.isArray(x.mutexes) && Array.isArray(x.pdbPaths));
+  }
+
+  function _resolveCats(stringsOrCats) {
+    return _isCats(stringsOrCats) ? stringsOrCats : classify(stringsOrCats);
+  }
+
   /**
    * Convenience helper used by all three renderers — classifies the
    * string corpus, then emits each category as the appropriate IOC.*
@@ -177,13 +241,17 @@ const BinaryStrings = (() => {
    * `IOC.INFO` truncation-marker row when the full list was trimmed.
    *
    * @param {object} findings   — as built by `analyzeForSecurity`
-   * @param {string[]|string} strings — the renderer's combined string corpus
+   * @param {string[]|string|object} stringsOrCats — the renderer's
+   *   combined string corpus, OR a precomputed `classify()` result
+   *   (detected by shape: object with `mutexes`/`pdbPaths` arrays). The
+   *   precomputed-cats path lets renderers classify once and reuse the
+   *   result on the render path without a second regex pass.
    * @param {object} [_opts]    — reserved (no options today)
    * @returns {object} the category counts, e.g. `{mutexes:3, namedPipes:0,…}`
    *   so the caller can populate `findings.metadata` summary rows.
    */
-  function emit(findings, strings) {
-    const cats = classify(strings);
+  function emit(findings, stringsOrCats) {
+    const cats = _resolveCats(stringsOrCats);
     const counts = {
       mutexes: cats.mutexes.length,
       namedPipes: cats.namedPipes.length,
@@ -250,8 +318,8 @@ const BinaryStrings = (() => {
   // already pushed each entry as the correct IOC.* type).
   const _esc = escHtml;
 
-  function renderCategorisedStringsTable(strings, _opts) {
-    const cats = classify(strings);
+  function renderCategorisedStringsTable(stringsOrCats, _opts) {
+    const cats = _resolveCats(stringsOrCats);
     const sections = [
       { key: 'mutexes',       label: '🔒 Mutexes',           note: 'synchronisation / cluster keys (T1027)',     cap: CAPS.mutex,     items: cats.mutexes     },
       { key: 'namedPipes',    label: '🪈 Named Pipes',       note: 'IPC / lateral movement (T1559.001)',         cap: CAPS.pipe,      items: cats.namedPipes  },

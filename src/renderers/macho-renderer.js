@@ -1997,7 +1997,11 @@ class MachoRenderer {
     // categories remain useful for cross-compiled binaries).
     try {
       if (typeof BinaryStrings !== 'undefined' && BinaryStrings.renderCategorisedStringsTable) {
-        const cats = BinaryStrings.renderCategorisedStringsTable(mo.strings || []);
+        // Reuse the cats stash from analyzeForSecurity when available
+        // so the render path doesn't re-run every classifier regex over
+        // the same corpus. See `_stringCats` assignment in
+        // analyzeForSecurity.
+        const cats = BinaryStrings.renderCategorisedStringsTable(this._stringCats || mo.strings || []);
         if (cats) div.appendChild(cats);
       }
     } catch (_) { /* non-fatal */ }
@@ -2554,7 +2558,14 @@ class MachoRenderer {
       // types so the sidebar groups them with PE / ELF hits.
       try {
         if (typeof BinaryStrings !== 'undefined' && BinaryStrings.emit) {
-          const strCounts = BinaryStrings.emit(findings, allStrings);
+          // Classify once and stash on the instance so render()'s
+          // categorised-strings card can reuse the result rather than
+          // re-running every regex over the same corpus on the render
+          // path. Mirrors the ELF/PE renderers.
+          this._stringCats = (typeof BinaryStrings.classify === 'function')
+            ? BinaryStrings.classify(allStrings)
+            : null;
+          const strCounts = BinaryStrings.emit(findings, this._stringCats || allStrings);
           if (strCounts.pdbPaths)   findings.metadata['PDB Paths (str)']   = String(strCounts.pdbPaths);
           if (strCounts.userPaths)  findings.metadata['Build-host Paths']  = String(strCounts.userPaths);
           if (strCounts.rustPanics) findings.metadata['Rust Panic Paths']  = String(strCounts.rustPanics);

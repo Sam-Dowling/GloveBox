@@ -1767,7 +1767,7 @@ class ElfRenderer {
     // but they're exactly the attribution pivots an ELF triage wants.
     try {
       if (typeof BinaryStrings !== 'undefined' && BinaryStrings.renderCategorisedStringsTable) {
-        const catCard = BinaryStrings.renderCategorisedStringsTable(elf.strings || []);
+        const catCard = BinaryStrings.renderCategorisedStringsTable(this._stringCats || elf.strings || []);
         if (catCard) div.appendChild(catCard);
       }
     } catch (_) { /* best-effort */ }
@@ -2227,7 +2227,16 @@ class ElfRenderer {
       // IOC.* types so the sidebar groups them with the PE/Mach-O hits.
       try {
         if (typeof BinaryStrings !== 'undefined' && BinaryStrings.emit) {
-          const strCounts = BinaryStrings.emit(findings, allStrings);
+          // Classify once and stash on the instance so render()'s
+          // categorised-strings card can reuse the result via
+          // `renderCategorisedStringsTable(this._stringCats)` rather
+          // than running every regex over the corpus a second time.
+          // Mirrors the `_parsed` / `_findings` instance-cache pattern
+          // already used elsewhere in this renderer.
+          this._stringCats = (typeof BinaryStrings.classify === 'function')
+            ? BinaryStrings.classify(allStrings)
+            : null;
+          const strCounts = BinaryStrings.emit(findings, this._stringCats || allStrings);
           if (strCounts.pdbPaths)   findings.metadata['PDB Paths (str)']   = String(strCounts.pdbPaths);
           if (strCounts.userPaths)  findings.metadata['Build-host Paths']  = String(strCounts.userPaths);
           if (strCounts.rustPanics) findings.metadata['Rust Panic Paths']  = String(strCounts.rustPanics);
