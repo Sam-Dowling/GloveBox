@@ -178,8 +178,22 @@ class HtmlRenderer {
     const refs = [];
     let risk = 'low';
 
+    // Length cap — DOM-text scans below run unbounded `matchAll` and
+    // `test()` over the raw HTML; cap at 5 MB to avoid the worst case
+    // on a giant inlined Base64 blob or a multi-MB single-page-app
+    // bundle. Mirrors the parser-limits pattern in `src/constants.js`.
+    const SCAN_CAP = 5 * 1024 * 1024;
+    const scanText = text.length > SCAN_CAP ? text.slice(0, SCAN_CAP) : text;
+    if (text.length > SCAN_CAP) {
+      refs.push({
+        type: IOC.PATTERN,
+        url: `HTML body >${(SCAN_CAP / (1024 * 1024)).toFixed(0)} MB — security scan truncated`,
+        severity: 'info'
+      });
+    }
+
     // ── 1. DOM-aware URL extraction ──────────────────────────────────────
-    const domInfo = this._extractDomContent(text);
+    const domInfo = this._extractDomContent(scanText);
 
     for (const url of domInfo.urls) {
       let sev = 'info';
@@ -237,9 +251,9 @@ class HtmlRenderer {
 
     // ── 2a. ClickFix / fake-captcha detection (T3.2) ────────────────────
     {
-      const hasClipboard = /navigator\.clipboard\.writetext|document\.execcommand\s*\(\s*['"]copy|clipboarddata/i.test(text);
-      const hasPayload = /powershell|mshta|cmd\s*\/c|cmd\.exe|regsvr32|certutil|bitsadmin|wscript|cscript/i.test(text);
-      const hasInstruction = /press\s+win\s*\+\s*r|win\+r|ctrl\s*\+\s*v|paste|verify\s+you\s+are\s+human|captcha|i\s*'?\s*m\s+not\s+a\s+robot|click\s+to\s+verify/i.test(text);
+      const hasClipboard = /navigator\.clipboard\.writetext|document\.execcommand\s*\(\s*['"]copy|clipboarddata/i.test(scanText);
+      const hasPayload = /powershell|mshta|cmd\s*\/c|cmd\.exe|regsvr32|certutil|bitsadmin|wscript|cscript/i.test(scanText);
+      const hasInstruction = /press\s+win\s*\+\s*r|win\+r|ctrl\s*\+\s*v|paste|verify\s+you\s+are\s+human|captcha|i\s*'?\s*m\s+not\s+a\s+robot|click\s+to\s+verify/i.test(scanText);
       if (hasClipboard && (hasPayload || hasInstruction)) {
         refs.push({
           type: IOC.PATTERN,
@@ -247,7 +261,7 @@ class HtmlRenderer {
           severity: 'critical'
         });
         risk = 'high';
-      } else if (hasClipboard && /base64|atob|fromcharcode/i.test(text)) {
+      } else if (hasClipboard && /base64|atob|fromcharcode/i.test(scanText)) {
         refs.push({
           type: IOC.PATTERN,
           url: 'Clipboard write with encoded content — possible ClickFix variant',
@@ -257,22 +271,20 @@ class HtmlRenderer {
       }
     }
 
-    // ── 2b. Data-URI iframe/embed smuggling (T3.3) ──────────────────────
+    // ── 2b. Data-URI iframe/embed/object/img smuggling (T3.3) ───────────
+    // Combined alternation — single text walk instead of two separate
+    // `matchAll` passes. The capture groups disambiguate which branch
+    // hit so we can report the right tag in the finding.
     {
-      const dataUriRE = /<(iframe|embed|object)\b[^>]+src\s*=\s*["']?\s*data:(?!image\/)/gi;
-      for (const m of text.matchAll(dataUriRE)) {
+      const dataUriRE = /<(iframe|embed|object)\b[^>]+src\s*=\s*["']?\s*data:(?!image\/)|<(img)\b[^>]+src\s*=\s*["']?\s*data:text\/html/gi;
+      for (const m of scanText.matchAll(dataUriRE)) {
+        const tag = m[1] || m[2];
+        const isImg = tag === 'img';
         refs.push({
           type: IOC.PATTERN,
-          url: `Data-URI <${m[1]}> — HTML smuggling technique`,
-          severity: 'high'
-        });
-        risk = 'high';
-      }
-      // Also flag <img src="data:text/html,..."> (non-image MIME in img tag)
-      for (const _m of text.matchAll(/<img\b[^>]+src\s*=\s*["']?\s*data:text\/html/gi)) {
-        refs.push({
-          type: IOC.PATTERN,
-          url: 'Data-URI <img> with text/html MIME — HTML smuggling technique',
+          url: isImg
+            ? 'Data-URI <img> with text/html MIME — HTML smuggling technique'
+            : `Data-URI <${tag}> — HTML smuggling technique`,
           severity: 'high'
         });
         risk = 'high';

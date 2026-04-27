@@ -550,10 +550,16 @@ class OneNoteRenderer {
   _extractStrings(bytes) {
     const strings = [];
     const seen = new Set();
+    const cap = 1000;
+    // Bound the scan window — the previous impl walked the entire file
+    // twice with no `maxScan` cap, which on a 100 MB OneNote freezes the
+    // tab. 8 MB matches the PE/ELF/Mach-O budget and is well past the
+    // useful triage window.
+    const maxScan = Math.min(bytes.length, 8 * 1024 * 1024);
 
     // Extract UTF-16LE strings
     let current = '';
-    for (let i = 0; i < bytes.length - 1; i += 2) {
+    for (let i = 0; i < maxScan - 1; i += 2) {
       const code = bytes[i] | (bytes[i + 1] << 8);
       if (code >= 0x20 && code < 0xFFFE && code !== 0xFFFD) {
         current += String.fromCharCode(code);
@@ -561,15 +567,20 @@ class OneNoteRenderer {
         if (current.length >= 8 && !seen.has(current)) {
           seen.add(current);
           strings.push(current);
+          if (strings.length >= cap) return strings;
         }
         current = '';
       }
     }
-    if (current.length >= 8 && !seen.has(current)) strings.push(current);
+    if (current.length >= 8 && !seen.has(current)) {
+      seen.add(current);
+      strings.push(current);
+      if (strings.length >= cap) return strings;
+    }
 
     // Also extract ASCII strings
     current = '';
-    for (let i = 0; i < bytes.length; i++) {
+    for (let i = 0; i < maxScan; i++) {
       const b = bytes[i];
       if (b >= 0x20 && b < 0x7F) {
         current += String.fromCharCode(b);
@@ -577,13 +588,17 @@ class OneNoteRenderer {
         if (current.length >= 12 && !seen.has(current)) {
           seen.add(current);
           strings.push(current);
+          if (strings.length >= cap) return strings;
         }
         current = '';
       }
     }
-    if (current.length >= 12 && !seen.has(current)) strings.push(current);
+    if (current.length >= 12 && !seen.has(current)) {
+      seen.add(current);
+      strings.push(current);
+    }
 
-    return strings.slice(0, 1000); // Cap at 1000
+    return strings;
   }
 
   _fmtBytes(n) {

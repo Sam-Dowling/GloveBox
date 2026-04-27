@@ -191,6 +191,17 @@ class EvtxRenderer {
   }
 
   // ── BinXml decoder ──────────────────────────────────────────────────────
+  //
+  // INVARIANT: `_decodeBinXml` is a synchronous per-record decoder. It
+  // does NOT yield to the event loop. Callers that walk many records must
+  // batch yields themselves — see `_parseAsync` (yields every 100 chunks
+  // ≈ 6.4 MB) and the timeline worker (`src/workers/timeline.worker.js`,
+  // off the main thread). The legacy synchronous `_parse()` entry point
+  // is retained only for `EvtxDetector` reentrant analysis paths where
+  // the buffer is already known to be small (see `src/evtx-detector.js`).
+  // Do NOT call `_parse` (and therefore `_decodeBinXml`) directly from
+  // the main thread on user-supplied EVTX bytes — go through `_parseAsync`
+  // or the timeline worker.
   _decodeBinXml(bytes, dv, off, maxLen, stringTable, chunkOff) {
     const result = { eventId: '', level: '', channel: '', provider: '', computer: '', opcode: '', task: '', eventData: '' };
     const end = off + maxLen;
@@ -954,9 +965,14 @@ class EvtxRenderer {
   }
 
   // ── Fallback: extract readable strings from a binary blob ───────────────
+  // Per-blob scan budget (256 KB) — record blobs are ≤64 KB by design, so
+  // this is generous, but still bounds the worst case if a corrupt record
+  // slips a giant declared `size` past the chunk parser.
   _extractStringsFromBlob(bytes, off, size) {
     const strings = [];
-    const end = Math.min(off + size, bytes.length - 1);
+    const SCAN_CAP = 256 * 1024;
+    const cappedSize = Math.min(size, SCAN_CAP);
+    const end = Math.min(off + cappedSize, bytes.length - 1);
     let i = off;
     while (i + 1 < end) {
       if (bytes[i] >= 0x20 && bytes[i] < 0x7F && bytes[i + 1] === 0) {
@@ -968,6 +984,7 @@ class EvtxRenderer {
         }
         if (len >= 3) {
           strings.push(this._readUtf16(bytes, strStart, len));
+          if (strings.length >= 256) break;
         }
       } else {
         i += 2;
