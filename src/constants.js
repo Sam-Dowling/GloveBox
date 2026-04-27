@@ -903,46 +903,197 @@ function extractAsciiAndUtf16leStrings(bytes, opts) {
   const utf16 = [];
   const seen = new Set();
 
+  // Chunked flush — per-byte `cur += String.fromCharCode(b)` is the V8
+  // ConsString-chain pathological case on multi-MB embedded text blobs;
+  // accumulating code points into an Array<number> and flushing via
+  // `String.fromCharCode.apply(null, codes)` in 32 K-code chunks avoids it.
+  // 32 768 is well under V8's ~65 536 spread-arg limit and Safari's 65 535.
+  // For the common short-run case (<32 KB) this is a single apply() call.
+  const FLUSH_CHUNK = 32768;
+  function flush(codes) {
+    if (codes.length <= FLUSH_CHUNK) {
+      return String.fromCharCode.apply(null, codes);
+    }
+    let out = '';
+    for (let j = 0; j < codes.length; j += FLUSH_CHUNK) {
+      out += String.fromCharCode.apply(null, codes.slice(j, j + FLUSH_CHUNK));
+    }
+    return out;
+  }
+
   // Pass 1: ASCII runs
-  let cur = '';
+  let codes = [];
   for (let i = start; i < end; i++) {
     const b = bytes[i];
     if (b >= 0x20 && b < 0x7F) {
-      cur += String.fromCharCode(b);
+      codes.push(b);
     } else {
-      if (cur.length >= asciiMin && !seen.has(cur)) {
-        seen.add(cur);
-        ascii.push(cur);
-        if (ascii.length + utf16.length >= cap) return { ascii, utf16 };
+      if (codes.length >= asciiMin) {
+        const cur = flush(codes);
+        if (!seen.has(cur)) {
+          seen.add(cur);
+          ascii.push(cur);
+          if (ascii.length + utf16.length >= cap) return { ascii, utf16 };
+        }
       }
-      cur = '';
+      if (codes.length) codes = [];
     }
   }
-  if (cur.length >= asciiMin && !seen.has(cur)) {
-    seen.add(cur);
-    ascii.push(cur);
+  if (codes.length >= asciiMin) {
+    const cur = flush(codes);
+    if (!seen.has(cur)) {
+      seen.add(cur);
+      ascii.push(cur);
+    }
   }
 
   // Pass 2: UTF-16LE runs
-  cur = '';
+  codes = [];
   for (let i = start; i + 1 < end; i += 2) {
     const lo = bytes[i], hi = bytes[i + 1];
     if (hi === 0 && lo >= 0x20 && lo < 0x7F) {
-      cur += String.fromCharCode(lo);
+      codes.push(lo);
     } else {
-      if (cur.length >= utf16Min && !seen.has(cur)) {
-        seen.add(cur);
-        utf16.push(cur);
-        if (ascii.length + utf16.length >= cap) return { ascii, utf16 };
+      if (codes.length >= utf16Min) {
+        const cur = flush(codes);
+        if (!seen.has(cur)) {
+          seen.add(cur);
+          utf16.push(cur);
+          if (ascii.length + utf16.length >= cap) return { ascii, utf16 };
+        }
       }
-      cur = '';
+      if (codes.length) codes = [];
     }
   }
-  if (cur.length >= utf16Min && !seen.has(cur)) {
-    seen.add(cur);
-    utf16.push(cur);
+  if (codes.length >= utf16Min) {
+    const cur = flush(codes);
+    if (!seen.has(cur)) {
+      seen.add(cur);
+      utf16.push(cur);
+    }
   }
 
   return { ascii, utf16 };
+}
+
+// ── User-regex safety harness ────────────────────────────────────────────────
+// Wraps `RegExp.exec` / `RegExp.test` / `String.matchAll` with three guards:
+//   1. A length cap on the source pattern (rejects pathologically long input).
+//   2. A "looks ReDoS-prone" heuristic (warn-only by default; refuse on the
+//      duplicate-adjacent-quantified-group shape that produces 2^n splits).
+//   3. A wall-clock budget enforced between iterations of bulk-match loops,
+//      plus a hard match cap and a guaranteed `lastIndex` advance so a
+//      zero-width match cannot infinite-loop.
+//
+// `safeRegex(pattern, flags)` returns `{ ok, regex, warning, error }`.
+// `safeExec(re, str, budgetMs)` returns the first match or `null`.
+// `safeTest(re, str, budgetMs)` returns boolean.
+// `safeMatchAll(re, str, budgetMs, maxMatches)` returns
+//   `{ matches, truncated, timedOut }`.
+//
+// Mirrored verbatim into worker shims; do not edit one without updating the
+// other. See plans/2026-04-27-loupe-perf-and-redos-remediation-v1.md.
+
+const SAFE_REGEX_MAX_PATTERN_LEN = 2048;
+
+// Heuristic: nested unbounded quantifiers, e.g. `(a+)+`, `(.*)*`, `(\w+){2,}`.
+// Conservative — only matches the classic ReDoS shapes; false positives are
+// surfaced as warnings, never hard rejects.
+const _REDOS_NESTED_QUANT_RE =
+  /\((?:\?[:=!]|\?<[=!])?[^()]*(?:[+*]|\{\d+,\}|\{,\d+\})[^()]*\)\s*(?:[+*]|\{\d+,\}|\{,\d+\})/;
+
+// Hard reject: two adjacent identical quantified groups capturing the same
+// shape, e.g. `(?:,'([^']+)')*(?:,'([^']+)')*` — the engine cannot decide
+// which group consumes which match, producing 2^n splits.
+const _REDOS_DUPLICATE_GROUP_RE =
+  /(\([^()]{2,80}\)[+*])\s*\1/;
+
+function looksRedosProne(src) {
+  if (typeof src !== 'string') return { warn: false, reject: false };
+  if (src.length > SAFE_REGEX_MAX_PATTERN_LEN) {
+    return { warn: false, reject: true, reason: 'pattern too long' };
+  }
+  if (_REDOS_DUPLICATE_GROUP_RE.test(src)) {
+    return { warn: false, reject: true, reason: 'duplicate adjacent quantified groups' };
+  }
+  if (_REDOS_NESTED_QUANT_RE.test(src)) {
+    return { warn: true, reject: false, reason: 'nested unbounded quantifier' };
+  }
+  return { warn: false, reject: false };
+}
+
+function safeRegex(pattern, flags) {
+  const src = String(pattern == null ? '' : pattern);
+  const heur = looksRedosProne(src);
+  if (heur.reject) {
+    return { ok: false, regex: null, warning: null, error: heur.reason };
+  }
+  let regex;
+  try {
+    /* safeRegex: builtin */
+    regex = new RegExp(src, flags || '');
+  } catch (e) {
+    return { ok: false, regex: null, warning: null, error: e && e.message || 'invalid regex' };
+  }
+  return { ok: true, regex, warning: heur.warn ? heur.reason : null, error: null };
+}
+
+function safeExec(re, str, budgetMs) {
+  if (!re || typeof str !== 'string') return null;
+  const budget = budgetMs || 50;
+  const start = Date.now();
+  try {
+    // Single exec — JS regex engine is not preemptible mid-call. The budget
+    // here is a soft check used by callers that loop; for one-shot exec we
+    // still wrap to keep the API uniform.
+    const m = re.exec(str);
+    if (Date.now() - start > budget) {
+      return { __timedOut: true };
+    }
+    return m;
+  } catch (_e) { return null; }
+}
+
+function safeTest(re, str, budgetMs) {
+  if (!re || typeof str !== 'string') return false;
+  const budget = budgetMs || 50;
+  const start = Date.now();
+  try {
+    const r = re.test(str);
+    if (Date.now() - start > budget) return false;
+    return r;
+  } catch (_e) { return false; }
+}
+
+function safeMatchAll(re, str, budgetMs, maxMatches) {
+  const matches = [];
+  if (!re || typeof str !== 'string') return { matches, truncated: false, timedOut: false };
+  // Force `g` flag so `exec` advances; otherwise we would infinite loop.
+  let rx = re;
+  if (!rx.global) {
+    /* safeRegex: builtin */
+    try { rx = new RegExp(rx.source, rx.flags + 'g'); }
+    catch (_e) { return { matches, truncated: false, timedOut: false }; }
+  }
+  rx.lastIndex = 0;
+  const cap = maxMatches || 10000;
+  const budget = budgetMs || 100;
+  const start = Date.now();
+  let truncated = false, timedOut = false;
+  let i = 0;
+  let m;
+  try {
+    while ((m = rx.exec(str)) !== null) {
+      matches.push(m);
+      // Always advance on zero-width match
+      if (m.index === rx.lastIndex) rx.lastIndex++;
+      if (matches.length >= cap) { truncated = true; break; }
+      if ((++i & 0xFF) === 0 && Date.now() - start > budget) {
+        timedOut = true;
+        break;
+      }
+    }
+  } catch (_e) { /* swallow */ }
+  return { matches, truncated, timedOut };
 }
 
