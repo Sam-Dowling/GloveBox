@@ -56,13 +56,15 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 # don't cover.
 STEPS: dict[str, tuple[str, str]] = {
     'verify':   ('Verify vendored SHA-256 pins', 'scripts/verify_vendored.py'),
+    'regex':    ('Check regex safety annotations', 'scripts/check_regex_safety.py'),
+    'parity':   ('Check worker shim parity',     'scripts/check_shim_parity.py'),
     'build':    ('Build docs/index.html',        'scripts/build.py'),
     'contract': ('Check renderer contract',      'scripts/check_renderer_contract.py'),
     'codemap':  ('Regenerate CODEMAP.md',        'scripts/generate_codemap.py'),
     'sbom':     ('Generate CycloneDX SBOM',      'scripts/generate_sbom.py'),
 }
 
-DEFAULT_STEPS = ['verify', 'build', 'contract', 'codemap']
+DEFAULT_STEPS = ['verify', 'regex', 'parity', 'build', 'contract', 'codemap']
 ALL_STEPS = list(STEPS.keys())
 
 
