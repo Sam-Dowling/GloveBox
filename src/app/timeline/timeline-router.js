@@ -181,6 +181,13 @@ extendApp({
         try { this._timelineCurrent.destroy(); } catch (_) { /* noop */ }
         this._timelineCurrent = null;
       }
+      // Clear sidebar highlight active-view back-references — the previous
+      // Timeline view's GridViewer is now destroyed, and the regular
+      // `_setRenderResult` chokepoint (app-load.js) is skipped on the
+      // Timeline → Timeline path. Without this, a stranded YARA / IOC
+      // clear callback would call into the destroyed grid.
+      this._yaraHighlightActiveView = null;
+      this._iocCsvHighlightActiveView = null;
       const buffer = prefetchedBuffer
         || await ParserWatchdog.run(() => file.arrayBuffer());
       // Resolve the effective extension — may come from the filename or,

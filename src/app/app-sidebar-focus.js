@@ -634,8 +634,13 @@ extendApp({
 
     // Renderer-owned CSV YARA highlight — ask the active view to clear its
     // state; its re-render will naturally drop marks and the row-tint class.
+    // Guard against a torn-down GridViewer: `destroy()` may have run between
+    // the `_setRenderResult` ref-clear and a stranded clear-callback, so
+    // confirm `_destroyed` is falsy and `_csvFilters` still exists before
+    // calling through.
     const activeYaraView = this._yaraHighlightActiveView;
-    if (activeYaraView && activeYaraView._csvFilters && activeYaraView._csvFilters.clearYaraHighlight) {
+    if (activeYaraView && !activeYaraView._destroyed
+      && activeYaraView._csvFilters && activeYaraView._csvFilters.clearYaraHighlight) {
       activeYaraView._csvFilters.clearYaraHighlight();
     }
     this._yaraHighlightActiveView = null;
@@ -1018,8 +1023,12 @@ extendApp({
 
   _clearIocCsvHighlight() {
     // Renderer-owned path: ask the active CSV view to clear its state.
+    // Guard against a torn-down GridViewer: `_setRenderResult` may have
+    // nulled the back-reference, but a stranded clear-callback can still
+    // fire — confirm `_destroyed` is falsy and `_csvFilters` still exists.
     const activeView = this._iocCsvHighlightActiveView;
-    if (activeView && activeView._csvFilters && activeView._csvFilters.clearIocHighlight) {
+    if (activeView && !activeView._destroyed
+      && activeView._csvFilters && activeView._csvFilters.clearIocHighlight) {
       activeView._csvFilters.clearIocHighlight();
     }
     this._iocCsvHighlightActiveView = null;
