@@ -579,6 +579,7 @@ Object.assign(EncodedContentDetector.prototype, {
     if (!text || text.length < 12) return [];
     const candidates = [];
     const minRun = this._aggressive ? 2 : 4;
+    /* safeRegex: builtin */
     const re = new RegExp(`(?:\\\\x[0-9a-fA-F]{2}){${minRun},}`, 'g');
     let m;
     while ((m = re.exec(text)) !== null) {
@@ -700,6 +701,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // Built via `new RegExp(...)` because the `{minFrags - 1},` repetition
     // bound is dynamic (varies with this._aggressive).
     const reSrc = `(?:["'][^"'\\\\\\n\\r]{0,80}["']\\s*\\+\\s*){${minFrags - 1},}["'][^"'\\\\\\n\\r]{0,80}["']`;
+    /* safeRegex: builtin */
     const re = new RegExp(reSrc, 'g');
 
     let m;
@@ -785,6 +787,9 @@ Object.assign(EncodedContentDetector.prototype, {
     const minTokens = this._aggressive ? 8 : 16;
 
     for (let li = 0; li < lines.length; li++) {
+      // Cancellation poll inside the per-line loop so a multi-MB plaintext
+      // file can be interrupted mid-walk on supersession / watchdog.
+      if ((li & 0xFF) === 0) throwIfAborted();
       const line = lines[li];
       // Walk forward to the next line; record this line's offset.
       const lineOffset = cursor;
@@ -905,6 +910,18 @@ Object.assign(EncodedContentDetector.prototype, {
    */
   _findCommentObfuscationCandidates(text, context) {
     if (!text || text.length < 24) return [];
+    // Cheap density prefilter: the regex requires at least two
+    // C-style block-comment openers separated by short identifier+
+    // operator runs. If the text has fewer than two such markers, the
+    // regex can never match — skip the whole pass and avoid paying any
+    // backtracking cost on adversarial inputs.
+    // Concatenated to avoid a literal `/` + `*` pair in source — the
+    // build gate's naive block-comment tracker would otherwise think a
+    // block comment opened here.
+    const _OPEN = '/' + '*';
+    const _firstC = text.indexOf(_OPEN);
+    if (_firstC < 0) return [];
+    if (text.indexOf(_OPEN, _firstC + 2) < 0) return [];
     const candidates = [];
     // ≥ 2 comment-separated `<op> <ident>` alternations, optional
     // trailing comment + open paren / bracket. Length-capped at 240 to

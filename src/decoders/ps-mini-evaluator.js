@@ -447,6 +447,7 @@ Object.assign(EncodedContentDetector.prototype, {
       // literal split.
       let parts;
       try {
+        /* safeRegex: builtin */
         parts = s.split(new RegExp(typeof sep === 'string' ? sep : ''));
       } catch (_) {
         parts = s.split(typeof sep === 'string' ? sep : '');

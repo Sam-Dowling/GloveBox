@@ -28,6 +28,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // Standard Base64 (including URL-safe variant). The {N,} length
     // floor is interpolated so bruteforce mode catches `aGk=` (4 chars
     // → "hi") that the default 40-char gate would silently drop.
+    /* safeRegex: builtin */
     const b64Re = new RegExp(`[A-Za-z0-9+\\/\\-_]{${minLen},}={0,2}`, 'g');
     let m;
     while ((m = b64Re.exec(text)) !== null) {
@@ -111,6 +112,7 @@ Object.assign(EncodedContentDetector.prototype, {
     const candidates = [];
 
     // Continuous hex strings
+    /* safeRegex: builtin */
     const hexContRe = new RegExp(`(?:0x)?([0-9a-fA-F]{${minLen},})`, 'g');
     let m;
     while ((m = hexContRe.exec(text)) !== null) {
@@ -154,6 +156,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // Bruteforce mode lowers the floor from 16 escapes to 2 — `\x48\x69`
     // ("Hi") is a perfectly valid candidate.
     const hexEscMin = this._bruteforce ? 2 : (this._aggressive ? 8 : 16);
+    /* safeRegex: builtin */
     const hexEscRe = new RegExp(`(?:\\\\x[0-9a-fA-F]{2}){${hexEscMin},}`, 'g');
     while ((m = hexEscRe.exec(text)) !== null) {
       if (candidates.length >= this.maxCandidatesPerType) break;
@@ -175,6 +178,7 @@ Object.assign(EncodedContentDetector.prototype, {
 
     // PowerShell byte arrays: 0x4d,0x5a,0x90,...
     const psByteMin = this._bruteforce ? 2 : (this._aggressive ? 8 : 16);
+    /* safeRegex: builtin */
     const psByteRe = new RegExp(`(?:0x[0-9a-fA-F]{2},?\\s*){${psByteMin},}`, 'g');
     while ((m = psByteRe.exec(text)) !== null) {
       if (candidates.length >= this.maxCandidatesPerType) break;

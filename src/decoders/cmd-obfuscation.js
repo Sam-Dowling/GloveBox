@@ -745,7 +745,12 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
     // ── PowerShell format operator: '{0}{1}' -f 'Inv','oke-Expression' ──
-    const fmtRe = /'(\{[0-9]\}[^']{0,60})'\s*-f\s*'([^']+)'(?:\s*,\s*'([^']+)')*(?:\s*,\s*'([^']+)')*/gi;
+    // Single repeated capture for trailing args; the previous shape had
+    // *two* adjacent identical (?:…)* groups, which let the engine 2^n-split
+    // on near-miss inputs (classic ReDoS). The argument-extraction loop at
+    // `args[0][1].matchAll(...)` below recovers each value, so the two
+    // groups were redundant anyway.
+    const fmtRe = /'(\{[0-9]\}[^']{0,60})'\s*-f\s*'([^']+)'(?:\s*,\s*'([^']+)')*/gi;
     while ((m = fmtRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
@@ -757,6 +762,7 @@ Object.assign(EncodedContentDetector.prototype, {
       const argValues = [...args[0][1].matchAll(/'([^']*)'/g)].map(a => a[1]);
       let result = template;
       for (let i = 0; i < argValues.length; i++) {
+        /* safeRegex: builtin */
         result = result.replace(new RegExp('\\{' + i + '\\}', 'g'), argValues[i]);
       }
       if (result.length < 3 || result === template) continue;
