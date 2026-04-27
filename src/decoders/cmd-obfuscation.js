@@ -112,7 +112,19 @@ function _stripCarets(s) {
  * applies pre-decode (decides whether to *emit*) and the other
  * applies post-decode (decides *severity*).
  */
-const SENSITIVE_CMD_KEYWORDS = /(?:powershell|pwsh|cmd\.exe|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|schtasks|wmic|forfiles|reg(?:\.exe)?\s+add|net(?:\.exe)?\s+(?:user|localgroup)|netstat|tasklist|whoami|nltest|systeminfo|invoke-expression|invoke-webrequest|downloadstring|downloadfile|new-object|frombase64string|encodedcommand|iex|iwr|irm)/i;
+// LOLBAS additions (finger, tftp, nltest, ssh, curl, winrs, installutil,
+// msbuild, pip) — see lolbas-project.github.io. These are dual-use system
+// binaries abused for AWL bypass / payload-fetch in modern ClickFix kits.
+const SENSITIVE_CMD_KEYWORDS = /(?:powershell|pwsh|cmd\.exe|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|schtasks|wmic|forfiles|reg(?:\.exe)?\s+add|net(?:\.exe)?\s+(?:user|localgroup)|netstat|tasklist|whoami|nltest|systeminfo|invoke-expression|invoke-webrequest|downloadstring|downloadfile|new-object|frombase64string|encodedcommand|iex|iwr|irm|finger|tftp|ssh|curl|winrs|installutil|msbuild|pip)/i;
+
+// English-language ClickFix / fake-captcha social-engineering cues. Lifted
+// verbatim from the HTML-side detector at
+// `src/renderers/html-renderer.js:242` so the cue list has a single
+// source of truth across both call sites. The HTML detector fires when
+// the buffer is the page itself; this module's command-string detector
+// (see the ClickFix Wrapper branch below) fires when the buffer is the
+// pasted Run-dialog payload, the next link in the same chain.
+const CLICKFIX_CUES = /press\s+win\s*\+\s*r|win\+r|ctrl\s*\+\s*v|paste|verify\s+you\s+are\s+human|captcha|i\s*'?\s*m\s+not\s+a\s+robot|click\s+to\s+verify/i;
 // ════════════════════════════════════════════════════════════════════════════
 
 
@@ -126,21 +138,48 @@ Object.assign(EncodedContentDetector.prototype, {
     if (!text || text.length < 10) return [];
     const candidates = [];
 
-    // ── CMD caret insertion: p^o^w^e^r^s^h^e^l^l ──
-    // Match words with 3+ carets interspersed
-    const caretRe = /\b[a-zA-Z]\^[a-zA-Z](?:\^?[a-zA-Z]){3,}\b/g;
+    // ── CMD caret insertion: p^o^w^e^r^s^h^e^l^l (single carets) and
+    //    ^^fi^^ng^^er (double carets, the for /f nested-quote form) ──
+    //
+    // The regex deliberately accepts ≥1 caret between letters and any
+    // number of leading carets. The double-caret form is the canonical
+    // for /f indirection: cmd.exe parses the outer string once (`^^`
+    // collapses to `^`), then the spawned subshell parses again (`^`
+    // stripped). Both layers reduce to the same deobfuscated word, so
+    // the maximally-stripped form via `_stripCarets`-equivalent
+    // `replace(/\^/g, '')` is the right answer for analyst reporting.
+    //
+    // Because the regex is broader than before, the post-decode block
+    // enforces a sensitivity gate: emit only when the cleaned word
+    // matches `SENSITIVE_CMD_KEYWORDS`, OR the raw match contained ≥2
+    // caret pairs (i.e. `^^` appeared at least twice — an explicit
+    // "I'm hiding inside a for /f / nested cmd /c" signal that warrants
+    // emission even on words we don't pre-classify as sensitive).
+    // `[a-zA-Z]+` (not just `[a-zA-Z]`) is required so `^^fi^^ng^^er` —
+    // multi-letter runs separated by caret-runs — is captured. The
+    // single-letter form `p^o^w^e^r^s^h^e^l^l` is a degenerate case
+    // (every letter-run has length 1) and is still matched.
+    const caretRe = /(?<![\w^])\^*[a-zA-Z]+(?:\^+[a-zA-Z]+){2,}(?![\w^])/g;
     let m;
     while ((m = caretRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
-      const deobfuscated = m[0].replace(/\^/g, '');
+      const raw = m[0];
+      if (raw.length > 200) continue; // pathological-length guard
+      const deobfuscated = raw.replace(/\^/g, '');
       if (deobfuscated.length < 3) continue;
+      // Count consecutive caret pairs (`^^` runs). Two or more such runs
+      // is a strong nested-parse signal regardless of the decoded word.
+      const doublePairs = (raw.match(/\^\^/g) || []).length;
+      const isNested = doublePairs >= 1;
+      const passesGate = SENSITIVE_CMD_KEYWORDS.test(deobfuscated) || doublePairs >= 2;
+      if (!passesGate) continue;
       candidates.push({
         type: 'cmd-obfuscation',
-        technique: 'CMD Caret Insertion',
-        raw: m[0],
+        technique: isNested ? 'CMD Caret Insertion (nested)' : 'CMD Caret Insertion',
+        raw,
         offset: m.index,
-        length: m[0].length,
+        length: raw.length,
         deobfuscated,
       });
     }
@@ -395,6 +434,81 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
 
+    // ── CMD `for /f` indirect execution ──
+    //
+    //   for /f "delims=" %A in ('LOLBIN args') do call %A
+    //
+    // The inner command between `(` and `)` is the actual payload;
+    // everything outside is scaffolding. When the body is `do call %X`
+    // (or `do %X`) and `%X` is the for-variable from the same construct,
+    // the captured stdout becomes the next shell command — the
+    // structural signature of ClickFix-via-LOLBin (finger / nltest /
+    // wmic / certutil delivery). We extract the inner command, resolve
+    // any `%VAR%` tokens through the shared `_lookupVar` helper, strip
+    // carets, and emit a candidate with the same three-tier confidence
+    // ladder the env-var-substring branch below uses.
+    //
+    // Bounded character classes (`[^()\r\n]*?`, `[^'"`)\r\n]+`) keep
+    // backtracking linear on adversarial inputs; per-iteration
+    // `maxCandidatesPerType` budget matches every other branch in this
+    // file.
+    const forFRe = /\bfor\s*\/f\b[^()\r\n]{0,200}?\(\s*(['"`])([^'"`)\r\n]{1,400})\1\s*\)\s*do\s+(call\s+)?(%~?[A-Za-z]|%%[A-Za-z])/gi;
+    while ((m = forFRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const innerRaw = m[2] || '';
+      const hasCall = !!m[3];
+      // The for-variable token (e.g. `%A` or `%%A`); used only as a
+      // marker that the do-clause is referencing the captured value.
+      const forVar = m[4] || '';
+      // Strip carets first (cmd.exe's parse semantics) so any %VAR%
+      // names inside resolve cleanly afterwards.
+      let inner = _stripCarets(innerRaw);
+      let resolvedCount = 0;
+      let unresolvedCount = 0;
+      inner = inner.replace(/%([\w^]+)%/g, (full, vname) => {
+        const val = _lookupVar(vname);
+        if (val !== null) { resolvedCount++; return val; }
+        // Variables that aren't %X% lookups (e.g. %A — the for-variable
+        // being reused) shouldn't count against the structural tier.
+        if (/^[A-Za-z]$/.test(vname)) return full;
+        unresolvedCount++;
+        return `\u27e8${vname}\u27e9`;
+      });
+      const cleaned = inner.trim();
+      if (cleaned.length < 3) continue;
+
+      let technique;
+      // Tokens worth tiering on: `%X%` lookups whose value we either had
+      // or didn't have. If neither category appeared (the inner command
+      // was already plaintext) treat as Full — there was nothing to
+      // resolve and we still extracted the inner payload.
+      if (unresolvedCount === 0) {
+        technique = 'CMD for /f Indirect Execution';
+      } else if (resolvedCount > 0) {
+        technique = 'CMD for /f Indirect Execution (partial)';
+      } else {
+        technique = 'CMD for /f Indirect Execution (structural)';
+      }
+
+      // `do call %A` / `do %A` where the body re-references the
+      // for-variable means "execute the captured output". Marker is
+      // consumed by `_processCommandObfuscation` to bump severity and
+      // mirror an IOC.PATTERN into the externalRefs surface.
+      const executeOutput = !!forVar; // any reference of a %X is enough
+
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique,
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: cleaned,
+        _executeOutput: executeOutput,
+        _forFCall: hasCall,
+      });
+    }
+
     // ── CMD environment variable substring abuse: %COMSPEC:~-7,1% ──
     //
     // Three confidence tiers:
@@ -479,6 +593,69 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
 
+    // ── ClickFix run-dialog wrapper detection ──
+    //
+    // Triggers when *all three* hold simultaneously in the input:
+    //   (a) at least one already-emitted candidate's decoded text
+    //       contains a known ClickFix delivery vector (for /f, COMSPEC
+    //       /c, mshta, powershell, finger);
+    //   (b) `CLICKFIX_CUES` matches anywhere in the input (English
+    //       social-engineering tells — "Verify you are human", etc.);
+    //   (c) the input contains a trailing `echo` whose closing quote is
+    //       preceded by ≥3 whitespace chars — the off-screen-scroll
+    //       trick ClickFix kits use to hide the malicious portion in
+    //       Win+R.
+    //
+    // Closes the loop the HTML detector at
+    // `src/renderers/html-renderer.js:238-258` opens but cannot reach
+    // when the buffer is the pasted command itself rather than the page
+    // that wrote it to the clipboard.
+    {
+      const hasDeliveryVector = candidates.some(c =>
+        typeof c.deobfuscated === 'string' &&
+        /\bfor\s*\/f\b|cmd\.exe\b|\bmshta\b|\bpowershell\b|\bfinger\b/i.test(c.deobfuscated)
+      );
+      const cueMatch = CLICKFIX_CUES.exec(text);
+      const trailingEchoRe = /\becho\s+['"][^'"\r\n]*?\s{3,}['"]/i;
+      const trailMatch = trailingEchoRe.exec(text);
+      if (hasDeliveryVector && cueMatch && trailMatch && candidates.length < this.maxCandidatesPerType) {
+        // Pick the most-relevant inner payload: prefer a for /f inner
+        // command (the actual shell command), then the COMSPEC argv0
+        // tail, then the first sensitive caret/concat decode.
+        const pickPayload = () => {
+          const forF = candidates.find(c => /for \/f/i.test(c.technique || ''));
+          if (forF) return forF.deobfuscated;
+          const argv0 = candidates.find(c => c.technique === 'CMD Env Var (argv0)');
+          if (argv0) return argv0.deobfuscated;
+          const sens = candidates.find(c =>
+            typeof c.deobfuscated === 'string' && SENSITIVE_CMD_KEYWORDS.test(c.deobfuscated)
+          );
+          return sens ? sens.deobfuscated : null;
+        };
+        const payload = pickPayload();
+        if (payload && payload.length >= 3) {
+          // The raw span covers the whole input from the cue to the
+          // trailing echo, capped to keep the snippet readable. Offset
+          // anchors at the earliest of cue / trail.
+          const start = Math.min(cueMatch.index, trailMatch.index);
+          const end = Math.min(text.length, Math.max(
+            cueMatch.index + cueMatch[0].length,
+            trailMatch.index + trailMatch[0].length
+          ));
+          const rawSpan = text.substring(start, Math.min(end, start + 400));
+          candidates.push({
+            type: 'cmd-obfuscation',
+            technique: 'CMD ClickFix Wrapper',
+            raw: rawSpan,
+            offset: start,
+            length: rawSpan.length,
+            deobfuscated: payload,
+            _clickfix: true,
+          });
+        }
+      }
+    }
+
     // ── PowerShell string concatenation: ('Down'+'loadStr'+'ing') ──
     const psConcat = /\(\s*'[^']{1,40}'\s*(?:\+\s*'[^']{1,40}'\s*){2,}\)/g;
     while ((m = psConcat.exec(text)) !== null) {
@@ -551,8 +728,11 @@ Object.assign(EncodedContentDetector.prototype, {
       if ((raw.match(/`/g) || []).length < 2) continue;
 
       const cleaned = raw.replace(/`/g, '');
-      // Must resolve to a known suspicious keyword
-      const suspiciousKeywords = /^(invoke-expression|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-process|new-object|set-executionpolicy|invoke-command|get-credential|convertto-securestring|frombase64string|encodedcommand|invoke-mimikatz|invoke-shellcode|powershell|cmd|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32)$/i;
+      // Must resolve to a known suspicious keyword. LOLBAS additions
+      // kept in sync with SENSITIVE_CMD_KEYWORDS above — tftp / curl /
+      // ssh are also valid PowerShell aliases, so backtick-escape
+      // variants like `t``ftp` show up in real droppers.
+      const suspiciousKeywords = /^(invoke-expression|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-process|new-object|set-executionpolicy|invoke-command|get-credential|convertto-securestring|frombase64string|encodedcommand|invoke-mimikatz|invoke-shellcode|powershell|cmd|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|finger|tftp|ssh|curl|winrs|installutil|msbuild|pip)$/i;
       if (!suspiciousKeywords.test(cleaned)) continue;
       candidates.push({
         type: 'cmd-obfuscation',
@@ -619,7 +799,11 @@ Object.assign(EncodedContentDetector.prototype, {
     const deobfBytes = new TextEncoder().encode(deobf);
     const iocs = this._extractIOCsFromDecoded(deobfBytes);
 
-    // Check for dangerous patterns in deobfuscated output
+    // Check for dangerous patterns in deobfuscated output. LOLBAS
+    // additions (finger / tftp / nltest / ssh / curl / winrs /
+    // installutil / msbuild / pip) align with SENSITIVE_CMD_KEYWORDS
+    // above. The ≥2 / ≥3 escalation gate at the bottom keeps a single
+    // benign `curl` from reaching `'high'` on its own.
     const dangerousPatterns = [
       /powershell/i, /cmd\.exe/i, /wscript/i, /cscript/i, /mshta/i,
       /certutil/i, /bitsadmin/i, /regsvr32/i, /rundll32/i,
@@ -628,12 +812,59 @@ Object.assign(EncodedContentDetector.prototype, {
       /net\.webclient/i, /frombase64string/i, /encodedcommand/i,
       /shellexecute/i, /wscript\.shell/i, /MSXML2\.XMLHTTP/i,
       /http:\/\//i, /https:\/\//i, /\\\\/,
+      /\bfinger\b/i, /\btftp\b/i, /\bnltest\b/i, /\bssh\b/i, /\bcurl\b/i,
+      /\bwinrs\b/i, /\binstallutil\b/i, /\bmsbuild\b/i, /\bpip\b/i,
     ];
     const matchedPatterns = dangerousPatterns.filter(p => p.test(deobf));
     let severity = 'medium';
     if (matchedPatterns.length >= 2) severity = 'high';
     if (matchedPatterns.length >= 3) severity = 'critical';
     if (iocs.length > 0) severity = severity === 'critical' ? 'critical' : 'high';
+
+    // Behavioural-tell escalation: `for /f … do call %X` means the
+    // captured command's stdout becomes the next shell command. Mirror
+    // an IOC.PATTERN into the IOC list (per the renderer-contract
+    // reminder "Mirror every Detection into externalRefs as
+    // IOC.PATTERN") and force at least 'high'.
+    if (candidate._executeOutput) {
+      iocs.push({
+        type: IOC.PATTERN,
+        url: 'for /f … do call %X — captured command output is executed as a shell command',
+        severity: 'high',
+      });
+      if (severity !== 'critical') severity = 'high';
+    }
+
+    // ClickFix run-dialog wrapper: align with the HTML-side detector
+    // at `src/renderers/html-renderer.js:247` (also critical, same
+    // MITRE technique tag).
+    if (candidate._clickfix) {
+      iocs.push({
+        type: IOC.PATTERN,
+        url: 'ClickFix run-dialog payload \u2014 instructs user to paste malicious command (T1204.001)',
+        severity: 'critical',
+      });
+      severity = 'critical';
+    }
+
+    // finger.exe LOLBin target enrichment: the canonical ClickFix
+    // delivery primitive is `finger user@host`, where the host is the
+    // attacker's finger daemon and `user` selects the payload variant.
+    // The user@host form would otherwise classify only as IOC.EMAIL,
+    // losing the LOLBin-target nuance an analyst needs to pivot on.
+    {
+      const fingerMatch = /\bfinger\s+(?:([\w.+\-]+)@)?([\w.\-]+\.[a-z]{2,})/i.exec(deobf);
+      if (fingerMatch) {
+        const host = fingerMatch[2];
+        const user = fingerMatch[1];
+        iocs.push({
+          type: IOC.PATTERN,
+          url: `finger LOLBin target \u2014 ${user ? user + '@' : ''}${host} (LOLBAS Finger.exe AWL-bypass / payload-fetch on TCP/79)`,
+          severity: 'high',
+        });
+        if (severity !== 'critical') severity = 'high';
+      }
+    }
 
     return {
       type: 'encoded-content',

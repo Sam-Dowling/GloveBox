@@ -82,6 +82,17 @@ REM   * delayed-expansion indirection: !%X%! reads the var named by %X%
 echo [TEST] wmic-style multi-trick blob:
 echo %%Co^^m^^S^^p^^Ec^^%% /v:on /c "set X=A&& set Y=B&& set Z=C&& set %%X%%=net&& set %%Y%%=stat&& set %%Z%%=-ano&& !%%X%%!!%%Y%%! !%%Z%%!"
 
+REM ── Technique 12: ClickFix `for /f` + double-caret + finger LOLBin ──
+REM A canonical Win+R ClickFix payload: %COMSPEC% argv0, for /f
+REM indirect execution, double-caret (`^^`) caret-obfuscation surviving
+REM the nested-quote parse, `do call %A` execute-the-output, and a
+REM trailing `Verify you are human` echo with off-screen-scroll
+REM whitespace. The actual `finger` invocation has been replaced with
+REM a harmless `echo HARMLESS-CLICKFIX-CORPUS` so this file remains
+REM safe to render.
+echo [TEST] ClickFix for /f + double-caret + LOLBin:
+echo %%COMSPEC%% /c start "" /min for /f "delims=" %%A in ('e^^ch^^o HARMLESS-CLICKFIX-CORPUS') do call %%A ^& exit ^&^& echo 'Verify you are human     '
+
 echo.
 echo [DONE] All CMD obfuscation test patterns rendered.
 pause

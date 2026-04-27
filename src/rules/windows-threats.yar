@@ -2432,3 +2432,42 @@ rule HTA_Stealth_Window
     condition:
         $hta and 2 of ($min, $notask, $nocap, $noscr, $noborder)
 }
+
+rule Suspicious_Finger_LOLBin
+{
+    meta:
+        description = "finger.exe LOLBin invocation — used in ClickFix kits to fetch a payload over the finger protocol (TCP/79). LOLBAS-listed for AWL bypass / payload-fetch. Both bare 'finger user@host' and the for-/f-wrapped indirect-execution form are matched, including caret-obfuscated variants ('^^fi^^ng^^er')."
+        severity    = "high"
+        category    = "command-and-control"
+        mitre       = "T1105"
+
+    strings:
+        $bare      = /\bfinger\s+[\w.+\-]+@[\w.\-]+\.[a-z]{2,}/ nocase
+        $caret     = /\^+f\^*i\^*n\^*g\^*e\^*r/ nocase
+        $forf_call = /for\s*\/f[^()\r\n]{0,200}\([^)\r\n]*finger[^)\r\n]*\)\s*do\s+(call\s+)?%/ nocase
+        $forf_wide = /for\s*\/f[^()\r\n]{0,200}\([^)\r\n]*finger[^)\r\n]*\)\s*do\s+(call\s+)?%/ nocase wide
+
+    condition:
+        any of them
+}
+
+rule Suspicious_ClickFix_RunDialog
+{
+    meta:
+        description = "ClickFix run-dialog payload — for /f indirect-execution + execute-the-output (`do call %X`) + English social-engineering cue (Verify you are human / I'm not a robot / captcha). The conjunction is the canonical ClickFix Win+R primitive (T1204.001)."
+        severity    = "critical"
+        category    = "execution"
+        mitre       = "T1204.001"
+
+    strings:
+        $forf_call = /for\s*\/f[^()\r\n]{0,200}\([^)\r\n]+\)\s*do\s+(call\s+)?%/ nocase
+        $cue_human = "verify you are human" nocase
+        $cue_robot = "i'm not a robot" nocase
+        $cue_robot2 = "i am not a robot" nocase
+        $cue_captcha = "captcha" nocase
+        $cue_winr   = "win+r" nocase
+        $cue_winr2  = "press win" nocase
+
+    condition:
+        $forf_call and 1 of ($cue_human, $cue_robot, $cue_robot2, $cue_captcha, $cue_winr, $cue_winr2)
+}
