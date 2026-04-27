@@ -44,6 +44,7 @@ AGENTS.md
 TODO.md
 PLAN.md
 ARCHITECTURAL_REVIEW.md
+plans/
 
 # Node / ESLint (CI-only — Loupe has no npm dependencies)
 node_modules/
