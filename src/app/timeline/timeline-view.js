@@ -5836,6 +5836,7 @@ class TimelineView {
         const escAnchor = _escLiteral(anchor);
         let re;
         try {
+          /* safeRegex: builtin */
           re = side === 'left'
             ? new RegExp(escAnchor + '(' + tokenPattern + ')', 'i')
             : new RegExp('(' + tokenPattern + ')' + escAnchor, 'i');
@@ -6006,9 +6007,24 @@ class TimelineView {
       const pattern = patternEl.value;
       const flags = flagsEl.value;
       if (!pattern) { statusEl.textContent = 'Enter a pattern to preview.'; samplesEl.innerHTML = ''; return; }
-      let re;
-      try { re = new RegExp(pattern, flags); }
-      catch (e) { statusEl.textContent = 'Invalid regex: ' + (e.message || e); samplesEl.innerHTML = ''; return; }
+      // Cap pattern length to prevent pathologically long inputs from
+      // even reaching the engine. 1 KB is plenty for any realistic
+      // extractor; anything longer is almost certainly a paste accident.
+      if (pattern.length > 1024) {
+        statusEl.textContent = 'Pattern too long (>1024 chars). Try anchoring or trimming it.';
+        samplesEl.innerHTML = '';
+        return;
+      }
+      const safe = safeRegex(pattern, flags);
+      if (!safe.ok) {
+        statusEl.textContent = 'Invalid or unsafe regex: ' + safe.error;
+        samplesEl.innerHTML = '';
+        return;
+      }
+      const re = safe.regex;
+      if (safe.warning) {
+        statusEl.textContent = '⚠ Pattern may be slow (' + safe.warning + ') — preview limited to 200 rows.';
+      }
       const col = parseInt(colSel.value, 10);
       const gp = Math.max(0, Math.min(9, parseInt(groupEl.value, 10) || 0));
       const sampleMax = 200;
@@ -6024,11 +6040,24 @@ class TimelineView {
       //              leaves group 1 undefined.
       let seen = 0, matched = 0, captured = 0, emptyCap = 0;
       const hits = [];
+      // Per-preview wall-clock budget. A single `re.exec(v)` call is not
+      // preemptible, but bounding the loop and the per-cell input length
+      // keeps adversarial patterns from chewing through 200 rows.
+      const _previewStart = Date.now();
+      const _PREVIEW_BUDGET_MS = 250;
+      let _bailedTimeout = false;
       for (let i = 0; i < N; i++) {
         const v = this._cellAt(i, col);
         if (!v) continue;
         seen++;
-        const m = re.exec(v);
+        // Cap per-cell input length to prevent a single long row from
+        // dominating the preview budget.
+        const _vCap = v.length > 8192 ? v.slice(0, 8192) : v;
+        const m = re.exec(_vCap);
+        if ((seen & 0x1F) === 0 && Date.now() - _previewStart > _PREVIEW_BUDGET_MS) {
+          _bailedTimeout = true;
+          break;
+        }
         if (!m) continue;
         matched++;
         const cap = (gp < m.length) ? (m[gp] == null ? '' : m[gp]) : m[0];
@@ -6054,6 +6083,12 @@ class TimelineView {
       if (_hasTopLevelPipe(pattern) && matched > captured) {
         status += `  ⚠ Your pattern contains "|" (regex alternation). To match a literal pipe character use "\\|".`;
       }
+      if (_bailedTimeout) {
+        status = `Pattern timed out after ${seen} of ${N} sample rows — try anchoring or bounding it.`;
+        statusEl.textContent = status;
+        samplesEl.innerHTML = '';
+        return;
+      }
       statusEl.textContent = status;
       samplesEl.innerHTML = '';
       for (const h of hits) {
@@ -6063,9 +6098,18 @@ class TimelineView {
         samplesEl.appendChild(d);
       }
     };
-    patternEl.addEventListener('input', runTest);
-    flagsEl.addEventListener('input', runTest);
-    groupEl.addEventListener('input', runTest);
+    // Debounce the keystroke-driven preview. Each keystroke previously fired
+    // a fresh `runTest` synchronously over up to 200 rows; for adversarial
+    // patterns this could stall the dialog. 100 ms is short enough to feel
+    // responsive but coalesces typing bursts.
+    let _runTestTimer = null;
+    const runTestDebounced = () => {
+      if (_runTestTimer != null) clearTimeout(_runTestTimer);
+      _runTestTimer = setTimeout(() => { _runTestTimer = null; runTest(); }, 100);
+    };
+    patternEl.addEventListener('input', runTestDebounced);
+    flagsEl.addEventListener('input', runTestDebounced);
+    groupEl.addEventListener('input', runTestDebounced);
     // Column change repaints the click-to-pick samples (so users see rows
     // from the newly-selected column) and re-runs the regex preview.
     colSel.addEventListener('change', () => { renderClickerSamples(); runTest(); });
@@ -6074,9 +6118,34 @@ class TimelineView {
     dlg.querySelector('[data-act="regex-extract"]').addEventListener('click', () => {
       const pattern = patternEl.value;
       if (!pattern) { if (this._app) this._app._toast('Enter a regex pattern', 'error'); return; }
-      let re;
-      try { re = new RegExp(pattern, flagsEl.value); } catch (e) { if (this._app) this._app._toast('Invalid regex: ' + e.message, 'error'); return; }
+      if (pattern.length > 1024) {
+        if (this._app) this._app._toast('Pattern too long (>1024 chars)', 'error');
+        return;
+      }
+      const safe = safeRegex(pattern, flagsEl.value);
+      if (!safe.ok) { if (this._app) this._app._toast('Invalid or unsafe regex: ' + safe.error, 'error'); return; }
+      const re = safe.regex;
+      // Sample-budget gate: dry-run the compiled regex against up to 1k rows
+      // with a 250 ms budget. If it can't keep up on the sample, the full
+      // commit (which scans every row in the timeline) certainly can't.
+      const sampleN = Math.min(this.rows.length, 1000);
       const col = parseInt(colSel.value, 10);
+      const sampleStart = Date.now();
+      let sampleBail = false;
+      for (let i = 0; i < sampleN; i++) {
+        const v = this._cellAt(i, col);
+        if (!v) continue;
+        const _vCap = v.length > 8192 ? v.slice(0, 8192) : v;
+        try { re.exec(_vCap); } catch (_e) { /* ignore */ }
+        if ((i & 0x3F) === 0 && Date.now() - sampleStart > 250) {
+          sampleBail = true;
+          break;
+        }
+      }
+      if (sampleBail) {
+        if (this._app) this._app._toast('Pattern too slow on sample — refusing to apply across full table', 'error');
+        return;
+      }
       const gp = Math.max(0, Math.min(9, parseInt(groupEl.value, 10) || 0));
       const colName = this._baseColumns[col] || `(col ${col + 1})`;
       const name = (nameEl.value || '').trim() || `${colName} (regex)`;

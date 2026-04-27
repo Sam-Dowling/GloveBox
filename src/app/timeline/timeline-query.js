@@ -355,15 +355,17 @@ function _tlParseQuery(tokens, columnsResolver) {
           if (op === 'regex') {
             if (val.re == null) {
               // Allow `col ~ "pattern"` as an alternative to `/pattern/`.
-              try {
-                const re = new RegExp(val.text || '', 'i');
-                return { k: 'pred', colIdx, op, val: val.text || '', re };
-              } catch (e) { err('invalid regex: ' + (e.message || e), val.tok); }
+              const _src = val.text || '';
+              if (_src.length > 1024) err('regex too long (>1024 chars)', val.tok);
+              const safe = safeRegex(_src, 'i');
+              if (!safe.ok) err('invalid or unsafe regex: ' + safe.error, val.tok);
+              return { k: 'pred', colIdx, op, val: _src, re: safe.regex };
             }
-            let re;
-            try { re = new RegExp(val.re.pattern, val.re.flags || ''); }
-            catch (e) { err('invalid regex: ' + (e.message || e), val.tok); }
-            return { k: 'pred', colIdx, op, val: val.text, re };
+            const _src = val.re.pattern || '';
+            if (_src.length > 1024) err('regex too long (>1024 chars)', val.tok);
+            const safe = safeRegex(_src, val.re.flags || '');
+            if (!safe.ok) err('invalid or unsafe regex: ' + safe.error, val.tok);
+            return { k: 'pred', colIdx, op, val: val.text, re: safe.regex };
           }
           if (op === 'lt' || op === 'le' || op === 'gt' || op === 'ge') {
             return { k: 'pred', colIdx, op, val: val.text, num: val.num };

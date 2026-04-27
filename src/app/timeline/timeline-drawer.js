@@ -99,8 +99,15 @@ Object.assign(TimelineView.prototype, {
   },
 
   _addRegexExtractNoRender(spec) {
-    let re;
-    try { re = new RegExp(spec.pattern, spec.flags || ''); } catch (_) { return; }
+    // Route through `safeRegex` so persisted-regex replay (loaded from
+    // localStorage) cannot crash the timeline if a pattern that previously
+    // compiled is now flagged as ReDoS-prone, and so adversarial patterns
+    // never reach `new RegExp`.
+    const _src = spec.pattern || '';
+    if (_src.length > 1024) return;
+    const safe = safeRegex(_src, spec.flags || '');
+    if (!safe.ok) return;
+    const re = safe.regex;
     const col = spec.col;
     const gp = Math.max(0, Math.min(9, spec.group || 0));
     // Dedup: same source column + same (pattern, flags, group) == same
