@@ -374,7 +374,7 @@
       }
 
       // Walk every event for per-EID stats + relationship harvest.
-      // `events[i]` aligns with `tm[i]` aligns with `this.rows[i]`.
+      // `events[i]` aligns with `tm[i]` aligns with `this.store.getRow(i)`.
       for (let i = 0; i < events.length; i++) {
         const ev = events[i];
         if (!ev) continue;

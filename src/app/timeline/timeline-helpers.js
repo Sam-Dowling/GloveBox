@@ -225,14 +225,20 @@ const _TL_RE_YEAR_MONTH = /^(\d{4})[-./](\d{2})$/;
 const _TL_RE_COMPACT8 = /^\d{8}$/;
 const _TL_RE_YEAR_ONLY = /^\d{4}$/;
 
-function _tlDetectTimestampFormat(rows, colIdx, sampleSize) {
-  const n = Math.min(rows.length, sampleSize || 30);
+// All timestamp / numeric / stack-cardinality scoring helpers below now
+// take a `RowStore` (see `src/row-store.js`) instead of the legacy
+// `string[][]`. The store's `getCell(rowIdx, colIdx)` returns `''` for
+// nullish cells / OOB indices — same semantics as the prior
+// `r ? r[colIdx] : null` defensive lookups, just compressed into a
+// single hot-path call. Hot loops sample the column once via `getCell`
+// and operate on the returned string; we never call `getRow` here.
+function _tlDetectTimestampFormat(store, colIdx, sampleSize) {
+  const n = Math.min(store ? store.rowCount : 0, sampleSize || 30);
   const votes = new Map();
   for (let i = 0; i < n; i++) {
-    const r = rows[i]; if (!r) continue;
-    const c = r[colIdx];
-    if (c == null || c === '') continue;
-    const str = String(c).trim();
+    const c = store.getCell(i, colIdx);
+    if (c === '') continue;
+    const str = c.trim();
     if (!str) continue;
     let tag = 'generic';
     if (_TL_RE_EPOCH_S.test(str)) tag = 'epoch-s';
@@ -326,30 +332,28 @@ function _tlParseTimestampFast(s, fmt) {
 // Score a column as "mostly plain numbers" (independent of timestamp
 // parsing). Used by the auto-detect fallback so that columns like
 // `id`, `index`, `period` can drive the timeline axis in numeric mode.
-function _tlScoreColumnAsNumber(rows, colIdx, sampleMax) {
-  const n = Math.min(rows.length, sampleMax || 400);
+function _tlScoreColumnAsNumber(store, colIdx, sampleMax) {
+  const n = Math.min(store ? store.rowCount : 0, sampleMax || 400);
   if (!n) return 0;
   let seen = 0, ok = 0;
   for (let i = 0; i < n; i++) {
-    const r = rows[i]; if (!r) continue;
-    const c = r[colIdx];
-    if (c == null || c === '') continue;
+    const c = store.getCell(i, colIdx);
+    if (c === '') continue;
     seen++;
-    const str = String(c).trim();
+    const str = c.trim();
     if (/^-?\d+(?:\.\d+)?$/.test(str) && Number.isFinite(+str)) ok++;
   }
   if (!seen) return 0;
   return ok / seen;
 }
 
-function _tlScoreColumnAsTimestamp(rows, colIdx, sampleMax) {
-  const n = Math.min(rows.length, sampleMax || 400);
+function _tlScoreColumnAsTimestamp(store, colIdx, sampleMax) {
+  const n = Math.min(store ? store.rowCount : 0, sampleMax || 400);
   if (!n) return 0;
   let seen = 0, ok = 0;
   for (let i = 0; i < n; i++) {
-    const r = rows[i]; if (!r) continue;
-    const c = r[colIdx];
-    if (c == null || c === '') continue;
+    const c = store.getCell(i, colIdx);
+    if (c === '') continue;
     seen++;
     if (Number.isFinite(_tlParseTimestamp(c))) ok++;
   }
@@ -389,24 +393,23 @@ const _TL_STACK_EXACT = new Set([
 ]);
 const _TL_STACK_HINT_RE = /(eventname|event|outcome|result|status|action|operation|category|type|kind|severity|level|channel|provider)/i;
 
-function _tlScoreStackCardinality(rows, colIdx, sampleMax) {
-  const n = Math.min(rows.length, sampleMax || 2000);
+function _tlScoreStackCardinality(store, colIdx, sampleMax) {
+  const n = Math.min(store ? store.rowCount : 0, sampleMax || 2000);
   if (!n) return null;
   const seen = new Set();
   let nonEmpty = 0;
   for (let i = 0; i < n; i++) {
-    const r = rows[i]; if (!r) continue;
-    const c = r[colIdx];
-    if (c == null || c === '') continue;
+    const c = store.getCell(i, colIdx);
+    if (c === '') continue;
     nonEmpty++;
-    seen.add(String(c));
+    seen.add(c);
     if (seen.size > 60) return { distinct: seen.size, nonEmpty, tooMany: true };
   }
   return { distinct: seen.size, nonEmpty, tooMany: false };
 }
 
-function _tlStackColumnPasses(rows, colIdx) {
-  const s = _tlScoreStackCardinality(rows, colIdx, 2000);
+function _tlStackColumnPasses(store, colIdx) {
+  const s = _tlScoreStackCardinality(store, colIdx, 2000);
   if (!s || s.tooMany) return false;
   if (s.distinct < 2 || s.distinct > 40) return false;
   if (s.nonEmpty < 10) return false;
@@ -414,37 +417,37 @@ function _tlStackColumnPasses(rows, colIdx) {
   return true;
 }
 
-function _tlAutoDetectStackCol(columns, rows, timeColIdx) {
-  if (!columns || !rows || !rows.length) return null;
+function _tlAutoDetectStackCol(columns, store, timeColIdx) {
+  if (!columns || !store || !store.rowCount) return null;
   // Tier 1 — exact header match.
   for (let i = 0; i < columns.length; i++) {
     if (i === timeColIdx) continue;
     const name = String(columns[i] || '').trim().toLowerCase();
     if (!name) continue;
-    if (_TL_STACK_EXACT.has(name) && _tlStackColumnPasses(rows, i)) return i;
+    if (_TL_STACK_EXACT.has(name) && _tlStackColumnPasses(store, i)) return i;
   }
   // Tier 2 — substring hint.
   for (let i = 0; i < columns.length; i++) {
     if (i === timeColIdx) continue;
     const name = String(columns[i] || '').trim();
     if (!name) continue;
-    if (_TL_STACK_HINT_RE.test(name) && _tlStackColumnPasses(rows, i)) return i;
+    if (_TL_STACK_HINT_RE.test(name) && _tlStackColumnPasses(store, i)) return i;
   }
   return null;
 }
 
-function _tlAutoDetectTimestampCol(columns, rows) {
+function _tlAutoDetectTimestampCol(columns, store) {
 
   // Pass 1 — headers that look timestamp-ish AND parse as timestamps.
   for (let i = 0; i < columns.length; i++) {
     if (_TL_HEADER_HINT_RE.test(String(columns[i] || '').trim())) {
-      if (_tlScoreColumnAsTimestamp(rows, i, 200) >= 0.5) return i;
+      if (_tlScoreColumnAsTimestamp(store, i, 200) >= 0.5) return i;
     }
   }
   // Pass 2 — any column whose cells overwhelmingly parse as timestamps.
   let best = -1, bestScore = 0.6;
   for (let i = 0; i < columns.length; i++) {
-    const s = _tlScoreColumnAsTimestamp(rows, i, 200);
+    const s = _tlScoreColumnAsTimestamp(store, i, 200);
     if (s > bestScore) { bestScore = s; best = i; }
   }
   if (best >= 0) return best;
@@ -457,7 +460,7 @@ function _tlAutoDetectTimestampCol(columns, rows) {
   for (let i = 0; i < columns.length; i++) {
     const name = String(columns[i] || '').trim();
     if (!_TL_NUMERIC_AXIS_HINT_RE.test(name)) continue;
-    if (_tlScoreColumnAsNumber(rows, i, 200) >= 0.8) return i;
+    if (_tlScoreColumnAsNumber(store, i, 200) >= 0.8) return i;
   }
   return null;
 }
@@ -465,10 +468,10 @@ function _tlAutoDetectTimestampCol(columns, rows) {
 // Is a given column best represented as a numeric axis (ordinals, not
 // wall-clock times)? Returns true when the cells parse as plain numbers
 // but NOT as timestamps.
-function _tlColumnIsNumericAxis(rows, colIdx) {
-  const numScore = _tlScoreColumnAsNumber(rows, colIdx, 200);
+function _tlColumnIsNumericAxis(store, colIdx) {
+  const numScore = _tlScoreColumnAsNumber(store, colIdx, 200);
   if (numScore < 0.8) return false;
-  const tsScore = _tlScoreColumnAsTimestamp(rows, colIdx, 200);
+  const tsScore = _tlScoreColumnAsTimestamp(store, colIdx, 200);
   // Numeric axis wins unless the column parses as real timestamps
   // appreciably better than as bare numbers (e.g. 4-digit years that
   // would otherwise score 1.0 for both paths stay on the timestamp path).

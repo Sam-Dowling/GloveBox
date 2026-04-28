@@ -261,7 +261,12 @@ extendApp({
       // label. We only surface the cheap fields here — the full row
       // table would balloon `dumpResult()` to multi-MB on a real EVTX.
       const file = (tlView._file || tlView.file) || null;
-      const rowCount = (Array.isArray(tlView._rows) && tlView._rows.length)
+      // Phase 3: TimelineView keeps rows in a `RowStore` (`tlView.store`)
+      // instead of a `string[][]` field. Older code paths used `_rows` /
+      // `rows` array fields — kept here as a fallback for any pre-Phase-3
+      // mock or transitional caller that still exposes them.
+      const rowCount = (tlView.store && tlView.store.rowCount)
+        || (Array.isArray(tlView._rows) && tlView._rows.length)
         || (Array.isArray(tlView.rows) && tlView.rows.length)
         || 0;
       return {

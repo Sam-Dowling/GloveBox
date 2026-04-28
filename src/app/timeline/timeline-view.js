@@ -353,17 +353,37 @@ class TimelineView {
   constructor(opts) {
     this.file = opts.file;
     this._baseColumns = opts.columns || [];
-    this.rows = opts.rows || [];
+    // Phase 3 row container — TimelineView reads cells exclusively via
+    // `this.store.getCell(rowIdx, colIdx)` (see `src/row-store.js`). The
+    // legacy `string[][]` layout is gone from this class entirely; it
+    // lives on briefly inside the `_buildRowConcat` cache that feeds
+    // GridViewer (Phase 4 will eliminate that cache).
+    //
+    //   - `opts.store`  : already-built RowStore (worker / router path).
+    //   - `opts.rows`   : legacy `string[][]` from the sync factory paths
+    //                     (`fromCsvAsync` fallback, `fromEvtx`,
+    //                     `fromSqlite`). Wrapped via `RowStore.fromStringMatrix`
+    //                     and the original array is dropped so it can be
+    //                     GC'd before the rest of the constructor runs.
+    if (opts.store) {
+      this.store = opts.store;
+    } else {
+      const rows = opts.rows || [];
+      this.store = RowStore.fromStringMatrix(this._baseColumns, rows);
+      // Drop the caller's reference if we own it; helps GC reclaim the
+      // `string[][]` before `_parseAllTimestamps` allocates the time array.
+      if (opts.rows) opts.rows = null;
+    }
     this.formatLabel = opts.formatLabel || '';
     this.truncated = !!opts.truncated;
-    this.originalRowCount = opts.originalRowCount || this.rows.length;
+    this.originalRowCount = opts.originalRowCount || this.store.rowCount;
     this._fileKey = _tlFileKey(this.file);
 
     // EVTX-only side-channel — the parsed event array (same indices as
-    // `this.rows`) and the Sigma-style `analyzeForSecurity` findings
-    // object. Used by the Detections + Entities sections below to render
-    // Sigma-rule hits, click-to-filter on Event ID, and entity pivots
-    // without re-parsing the file. Both are `null` for CSV / TSV.
+    // `this.store.getRow(i)`) and the Sigma-style `analyzeForSecurity`
+    // findings object. Used by the Detections + Entities sections below
+    // to render Sigma-rule hits, click-to-filter on Event ID, and entity
+    // pivots without re-parsing the file. Both are `null` for CSV / TSV.
     this._evtxEvents = Array.isArray(opts.evtxEvents) ? opts.evtxEvents : null;
     this._evtxFindings = opts.evtxFindings && typeof opts.evtxFindings === 'object'
       ? opts.evtxFindings : null;
@@ -381,14 +401,14 @@ class TimelineView {
     // Time parsing
     this._timeCol = Number.isInteger(opts.defaultTimeColIdx)
       ? opts.defaultTimeColIdx
-      : _tlAutoDetectTimestampCol(this._baseColumns, this.rows);
+      : _tlAutoDetectTimestampCol(this._baseColumns, this.store);
     this._stackCol = Number.isInteger(opts.defaultStackColIdx)
       ? opts.defaultStackColIdx
-      : _tlAutoDetectStackCol(this._baseColumns, this.rows, this._timeCol);
+      : _tlAutoDetectStackCol(this._baseColumns, this.store, this._timeCol);
     this._stackColorMap = null;
     this._buildStableStackColorMap();
     this._bucketId = TimelineView._loadBucketPref();
-    this._timeMs = new Float64Array(this.rows.length);
+    this._timeMs = new Float64Array(this.store.rowCount);
     // `_timeIsNumeric` — switches the axis / bucket / tick formatters from
     // wall-clock ms into a plain numeric domain. Set by `_parseAllTimestamps`
     // based on the column's parse-ability. When true, `_timeMs[i]` holds the
@@ -595,7 +615,7 @@ class TimelineView {
     // the query editor) keeps the entire parsed dataset alive until that
     // reference is collected. For an 80 MB CSV with 500 k rows this is
     // easily 300+ MB of JS heap — repeated load/clear cycles OOM the tab.
-    this.rows = null;
+    this.store = null;
     this._baseColumns = null;
     this._extractedCols = null;
     this._colStats = null;
@@ -622,12 +642,13 @@ class TimelineView {
   _extractedColFor(colIdx) { return this._extractedCols[colIdx - this._baseColumns.length] || null; }
 
   // Cell access — unified base + extracted lookup. Returns a string or ''.
+  // Base columns come from `this.store` (RowStore — `getCell` already
+  // returns `''` for OOB / nullish). Extracted (virtual) columns live in
+  // a parallel `string[]` per-column allocated lazily during JSON / regex
+  // extraction; their lookup path is unchanged.
   _cellAt(dataIdx, colIdx) {
     if (colIdx < this._baseColumns.length) {
-      const r = this.rows[dataIdx];
-      if (!r) return '';
-      const v = r[colIdx];
-      return v == null ? '' : String(v);
+      return this.store.getCell(dataIdx, colIdx);
     }
     const e = this._extractedColFor(colIdx);
     if (!e) return '';
@@ -641,8 +662,8 @@ class TimelineView {
   // the thresholds used by `_tlAutoDetectTimestampCol`: ≥ 50 % parse as
   // real timestamps OR ≥ 80 % parse as bare numbers (numeric-axis).
   _columnLooksLikeTimestamp(colIdx) {
-    if (!this.rows || !this.rows.length) return false;
-    const N = Math.min(this.rows.length, 200);
+    if (!this.store || !this.store.rowCount) return false;
+    const N = Math.min(this.store.rowCount, 200);
     let seen = 0, ok = 0, numOk = 0;
     for (let i = 0; i < N; i++) {
       const v = this._cellAt(i, colIdx);
@@ -848,46 +869,44 @@ class TimelineView {
     // timestamps are re-parsed (time-column change, reset, etc.).
     this._invalidateGridCache();
     const col = this._timeCol;
-    const rows = this.rows;
+    const store = this.store;
     const out = this._timeMs;
     if (col == null) {
       out.fill(NaN);
       this._timeIsNumeric = false;
       return;
     }
+    const total = store ? store.rowCount : 0;
     // Decide numeric vs. timestamp for THIS column. Extracted columns are
-    // skipped for the numeric path — the sample lives in `rows` which is
-    // base-only — they always go through `_tlParseTimestamp`.
+    // skipped for the numeric path — base-only sampling — so they always
+    // go through `_tlParseTimestamp`.
     const numeric = (col < this._baseColumns.length)
-      && _tlColumnIsNumericAxis(rows, col);
+      && _tlColumnIsNumericAxis(store, col);
     this._timeIsNumeric = numeric;
     if (numeric) {
-      for (let i = 0; i < rows.length; i++) {
-        const r = rows[i];
-        if (!r) { out[i] = NaN; continue; }
-        const c = r[col];
-        if (c == null || c === '') { out[i] = NaN; continue; }
-        const n = Number(String(c).trim());
+      for (let i = 0; i < total; i++) {
+        const c = store.getCell(i, col);
+        if (c === '') { out[i] = NaN; continue; }
+        const n = Number(c.trim());
         out[i] = Number.isFinite(n) ? n : NaN;
       }
     } else {
       // Detect the dominant timestamp format from a small sample and use
       // the specialised fast-path parser that skips the full regex
       // waterfall. Falls back to `_tlParseTimestamp` for outlier cells.
-      // Use `_cellAt` so extracted (virtual) columns resolve correctly —
-      // `rows[i][col]` would be undefined for extracted columns since the
-      // row arrays only hold `_baseColumns.length` cells.
+      // Extracted (virtual) columns resolve via `_cellAt` since their
+      // values live in `_extractedCols`, not the RowStore.
       const isExtracted = col >= this._baseColumns.length;
-      const fmt = isExtracted ? 'generic' : _tlDetectTimestampFormat(rows, col, 30);
+      const fmt = isExtracted ? 'generic' : _tlDetectTimestampFormat(store, col, 30);
       if (fmt === 'generic') {
-        for (let i = 0; i < rows.length; i++) {
-          const v = isExtracted ? this._cellAt(i, col) : (rows[i] ? rows[i][col] : null);
-          out[i] = (v == null || v === '') ? NaN : _tlParseTimestamp(v);
+        for (let i = 0; i < total; i++) {
+          const v = isExtracted ? this._cellAt(i, col) : store.getCell(i, col);
+          out[i] = (v === '' || v == null) ? NaN : _tlParseTimestamp(v);
         }
       } else {
-        for (let i = 0; i < rows.length; i++) {
-          const r = rows[i];
-          out[i] = r ? _tlParseTimestampFast(r[col], fmt) : NaN;
+        for (let i = 0; i < total; i++) {
+          const v = store.getCell(i, col);
+          out[i] = v === '' ? NaN : _tlParseTimestampFast(v, fmt);
         }
       }
     }
@@ -962,7 +981,7 @@ class TimelineView {
         this._queryEditor.setStatus('', null);
       } else {
         const vis = this._filteredIdx ? this._filteredIdx.length : 0;
-        const tot = this.rows.length;
+        const tot = this.store.rowCount;
         this._queryEditor.setStatus(
           `<span class="tl-query-status-msg">✓ ${vis.toLocaleString()} / ${tot.toLocaleString()} rows</span>`,
           'ok'
@@ -984,7 +1003,7 @@ class TimelineView {
     // below rather than pushing onto a separate chip list. Sus marks
     // (`this._susMarks`, persisted by colName) are orthogonal — they
     // tint matching rows red but never filter them out.
-    const n = this.rows.length;
+    const n = this.store.rowCount;
     const queryPred = this._queryPred;
 
     if (!queryPred) {
@@ -1040,7 +1059,7 @@ class TimelineView {
   // added / removed / cleared. The bitmap must exist BEFORE the query
   // compiler runs so that `is:sus` can reference it.
   _rebuildSusBitmap() {
-    const n = this.rows.length;
+    const n = this.store.rowCount;
     const susResolved = this._susMarksResolved();
     this._susAny = susResolved.length > 0;
     if (this._susAny) {
@@ -1089,7 +1108,7 @@ class TimelineView {
     if (!eids.size) { this._detectionBitmap = null; return; }
     const eventIdCol = this._baseColumns.indexOf(EVTX_COLUMNS.EVENT_ID);
     if (eventIdCol < 0) { this._detectionBitmap = null; return; }
-    const n = this.rows.length;
+    const n = this.store.rowCount;
     const bm = new Uint8Array(n);
     for (let i = 0; i < n; i++) {
       if (eids.has(this._cellAt(i, eventIdCol))) bm[i] = 1;
@@ -1267,7 +1286,7 @@ class TimelineView {
   // on other columns still apply, then clips by the time window. Sus
   // marks are irrelevant — they only tint, they don't filter.
   _indexIgnoringColumn(excludeColIdx) {
-    const n = this.rows.length;
+    const n = this.store.rowCount;
     const buf = new Uint32Array(n);
     let w = 0;
     const qp = this._queryAst ? _tlCompileAstExcluding(this._queryAst, this, excludeColIdx) : null;
@@ -2238,7 +2257,7 @@ class TimelineView {
     // extracted space.
     if (this._extractedCols && this._extractedCols.length) {
       if (this._timeCol != null && this._timeCol >= baseLen) {
-        this._timeCol = _tlAutoDetectTimestampCol(this._baseColumns, this.rows);
+        this._timeCol = _tlAutoDetectTimestampCol(this._baseColumns, this.store);
         if (this._els && this._els.timeColSelect) {
           this._els.timeColSelect.value = this._timeCol == null ? '-1' : String(this._timeCol);
         }
@@ -2354,7 +2373,7 @@ class TimelineView {
   }
 
   _refreshRowStat() {
-    const total = this.rows.length;
+    const total = this.store.rowCount;
     const visible = this._filteredIdx ? this._filteredIdx.length : total;
     let txt = visible === total
       ? `${total.toLocaleString()} rows`
@@ -2496,7 +2515,7 @@ class TimelineView {
     const col = this._stackCol;
     if (col == null) { this._stackColorMap = null; return; }
     const counts = new Map();
-    for (let i = 0; i < this.rows.length; i++) {
+    for (let i = 0; i < this.store.rowCount; i++) {
       const v = this._cellAt(i, col);
       counts.set(v, (counts.get(v) || 0) + 1);
     }
@@ -3433,7 +3452,7 @@ class TimelineView {
     // O(n log n) re-sort + O(n) array build into O(1) cache hits.
     const timeCol = this._timeCol;
     const timeMs = this._timeMs;
-    const isFullDataset = idx.length === this.rows.length;
+    const isFullDataset = idx.length === this.store.rowCount;
     if (timeCol != null && timeMs && idx.length > 1) {
       if (isFullDataset && this._sortedFullIdx &&
         this._sortedFullIdx.length === idx.length) {
@@ -3481,8 +3500,13 @@ class TimelineView {
       if (hasExtracted) {
         for (let i = 0; i < idx.length; i++) rowsConcat[i] = this._buildRowConcat(idx[i]);
       } else {
-        const rows = this.rows;
-        for (let i = 0; i < idx.length; i++) rowsConcat[i] = rows[idx[i]] || [];
+        // Materialise the filtered subset out of the RowStore as a fresh
+        // `string[][]` for GridViewer (which still consumes the legacy
+        // shape — Phase 4 will teach it to read store cells directly).
+        // `getRow` always returns a fresh array padded to column-width
+        // with `''`, so the `|| []` defensive default is unnecessary.
+        const store = this.store;
+        for (let i = 0; i < idx.length; i++) rowsConcat[i] = store.getRow(idx[i]);
       }
       if (isFullDataset) {
         this._cachedRowsConcat = rowsConcat;
@@ -3877,13 +3901,18 @@ class TimelineView {
   }
 
   // Build a concatenated row (base + extracted cell values) for GridViewer.
+  // Pulls base cells out of the RowStore (`getRow` returns a fresh
+  // `''`-padded array of `_baseColumns.length`) then appends each
+  // extracted column's per-row value. Allocations are unavoidable here:
+  // GridViewer eats `string[][]` until Phase 4 swaps it onto the store.
   _buildRowConcat(dataIdx) {
-    const base = this.rows[dataIdx] || [];
-    if (!this._extractedCols.length) return base;
-    const out = new Array(this._baseColumns.length + this._extractedCols.length);
-    for (let c = 0; c < this._baseColumns.length; c++) out[c] = base[c] == null ? '' : base[c];
-    for (let e = 0; e < this._extractedCols.length; e++) {
-      out[this._baseColumns.length + e] = this._extractedCols[e].values[dataIdx] || '';
+    const baseLen = this._baseColumns.length;
+    const extLen = this._extractedCols.length;
+    const out = this.store.getRow(dataIdx);
+    if (!extLen) return out;
+    out.length = baseLen + extLen;
+    for (let e = 0; e < extLen; e++) {
+      out[baseLen + e] = this._extractedCols[e].values[dataIdx] || '';
     }
     return out;
   }
@@ -5807,7 +5836,7 @@ class TimelineView {
     // Collect up to 30 non-empty samples for the pick pane + anchor check.
     const _collectClickerSamples = (colIdx) => {
       const out = [];
-      const cap = Math.min(this.rows.length, 400);
+      const cap = Math.min(this.store.rowCount, 400);
       for (let i = 0; i < cap && out.length < 30; i++) {
         const v = this._cellAt(i, colIdx);
         if (v) out.push(v);
@@ -6021,7 +6050,7 @@ class TimelineView {
       const col = parseInt(colSel.value, 10);
       const gp = Math.max(0, Math.min(9, parseInt(groupEl.value, 10) || 0));
       const sampleMax = 200;
-      const N = Math.min(this.rows.length, sampleMax);
+      const N = Math.min(this.store.rowCount, sampleMax);
       // `matched`  — rows where `re.exec()` returned any match at all.
       // `captured` — rows where the selected group `gp` captured a
       //              NON-EMPTY string. This is the count the user actually
@@ -6121,7 +6150,7 @@ class TimelineView {
       // Sample-budget gate: dry-run the compiled regex against up to 1k rows
       // with a 250 ms budget. If it can't keep up on the sample, the full
       // commit (which scans every row in the timeline) certainly can't.
-      const sampleN = Math.min(this.rows.length, 1000);
+      const sampleN = Math.min(this.store.rowCount, 1000);
       const col = parseInt(colSel.value, 10);
       const sampleStart = Date.now();
       let sampleBail = false;
@@ -6166,7 +6195,7 @@ class TimelineView {
 
   _autoExtractScan() {
     const proposals = [];
-    const sampleCap = Math.min(this.rows.length, 200);
+    const sampleCap = Math.min(this.store.rowCount, 200);
     const cols = this._baseColumns.length;
 
     // EVTX detection: format label is "EVTX", or the base columns include
@@ -6200,7 +6229,7 @@ class TimelineView {
         const colName = this._baseColumns[c] || 'url';
         // Sample a value for the preview column.
         let sampleVal = '';
-        for (let i = 0; i < Math.min(this.rows.length, 50); i++) {
+        for (let i = 0; i < Math.min(this.store.rowCount, 50); i++) {
           const v = this._cellAt(i, c);
           if (v) { sampleVal = v; break; }
         }

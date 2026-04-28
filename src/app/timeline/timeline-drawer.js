@@ -78,9 +78,9 @@ Object.assign(TimelineView.prototype, {
     // duplicate columns.
     if (this._findDuplicateExtractedCol({ kind: 'json', sourceCol: colIdx, path }) >= 0) return;
     const name = this._uniqueColName(label || _tlJsonPathLabel(path));
-    const values = new Array(this.rows.length);
+    const values = new Array(this.store.rowCount);
 
-    for (let i = 0; i < this.rows.length; i++) {
+    for (let i = 0; i < this.store.rowCount; i++) {
       const raw = this._cellAt(i, colIdx);
       if (!raw) { values[i] = ''; continue; }
       let parsed = this._jsonCache.get(i);
@@ -131,8 +131,8 @@ Object.assign(TimelineView.prototype, {
     // Only enabled for the Auto-tab KV branch via `spec.trim`; manually
     // authored Regex-tab extractors keep their raw capture bytes.
     const doTrim = !!spec.trim;
-    const values = new Array(this.rows.length);
-    for (let i = 0; i < this.rows.length; i++) {
+    const values = new Array(this.store.rowCount);
+    for (let i = 0; i < this.store.rowCount; i++) {
       const v = this._cellAt(i, col);
       if (!v) { values[i] = ''; continue; }
       // Reset lastIndex if global flag used
@@ -212,7 +212,7 @@ Object.assign(TimelineView.prototype, {
     }
     // Time/stack/pivot sometimes reference an extracted col — snap back.
     if (this._timeCol != null && this._timeCol >= baseLen) {
-      this._timeCol = _tlAutoDetectTimestampCol(this._baseColumns, this.rows);
+      this._timeCol = _tlAutoDetectTimestampCol(this._baseColumns, this.store);
       this._parseAllTimestamps();
       this._dataRange = this._computeDataRange();
       this._window = null;

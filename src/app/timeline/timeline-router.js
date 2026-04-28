@@ -473,10 +473,7 @@ extendApp({
       // doesn't re-read the file from scratch. For very large files the
       // double-read was the primary cause of OOM / silent empty-string
       // returns from `file.text()`.
-      const rowCount = view
-        ? (view.rows ? view.rows.length
-          : (view._rowStore ? view._rowStore.rowCount : 0))
-        : 0;
+      const rowCount = view && view.store ? view.store.rowCount : 0;
       const evtCount = view && view._evtxEvents ? view._evtxEvents.length : 0;
       if (rowCount === 0 && evtCount === 0) {
         if (view) { try { view.destroy(); } catch (_) { /* noop */ } }
@@ -566,24 +563,16 @@ extendApp({
   _buildTimelineViewFromWorker(file, kind, msg, originalBuffer) {
     if (!msg) return null;
     const columns = msg.columns || [];
-    let rows = msg.rows || [];
-    // CSV / TSV path: the streamed `rows-chunk` events were assembled
-    // into a `RowStore` and parked on `msg.rowStore` by the caller.
-    // The legacy `TimelineView` constructor still expects a `string[][]`,
-    // so we materialise back here as a temporary bridge — this restores
-    // the pre-Phase-2 main-thread footprint at view-construction time
-    // but keeps the Phase 2 worker-side savings (no string accumulator
-    // in the worker, no structured-clone postback, chunked transfer
-    // semantics for the Phase 3 follow-up). The bridge will be removed
-    // when `TimelineView` is migrated to read directly from a RowStore.
-    let rowStore = null;
-    if (kind === 'csv' && msg.rowStore) {
-      rowStore = msg.rowStore;
-      const total = rowStore.rowCount;
-      const out = new Array(total);
-      for (let i = 0; i < total; i++) out[i] = rowStore.getRow(i);
-      rows = out;
-    }
+    // CSV / TSV: the streamed `rows-chunk` events were assembled into a
+    // `RowStore` (see `src/row-store.js`) and parked on `msg.rowStore`.
+    // Phase 3: pass the store straight to `TimelineView` — no
+    // intermediate `string[][]` materialisation. Other kinds (EVTX,
+    // SQLite browser-history) still ship `msg.rows` as a `string[][]`
+    // from the worker; the constructor wraps those via
+    // `RowStore.fromStringMatrix` and drops the original reference so
+    // the legacy array can GC before time-parsing allocates.
+    const rows = msg.rows || [];
+    const rowStore = (kind === 'csv' && msg.rowStore) ? msg.rowStore : null;
     if (kind === 'evtx') {
       let securityFindings = null;
       try {
@@ -617,19 +606,21 @@ extendApp({
       if (Number.isInteger(msg.defaultStackColIdx)) out.defaultStackColIdx = msg.defaultStackColIdx;
       return new TimelineView(out);
     }
-    // csv / tsv — no analyzer side-channel.
-    const v = new TimelineView({
-      file, columns, rows,
+    // csv / tsv — no analyzer side-channel. Hand the RowStore in
+    // directly when we have one (the worker path); fall back to the
+    // legacy `rows` shape only if the worker for some reason emitted
+    // an unstreamed `string[][]` (no current code path does, but we
+    // keep the fallback for safety and the sync-fallback factories).
+    const csvOpts = {
+      file, columns,
       formatLabel: msg.formatLabel || (kind === 'csv' ? 'CSV' : 'TSV'),
       truncated: !!msg.truncated,
-      originalRowCount: msg.originalRowCount || rows.length,
-    });
-    // Stash the RowStore on the view for callers that already speak
-    // the new contract (none today; Phase 3 migrates `TimelineView`
-    // itself). Held as a non-enumerable-ish slot under `_rowStore`
-    // so existing `for (const k in view)` iteration is unaffected.
-    if (rowStore) v._rowStore = rowStore;
-    return v;
+      originalRowCount: msg.originalRowCount
+        || (rowStore ? rowStore.rowCount : rows.length),
+    };
+    if (rowStore) csvOpts.store = rowStore;
+    else csvOpts.rows = rows;
+    return new TimelineView(csvOpts);
   },
 
   _clearTimelineFile() {
