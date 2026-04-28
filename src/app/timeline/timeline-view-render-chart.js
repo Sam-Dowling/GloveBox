@@ -873,21 +873,21 @@ Object.assign(TimelineView.prototype, {
     const key = chip.dataset.key;
     const op = e.shiftKey ? 'ne' : 'eq';
     this._addOrToggleChip(this._stackCol, key, { op });
-  }
+  },
   _handleLegendDbl(e) {
     const chip = e.target.closest('.tl-legend-chip');
     if (!chip || this._stackCol == null) return;
     const key = chip.dataset.key;
     // "Only this" → replace all chips on this column with a single eq.
     this._addOrToggleChip(this._stackCol, key, { op: 'eq', replace: true });
-  }
+  },
   _handleLegendContext(e) {
     const chip = e.target.closest('.tl-legend-chip');
     if (!chip || this._stackCol == null) return;
     e.preventDefault();
     const key = chip.dataset.key;
     this._openRowContextMenu(e, this._stackCol, key);
-  }
+  },
   // ── Chart height drag ────────────────────────────────────────────────────
   // Mirrors the main splitter but targets the `.tl-chart-resize` grab-bar
   // rendered at the bottom edge of the histogram body. Persists the new

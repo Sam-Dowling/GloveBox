@@ -246,7 +246,7 @@ Object.assign(TimelineView.prototype, {
         kind: 'auto',
       });
     }
-  }
+  },
   // ── Auto-extract scanner ─────────────────────────────────────────────────
 
   _autoExtractScan() {

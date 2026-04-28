@@ -9,8 +9,12 @@ gitignored). The version pinned in `PLAYWRIGHT_VERSION` is the single
 source of truth — bump it deliberately via PR; CI must use the same pin.
 
 Workflow:
-  1. Verify `docs/index.test.html` exists (run `python make.py test-build`
-     first, otherwise this fails fast with a clear error).
+  1. Verify `docs/index.test.html` exists AND is fresh — every file
+     under `src/` must have an mtime ≤ the bundle's mtime, else we
+     auto-rebuild via `scripts/build.py --test-api`. (Earlier versions
+     only checked existence; that masked a 12-comma syntax bug
+     throughout the B2 timeline split because every local
+     `python make.py test-e2e` happily reused a pre-B2 bundle.)
   2. Generate `dist/test-deps/package.json` from the pinned version.
   3. Run `npm install --prefix dist/test-deps` if `node_modules` is
      missing or the install marker doesn't match the pin (cheap, idempotent).
@@ -35,6 +39,8 @@ import sys
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEST_BUNDLE = os.path.join(BASE, 'docs', 'index.test.html')
+SRC_DIR = os.path.join(BASE, 'src')
+BUILD_SCRIPT = os.path.join(BASE, 'scripts', 'build.py')
 
 # ── Pinned Playwright Test version ────────────────────────────────────────────
 # Single source of truth. Bump deliberately via PR; CI must use the same
@@ -131,13 +137,57 @@ def _ensure_browsers() -> None:
         f.write(PLAYWRIGHT_VERSION + '\n')
 
 
-def main() -> int:
+def _bundle_is_stale() -> bool:
+    """True if any file under src/ is newer than docs/index.test.html.
+
+    The bundle is byte-concatenated from `src/`, so any source mtime
+    > bundle mtime means the bundle is out of date. We deliberately
+    use mtime-based staleness (not content hashing) because it
+    matches how `make` and every other build tool decides freshness;
+    a cheap `os.walk` is fine — `src/` is ~150 files and this runs
+    once per e2e invocation. NOTE: this is a developer-loop
+    convenience only; CI does NOT call run_tests_e2e.py — it builds
+    the test bundle inline before running Playwright (see
+    .github/workflows/ci.yml).
+    """
     if not os.path.isfile(TEST_BUNDLE):
-        _die(
-            f'docs/index.test.html not found at {TEST_BUNDLE}.\n'
-            '       Run `python make.py test-build` first (or `python '
-            'scripts/build.py --test-api`).',
-        )
+        return True
+    bundle_mtime = os.path.getmtime(TEST_BUNDLE)
+    # Sort directory contents so iteration order is stable — keeps
+    # debug-log output deterministic and avoids the `os.walk` ordering
+    # caveat called out in CONTRIBUTING.md (no determinism issue here
+    # because we're comparing scalars, but it makes any future logging
+    # reproducible).
+    for root, dirs, files in os.walk(SRC_DIR):
+        dirs.sort()
+        for name in sorted(files):
+            p = os.path.join(root, name)
+            try:
+                if os.path.getmtime(p) > bundle_mtime:
+                    return True
+            except OSError:
+                # Race with a delete; treat as stale and let the
+                # rebuild surface any genuine error.
+                return True
+    return False
+
+
+def _rebuild_test_bundle() -> None:
+    """Invoke `python scripts/build.py --test-api` to refresh the bundle."""
+    cmd = [sys.executable, BUILD_SCRIPT, '--test-api']
+    print(f'$ {" ".join(cmd)}  # bundle stale, rebuilding', flush=True)
+    rc = subprocess.call(cmd, cwd=BASE)
+    if rc != 0:
+        _die(f'test-build failed with exit code {rc}', code=rc)
+
+
+def main() -> int:
+    # Earlier this only checked existence — see file docstring for
+    # the bug that motivated the freshness check. Auto-rebuild
+    # mirrors what CI does inline and removes a foot-gun without
+    # adding a separate error path for developers.
+    if _bundle_is_stale():
+        _rebuild_test_bundle()
 
     _need('node')
     _ensure_install()

@@ -153,7 +153,7 @@ Object.assign(TimelineView.prototype, {
     document.body.appendChild(menu);
     this._openPopover = menu;
     setTimeout(() => valEl.focus(), 0);
-  }
+  },
   // ── Right-click row context menu ─────────────────────────────────────────
   _openRowContextMenu(e, colIdx, val, opts) {
     opts = opts || {};
@@ -260,13 +260,13 @@ Object.assign(TimelineView.prototype, {
     this._positionFloating(menu, e.clientX, e.clientY);
     document.body.appendChild(menu);
     this._openPopover = menu;
-  }
+  },
   _closePopover() {
     if (this._openPopover && this._openPopover.parentNode) {
       this._openPopover.parentNode.removeChild(this._openPopover);
     }
     this._openPopover = null;
-  }
+  },
   // ── Column menu (Excel-style) ────────────────────────────────────────────
   _openColumnMenu(colIdx, anchor) {
     // Toggle: if the menu is already open for this exact column, close it.

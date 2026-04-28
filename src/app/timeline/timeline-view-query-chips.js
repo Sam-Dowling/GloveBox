@@ -139,7 +139,7 @@ Object.assign(TimelineView.prototype, {
       });
       el.appendChild(clearBtn);
     }
-  }
+  },
   // ── AST edit helpers ─────────────────────────────────────────────────────
   // The query bar is the single source of truth for row filtering, so every
   // click-pivot (right-click Include / Exclude / Only, column-card click,
@@ -162,23 +162,23 @@ Object.assign(TimelineView.prototype, {
       // broken one).
       return { k: 'empty' };
     }
-  }
+  },
   _queryTopLevelClauses(ast) {
     if (!ast || ast.k === 'empty') return [];
     if (ast.k === 'and') return ast.children.slice();
     return [ast];
-  }
+  },
   _queryClausesToAst(clauses) {
     if (!clauses.length) return { k: 'empty' };
     if (clauses.length === 1) return clauses[0];
     return { k: 'and', children: clauses };
-  }
+  },
   _queryCommitClauses(clauses) {
     const ast = this._queryClausesToAst(clauses);
     const s = _tlFormatQuery(ast, this.columns);
     if (this._queryEditor) this._queryEditor.setValue(s);
     this._applyQueryString(s);
-  }
+  },
   // Does a single top-level clause reference `colIdx`?
   _clauseTargetsCol(c, colIdx) {
     if (!c) return false;
