@@ -719,22 +719,41 @@ class TimelineView {
   }
 
   // ── Columns accessor (base + extracted) ─────────────────────────────────
+  // Delegated to `TimelineDataset.allColumnNames()` — the dataset
+  // owns the base+extracted concatenation, and going through it
+  // means the base/extracted split has exactly one source of truth.
+  // Falls back to the legacy slot path if `_dataset` is null (the
+  // dispose state — every consumer should already be inert at that
+  // point, but `columns` is read defensively from a few error paths).
   get columns() {
+    if (this._dataset) return this._dataset.allColumnNames();
     if (!this._extractedCols || !this._extractedCols.length) return this._baseColumns;
     const out = this._baseColumns.slice();
     for (const e of this._extractedCols) out.push(e.name);
     return out;
   }
 
-  _isExtractedCol(colIdx) { return colIdx >= this._baseColumns.length; }
-  _extractedColFor(colIdx) { return this._extractedCols[colIdx - this._baseColumns.length] || null; }
+  // `_isExtractedCol` / `_extractedColFor` use the dataset's
+  // `baseColCount` (which equals `this.store.colCount` — same number
+  // as the legacy `this._baseColumns.length`, just sourced from the
+  // canonical RowStore).
+  _isExtractedCol(colIdx) {
+    const baseLen = this._dataset ? this._dataset.baseColCount : this._baseColumns.length;
+    return colIdx >= baseLen;
+  }
+  _extractedColFor(colIdx) {
+    const baseLen = this._dataset ? this._dataset.baseColCount : this._baseColumns.length;
+    const cols = this._dataset ? this._dataset.extractedCols : this._extractedCols;
+    return cols[colIdx - baseLen] || null;
+  }
 
   // Cell access — unified base + extracted lookup. Returns a string or ''.
-  // Base columns come from `this.store` (RowStore — `getCell` already
-  // returns `''` for OOB / nullish). Extracted (virtual) columns live in
-  // a parallel `string[]` per-column allocated lazily during JSON / regex
-  // extraction; their lookup path is unchanged.
+  // Delegates to the dataset's `cellAt` so the base/extracted dispatch
+  // has one implementation. Falls back to the inline lookup only when
+  // the dataset is null (post-dispose) — every live read goes through
+  // the dataset.
   _cellAt(dataIdx, colIdx) {
+    if (this._dataset) return this._dataset.cellAt(dataIdx, colIdx);
     if (colIdx < this._baseColumns.length) {
       return this.store.getCell(dataIdx, colIdx);
     }
@@ -3638,10 +3657,18 @@ class TimelineView {
     // ~3× input allocation. The adapter is cheap to recreate (a few
     // field assignments) so we don't bother caching it across re-renders;
     // invalidation is implicit when the caller passes a different `idx`.
+    //
+    // Source the three slot-shaped fields from `this._dataset` (rather
+    // than the legacy `this.store` / `this._extractedCols` /
+    // `this._baseColumns.length` aliases). The dataset's
+    // `extractedCols` getter returns the SAME array reference the view
+    // mutates, so the adapter sees newly-pushed extracted columns
+    // without needing a re-build.
+    const ds = this._dataset;
     const rowView = new TimelineRowView({
-      baseStore: this.store,
-      extractedCols: this._extractedCols,
-      baseLen: this._baseColumns.length,
+      baseStore: ds ? ds.store : this.store,
+      extractedCols: ds ? ds.extractedCols : this._extractedCols,
+      baseLen: ds ? ds.baseColCount : this._baseColumns.length,
       idx,
     });
     const sus = this._susBitmap;

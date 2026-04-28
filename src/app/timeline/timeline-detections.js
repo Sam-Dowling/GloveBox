@@ -138,9 +138,15 @@ Object.assign(TimelineView.prototype, {
     const Reg = (typeof window !== 'undefined' && window.EvtxEventIds) || null;
     const MT = (typeof window !== 'undefined' && window.MITRE) ? window.MITRE : null;
 
-    // Resolve column indices for click-to-filter pivots.
-    const eventIdCol = this._baseColumns ? this._baseColumns.indexOf(EVTX_COLUMNS.EVENT_ID) : -1;
-    const channelCol = this._baseColumns ? this._baseColumns.indexOf(EVTX_COLUMNS.CHANNEL) : -1;
+    // Resolve column indices for click-to-filter pivots through
+    // RowStore.colIndex — same -1-on-miss semantics as the legacy
+    // `_baseColumns.indexOf`, but RowStore lazily caches the
+    // name → index map so repeated lookups (e.g. across re-renders
+    // of the detections pane on column-set change) don't re-walk
+    // the column array.
+    const store = this._dataset ? this._dataset.store : this.store;
+    const eventIdCol = store ? store.colIndex(EVTX_COLUMNS.EVENT_ID) : -1;
+    const channelCol = store ? store.colIndex(EVTX_COLUMNS.CHANNEL) : -1;
 
     // Pre-decorate every detection row with the registry lookup +
     // primary tactic so sort / group / render passes don't re-hit the

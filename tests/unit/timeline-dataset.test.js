@@ -437,6 +437,58 @@ test('timeline-summary.js reads parallel arrays through the dataset wrapper', ()
   );
 });
 
+test('timeline-detections.js resolves column indices via the store, not _baseColumns', () => {
+  // Migration B1c: timeline-detections.js previously called
+  // `this._baseColumns.indexOf(...)` for the click-to-filter pivot
+  // columns. Those lookups now go through `store.colIndex(...)` —
+  // RowStore caches the name → index map lazily; `_baseColumns
+  // .indexOf` is a linear walk re-done on every render. Pin the
+  // migration so a future revert lights up CI.
+  const detSrc = fs.readFileSync(
+    path.join(REPO_ROOT, 'src/app/timeline/timeline-detections.js'),
+    'utf8',
+  );
+  const stripped = detSrc
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"])\/\/[^\n]*/g, '$1');
+  assert.doesNotMatch(
+    stripped,
+    /this\._baseColumns\b/,
+    'timeline-detections.js must use RowStore.colIndex instead of _baseColumns.indexOf',
+  );
+});
+
+test('TimelineView delegates _cellAt / columns / _isExtractedCol to the dataset', () => {
+  // Migration B1c: TimelineView's per-call helpers (_cellAt,
+  // _isExtractedCol, _extractedColFor, the `columns` getter) now
+  // route through `this._dataset` so the base/extracted dispatch
+  // has exactly one implementation. Pin source-text references to
+  // catch a future revert that re-inlines the slot reads.
+  const viewSrc = fs.readFileSync(
+    path.join(REPO_ROOT, 'src/app/timeline/timeline-view.js'),
+    'utf8',
+  );
+  // _cellAt body must call into the dataset.
+  assert.match(
+    viewSrc,
+    /_cellAt\(dataIdx, colIdx\)\s*\{[\s\S]{0,200}this\._dataset\.cellAt\(/,
+    'TimelineView._cellAt must delegate to this._dataset.cellAt',
+  );
+  // `columns` getter must call dataset.allColumnNames.
+  assert.match(
+    viewSrc,
+    /get columns\(\)\s*\{[\s\S]{0,200}this\._dataset\.allColumnNames\(\)/,
+    'TimelineView.columns getter must delegate to dataset.allColumnNames',
+  );
+  // The TimelineRowView adapter at grid-render time must source
+  // baseStore / extractedCols / baseLen from the dataset.
+  assert.match(
+    viewSrc,
+    /baseStore:\s*ds\s*\?\s*ds\.store/,
+    'Grid-render TimelineRowView must source baseStore from the dataset',
+  );
+});
+
 // ── Bundle membership ──────────────────────────────────────────────────────
 
 test('timeline-dataset.js is registered in build APP_JS_FILES', () => {
