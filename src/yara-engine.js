@@ -535,7 +535,12 @@ class YaraEngine {
   // ── Internal: Parse a single rule body ────────────────────────────────────
 
   static _parseRuleBody(name, tags, body) {
-    const rule = { name, tags, strings: [], condition: 'any of them', meta: {} };
+    // `meta` is `Object.create(null)` so that user-supplied keys captured by
+    // `(\w+)` below cannot shadow `Object.prototype` members or hit the
+    // `__proto__` setter — `\w` matches `__proto__`, `constructor`, and
+    // `prototype`. Belt-and-braces, we also explicitly skip those three
+    // reserved names. Closes CodeQL alert js/remote-property-injection.
+    const rule = { name, tags, strings: [], condition: 'any of them', meta: Object.create(null) };
 
     // Extract meta section
     const metaMatch = body.match(/meta\s*:([\s\S]*?)(?=strings\s*:|condition\s*:|$)/i);
@@ -544,7 +549,9 @@ class YaraEngine {
       const metaRx = /(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"/g;
       let mm;
       while ((mm = metaRx.exec(metaBlock)) !== null) {
-        rule.meta[mm[1]] = mm[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+        const key = mm[1];
+        if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue;
+        rule.meta[key] = mm[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
       }
     }
 

@@ -716,7 +716,14 @@ class TimelineQueryEditor {
       const vs = String(val || '');
       if (lcPrefix && !vs.toLowerCase().includes(lcPrefix)) continue;
       const needsQuote = /[\s=!:~<>()"]/.test(vs) || vs === '';
-      const text = needsQuote ? `"${vs.replace(/"/g, '\\"')}"` : vs;
+      // Escape `\` first, then `"` — symmetric with the parser's
+      // `replace(/\\\\/g, '\\').replace(/\\"/g, '"')` and matches the
+      // canonical encoder in timeline-query.js:632. Without the
+      // backslash pass, a value like `a\"` would emit `"a\\""` and
+      // mis-parse. Closes CodeQL alert js/incomplete-sanitization.
+      const text = needsQuote
+        ? `"${vs.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+        : vs;
       out.push({ label: vs === '' ? '(empty)' : vs, text, kind: 'value', count });
     }
     return out.slice(0, 30);

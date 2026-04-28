@@ -84,13 +84,20 @@ Object.assign(EncodedContentDetector.prototype, {
 
   _shannonEntropyString(str) {
     if (!str || str.length === 0) return 0;
-    const freq = {};
-    for (const ch of str) freq[ch] = (freq[ch] || 0) + 1;
+    // Use a Map keyed by code-point so user-supplied characters cannot reach
+    // `Object.prototype` via `__proto__`/`constructor` etc. — closes CodeQL
+    // alert js/remote-property-injection. (Single-character keys make
+    // exploitation impossible in practice, but Map is also marginally faster
+    // for high-cardinality alphabets.)
+    const freq = new Map();
+    for (const ch of str) freq.set(ch, (freq.get(ch) || 0) + 1);
     const len = str.length;
-    return -Object.values(freq).reduce((sum, f) => {
+    let entropy = 0;
+    for (const f of freq.values()) {
       const p = f / len;
-      return sum + p * Math.log2(p);
-    }, 0);
+      entropy -= p * Math.log2(p);
+    }
+    return entropy;
   },
 
   _shannonEntropyBytes(bytes) {

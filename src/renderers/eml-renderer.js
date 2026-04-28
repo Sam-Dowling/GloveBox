@@ -361,7 +361,17 @@ class EmlRenderer {
       if (email.from) {
         const fromAddr = (email.from.match(EMAIL_RE) || [])[0] || '';
         const fromDomain = fromAddr.split('@')[1] || '';
-        const displayName = email.from.replace(/<[^>]*>/, '').replace(/["']/g, '').trim().toLowerCase();
+        // Strip *all* angle-bracket groups, looped until stable so nested
+        // forms like `<<x>name>` cannot leak a stray `<…>` through a
+        // single non-global pass. Closes CodeQL alert
+        // js/incomplete-multi-character-sanitization. (`displayName` is
+        // only used for textual heuristics and pushed into
+        // `externalRefs.url` as plain text — never rendered as HTML —
+        // but defence in depth is cheap.)
+        let dn = email.from;
+        let prev;
+        do { prev = dn; dn = dn.replace(/<[^>]*>/g, ''); } while (dn !== prev);
+        const displayName = dn.replace(/["']/g, '').trim().toLowerCase();
         const authorityWords = /\b(ceo|cfo|cto|coo|ciso|director|president|vp|admin|administrator|support|helpdesk|hr|payroll|it department|security|finance|accounting|legal)\b/i;
         const freemailDomains = /^(gmail\.com|yahoo\.com|outlook\.com|hotmail\.com|protonmail\.com|aol\.com|mail\.com|yandex\.com|gmx\.com|icloud\.com|zoho\.com|live\.com)$/i;
         if (displayName && authorityWords.test(displayName) && fromDomain && freemailDomains.test(fromDomain)) {
