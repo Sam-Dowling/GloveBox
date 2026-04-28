@@ -546,11 +546,22 @@ class YaraEngine {
     const metaMatch = body.match(/meta\s*:([\s\S]*?)(?=strings\s*:|condition\s*:|$)/i);
     if (metaMatch) {
       const metaBlock = metaMatch[1];
+      // Key whitelist: lowercase identifier (`[a-z_][a-z0-9_]*`). Built-in
+      // YARA rules under src/rules/*.yar use only `applies_to`, `category`,
+      // `description`, `mitre`, `reference`, `severity`. The whitelist is a
+      // superset of those, keeps the parser permissive for future rule
+      // authors, and rules out `__proto__` / `prototype` / `constructor`
+      // (uppercase first letter or contains `_` only after a letter, so
+      // `constructor` would technically pass — Object.create(null) above
+      // makes that benign anyway, but the whitelist also makes CodeQL's
+      // js/remote-property-injection happy without a Map refactor).
       const metaRx = /(\w+)\s*=\s*"((?:[^"\\]|\\.)*)"/g;
+      const SAFE_KEY = /^[a-z][a-z0-9_]*$/;
       let mm;
       while ((mm = metaRx.exec(metaBlock)) !== null) {
         const key = mm[1];
-        if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue;
+        if (!SAFE_KEY.test(key)) continue;
+        if (key === 'constructor') continue;
         rule.meta[key] = mm[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
       }
     }
