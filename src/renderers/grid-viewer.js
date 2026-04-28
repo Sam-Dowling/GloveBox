@@ -83,13 +83,20 @@ class GridViewer {
     // `rowSearchText` is the per-row pre-joined lowercase text cache used
     // by the filter-bar substring match. In legacy mode it is populated
     // either eagerly by the caller (EVTX) or lazily by the idle build
-    // (`_scheduleIdleSearchTextBuild`). In store mode the cache is
-    // always null and `_rowMatchesQuery` resolves search text on the fly
-    // via the store's `getRow` — the timeline path doesn't use the
-    // grid filter (it has its own query DSL) so the cache earns its
-    // ~3× memory cost only on legacy CSV / EVTX where the filter bar is
-    // primary.
-    this.rowSearchText = this.store ? null : (opts.rowSearchText || null);
+    // (`_scheduleIdleSearchTextBuild`). The cache earns its ~3× memory
+    // cost only when the grid filter bar is the primary entry point —
+    // which is true for CSV / EVTX / SQLite / XLSX / JSON renderers
+    // but NOT for the timeline (its query DSL bypasses the filter
+    // bar). `searchCacheMode` controls the policy:
+    //   • 'auto'   (default) — on for legacy `rows`, off for `store`
+    //   • 'always' — build/maintain the cache regardless of mode
+    //   • 'never'  — skip the cache regardless of mode
+    // Renderers that ALWAYS feed a RowStore but still want fast
+    // filter-bar matching pass `searchCacheMode: 'always'`.
+    this._searchCacheMode = opts.searchCacheMode || 'auto';
+    this.rowSearchText = (this.store && this._searchCacheMode !== 'always')
+      ? null
+      : (opts.rowSearchText || null);
     this.rowOffsets = opts.rowOffsets || null;
     this.rawText = opts.rawText || '';
     this._rootClass = opts.className || 'csv-view';
@@ -2081,18 +2088,22 @@ class GridViewer {
     if (this.rowSearchText && this.rowSearchText[dataIdx]) {
       return this.rowSearchText[dataIdx].includes(needle);
     }
-    // Store mode: pull a fresh row out of the store and resolve the
-    // match on the fly. We deliberately do NOT cache the joined text —
-    // the timeline path doesn't use the grid filter (its own query DSL
-    // is the primary entry point) so caching would just bloat the heap
-    // for rows the user will never search.
-    if (this.store) {
+    // Store + (auto | never) — resolve match on the fly with no
+    // memoisation. Used by the timeline path: its query DSL is primary,
+    // the filter bar is rare, and a 160 MB cache for a feature the user
+    // doesn't reach for is the wrong trade.
+    const cacheOff = (this._searchCacheMode === 'never')
+      || (this._searchCacheMode === 'auto' && this.store);
+    if (cacheOff && this.store) {
       const row = this.store.getRow(dataIdx);
       if (!row) return false;
       return row.join(' ').toLowerCase().includes(needle);
     }
-    // Legacy fallback — build on demand, cache for re-use.
-    const row = this._rowAt(dataIdx);
+    // Legacy mode OR store + 'always' cache — build on demand and cache
+    // for re-use. The 'always' branch reads cells through `store.getRow`
+    // exactly like the eager idle build does, so subsequent matches on
+    // the same row are O(1).
+    const row = this.store ? this.store.getRow(dataIdx) : this._rowAt(dataIdx);
     if (!row) return false;
     const joined = row.join(' ').toLowerCase();
     if (!this.rowSearchText) this.rowSearchText = new Array(this._rowCount());
@@ -2130,20 +2141,25 @@ class GridViewer {
       try { cancel(this._idleBuildHandle); } catch (_e) { /* ignore */ }
       this._idleBuildHandle = null;
     }
-    // Store mode skips the cache entirely — see comment on
-    // `this.rowSearchText` in the constructor.
-    if (this.store) return;
-    if (!this.rows || this.rows.length < 5000) return;
-    if (!this.rowSearchText) this.rowSearchText = new Array(this.rows.length);
+    // Cache policy gate — see `_searchCacheMode` in the constructor.
+    // 'auto' + store → no cache (timeline default).
+    // 'never' → no cache regardless.
+    // 'always' or legacy 'auto' + rows → cache.
+    if (this._searchCacheMode === 'never') return;
+    if (this.store && this._searchCacheMode !== 'always') return;
+    const total = this._rowCount();
+    if (total < 5000) return;
+    if (!this.rowSearchText) this.rowSearchText = new Array(total);
     let i = 0;
-    const total = this.rows.length;
     const BATCH = 5000;
     const step = () => {
       this._idleBuildHandle = null;
       const end = Math.min(i + BATCH, total);
       for (; i < end; i++) {
         if (this.rowSearchText[i]) continue;
-        const row = this._rowAt(i);
+        // Store mode pulls cells via `store.getRow` (allocates a fresh
+        // `string[]` per row). Legacy mode reuses the in-memory row.
+        const row = this.store ? this.store.getRow(i) : this._rowAt(i);
         this.rowSearchText[i] = row ? row.join(' ').toLowerCase() : '';
       }
       if (i < total) {
@@ -2316,7 +2332,10 @@ class GridViewer {
     if (isStore) {
       this.store = rows;
       this.rows = null;
-      this.rowSearchText = null;
+      // Drop the cache by default; renderers that want it (csv-renderer
+      // with `searchCacheMode: 'always'`) will repopulate via the idle
+      // build below or lazily via `_rowMatchesQuery`.
+      this.rowSearchText = (this._searchCacheMode === 'always') ? (rowSearchText || null) : null;
     } else {
       this.store = null;
       this.rows = rows;

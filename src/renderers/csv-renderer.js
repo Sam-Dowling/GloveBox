@@ -286,41 +286,49 @@ class CsvRenderer {
     const infoText = this._delimLabel(delim);
 
     // Build the viewer up front with an empty body so the user sees
-    // something paint immediately on huge files.
+    // something paint immediately on huge files.  Phase 4b: the body
+    // is always handed to the viewer as a finalised RowStore (sync
+    // path: build once after parse; streaming path: accumulate into
+    // a RowStoreBuilder and finalise on EOF) — never as a `string[][]`.
     const viewer = new GridViewer({
       columns: headerRow,
-      rows:    [],
+      store:   RowStore.empty(headerRow),
       rawText: text,
       infoText,
       className: 'csv-view',   // keep the sidebar selector happy
-      emptyMessage: 'Empty file.'
+      emptyMessage: 'Empty file.',
+      // The grid filter bar is the primary navigation aid for raw CSV /
+      // TSV viewing — opt the search-text cache in so a 1 M-row table's
+      // first filter keystroke is O(1) per row instead of an
+      // allocate-and-join-on-the-fly walk.
+      searchCacheMode: 'always',
     });
 
-    // Small file — parse synchronously and hand the rows to the viewer.
+    // Small file — parse synchronously and hand a finished RowStore to
+    // the viewer in a single setRows call.
     if (text.length <= this.CHUNK_BYTES_SYNC) {
       const { rows, rowOffsets, endedInQuotes } = this._parse(text, delim, headerEndIdx);
       const { rows: capped, rowOffsets: cappedOff, truncated, originalCount } =
         this._capRows(rows, rowOffsets);
-      const rowSearchText = new Array(capped.length);
-      const malformed = new Set();
       const expectedCols = headerRow.length;
+      const malformed = new Set();
+      const builder = new RowStoreBuilder(headerRow);
       for (let i = 0; i < capped.length; i++) {
         const r = capped[i];
         // Width policy: pad short rows silently (common for CSVs assembled
         // from multiple sources); flag rows that have MORE columns than
         // the header (more likely real corruption / quote-escape damage).
-        if (r.length > expectedCols) {
-          malformed.add(i);
-        } else if (expectedCols && r.length < expectedCols) {
-          while (r.length < expectedCols) r.push('');
-        }
-        rowSearchText[i] = r.join(' ').toLowerCase();
+        // RowStoreBuilder truncates extras at colCount and treats missing
+        // trailing cells as `''`, so we only need to flag — no in-place
+        // mutation of `r`.
+        if (r.length > expectedCols) malformed.add(i);
+        builder.addRow(r);
       }
       // An unterminated `"` at EOF means the last emitted row's final
       // cell ate everything to the end of the file. Flag it so the
       // analyst sees the malformed-row counter tick up by one.
       if (endedInQuotes && capped.length) malformed.add(capped.length - 1);
-      viewer.setRows(capped, rowSearchText, cappedOff);
+      viewer.setRows(builder.finalize(), null, cappedOff);
       viewer._infoText = `${capped.length.toLocaleString()} rows × ${headerRow.length} columns · ${infoText}`;
       viewer._updateInfoBar();
       if (malformed.size) viewer.setMalformedRows(malformed);
@@ -418,10 +426,18 @@ class CsvRenderer {
 
   // ═══════════════════════════════════════════════════════════════════════
   //  Streaming parse — yields control back to the event loop every
-  //  CHUNK_ROWS_STREAM rows so the first paint isn't blocked by a 50 MB
-  //  parse. Feeds the viewer via `appendRows()` + `updateParseProgress()`.
-  //  Threads parser state across yields so multi-line quoted cells that
-  //  straddle a chunk boundary are handled correctly.
+  //  CHUNK_ROWS_STREAM rows so the parse doesn't block input handling
+  //  on a 50 MB file. Phase 4b: instead of progressively painting via
+  //  `appendRows()` we accumulate every parsed row into a
+  //  `RowStoreBuilder` (chunked flat-buffer storage — see
+  //  `src/row-store.js`) and hand the finalised store to GridViewer in
+  //  a single `setRows` at EOF. The user sees the empty grid + a
+  //  progress bar until parse completes (~1–3 s per 100 MB on a modern
+  //  laptop). The progressive-paint regression is the deliberate trade
+  //  for single-mode GridViewer and the ~5× peak-heap reduction the
+  //  flat-buffer layout buys on the 1 M-row scenario.
+  //  Threads parser state across yields so multi-line quoted cells
+  //  that straddle a chunk boundary are handled correctly.
   // ═══════════════════════════════════════════════════════════════════════
   _parseStreaming(text, delim, startOffset, colCount, viewer) {
     const state = CsvRenderer.initParserState();
@@ -431,6 +447,13 @@ class CsvRenderer {
     const MAX = this.MAX_ROWS;
     let truncated = false;
     const malformed = new Set();
+    const builder = new RowStoreBuilder(viewer.columns);
+    // RowStore stores cell text only; row → byte-offset mapping is a
+    // separate concern (sidebar click-to-focus, raw-text preview), so
+    // we keep it as a plain `string[]`-shaped array of `{start, end}`
+    // and pass it to `setRows` as the third arg. Unbounded but bounded
+    // by `MAX_ROWS` (2× Uint32 per row → ~8 MB at 1 M rows).
+    const allOffsets = [];
 
     const yieldNext = (fn) => {
       // Prefer MessageChannel for zero-delay yielding; fall back to setTimeout.
@@ -444,19 +467,16 @@ class CsvRenderer {
     };
 
     const ingestRows = (chunkRows, chunkOffsets) => {
-      const chunkSearch = new Array(chunkRows.length);
       for (let i = 0; i < chunkRows.length; i++) {
         const r = chunkRows[i];
-        if (r.length > colCount) {
-          malformed.add(totalRows + i);
-        } else if (colCount && r.length < colCount) {
-          while (r.length < colCount) r.push('');
-        }
-        chunkSearch[i] = r.join(' ').toLowerCase();
+        // Width policy: flag rows wider than the header (RowStoreBuilder
+        // truncates them to `colCount`); short rows are padded silently
+        // by the builder via the missing-cell-as-`''` fallback.
+        if (r.length > colCount) malformed.add(totalRows + i);
+        builder.addRow(r);
+        allOffsets.push(chunkOffsets[i]);
       }
-      viewer.appendRows(chunkRows, chunkSearch, chunkOffsets);
       totalRows += chunkRows.length;
-      if (malformed.size) viewer.setMalformedRows(malformed);
     };
 
     const self = this;
@@ -474,13 +494,19 @@ class CsvRenderer {
           if (flushResult.rows.length) {
             ingestRows(flushResult.rows, flushResult.rowOffsets);
             if (flushResult.endedInQuotes) malformed.add(totalRows - 1);
-            if (malformed.size) viewer.setMalformedRows(malformed);
           }
         }
+        // Hand the finished store to the viewer. `setRows` detects the
+        // RowStore-shaped payload, stamps it onto `viewer.store`, and
+        // re-renders. Malformed flags + the truncation banner are
+        // applied AFTER the row swap so they paint against the new
+        // store-mode state.
+        viewer.setRows(builder.finalize(), null, allOffsets);
         viewer._infoText =
           `${totalRows.toLocaleString()} rows × ${colCount} columns · ${self._delimLabel(delim)}`;
         viewer._updateInfoBar();
         viewer.endParseProgress();
+        if (malformed.size) viewer.setMalformedRows(malformed);
         if (truncated) {
           viewer._truncNote =
             `⚠ Showing first ${MAX.toLocaleString()} rows (row cap). File continues beyond this point.`;
@@ -513,7 +539,7 @@ class CsvRenderer {
       yieldNext(() => parseChunk(self.CHUNK_ROWS_STREAM));
     };
 
-    // Kick off with a smaller first chunk for faster first paint.
+    // Kick off with a smaller first chunk for the first progress-bar tick.
     parseChunk(this.CHUNK_ROWS_FIRST);
   }
 
