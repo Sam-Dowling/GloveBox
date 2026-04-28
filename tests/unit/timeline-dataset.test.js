@@ -526,10 +526,32 @@ test('TimelineView delegates _cellAt / columns / _isExtractedCol to the dataset'
   // route through `this._dataset` so the base/extracted dispatch
   // has exactly one implementation. Pin source-text references to
   // catch a future revert that re-inlines the slot reads.
+  //
+  // After B2f2 the grid-render path lives in
+  // `timeline-view-render-grid.js` (a sibling prototype mixin), so
+  // we scan the entire `timeline-view*` family for the
+  // baseStore-from-dataset assertion. The `_cellAt` / `columns`
+  // getter assertions still anchor against `timeline-view.js` (those
+  // remain in core).
   const viewSrc = fs.readFileSync(
     path.join(REPO_ROOT, 'src/app/timeline/timeline-view.js'),
     'utf8',
   );
+  const SIBLING_FILES = [
+    'src/app/timeline/timeline-view.js',
+    'src/app/timeline/timeline-view-render-grid.js',
+    'src/app/timeline/timeline-view-render-chart.js',
+    'src/app/timeline/timeline-view-filter.js',
+    'src/app/timeline/timeline-view-popovers.js',
+    'src/app/timeline/timeline-view-autoextract.js',
+    'src/app/timeline/timeline-view-factories.js',
+  ];
+  const COMBINED = SIBLING_FILES
+    .map(p => {
+      try { return fs.readFileSync(path.join(REPO_ROOT, p), 'utf8'); }
+      catch (_) { return ''; }
+    })
+    .join('\n');
   // _cellAt body must call into the dataset.
   assert.match(
     viewSrc,
@@ -543,11 +565,12 @@ test('TimelineView delegates _cellAt / columns / _isExtractedCol to the dataset'
     'TimelineView.columns getter must delegate to dataset.allColumnNames',
   );
   // The TimelineRowView adapter at grid-render time must source
-  // baseStore / extractedCols / baseLen from the dataset.
+  // baseStore / extractedCols / baseLen from the dataset. After B2f2
+  // this lives in `timeline-view-render-grid.js`.
   assert.match(
-    viewSrc,
+    COMBINED,
     /baseStore:\s*ds\s*\?\s*ds\.store/,
-    'Grid-render TimelineRowView must source baseStore from the dataset',
+    'Grid-render TimelineRowView must source baseStore from the dataset (any timeline-view* sibling)',
   );
 });
 

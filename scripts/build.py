@@ -898,6 +898,14 @@ APP_JS_FILES = [
     # are byte-identical with pre-B2f1 `timeline-view.js`. Loads
     # AFTER timeline-view.js.
     'src/app/timeline/timeline-view-render-chart.js',
+    # timeline-view-render-grid.js — TimelineView prototype mixin
+    # (B2f2). Twin to render-chart but for the lower half of the
+    # timeline UI: the grid table mount (`_renderGridInto`) and the
+    # column top-values "cards" strip (`_paintColumnCards` and its
+    # drag/resize/sus-resolve helpers). Hot paths — bodies are
+    # byte-identical with the pre-B2f2 `timeline-view.js`. Loads
+    # AFTER timeline-view.js.
+    'src/app/timeline/timeline-view-render-grid.js',
     'src/app/timeline/timeline-detections.js',
     'src/app/timeline/timeline-summary.js',
     'src/app/timeline/timeline-drawer.js',
