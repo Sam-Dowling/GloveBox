@@ -12899,6 +12899,270 @@ body.tl-chart-resizing * {
   line-height: 1.4;
 }
 
+/* ── Inline datetime range widget ─────────────────────────────────────
+   Replaces the old `tl-range-banner` strip. Compact two-line button on
+   the LEFT edge of `.tl-query-inner`, opening a tabbed popover (Absolute
+   / Relative). Empty state: single line "🕒 Any time ▾". Active state:
+   stacked from / to / delta. The `--preview` modifier (dashed border,
+   pulse) is applied during scrubber / chart-drag previews. */
+.timeline-view .tl-query-daterange {
+  flex: 0 0 auto;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  margin-right: 6px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.15;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms, border-color 120ms;
+}
+
+.timeline-view .tl-query-daterange:hover {
+  background: var(--panel-bg-hover, rgb(0 0 0 / 0.06));
+  border-color: var(--hairline);
+}
+
+.timeline-view .tl-query-daterange-empty {
+  opacity: 0.7;
+}
+
+.timeline-view .tl-query-daterange--active {
+  border-color: rgb(var(--accent-rgb, 79 140 255) / 0.4);
+  background: rgb(var(--accent-rgb, 79 140 255) / 0.08);
+  color: var(--accent, #4f8cff);
+}
+
+.timeline-view .tl-query-daterange--active:hover {
+  background: rgb(var(--accent-rgb, 79 140 255) / 0.16);
+}
+
+.timeline-view .tl-query-daterange-active {
+  display: grid;
+  grid-template-columns: max-content max-content;
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  row-gap: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-view .tl-query-daterange-from {
+  grid-column: 1;
+  grid-row: 1;
+  font-weight: 600;
+}
+
+.timeline-view .tl-query-daterange-to {
+  grid-column: 1;
+  grid-row: 2;
+  font-weight: 600;
+}
+
+.timeline-view .tl-query-daterange-delta {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: center;
+  opacity: 0.7;
+  font-size: 10.5px;
+}
+
+.timeline-view .tl-query-daterange--preview {
+  border-style: dashed;
+  animation: tl-query-daterange-preview-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes tl-query-daterange-preview-pulse {
+  0%, 100% { background: rgb(var(--accent-rgb, 79 140 255) / 0.08); }
+  50%      { background: rgb(var(--accent-rgb, 79 140 255) / 0.22); }
+}
+
+body.dark .timeline-view .tl-query-daterange--active {
+  background: rgb(var(--accent-rgb, 79 140 255) / 0.14);
+}
+
+/* Date-range popover (portal'd to body — same dismiss rules as the
+   suggestion / history menus). Tabbed layout (Absolute / Relative)
+   with a shared draft and Apply / Cancel / Clear footer. */
+.tl-query-daterange-popover {
+  background: var(--panel-bg);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.25);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  min-width: 280px;
+  max-width: 360px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tl-query-daterange-tabs {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--hairline);
+  padding: 6px 6px 0;
+}
+
+.tl-query-daterange-tab {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  padding: 6px 12px;
+  margin-bottom: -1px;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tl-query-daterange-tab:hover {
+  color: var(--text);
+}
+
+.tl-query-daterange-tab.tl-query-daterange-tab-active {
+  color: var(--accent, #4f8cff);
+  border-bottom-color: var(--accent, #4f8cff);
+}
+
+.tl-query-daterange-pane {
+  padding: 10px 12px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tl-query-daterange-pane[hidden] {
+  display: none;
+}
+
+.tl-query-daterange-row {
+  display: grid;
+  grid-template-columns: 50px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.tl-query-daterange-row-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.tl-query-daterange-input,
+.tl-query-daterange-rel-input {
+  font-family: inherit;
+  font-size: 12px;
+  padding: 4px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--panel-bg);
+  color: var(--text);
+  min-width: 0;
+}
+
+.tl-query-daterange-input:focus,
+.tl-query-daterange-rel-input:focus {
+  outline: none;
+  border-color: var(--accent, #4f8cff);
+  box-shadow: 0 0 0 2px rgb(var(--accent-rgb, 79 140 255) / 0.18);
+}
+
+.tl-query-daterange-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding-top: 2px;
+  border-top: 1px dashed var(--hairline);
+  margin-top: 2px;
+}
+
+.tl-query-daterange-preset {
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.tl-query-daterange-preset:hover {
+  border-color: var(--accent, #4f8cff);
+  color: var(--accent, #4f8cff);
+  background: rgb(var(--accent-rgb, 79 140 255) / 0.08);
+}
+
+.tl-query-daterange-rel-row {
+  display: grid;
+  grid-template-columns: 50px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.tl-query-daterange-rel-help {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.tl-query-daterange-rel-help code {
+  background: rgb(var(--accent-rgb, 79 140 255) / 0.1);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10.5px;
+}
+
+.tl-query-daterange-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--hairline);
+  background: var(--panel-bg-section, var(--panel-bg));
+}
+
+.tl-query-daterange-foot-spacer {
+  flex: 1;
+}
+
+.tl-query-daterange-foot-btn {
+  background: transparent;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tl-query-daterange-foot-btn:hover {
+  border-color: var(--accent, #4f8cff);
+}
+
+.tl-query-daterange-foot-btn-primary {
+  background: var(--accent, #4f8cff);
+  border-color: var(--accent, #4f8cff);
+  color: #fff;
+}
+
+.tl-query-daterange-foot-btn-primary:hover {
+  filter: brightness(1.08);
+}
+
 /* Timeline detail drawer — tint cells whose values triggered a Suspicious
    match. Two tiers: `.tl-sus-cell` = the exact cell that matched;
    `.tl-sus-row-cell` = the rest of the row, so the offending column still
@@ -13279,104 +13543,6 @@ body.dark .timeline-view .grid-drawer-body .csv-detail-val.tl-sus-row-cell {
    many sus chips wrap across multiple lines in the `.tl-chips` row. */
 .timeline-view .tl-chips .tl-chip-add {
   flex-shrink: 0;
-}
-
-/* ── Range banner ─────────────────────────────────────────────────────
-   Promoted out of the chips strip — shown above the query bar whenever
-   `_window` is non-null. Uses the accent palette with a thick left border
-   so the active time window reads at a glance; hidden via `.hidden`
-   (display: none) the rest of the time. */
-.timeline-view .tl-range-banner {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--hairline);
-  border-left: 4px solid var(--accent);
-  background: rgb(var(--accent-rgb) / .10);
-  color: var(--text);
-  font-size: 12px;
-}
-
-.timeline-view .tl-range-banner.hidden {
-  display: none;
-}
-
-.timeline-view .tl-range-banner-icon {
-  font-size: 14px;
-}
-
-.timeline-view .tl-range-banner-label {
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  font-size: 10px;
-  letter-spacing: 0.05em;
-}
-
-.timeline-view .tl-range-banner-text {
-  font-family: var(--mono, ui-monospace, monospace);
-  font-weight: 600;
-  color: var(--accent);
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Live-drag preview — mirrors the grid-viewer window-label chip. Applied
-   while the analyst is rubber-banding a range on the histogram or dragging
-   either scrubber handle; removed on mouseup when the range is committed. */
-.timeline-view .tl-range-banner--preview {
-  border-left-style: dashed;
-  animation: tl-range-banner-preview-pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes tl-range-banner-preview-pulse {
-
-  0%,
-  100% {
-    background: rgb(var(--accent-rgb) / .10);
-  }
-
-  50% {
-    background: rgb(var(--accent-rgb) / .22);
-  }
-}
-
-body.dark .timeline-view .tl-range-banner--preview {
-  animation-name: tl-range-banner-preview-pulse-dark;
-}
-
-@keyframes tl-range-banner-preview-pulse-dark {
-
-  0%,
-  100% {
-    background: rgb(var(--accent-rgb) / .15);
-  }
-
-  50% {
-    background: rgb(var(--accent-rgb) / .30);
-  }
-}
-
-.timeline-view .tl-range-banner-clear {
-  padding: 3px 10px;
-  border-radius: 4px;
-  border: 1px solid rgb(var(--accent-rgb) / .4);
-  background: transparent;
-  color: var(--accent);
-  font-size: 11px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.timeline-view .tl-range-banner-clear:hover {
-  background: rgb(var(--accent-rgb) / .15);
-}
-
-body.dark .timeline-view .tl-range-banner {
-  background: rgb(var(--accent-rgb) / .15);
 }
 
 .timeline-view .tl-chip-col {

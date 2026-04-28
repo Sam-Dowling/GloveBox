@@ -55,7 +55,32 @@ class TimelineQueryEditor {
     this.view = opts.view;
     this.onChange = opts.onChange || (() => { });
     this.onCommit = opts.onCommit || (() => { });
+    // `onWindowChange(win)` — called when the inline datetime range
+    // widget commits a new {min,max} (or null = "Any time"). The view
+    // wires it to mutate `_window` + run `_applyWindowOnly` + schedule
+    // a render. Same contract as the legacy `tl-range-banner` Clear
+    // button; replaces `_renderRangeBanner` as the only window-state
+    // surface visible to the analyst.
+    this.onWindowChange = opts.onWindowChange || (() => { });
+    // Formatters are injected so the editor stays decoupled from the
+    // view's numeric/UTC mode. The view passes `_tlFormatFullUtc`,
+    // `_tlFormatDuration`, `_tlFormatNumericTick`, `_tlParseRelative`,
+    // and lambdas for `isNumeric` / `dataRange`. All optional — fall
+    // back to a no-op formatter so the constructor never throws.
+    this.formatters = opts.formatters || {};
     this.debounceMs = opts.debounceMs != null ? opts.debounceMs : 60;
+    // Active time window — null means "Any time" (no filter). Mutations
+    // come from (a) the datetime widget popover (Apply / Clear / preset
+    // chip), (b) the public `setWindow(win)` called by the view when the
+    // scrubber / chart-drag mutates `_window`. Render-only — committing
+    // a value goes through `onWindowChange`.
+    this._window = opts.initialWindow || null;
+    // Live drag-preview flag — when true the compact button gets a
+    // `--preview` modifier (dashed / pulsing) so the analyst can see
+    // they haven't released yet. Set via `setWindow({preview:true})`,
+    // cleared on the next non-preview call.
+    this._windowPreview = false;
+    this._datePopover = null;
 
     this._debounceTimer = 0;
     this._sugg = null;                   // suggestion state (see class header)
@@ -101,20 +126,29 @@ class TimelineQueryEditor {
   _buildDom() {
     const root = document.createElement('div');
     root.className = 'tl-query';
-    // Button cluster is deliberately rendered BEFORE the editor so the
-    // clear / history / help controls sit on the LEFT, next to the
-    // natural "I'm about to type here" focus point. The search-icon
-    // indicator was removed — the placeholder text already carries the
-    // affordance and the icon fought for width with the buttons.
+    // Layout (left → right):
+    //   [datetime range] [─── editor (flex) ───] [✕] [▾] [?]
+    //
+    // The datetime range button replaces the legacy `tl-range-banner`
+    // (a separate full-width strip above the editor) — it shows the
+    // active `_window` as two stacked timestamps with a delta, opens a
+    // popover for absolute / relative input on click, and flips to an
+    // "Any time" empty state when no window is set. The clear / history
+    // / help cluster moved to the trailing edge so the editor anchors
+    // visually between the two control groups.
     root.innerHTML = `
       <div class="tl-query-inner">
-        <button class="tl-query-clear" type="button" title="Clear filter" tabindex="-1">✕</button>
-        <button class="tl-query-history" type="button" title="History (Ctrl/⌘-↓)" tabindex="-1">▾</button>
-        <button class="tl-query-help" type="button" title="Query language help (Ctrl/⌘-Z undo · Ctrl/⌘-Shift-Z redo · Ctrl/⌘-Backspace delete clause)" tabindex="-1">?</button>
+        <button class="tl-query-daterange" type="button" tabindex="-1"
+                title="Filter by time range — click to set absolute / relative">
+          <span class="tl-query-daterange-body"></span>
+        </button>
         <div class="tl-query-editor">
           <pre class="tl-query-hl" aria-hidden="true"><code></code></pre>
           <textarea class="tl-query-input" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" rows="1" placeholder='Filter — e.g. User:admin AND (EventID=4624 OR EventID=4625) NOT "svc_backup"'></textarea>
         </div>
+        <button class="tl-query-clear" type="button" title="Clear filter" tabindex="-1">✕</button>
+        <button class="tl-query-history" type="button" title="History (Ctrl/⌘-↓)" tabindex="-1">▾</button>
+        <button class="tl-query-help" type="button" title="Query language help (Ctrl/⌘-Z undo · Ctrl/⌘-Shift-Z redo · Ctrl/⌘-Backspace delete clause)" tabindex="-1">?</button>
       </div>
       <div class="tl-query-status" aria-live="polite"></div>
     `;
@@ -125,6 +159,8 @@ class TimelineQueryEditor {
     this.clearBtn = root.querySelector('.tl-query-clear');
     this.historyBtn = root.querySelector('.tl-query-history');
     this.helpBtn = root.querySelector('.tl-query-help');
+    this.daterangeBtn = root.querySelector('.tl-query-daterange');
+    this.daterangeBody = root.querySelector('.tl-query-daterange-body');
 
     // Input event = user typed / pasted / cut. This is the ONE place we
     // consider opening the popover automatically. `e.isComposing` skips
@@ -203,6 +239,14 @@ class TimelineQueryEditor {
       e.stopPropagation();
       this._openHelpPopover();
     });
+    this.daterangeBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._toggleDatePopover();
+    });
+    // Initial paint — empty state (or active window if `initialWindow`
+    // was supplied). Keeps the button visually populated before the
+    // view has had a chance to push a window via `setWindow`.
+    this._renderDaterangeButton();
   }
 
   // Public API — setValue is used on history-pick, query restore, and
@@ -1093,9 +1137,13 @@ class TimelineQueryEditor {
     setTimeout(() => { if (bub.parentNode) bub.parentNode.removeChild(bub); }, 1800);
   }
 
-  // Shared mount helper for history / help menus — same dismiss rules as
-  // the suggestion popover (outside pointerdown, Escape, window resize).
-  _mountFloatingMenu(menu, anchor) {
+  // Shared mount helper for history / help / date-range menus — same
+  // dismiss rules as the suggestion popover (outside pointerdown,
+  // Escape, window resize). `opts.onDismiss` (optional) fires once the
+  // menu is removed, so callers can null out their state pointer
+  // without polling.
+  _mountFloatingMenu(menu, anchor, opts) {
+    const onDismiss = (opts && typeof opts.onDismiss === 'function') ? opts.onDismiss : null;
     const rect = anchor.getBoundingClientRect();
     menu.style.position = 'fixed';
     menu.style.top = (rect.bottom + 2) + 'px';
@@ -1109,11 +1157,15 @@ class TimelineQueryEditor {
     const maxLeft = Math.max(8, window.innerWidth - menuW - 8);
     menu.style.left = Math.max(8, Math.min(rect.left, maxLeft)) + 'px';
 
+    let dismissed = false;
     const dismiss = () => {
+      if (dismissed) return;
+      dismissed = true;
       if (menu.parentNode) menu.parentNode.removeChild(menu);
       document.removeEventListener('pointerdown', onPointer, true);
       document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', onResize, true);
+      if (onDismiss) { try { onDismiss(); } catch (_) { /* noop */ } }
     };
     // Expose dismiss so _closeHistoryMenu can invoke it cleanly.
     menu._dismiss = dismiss;
@@ -1128,8 +1180,362 @@ class TimelineQueryEditor {
     }, 0);
   }
 
+  // ── Inline datetime range widget ─────────────────────────────────────
+  // The compact button + popover that replaces the old `tl-range-banner`.
+  // `_window` is the editor's local copy of the view's `_window`; the
+  // view pushes updates here via `setWindow` (scrubber/chart drag, reset),
+  // and the popover commits user input back through `onWindowChange`
+  // (which the view wires to mutate `_window` + run `_applyWindowOnly`).
+  //
+  // The button has two render modes:
+  //   - empty   (`_window == null`): single line "🕒 Any time ▾"
+  //   - active  (`_window != null`): three lines — start, end, delta.
+  // A `--preview` modifier is applied during live drag so the analyst
+  // can see the pending range hasn't been committed yet.
+
+  // Public API. Render-only — does NOT call `onWindowChange` (the caller
+  // is the source of truth). Pass `{preview: true}` for drag previews.
+  setWindow(win) {
+    if (!win) {
+      this._window = null;
+      this._windowPreview = false;
+    } else {
+      this._window = { min: win.min, max: win.max };
+      this._windowPreview = !!win.preview;
+    }
+    this._renderDaterangeButton();
+  }
+
+  getWindow() {
+    return this._window ? { min: this._window.min, max: this._window.max } : null;
+  }
+
+  // Internal — emit a window change to the view. The view applies it
+  // and is expected to call `setWindow` back at us as part of its
+  // render pass; we update locally first so the button repaints
+  // immediately (before the view's rAF), avoiding a one-frame flicker.
+  _commitWindow(win) {
+    this._window = win ? { min: win.min, max: win.max } : null;
+    this._windowPreview = false;
+    this._renderDaterangeButton();
+    try { this.onWindowChange(this._window ? { ...this._window } : null); } catch (_) { /* noop */ }
+  }
+
+  _isNumericAxis() {
+    const f = this.formatters;
+    return !!(f && typeof f.isNumeric === 'function' && f.isNumeric());
+  }
+
+  _formatStamp(v) {
+    const f = this.formatters;
+    if (typeof f.formatTimestamp === 'function') return f.formatTimestamp(v, this._isNumericAxis());
+    if (Number.isFinite(v)) return String(v);
+    return '—';
+  }
+
+  _formatSpan(min, max) {
+    const f = this.formatters;
+    const span = max - min;
+    if (this._isNumericAxis()) {
+      if (typeof f.formatNumeric === 'function' && Number.isFinite(span)) {
+        return '· Δ ' + f.formatNumeric(span, span);
+      }
+      return Number.isFinite(span) ? '· Δ ' + String(span) : '';
+    }
+    if (typeof f.formatDuration === 'function') {
+      const dur = f.formatDuration(span);
+      return dur ? '· ' + dur : '';
+    }
+    return '';
+  }
+
+  _renderDaterangeButton() {
+    if (!this.daterangeBtn || !this.daterangeBody) return;
+    const btn = this.daterangeBtn;
+    btn.classList.toggle('tl-query-daterange--active', !!this._window);
+    btn.classList.toggle('tl-query-daterange--preview', !!this._windowPreview);
+    if (!this._window) {
+      this.daterangeBody.innerHTML = '<span class="tl-query-daterange-empty">🕒 Any time ▾</span>';
+      btn.title = 'Filter by time range — click to set absolute / relative';
+      return;
+    }
+    const lo = this._formatStamp(this._window.min);
+    const hi = this._formatStamp(this._window.max);
+    const delta = this._formatSpan(this._window.min, this._window.max);
+    this.daterangeBody.innerHTML = `
+      <span class="tl-query-daterange-active">
+        <span class="tl-query-daterange-from">${_tlEsc(lo)}</span>
+        <span class="tl-query-daterange-to">${_tlEsc(hi)}</span>
+        <span class="tl-query-daterange-delta">${_tlEsc(delta)}</span>
+      </span>
+    `;
+    btn.title = `Showing ${lo} → ${hi}${delta ? ' ' + delta : ''} — click to edit`;
+  }
+
+  // ── Date range popover ───────────────────────────────────────────────
+  // Tabbed popover: Absolute (datetime-local OR number inputs + presets),
+  // Relative (single-term "Last <N><unit>", date-axis only). Both tabs
+  // share a draft `{min, max}` so toggling between them doesn't lose
+  // state. Apply commits via `_commitWindow`; Clear commits null. Esc /
+  // outside-pointer / window-resize dismisses without committing.
+  _isDatePopoverOpen() { return !!(this._datePopover && this._datePopover.parentNode); }
+
+  _toggleDatePopover() {
+    if (this._isDatePopoverOpen()) {
+      this._closeDatePopover();
+      return;
+    }
+    this._openDatePopover();
+  }
+
+  _closeDatePopover() {
+    if (this._datePopover && typeof this._datePopover._dismiss === 'function') {
+      this._datePopover._dismiss();
+    } else if (this._datePopover && this._datePopover.parentNode) {
+      this._datePopover.parentNode.removeChild(this._datePopover);
+    }
+    this._datePopover = null;
+  }
+
+  _openDatePopover() {
+    this._closeSuggest();
+    this._closeHistoryMenu();
+    const numeric = this._isNumericAxis();
+    const dr = (this.formatters && typeof this.formatters.dataRange === 'function')
+      ? this.formatters.dataRange() : null;
+    // Draft state — start from the current window if any, else the data
+    // range so the inputs are pre-populated with a sensible default.
+    const draft = {
+      min: this._window ? this._window.min
+        : (dr && Number.isFinite(dr.min) ? dr.min : NaN),
+      max: this._window ? this._window.max
+        : (dr && Number.isFinite(dr.max) ? dr.max : NaN),
+    };
+
+    const menu = document.createElement('div');
+    menu.className = 'tl-query-daterange-popover';
+    menu.innerHTML = `
+      <div class="tl-query-daterange-tabs" role="tablist">
+        <button type="button" role="tab" data-tab="absolute" class="tl-query-daterange-tab tl-query-daterange-tab-active">Absolute</button>
+        ${numeric ? '' : '<button type="button" role="tab" data-tab="relative" class="tl-query-daterange-tab">Relative</button>'}
+      </div>
+      <div class="tl-query-daterange-pane tl-query-daterange-pane-absolute" data-pane="absolute">
+        <label class="tl-query-daterange-row">
+          <span class="tl-query-daterange-row-label">From</span>
+          ${numeric
+    ? '<input type="number" step="any" class="tl-query-daterange-input" data-field="min">'
+    : '<input type="datetime-local" step="1" class="tl-query-daterange-input" data-field="min">'}
+        </label>
+        <label class="tl-query-daterange-row">
+          <span class="tl-query-daterange-row-label">To</span>
+          ${numeric
+    ? '<input type="number" step="any" class="tl-query-daterange-input" data-field="max">'
+    : '<input type="datetime-local" step="1" class="tl-query-daterange-input" data-field="max">'}
+        </label>
+        <div class="tl-query-daterange-presets">
+          ${this._presetChipsHtml(numeric)}
+        </div>
+      </div>
+      ${numeric ? '' : `
+      <div class="tl-query-daterange-pane tl-query-daterange-pane-relative" data-pane="relative" hidden>
+        <div class="tl-query-daterange-rel-row">
+          <span class="tl-query-daterange-row-label">Last</span>
+          <input type="text" class="tl-query-daterange-rel-input"
+                 data-field="rel" placeholder="e.g. 15m · 2h · 7d" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="tl-query-daterange-rel-help">
+          Single term — &lt;number&gt;&lt;unit&gt;. Units: <code>s</code> · <code>m</code> · <code>h</code> · <code>d</code> · <code>w</code>.
+          Anchored to the data's latest timestamp.
+        </div>
+      </div>`}
+      <div class="tl-query-daterange-foot">
+        <button type="button" class="tl-query-daterange-foot-btn tl-query-daterange-clear">Clear</button>
+        <span class="tl-query-daterange-foot-spacer"></span>
+        <button type="button" class="tl-query-daterange-foot-btn tl-query-daterange-cancel">Cancel</button>
+        <button type="button" class="tl-query-daterange-foot-btn tl-query-daterange-apply tl-query-daterange-foot-btn-primary">Apply</button>
+      </div>
+    `;
+
+    // Pre-fill the absolute inputs from the draft.
+    const minInput = menu.querySelector('[data-field="min"]');
+    const maxInput = menu.querySelector('[data-field="max"]');
+    if (numeric) {
+      if (Number.isFinite(draft.min)) minInput.value = String(draft.min);
+      if (Number.isFinite(draft.max)) maxInput.value = String(draft.max);
+    } else {
+      if (Number.isFinite(draft.min)) minInput.value = TimelineQueryEditor._toDateTimeLocal(draft.min);
+      if (Number.isFinite(draft.max)) maxInput.value = TimelineQueryEditor._toDateTimeLocal(draft.max);
+    }
+
+    // Tab switching.
+    const tabs = menu.querySelectorAll('.tl-query-daterange-tab');
+    const panes = menu.querySelectorAll('.tl-query-daterange-pane');
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => {
+        const id = tab.dataset.tab;
+        for (const t of tabs) t.classList.toggle('tl-query-daterange-tab-active', t === tab);
+        for (const p of panes) p.hidden = p.dataset.pane !== id;
+      });
+    }
+
+    // Preset chips — click sets both inputs and immediately commits.
+    menu.querySelectorAll('.tl-query-daterange-preset').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const win = this._resolvePreset(chip.dataset.preset, dr, numeric);
+        if (!win) return;
+        this._commitWindow(win);
+        this._closeDatePopover();
+      });
+    });
+
+    // Apply button — read the active pane's inputs into a window.
+    menu.querySelector('.tl-query-daterange-apply').addEventListener('click', () => {
+      const activeTab = menu.querySelector('.tl-query-daterange-tab-active').dataset.tab;
+      let win = null;
+      if (activeTab === 'absolute') {
+        const lo = this._readAbsoluteInput(minInput, numeric);
+        const hi = this._readAbsoluteInput(maxInput, numeric);
+        if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi <= lo) return;
+        win = { min: lo, max: hi };
+      } else {
+        const relInput = menu.querySelector('[data-field="rel"]');
+        const dur = (this.formatters && typeof this.formatters.parseRelative === 'function')
+          ? this.formatters.parseRelative(relInput.value) : null;
+        if (!dur) return;
+        const anchor = (dr && Number.isFinite(dr.max)) ? dr.max : Date.now();
+        win = { min: anchor - dur, max: anchor };
+      }
+      // Clamp to the data range so a sloppy "year 2099" entry doesn't
+      // produce an empty grid.
+      if (dr) {
+        if (Number.isFinite(dr.min)) win.min = Math.max(dr.min, win.min);
+        if (Number.isFinite(dr.max)) win.max = Math.min(dr.max, win.max);
+      }
+      if (!(Number.isFinite(win.min) && Number.isFinite(win.max) && win.max > win.min)) return;
+      this._commitWindow(win);
+      this._closeDatePopover();
+    });
+
+    // Enter inside any input = Apply.
+    menu.querySelectorAll('input').forEach(inp => {
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          menu.querySelector('.tl-query-daterange-apply').click();
+        }
+      });
+    });
+
+    // Cancel / Clear.
+    menu.querySelector('.tl-query-daterange-cancel').addEventListener('click', () => {
+      this._closeDatePopover();
+    });
+    menu.querySelector('.tl-query-daterange-clear').addEventListener('click', () => {
+      this._commitWindow(null);
+      this._closeDatePopover();
+    });
+
+    this._datePopover = menu;
+    this._mountFloatingMenu(menu, this.daterangeBtn, { onDismiss: () => { this._datePopover = null; } });
+    // Focus the first input so keyboard analysts can start typing
+    // immediately without a tab.
+    setTimeout(() => {
+      const first = menu.querySelector('input');
+      if (first) first.focus();
+    }, 0);
+  }
+
+  _presetChipsHtml(numeric) {
+    if (numeric) {
+      // Numeric-axis: only "Full range" makes sense as a preset; the
+      // others are wall-clock relative and have no meaning here.
+      return [
+        '<button type="button" class="tl-query-daterange-preset" data-preset="full">Full range</button>',
+        '<button type="button" class="tl-query-daterange-preset" data-preset="num-first-half">First half</button>',
+        '<button type="button" class="tl-query-daterange-preset" data-preset="num-last-half">Last half</button>',
+      ].join('');
+    }
+    const presets = [
+      ['15m', 'Last 15m'],
+      ['1h', 'Last 1h'],
+      ['24h', 'Last 24h'],
+      ['7d', 'Last 7d'],
+      ['30d', 'Last 30d'],
+      ['day', 'This day'],
+      ['week', 'This week'],
+      ['full', 'Full range'],
+    ];
+    return presets.map(([id, label]) =>
+      `<button type="button" class="tl-query-daterange-preset" data-preset="${id}">${_tlEsc(label)}</button>`
+    ).join('');
+  }
+
+  _resolvePreset(id, dr, numeric) {
+    if (numeric) {
+      if (!dr || !Number.isFinite(dr.min) || !Number.isFinite(dr.max)) return null;
+      if (id === 'full') return { min: dr.min, max: dr.max };
+      const mid = dr.min + (dr.max - dr.min) / 2;
+      if (id === 'num-first-half') return { min: dr.min, max: mid };
+      if (id === 'num-last-half') return { min: mid, max: dr.max };
+      return null;
+    }
+    const anchor = (dr && Number.isFinite(dr.max)) ? dr.max : Date.now();
+    const dataMin = (dr && Number.isFinite(dr.min)) ? dr.min : -Infinity;
+    if (id === 'full') {
+      if (!dr || !Number.isFinite(dr.min) || !Number.isFinite(dr.max)) return null;
+      return { min: dr.min, max: dr.max };
+    }
+    if (id === 'day' || id === 'week') {
+      // Anchor a calendar-aligned day / week to the latest data
+      // timestamp so "This day" matches the rightmost histogram bucket.
+      const d = new Date(anchor);
+      const startOfDay = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+      if (id === 'day') return { min: Math.max(dataMin, startOfDay), max: anchor };
+      // Week: ISO week starts Monday. `getUTCDay()` Sunday=0 → shift.
+      const dow = (d.getUTCDay() + 6) % 7;
+      const startOfWeek = startOfDay - dow * 86_400_000;
+      return { min: Math.max(dataMin, startOfWeek), max: anchor };
+    }
+    // Otherwise it's a relative term ("15m", "24h", ...).
+    const dur = (this.formatters && typeof this.formatters.parseRelative === 'function')
+      ? this.formatters.parseRelative(id) : null;
+    if (!dur) return null;
+    return { min: Math.max(dataMin, anchor - dur), max: anchor };
+  }
+
+  _readAbsoluteInput(el, numeric) {
+    if (!el) return NaN;
+    const v = el.value;
+    if (!v) return NaN;
+    if (numeric) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : NaN;
+    }
+    // datetime-local — interpret as UTC to match the rest of the
+    // timeline (which renders in UTC throughout — see
+    // `_tlFormatFullUtc`). The browser hands us a local-tz string, but
+    // since we display UTC the analyst's mental model is UTC; treat
+    // the input as UTC-naive and parse with `Date.UTC`.
+    const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?$/);
+    if (!m) return NaN;
+    const ms = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0), m[7] ? Math.round(parseFloat('0.' + m[7]) * 1000) : 0);
+    return Number.isFinite(ms) ? ms : NaN;
+  }
+
+  // Format an epoch-ms as a `datetime-local`-compatible string in UTC.
+  // The browser's `<input type="datetime-local">` does not accept a `Z`
+  // suffix; we display UTC throughout the timeline so the input value
+  // is the UTC wall-clock spelled in the local-naive format.
+  static _toDateTimeLocal(ms) {
+    if (!Number.isFinite(ms)) return '';
+    const d = new Date(ms);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+  }
+
   destroy() {
     this._closeSuggest();
+    this._closeDatePopover();
     clearTimeout(this._debounceTimer);
     if (this.root && this.root.parentNode) this.root.parentNode.removeChild(this.root);
     // Drop back-references so the parent TimelineView (and its row data)
@@ -1137,6 +1543,8 @@ class TimelineQueryEditor {
     this.view = null;
     this.onChange = null;
     this.onCommit = null;
+    this.onWindowChange = null;
+    this.formatters = null;
   }
 
   static _loadHistory() {

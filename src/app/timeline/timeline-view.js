@@ -1533,28 +1533,18 @@ class TimelineView {
     });
     host.appendChild(chart.wrapper);
 
-    // Range banner — shown only when a time window is active (scrubber
-    // drag / chart rubber-band selection / query `range:`). Promoted out
-    // of the chips strip into a prominent full-width banner so the
-    // active window is always visible at a glance. Hidden via the
-    // `.hidden` class when `this._window == null`; see
-    // `_renderRangeBanner` for the render site and `_scheduleRender`
-    // (chips task) for the dispatch wiring.
-    const rangeBanner = document.createElement('div');
-    rangeBanner.className = 'tl-range-banner hidden';
-    rangeBanner.innerHTML = `
-      <span class="tl-range-banner-icon">🕒</span>
-      <span class="tl-range-banner-label">Showing</span>
-      <span class="tl-range-banner-text">—</span>
-      <button class="tl-range-banner-clear" type="button" title="Clear time window">✕ Clear</button>
-    `;
-    host.appendChild(rangeBanner);
-
     // Query bar — mount point for TimelineQueryEditor. The editor itself
     // is constructed in `_wireEvents` (after columns are known) and its
     // `.root` is appended into this container. Kept as a thin shell here
-    // so the layout ordering (scrubber → chart → range → query → chips → grid)
+    // so the layout ordering (scrubber → chart → query → chips → grid)
     // is visible from `_buildDOM`.
+    //
+    // The active time window readout (formerly a separate
+    // `tl-range-banner` strip above this mount point) now lives INSIDE
+    // the query bar as a compact two-line button — see
+    // `TimelineQueryEditor`'s `setWindow` API. Scrubber / chart-drag
+    // call sites push window updates through that API; the editor's
+    // popover commits user input back via `onWindowChange`.
     const queryBar = document.createElement('div');
     queryBar.className = 'tl-query-mount';
     host.appendChild(queryBar);
@@ -1689,9 +1679,6 @@ class TimelineView {
       chart: chart.body, chartSection: chart,
       queryBar,
       chips, gridSection: gridSec, gridWrap: gridSec.body,
-      rangeBanner,
-      rangeBannerText: rangeBanner.querySelector('.tl-range-banner-text'),
-      rangeBannerClear: rangeBanner.querySelector('.tl-range-banner-clear'),
       splitter,
       columnsSection: colsSec, cols: colsSec.body,
       detectionsSection: detectionsSec, detectionsBody: detectionsSec.body,
@@ -1895,29 +1882,43 @@ class TimelineView {
       }
     }
 
-    // Range-banner Clear button — matches the old range-chip ⊗ semantics:
-    // window-only change, no filter re-run, fast path via
-    // `_applyWindowOnly()`. Piggybacks chips/banner render on the same
-    // scheduleRender call.
-    if (els.rangeBannerClear) {
-      els.rangeBannerClear.addEventListener('click', () => {
-        this._window = null;
-        this._applyWindowOnly();
-        this._scheduleRender(['scrubber', 'chart', 'chips', 'grid', 'columns']);
-      });
-    }
-
     // Construct the query editor now that columns / stats are available
     // (suggestion lookups consult `this.columns` + `_distinctValuesFor`).
     // The editor's DOM `.root` is appended into the `.tl-query-mount`
-    // container prepared by `_buildDOM`. onChange → live re-parse + filter;
-    // onCommit → persist the string under `loupe_timeline_query` and push
-    // onto the history ring.
+    // container prepared by `_buildDOM`.
+    //
+    //   onChange         → live re-parse + filter (debounced).
+    //   onCommit         → persist string under `loupe_timeline_query` +
+    //                      push onto history ring.
+    //   onWindowChange   → datetime-range widget commits a new {min,max}
+    //                      (or null = "Any time"). Replaces the legacy
+    //                      `tl-range-banner` Clear-button wiring; same
+    //                      semantics — window-only change, fast path via
+    //                      `_applyWindowOnly()`.
+    //   formatters       → pure helpers the widget uses to render the
+    //                      compact button + popover. We pass live
+    //                      lambdas for `isNumeric` / `dataRange` because
+    //                      both flip when the analyst picks a new time
+    //                      column from the toolbar.
     this._queryEditor = new TimelineQueryEditor({
       view: this,
       initialValue: this._queryStr || '',
+      initialWindow: this._window,
       onChange: (q) => this._applyQueryString(q),
       onCommit: (q) => TimelineView._saveQueryFor(this._fileKey, q),
+      onWindowChange: (win) => {
+        this._window = win;
+        this._applyWindowOnly();
+        this._scheduleRender(['scrubber', 'chart', 'chips', 'grid', 'columns']);
+      },
+      formatters: {
+        formatTimestamp: _tlFormatFullUtc,
+        formatDuration: _tlFormatDuration,
+        formatNumeric: _tlFormatNumericTick,
+        parseRelative: _tlParseRelative,
+        isNumeric: () => !!this._timeIsNumeric,
+        dataRange: () => this._dataRange,
+      },
     });
     els.queryBar.appendChild(this._queryEditor.root);
     if (this._queryStr) {
@@ -2409,7 +2410,12 @@ class TimelineView {
       // user's keystroke / click so the UI feels responsive.
       if (set.has('scrubber')) this._renderScrubber();
       if (set.has('chart')) this._renderChart();
-      if (set.has('chips')) this._renderRangeBanner();
+      // Window readout lives inside the query bar now (compact button
+      // on the editor's left edge). Pushing the current `_window` here
+      // keeps the button in sync with scrubber/chart drags, the Reset
+      // button, and chip-driven re-clips. The editor itself commits
+      // user input back via `onWindowChange` (wired in `_wireEvents`).
+      if (set.has('chips') && this._queryEditor) this._queryEditor.setWindow(this._window);
       if (set.has('chips')) this._renderChips();
       if (set.has('grid')) this._renderGrid();
       if (set.has('detections')) this._renderDetections();
@@ -2558,11 +2564,15 @@ class TimelineView {
           // Row-stat reflects the new count but grid/columns/sus wait for
           // pointerup. This keeps drag rAF under a few ms even at 100k+ rows.
           this._scheduleRender(['scrubber', 'chart']);
-          // Live-update the range banner so the analyst can read the
-          // pending [from → to · duration] while dragging. O(1) text
-          // update — cheaper than a full 'chips' task (which would also
-          // repaint the sus chips strip unnecessarily).
-          this._renderRangeBanner({ min: this._window.min, max: this._window.max, preview: true });
+          // Live-update the inline datetime widget so the analyst can
+          // read the pending [from → to · duration] while dragging.
+          // O(1) text update — cheaper than a full 'chips' task (which
+          // would also repaint the sus chips strip unnecessarily). The
+          // `preview:true` flag adds a `--preview` modifier so the
+          // button visually reads "not committed yet".
+          if (this._queryEditor) {
+            this._queryEditor.setWindow({ min: this._window.min, max: this._window.max, preview: true });
+          }
         }
       };
       const onUp = () => {
@@ -3177,15 +3187,16 @@ class TimelineView {
         // keeps even 100k-row datasets buttery while the user picks
         // a range.
         //
-        // One exception: we DO live-update the range banner so the
-        // analyst can read the pending [from → to · duration] while
-        // still dragging. This is a pure text update (O(1)) — no
-        // render pass — so it stays in the same budget as the
-        // overlay rect it mirrors.
+        // One exception: we DO live-update the inline datetime widget
+        // (in the query bar) so the analyst can read the pending
+        // [from → to · duration] while still dragging. This is a pure
+        // text update (O(1)) — no render pass — so it stays in the
+        // same budget as the overlay rect it mirrors.
         const previewLo = xToMs(aClamped);
         const previewHi = xToMs(bClamped);
-        if (Number.isFinite(previewLo) && Number.isFinite(previewHi) && previewHi > previewLo) {
-          this._renderRangeBanner({ min: previewLo, max: previewHi, preview: true });
+        if (Number.isFinite(previewLo) && Number.isFinite(previewHi) && previewHi > previewLo
+            && this._queryEditor) {
+          this._queryEditor.setWindow({ min: previewLo, max: previewHi, preview: true });
         }
       };
 
@@ -3302,47 +3313,6 @@ class TimelineView {
     const key = chip.dataset.key;
     this._openRowContextMenu(e, this._stackCol, key);
   }
-
-  // ── Range banner ────────────────────────────────────────────────────────
-  // Shown above the query bar whenever a time window is active. Hidden
-  // (`.hidden`) when `_window == null` so the analyst gets an empty,
-  // unobstructed view in the neutral state. Piggybacks on the 'chips'
-  // task in `_scheduleRender` since every site that mutates `_window`
-  // already schedules 'chips'.
-  _renderRangeBanner(overrides) {
-    const el = this._els && this._els.rangeBanner;
-    if (!el) return;
-    // During a live drag-preview the banner is fed a transient
-    // `{min,max,preview:true}` span so the analyst can see the range
-    // they're about to commit. `preview` adds a `--preview` modifier
-    // so the banner visually reads "not committed yet".
-    const win = overrides || this._window;
-    if (!win) {
-      el.classList.add('hidden');
-      el.classList.remove('tl-range-banner--preview');
-      return;
-    }
-    el.classList.remove('hidden');
-    el.classList.toggle('tl-range-banner--preview', !!(overrides && overrides.preview));
-    const lo = _tlFormatFullUtc(win.min, this._timeIsNumeric);
-    const hi = _tlFormatFullUtc(win.max, this._timeIsNumeric);
-    if (this._els.rangeBannerText) {
-      // Append a human-friendly duration ("30m", "2h 15m", …) to the
-      // end of the readout. Skipped in numeric-axis mode — `_tlFormatDuration`
-      // treats its argument as milliseconds, so a duration of "year 2024"
-      // on a numeric axis has no sensible spelling.
-      let suffix = '';
-      if (!this._timeIsNumeric) {
-        const dur = _tlFormatDuration(win.max - win.min);
-        if (dur) suffix = ' · ' + dur;
-      } else {
-        const span = win.max - win.min;
-        if (Number.isFinite(span)) suffix = ' · Δ ' + _tlFormatNumericTick(span, span);
-      }
-      this._els.rangeBannerText.textContent = `${lo} → ${hi}${suffix}`;
-    }
-  }
-
 
   // ── Chips ────────────────────────────────────────────────────────────────
   // The chips strip hosts the "＋ Add Suspicious Indicator" button —

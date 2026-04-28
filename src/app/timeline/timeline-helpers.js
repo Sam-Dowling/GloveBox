@@ -566,6 +566,46 @@ function _tlFormatDuration(ms) {
   return dR ? `${y}y ${dR}d` : `${y}y`;
 }
 
+// Minimal relative-time grammar: a single integer followed by a unit
+// suffix (`s` | `m` | `h` | `d` | `w`). Whitespace around the value is
+// tolerated; case is ignored. Returns the duration in milliseconds, or
+// `null` if the input doesn't match. Used by the inline datetime range
+// widget's "Last <N> <unit>" mode — kept deliberately small so that
+// compound terms like `1d 6h` are not silently accepted (they'd require
+// a tokeniser; defer to a follow-up if analysts ask for it).
+function _tlParseRelative(s) {
+  if (s == null) return null;
+  const m = String(s).trim().toLowerCase().match(/^(\d+)\s*([smhdw])$/);
+  if (!m) return null;
+  const n = parseInt(m[1], 10);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  const unit = m[2];
+  const mul = unit === 's' ? 1000
+    : unit === 'm' ? 60_000
+      : unit === 'h' ? 3_600_000
+        : unit === 'd' ? 86_400_000
+          : 604_800_000; // 'w'
+  return n * mul;
+}
+
+// Inverse of `_tlParseRelative`: pick the largest single unit that
+// divides `ms` exactly so a 7200000ms span round-trips to "2h" rather
+// than "120m". Returns `''` for non-positive / non-finite inputs.
+function _tlFormatRelative(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const units = [
+    [604_800_000, 'w'],
+    [86_400_000, 'd'],
+    [3_600_000, 'h'],
+    [60_000, 'm'],
+    [1000, 's'],
+  ];
+  for (const [size, unit] of units) {
+    if (ms % size === 0) return (ms / size) + unit;
+  }
+  return '';
+}
+
 function _tlFormatBytes(n) {
   if (n < 1024) return n + ' B';
   if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
