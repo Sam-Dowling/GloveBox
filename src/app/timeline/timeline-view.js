@@ -527,12 +527,14 @@ class TimelineView {
     this._rebuildDetectionBitmap();
     this._recomputeFilter();
     this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns', 'detections', 'entities', 'pivot', 'sections']);
-    // Auto-extract nudge — run one tick later so the initial render has
-    // painted and the user isn't staring at a nudge before the grid.
-    // Persisted suppression (`loupe_timeline_autoextract_nudged_hard`) is
-    // checked inside `_renderAutoExtractNudge`.
-    this._autoExtractNudgeDismissed = false;
-    setTimeout(() => this._renderAutoExtractNudge(), 60);
+    // Best-effort auto-extract — run one tick later so the initial render
+    // has painted (the analyst sees the grid first, then any high-coverage
+    // extracted columns slide in next to it). Single-shot per file: the
+    // `loupe_timeline_autoextract_done` marker is checked + set inside
+    // `_autoExtractBestEffort` so deleted columns never come back on
+    // reopen. The full Extract Values dialog still exists for analysts
+    // who want to opt into lower-coverage proposals manually.
+    setTimeout(() => this._autoExtractBestEffort(), 60);
   }
 
 
@@ -762,6 +764,22 @@ class TimelineView {
     const all = safeStorage.getJSON(TIMELINE_KEYS.REGEX_EXTRACTS, {}) || {};
     all[fileKey] = list;
     safeStorage.setJSON(TIMELINE_KEYS.REGEX_EXTRACTS, all);
+  }
+  // Per-file marker — set the first time the best-effort auto-extract pass
+  // runs against a file so we never re-add columns the analyst has since
+  // deleted. Read on construction (`_autoExtractBestEffort` short-circuits
+  // when truthy), written once after that pass runs (whether or not it
+  // added any columns — a zero-result file shouldn't get re-scanned on
+  // every reopen). Cleared by `_reset()` via the `loupe_timeline_*` prefix
+  // wipe so a hard reset always re-runs auto-extract.
+  static _loadAutoExtractDoneFor(fileKey) {
+    const all = safeStorage.getJSON(TIMELINE_KEYS.AUTOEXTRACT_DONE, null);
+    return !!(all && all[fileKey]);
+  }
+  static _saveAutoExtractDoneFor(fileKey) {
+    const all = safeStorage.getJSON(TIMELINE_KEYS.AUTOEXTRACT_DONE, {}) || {};
+    all[fileKey] = true;
+    safeStorage.setJSON(TIMELINE_KEYS.AUTOEXTRACT_DONE, all);
   }
   static _loadPivotSpec() {
     const obj = safeStorage.getJSON(TIMELINE_KEYS.PIVOT, null);
@@ -1965,181 +1983,149 @@ class TimelineView {
     document.addEventListener('keyup', this._onDocKeyUp, true);
   }
 
-  // Canonical "put me back to neutral" button. Wipes every piece of
-  // analyst-authored filter / view state on this view: time window,
-  // hidden columns, typed query, 🚩 Suspicious marks, stack column,
-  // pivot spec, and every extracted (ƒx / regex / JSON-leaf) column.
-  // Also wipes every Timeline-related `loupe_*` persisted key and
-
-  // resets the in-memory layout prefs (`_gridH`, `_chartH`,
-  // `_sections`, `_bucketId`, `_cardWidths`, `_cardOrder`), plus the
-  // embedded GridViewer's saved column widths and drawer width, plus
-  // the global TimelineQueryEditor history ring. Reset is the single
-  // "scrub this workstation clean of Timeline state" button.
+  // ── Best-effort auto-extract ──────────────────────────────────────────
+  // Replaces the old "nudge strip" prompt UX. On a freshly opened file
+  // we silently apply the high-confidence subset of `_autoExtractScan()`
+  // proposals so analysts get useful columns (URL host, JSON leaves,
+  // EVTX forensic fields, …) without having to find + click an Extract
+  // button. The full Extract Values dialog still exists for analysts
+  // who want to opt into lower-coverage proposals manually.
   //
-  // ── Auto-extract nudge strip ────────────────────────────────────────
-  // Inserted above `.tl-query-mount` once the lazy load completes. It
-  // only renders if the auto-scanner finds ≥ 1 proposal and the user
-  // hasn't opted out ("Don't show again" → `loupe_timeline_autoextract_nudged_hard`).
-  // The strip surfaces up to 4 preview rows with a per-row "Add" button
-  // plus a "See all N →" escape hatch that opens the full Extract dialog.
-  _renderAutoExtractNudge() {
+  // Eligibility — a proposal is auto-applied iff:
+  //   • `matchPct >= 80`  (the analyst's "appears in most rows" rule), OR
+  //   • EVTX file AND it's a `kv-field` whose name is in
+  //     `TIMELINE_FORENSIC_EVTX_FIELDS_SET` (LogonType, IpAddress, …) —
+  //     these are sparse-by-design but always investigatable, so we
+  //     keep today's forensic-friendly defaults intact.
+  //
+  // Ranking + cap — eligible proposals are sorted by:
+  //   1. kind priority: url-part / text-url / json-url → text-host /
+  //      json-host → forensic kv-field → generic kv-field → json-leaf
+  //   2. matchPct desc
+  // …and the top `MAX` (12) are applied. Avoids drowning the grid in
+  // 40+ columns on JSON-heavy logs.
+  //
+  // Idempotence — a per-file marker (`loupe_timeline_autoextract_done`)
+  // is set after the pass, so the analyst can delete an auto-extracted
+  // column and it stays gone on reopen. `_reset()` wipes the marker via
+  // its `loupe_timeline_*` prefix scrub, so a hard reset re-runs the
+  // pass.
+  _autoExtractBestEffort() {
     if (this._destroyed) return;
-    if (this._autoExtractNudgeDismissed) return;
-    if (safeStorage.get(TIMELINE_KEYS.AUTOEXTRACT_NUDGED_HARD) === '1') return;
-    if (!this._els || !this._els.host || !this._els.queryBar) return;
-
-    // Don't pile a second strip on top of an existing one.
-    if (this._els.host.querySelector('.tl-autoextract-nudge')) return;
+    if (!this._els || !this._els.host) return;
+    // Already done for this file — never re-add deleted columns.
+    if (TimelineView._loadAutoExtractDoneFor(this._fileKey)) return;
+    // Persisted regex extracts already replayed in the constructor. If
+    // anything's there, the analyst has prior work for this file and we
+    // shouldn't pile on. The marker write at the end still fires so this
+    // only happens once.
+    if (this._extractedCols.length > 0) {
+      TimelineView._saveAutoExtractDoneFor(this._fileKey);
+      return;
+    }
 
     let proposals = [];
-    try { proposals = this._autoExtractScan() || []; } catch (_) { return; }
-    if (!proposals.length) return;
+    try { proposals = this._autoExtractScan() || []; } catch (_) {
+      TimelineView._saveAutoExtractDoneFor(this._fileKey);
+      return;
+    }
 
-    // Rank by match %, then by URL/host kind over generic JSON leaves.
-    const kindRank = { 'url-part': 0, 'text-url': 0, 'text-host': 0, 'json-url': 1, 'json-host': 1, 'kv-field': 2, 'json-leaf': 3 };
-    const ranked = proposals.slice().sort((a, b) => {
-      const ka = kindRank[a.kind] == null ? 9 : kindRank[a.kind];
-      const kb = kindRank[b.kind] == null ? 9 : kindRank[b.kind];
+    const isEvtx = this.formatLabel === 'EVTX'
+      || (this._baseColumns && this._baseColumns.indexOf(EVTX_COLUMNS.EVENT_DATA) !== -1);
+
+    const eligible = proposals.filter(p => {
+      if ((p.matchPct || 0) >= 80) return true;
+      if (isEvtx && p.kind === 'kv-field'
+        && p.fieldName && TIMELINE_FORENSIC_EVTX_FIELDS_SET.has(p.fieldName)) return true;
+      return false;
+    });
+
+    if (!eligible.length) {
+      // No candidates met the bar — set the marker so we don't re-scan
+      // every reopen of an unhelpful file.
+      TimelineView._saveAutoExtractDoneFor(this._fileKey);
+      return;
+    }
+
+    // Kind priority. URL-shaped values are typically the most
+    // investigatable, so they win over generic JSON leaves; forensic
+    // EVTX KV beats generic KV; KV beats raw json-leaf flattening.
+    const kindRank = (p) => {
+      if (p.kind === 'url-part' || p.kind === 'text-url' || p.kind === 'json-url') return 0;
+      if (p.kind === 'text-host' || p.kind === 'json-host') return 1;
+      if (p.kind === 'kv-field' && isEvtx
+        && TIMELINE_FORENSIC_EVTX_FIELDS_SET.has(p.fieldName || '')) return 2;
+      if (p.kind === 'kv-field') return 3;
+      if (p.kind === 'json-leaf') return 4;
+      return 9;
+    };
+    eligible.sort((a, b) => {
+      const ka = kindRank(a), kb = kindRank(b);
       if (ka !== kb) return ka - kb;
       return (b.matchPct || 0) - (a.matchPct || 0);
     });
-    const previewCount = Math.min(4, ranked.length);
 
-    const strip = document.createElement('div');
-    strip.className = 'tl-autoextract-nudge';
-    strip.setAttribute('role', 'region');
-    strip.setAttribute('aria-label', 'Auto-extractable fields');
+    const MAX = 12;
+    const ranked = eligible.slice(0, MAX);
 
-    const header = document.createElement('div');
-    header.className = 'tl-autoextract-nudge__header';
-    header.innerHTML = `
-      <span class="tl-autoextract-nudge__spark" aria-hidden="true">✨</span>
-      <span class="tl-autoextract-nudge__title">${ranked.length} auto-extractable field${ranked.length === 1 ? '' : 's'} detected</span>
-    `;
-    const actions = document.createElement('div');
-    actions.className = 'tl-autoextract-nudge__actions';
-    actions.innerHTML = `
-      <button type="button" class="tl-autoextract-nudge__seeall">See all ${ranked.length} →</button>
-      <button type="button" class="tl-autoextract-nudge__dismiss" title="Hide for this session">Dismiss</button>
-      <button type="button" class="tl-autoextract-nudge__never" title="Never show this nudge again on any file">Don't show again</button>
-    `;
-    header.appendChild(actions);
-    strip.appendChild(header);
-
-    const list = document.createElement('div');
-    list.className = 'tl-autoextract-nudge__list';
-
-    // Header row — shares the same `__row` grid template so every label
-    // sits directly above its matching data cell. The trailing empty
-    // <span> preserves the 6-track grid (kind | col | path | rate |
-    // sample | add) so the "Add" buttons in data rows stay aligned.
-    const head = document.createElement('div');
-    head.className = 'tl-autoextract-nudge__row tl-autoextract-nudge__row--head';
-    head.setAttribute('role', 'row');
-    head.innerHTML = `
-      <span class="tl-autoextract-nudge__kind tl-autoextract-nudge__kind--head">Type</span>
-      <span class="tl-autoextract-nudge__col">Column</span>
-      <span class="tl-autoextract-nudge__path">Path</span>
-      <span class="tl-autoextract-nudge__rate" title="Match rate in sample">Match</span>
-      <span class="tl-autoextract-nudge__sample">Sample</span>
-      <span aria-hidden="true"></span>
-    `;
-    list.appendChild(head);
-
-    const applyOne = (p) => {
+    let added = 0;
+    for (const p of ranked) {
       const before = this._extractedCols.length;
-      if (p.kind === 'json-url' || p.kind === 'json-host' || p.kind === 'json-leaf') {
-        this._addJsonExtractedColNoRender(p.sourceCol, p.path, p.proposedName, { autoKind: p.kind });
-      } else if (p.kind === 'text-url' || p.kind === 'text-host') {
-        this._addRegexExtractNoRender({
-          name: p.proposedName,
-          col: p.sourceCol,
-          pattern: (p.kind === 'text-url' ? TL_URL_RE.source : TL_HOSTNAME_INLINE_RE.source),
-          flags: 'i',
-          group: (p.kind === 'text-host') ? 1 : 0,
-          kind: 'auto',
-        });
-      } else if (p.kind === 'kv-field') {
-        const esc = String(p.fieldName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const pattern = `(?:^| \\| )${esc}=([\\s\\S]*?)(?= \\| [A-Za-z_][\\w.-]*=|$)`;
-        this._addRegexExtractNoRender({
-          name: p.proposedName,
-          col: p.sourceCol,
-          pattern,
-          flags: '',
-          group: 1,
-          kind: 'auto',
-          trim: true,
-        });
-      } else if (p.kind === 'url-part') {
-        this._addRegexExtractNoRender({
-          name: p.proposedName,
-          col: p.sourceCol,
-          pattern: p.pattern,
-          flags: '',
-          group: p.group,
-          kind: 'auto',
-        });
-      }
-      const added = this._extractedCols.length - before;
-      if (added) {
-        this._rebuildExtractedStateAndRender();
-
-        if (this._app && this._app._toast) {
-          this._app._toast(`Added "${p.proposedName}"`, 'info');
-        }
-      } else if (this._app && this._app._toast) {
-        this._app._toast('Already extracted', 'info');
-      }
-    };
-
-    for (let i = 0; i < previewCount; i++) {
-      const p = ranked[i];
-      const row = document.createElement('div');
-      row.className = 'tl-autoextract-nudge__row';
-      const colName = this.columns[p.sourceCol] || `(col ${p.sourceCol + 1})`;
-      const pathLabel = p.path
-        ? _tlJsonPathLabel(p.path)
-        : (p.kind === 'kv-field' ? p.fieldName : '(whole cell)');
-      row.innerHTML = `
-        <span class="tl-autoextract-nudge__kind" data-kind="${_tlEsc(p.kind)}">${_tlEsc(p.kindLabel)}</span>
-        <span class="tl-autoextract-nudge__col" title="${_tlEsc(colName)}">${_tlEsc(colName)}</span>
-        <span class="tl-autoextract-nudge__path" title="${_tlEsc(String(pathLabel))}">${_tlEsc(String(pathLabel))}</span>
-        <span class="tl-autoextract-nudge__rate" title="match rate in sample">${(p.matchPct || 0).toFixed(0)}%</span>
-        <span class="tl-autoextract-nudge__sample" title="${_tlEsc(p.sample || '')}">${_tlEsc(this._ellipsis(p.sample || '', 80))}</span>
-        <button type="button" class="tl-autoextract-nudge__add">Add</button>
-      `;
-      row.querySelector('.tl-autoextract-nudge__add').addEventListener('click', () => {
-        applyOne(p);
-        row.classList.add('tl-autoextract-nudge__row--added');
-        const btn = row.querySelector('.tl-autoextract-nudge__add');
-        if (btn) { btn.textContent = '✓ Added'; btn.disabled = true; }
-      });
-      list.appendChild(row);
+      try { this._applyAutoProposal(p); } catch (_) { continue; }
+      if (this._extractedCols.length > before) added++;
     }
-    strip.appendChild(list);
 
-    const removeStrip = () => { if (strip.parentNode) strip.parentNode.removeChild(strip); };
-    actions.querySelector('.tl-autoextract-nudge__seeall').addEventListener('click', () => {
-      removeStrip();
-      this._openExtractionDialog(null);
-    });
-    actions.querySelector('.tl-autoextract-nudge__dismiss').addEventListener('click', () => {
-      this._autoExtractNudgeDismissed = true;
-      removeStrip();
-    });
-    actions.querySelector('.tl-autoextract-nudge__never').addEventListener('click', () => {
-      safeStorage.set(TIMELINE_KEYS.AUTOEXTRACT_NUDGED_HARD, '1');
-      this._autoExtractNudgeDismissed = true;
-      removeStrip();
-      if (this._app && this._app._toast) this._app._toast('Auto-extract nudge disabled', 'info');
-    });
+    if (added > 0) {
+      this._rebuildExtractedStateAndRender();
+      if (this._app && typeof this._app._toast === 'function') {
+        this._app._toast(`Auto-extracted ${added} field${added === 1 ? '' : 's'}`, 'info');
+      }
+    }
 
+    TimelineView._saveAutoExtractDoneFor(this._fileKey);
+  }
 
-    // Insert directly before the query mount so the nudge sits in the
-    // normal scroll flow above the query bar.
-    this._els.host.insertBefore(strip, this._els.queryBar);
+  // Apply a single proposal from `_autoExtractScan()` to the extracted-
+  // column set without rendering. Caller is responsible for batching the
+  // single `_rebuildExtractedStateAndRender()` after a multi-apply pass.
+  // Dedup is handled inside `_addJsonExtractedColNoRender` /
+  // `_addRegexExtractNoRender` via `_findDuplicateExtractedCol`, so
+  // re-running this for an already-extracted proposal is a silent no-op.
+  _applyAutoProposal(p) {
+    if (!p) return;
+    if (p.kind === 'json-url' || p.kind === 'json-host' || p.kind === 'json-leaf') {
+      this._addJsonExtractedColNoRender(p.sourceCol, p.path, p.proposedName, { autoKind: p.kind });
+    } else if (p.kind === 'text-url' || p.kind === 'text-host') {
+      this._addRegexExtractNoRender({
+        name: p.proposedName,
+        col: p.sourceCol,
+        pattern: (p.kind === 'text-url' ? TL_URL_RE.source : TL_HOSTNAME_INLINE_RE.source),
+        flags: 'i',
+        group: (p.kind === 'text-host') ? 1 : 0,
+        kind: 'auto',
+      });
+    } else if (p.kind === 'kv-field') {
+      const esc = String(p.fieldName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const pattern = `(?:^| \\| )${esc}=([\\s\\S]*?)(?= \\| [A-Za-z_][\\w.-]*=|$)`;
+      this._addRegexExtractNoRender({
+        name: p.proposedName,
+        col: p.sourceCol,
+        pattern,
+        flags: '',
+        group: 1,
+        kind: 'auto',
+        trim: true,
+      });
+    } else if (p.kind === 'url-part') {
+      this._addRegexExtractNoRender({
+        name: p.proposedName,
+        col: p.sourceCol,
+        pattern: p.pattern,
+        flags: '',
+        group: p.group,
+        kind: 'auto',
+      });
+    }
   }
 
   // Extracted columns are cleared inline (not via `_clearAllExtractedCols`)
@@ -6194,10 +6180,10 @@ class TimelineView {
     // Forensics-grade EVTX fields: pre-selected by default (others stay
     // visible but unchecked) so analysts can Extract-selected and get a
     // tight investigatable column set without triaging 40 checkboxes.
-    const FORENSIC_EVTX_FIELDS = new Set([
-      'CommandLine', 'ParentCommandLine', 'TargetUserName', 'SubjectUserName',
-      'ProcessName', 'NewProcessName', 'IpAddress', 'LogonType',
-    ]);
+    // Lifted to module scope (`TIMELINE_FORENSIC_EVTX_FIELDS_SET` in
+    // timeline-helpers.js) so the best-effort auto-extract pass can also
+    // gate on it.
+    const FORENSIC_EVTX_FIELDS = TIMELINE_FORENSIC_EVTX_FIELDS_SET;
 
     // Browser-history SQLite — the `url` column gets three additional
     // `url-part` proposals (host / path / query) so analysts can split a

@@ -30,7 +30,12 @@ const TIMELINE_KEYS = Object.freeze({
   SUS_MARKS: 'loupe_timeline_sus_marks',
   CARD_ORDER: 'loupe_timeline_card_order',
   PINNED_COLS: 'loupe_timeline_pinned_cols',
-  AUTOEXTRACT_NUDGED_HARD: 'loupe_timeline_autoextract_nudged_hard',
+  // Per-file marker — `{ [fileKey]: true }` — set the first time the
+  // best-effort auto-extract pass runs against a given file, so we never
+  // re-add columns the analyst has since deleted. Replaces the old
+  // `loupe_timeline_autoextract_nudged_hard` flag from the prompt-style
+  // nudge UX. `_reset()` wipes this via the `loupe_timeline_*` prefix.
+  AUTOEXTRACT_DONE: 'loupe_timeline_autoextract_done',
   // Entities-section parity with Top values (per-file persistence). The
   // entity card head was promoted from a fixed type-label to a Top-values-
   // style head with pin / copy / sort-cycle / search affordances; these
@@ -95,6 +100,16 @@ const TIMELINE_CARD_SIZE_DEFAULT = 'M';
 const TL_URL_RE = /\bhttps?:\/\/[^\s"'<>`()\[\]{}]+/i;
 const TL_HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i;
 const TL_HOSTNAME_INLINE_RE = /\b([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){1,})\b/i;
+
+// EVTX forensic-grade KV fields. The Extract dialog pre-checks these in its
+// Auto tab when the file is EVTX, and the best-effort auto-extract pass
+// (`_autoExtractBestEffort`) treats them as always-eligible regardless of
+// per-field match coverage so sparse-but-investigatable fields (LogonType,
+// IpAddress…) still surface on first open.
+const TIMELINE_FORENSIC_EVTX_FIELDS_SET = new Set([
+  'CommandLine', 'ParentCommandLine', 'TargetUserName', 'SubjectUserName',
+  'ProcessName', 'NewProcessName', 'IpAddress', 'LogonType',
+]);
 
 // Regex presets offered on the Extract popup.
 const TL_REGEX_PRESETS = [

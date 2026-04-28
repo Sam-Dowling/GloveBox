@@ -952,7 +952,7 @@ filter, and (c) auditable against this table.
 | `loupe_timeline_query` | string | Timeline DSL editor | Last-used query string. |
 | `loupe_timeline_query_history` | JSON array | ⌄ history button | Recent non-empty queries, capped ~20. |
 | `loupe_timeline_sus_marks` | JSON object | right-click → 🚩 Mark suspicious | Persisted **by column NAME** (not index) so extracted columns survive reload at a different index. Tints rows red but does **not** filter. |
-| `loupe_timeline_autoextract_nudged_hard` | string | "Don't show again" on the auto-extract nudge strip | `"1"` when permanently suppressed. |
+| `loupe_timeline_autoextract_done` | JSON object | best-effort auto-extract pass on file open | `{ "<fileKey>": true }`. Set the first time `_autoExtractBestEffort()` runs against a file (whether or not it added columns) so the pass never re-adds columns the analyst has since deleted. Cleared by Timeline ↺ Reset via the `loupe_timeline_*` prefix wipe. |
 | `loupe_hosted_dismissed` | string | `_checkHostedMode()` | `"1"` when the hosted-mode privacy bar is dismissed. |
 | `loupe_dev_breadcrumbs` | string | `_toggleDevBreadcrumbs()` | `"1"` when the dev-mode breadcrumbs ribbon is mounted. Toggle from devtools — no Settings UI. |
 | `loupe_deobf_selection_enabled` | string | `_setSelectionDecodeEnabled()` | `"1"` (default) / `"0"`. Master switch for the floating "🔍 Decode selection" chip. |
