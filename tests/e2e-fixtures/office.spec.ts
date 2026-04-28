@@ -138,4 +138,23 @@ test.describe('Office (OOXML / CFB / OpenDocument)', () => {
     expect(result).not.toBeNull();
     expect(result!.timeline).toBe(true);
   });
+
+  // Regression coverage for the multi-line-quoted-cell parser bug
+  // (https://example.com — pre-refactor, the line-oriented parser split
+  // every `\n` into a fresh row and pushed quoted-cell continuations
+  // into column 0 of a phantom next row). The fixture has 27 physical
+  // lines but exactly 4 logical rows (1 header + 3 body) once
+  // RFC-4180 quoting is honoured. The Timeline excludes the header,
+  // so we expect exactly 3 rows.
+  test('TSV with multi-line quoted cells parses to 3 logical body rows', async ({ page }) => {
+    const findings = await loadFixture(page, 'examples/office/example-multiline.tsv');
+    expect(findings.iocCount).toBe(0);
+    const result = await dumpResult(page);
+    expect(result).not.toBeNull();
+    expect(result!.timeline).toBe(true);
+    // The header has 13 columns; bodies are ragged (8/9/11 cols) and
+    // contain literal `\n` inside quoted cells. The legacy parser
+    // would have produced 26 rows here.
+    expect(result!.timelineRowCount).toBe(3);
+  });
 });

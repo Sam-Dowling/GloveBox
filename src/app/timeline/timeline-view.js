@@ -101,29 +101,57 @@ class TimelineView {
     if (!delim) {
       try { delim = r._delim(norm); } catch (_) { delim = ','; }
     }
-    const firstNl = norm.indexOf('\n');
-    const headerLine = firstNl === -1 ? norm : norm.substring(0, firstNl);
+    // ── Header extraction ──────────────────────────────────────────────
+    // Use the shared RFC-4180 state-machine parser so a header that
+    // includes a multi-line quoted cell parses correctly (the legacy
+    // `norm.indexOf('\n')` slice would chop the header in half on the
+    // first embedded newline). Same parser drives the body loop below.
+    const headerState = CsvRenderer.initParserState();
+    const headerResult = CsvRenderer.parseChunk(norm, 0, headerState, delim, {
+      baseOffset: 0, maxRows: 1, flush: false,
+    });
     let columns = [];
-    try {
-      columns = headerLine.indexOf('"') === -1
-        ? headerLine.split(delim)
-        : r._splitQuoted(headerLine, delim);
-    } catch (_) {
-      columns = headerLine.split(delim);
+    let bodyStartIdx;
+    if (headerResult.rows.length) {
+      columns = headerResult.rows[0];
+      bodyStartIdx = headerResult.endIdx;
+    } else if (norm.length) {
+      // Single-line file (no trailing newline). Flush to extract.
+      const flushResult = CsvRenderer.parseChunk(norm, headerResult.endIdx, headerState, delim, {
+        baseOffset: 0, maxRows: 0, flush: true,
+      });
+      if (flushResult.rows.length) columns = flushResult.rows[0];
+      bodyStartIdx = norm.length;
+    } else {
+      bodyStartIdx = 0;
     }
     // Trim and de-noise column names — whitespace / stray quotes from
     // hand-edited exports throw off `_tlAutoDetectTimestampCol` otherwise.
     columns = columns.map(c => String(c == null ? '' : c).trim());
 
     // ── Chunked parse ─────────────────────────────────────────────────
-    // Parse CHUNK_ROWS lines at a time, yielding to the event loop
-    // between chunks via MessageChannel (zero-delay, matches the
-    // existing _parseStreaming pattern in CsvRenderer).
+    // Parse CHUNK_ROWS rows at a time, yielding to the event loop between
+    // chunks via MessageChannel (zero-delay, matches the existing
+    // _parseStreaming pattern in CsvRenderer). State threads across
+    // yields so multi-line quoted cells straddling a chunk boundary work.
     const CHUNK_ROWS = 50000;
     const len = norm.length;
-    let offset = firstNl === -1 ? len : firstNl + 1;
+    let offset = bodyStartIdx;
     const rows = [];
     const colLen = columns.length;
+    const bodyState = CsvRenderer.initParserState();
+
+    const padOrTrim = (cells) => {
+      if (!colLen) return cells;
+      if (cells.length < colLen) {
+        while (cells.length < colLen) cells.push('');
+      } else if (cells.length > colLen) {
+        const tail = cells.slice(colLen - 1).join(delim);
+        cells.length = colLen;
+        cells[colLen - 1] = tail;
+      }
+      return cells;
+    };
 
     // Zero-delay yield helper — returns a Promise that resolves on the
     // next microtask boundary via MessageChannel (or setTimeout
@@ -140,56 +168,35 @@ class TimelineView {
 
     try {
       while (offset < len && rows.length < TIMELINE_MAX_ROWS) {
-        const chunkEnd = Math.min(rows.length + CHUNK_ROWS, TIMELINE_MAX_ROWS);
-        while (offset < len && rows.length < chunkEnd) {
-          let lineEnd = norm.indexOf('\n', offset);
-          if (lineEnd === -1) lineEnd = len;
-          if (lineEnd > offset) {
-            const line = norm.substring(offset, lineEnd);
-            const cells = line.indexOf('"') === -1
-              ? line.split(delim)
-              : r._splitQuoted(line, delim);
-            // Inline row-width normalisation (avoids a second full-array pass).
-            if (colLen) {
-              if (cells.length < colLen) {
-                while (cells.length < colLen) cells.push('');
-              } else if (cells.length > colLen) {
-                const tail = cells.slice(colLen - 1).join(delim);
-                cells.length = colLen;
-                cells[colLen - 1] = tail;
-              }
-            }
-            rows.push(cells);
-          }
-          offset = lineEnd + 1;
+        const cap = Math.min(CHUNK_ROWS, TIMELINE_MAX_ROWS - rows.length);
+        const result = CsvRenderer.parseChunk(norm, offset, bodyState, delim, {
+          baseOffset: 0, maxRows: cap, flush: false,
+        });
+        offset = result.endIdx;
+        for (let i = 0; i < result.rows.length; i++) {
+          rows.push(padOrTrim(result.rows[i]));
         }
         // Yield to the event loop so the browser can paint / stay responsive.
         if (offset < len && rows.length < TIMELINE_MAX_ROWS) {
           await yieldTick();
         }
       }
-    } catch (e) {
-      // Parser blew up on a pathological chunk. Fall back to a very
-      // forgiving line-by-line split — loses quoted-newline handling,
-      // but keeps the analyst looking at real data instead of hex.
-      console.warn('[timeline] CSV parser failed, using fallback split:', e);
-      rows.length = 0;
-      const lines = norm.split('\n');
-      for (let i = 1; i < lines.length && rows.length < TIMELINE_MAX_ROWS; i++) {
-        const ln = lines[i];
-        if (!ln) continue;
-        const cells = ln.indexOf('"') === -1 ? ln.split(delim) : r._splitQuoted(ln, delim);
-        if (colLen) {
-          if (cells.length < colLen) {
-            while (cells.length < colLen) cells.push('');
-          } else if (cells.length > colLen) {
-            const tail = cells.slice(colLen - 1).join(delim);
-            cells.length = colLen;
-            cells[colLen - 1] = tail;
-          }
+      // Final flush — emit any trailing partial row (file without
+      // newline at EOF, or unterminated quoted cell).
+      if (rows.length < TIMELINE_MAX_ROWS) {
+        const flushResult = CsvRenderer.parseChunk(norm, offset, bodyState, delim, {
+          baseOffset: 0, maxRows: 0, flush: true,
+        });
+        for (let i = 0; i < flushResult.rows.length; i++) {
+          if (rows.length >= TIMELINE_MAX_ROWS) break;
+          rows.push(padOrTrim(flushResult.rows[i]));
         }
-        rows.push(cells);
       }
+    } catch (e) {
+      // The state-machine parser is robust against malformed input
+      // (it never throws on quote/delimiter combos), so this catch is
+      // belt-and-braces only. Log and surface what we managed to parse.
+      console.warn('[timeline] CSV parser failed:', e);
     }
 
     // Null-row normalisation (for rows that somehow ended up null).

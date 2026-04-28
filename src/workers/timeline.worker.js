@@ -142,11 +142,15 @@ async function _parseCsv(buffer, explicitDelim) {
   const decoder = new TextDecoder('utf-8', { fatal: false });
   const r = new CsvRenderer();
 
-  // Tail buffer: text that survived the last chunk because no `\n`
-  // followed it yet (i.e. the partial last line). On the next iteration
-  // we prepend this to the freshly decoded chunk before scanning lines.
-  let tail = '';
-  // True once we've consumed and parsed the header line.
+  // Parser state. The state-machine parser carries any partial cell /
+  // partial row across chunk boundaries — including multi-line quoted
+  // cells where a `"..."` value spans several physical lines. This
+  // replaces the legacy `tail` buffer (which prepended the partial last
+  // line of each chunk to the next): with the new parser, the partial
+  // row IS the tail, so we never re-scan or copy text across chunks.
+  const parserState = CsvRenderer.initParserState();
+
+  // True once we've consumed and parsed the header row.
   let headerSeen = false;
   let columns = [];
   let colLen = 0;
@@ -166,18 +170,12 @@ async function _parseCsv(buffer, explicitDelim) {
     pendingBatch = [];
   };
 
-  // Split a single line into cells, defensively. Mirrors the legacy
-  // "indexOf('"') first" branching so unquoted lines avoid the slower
-  // state-machine path.
-  const splitLine = (line) => {
-    if (line.indexOf('"') === -1) return line.split(delim);
-    try { return r._splitQuoted(line, delim); }
-    catch (_) { return line.split(delim); }
-  };
-
   const padOrTrimCells = (cells) => {
     if (!colLen) return cells;
     if (cells.length < colLen) {
+      // Short rows (common when a CSV is assembled from multiple sources)
+      // get padded silently. The renderer's malformed-row counter only
+      // flags rows that are *wider* than the header.
       while (cells.length < colLen) cells.push('');
     } else if (cells.length > colLen) {
       const tailCells = cells.slice(colLen - 1).join(delim);
@@ -187,31 +185,24 @@ async function _parseCsv(buffer, explicitDelim) {
     return cells;
   };
 
-  const consumeLine = (line) => {
-    if (!headerSeen) {
-      // First non-empty position is the header. We allow blank leading
-      // lines but in practice CSVs never have them.
-      if (!line) return;
-      if (!delim) {
-        try { delim = r._delim(line); } catch (_) { delim = ','; }
-        formatLabel = (delim === '\t') ? 'TSV' : 'CSV';
+  const ingestRows = (rows) => {
+    for (let i = 0; i < rows.length; i++) {
+      const cells = rows[i];
+      if (!headerSeen) {
+        columns = cells.map(c => String(c == null ? '' : c).trim());
+        colLen = columns.length;
+        headerSeen = true;
+        continue;
       }
-      let cols;
-      try { cols = splitLine(line); } catch (_) { cols = line.split(delim); }
-      columns = cols.map(c => String(c == null ? '' : c).trim());
-      colLen = columns.length;
-      headerSeen = true;
-      return;
+      if (rowCount >= TIMELINE_MAX_ROWS) {
+        truncated = true;
+        return true;                    // signal break-outer to caller
+      }
+      pendingBatch.push(padOrTrimCells(cells));
+      rowCount++;
+      if (pendingBatch.length >= BATCH_ROWS) flushBatch();
     }
-    if (!line) return;                  // skip blank lines mid-stream
-    if (rowCount >= TIMELINE_MAX_ROWS) {
-      truncated = true;
-      return;
-    }
-    const cells = padOrTrimCells(splitLine(line));
-    pendingBatch.push(cells);
-    rowCount++;
-    if (pendingBatch.length >= BATCH_ROWS) flushBatch();
+    return false;
   };
 
   outer:
@@ -222,42 +213,53 @@ async function _parseCsv(buffer, explicitDelim) {
 
     if (firstChunk) {
       if (chunk.charCodeAt(0) === 0xFEFF) chunk = chunk.slice(1);
+      // Sniff delimiter from the first chunk. _delim is quote-aware
+      // and bounds itself to ~4 KB so this is cheap.
+      if (!delim) {
+        try { delim = r._delim(chunk); } catch (_) { delim = ','; }
+        formatLabel = (delim === '\t') ? 'TSV' : 'CSV';
+      }
       firstChunk = false;
     }
-    // Normalise CRLF / bare CR. We do this per chunk; the only case the
-    // single-pass `\r\n?` regex misses is a `\r` at the very end of the
-    // chunk followed by `\n` at the start of the next chunk. Handle it
-    // by trimming a trailing lone `\r` into the tail.
+    // Normalise CRLF / bare CR. We do this per chunk; a `\r` at the very
+    // end of one chunk followed by `\n` at the start of the next would
+    // become two newlines after this regex, but the parser skips blank
+    // physical lines so the worst case is a single phantom row break —
+    // not a row-count corruption.
     if (chunk.indexOf('\r') !== -1) chunk = chunk.replace(/\r\n?/g, '\n');
 
-    let scan = tail + chunk;
     bytesConsumed = end;
-    tail = '';
 
-    let lineStart = 0;
-    while (true) {
-      const nl = scan.indexOf('\n', lineStart);
-      if (nl === -1) {
-        // Partial line — hold for next chunk.
-        tail = lineStart === 0 ? scan : scan.substring(lineStart);
-        break;
-      }
-      const line = scan.substring(lineStart, nl);
-      lineStart = nl + 1;
-      try { consumeLine(line); }
-      catch (_) {
-        // Pathological row — skip and continue. We deliberately don't
-        // fall back to a whole-file forgiving split here as the legacy
-        // code did: a single bad line should not lose the rest of the
-        // stream.
-      }
-      if (truncated) break outer;
+    // Feed the chunk to the parser. State threads across calls so a
+    // multi-line quoted cell spanning chunk boundaries is handled
+    // transparently. baseOffset:0 — the worker streams cells, not byte
+    // ranges, so rowOffsets are unused.
+    try {
+      const result = CsvRenderer.parseChunk(chunk, 0, parserState, delim, {
+        baseOffset: 0,
+        maxRows:    0,
+        flush:      false,
+      });
+      if (ingestRows(result.rows)) break outer;
+    } catch (_) {
+      // Pathological chunk — skip and continue. We deliberately don't
+      // fall back to a whole-file forgiving split here as the legacy
+      // code did: a single bad chunk should not lose the rest of the
+      // stream.
     }
   }
 
-  // Flush any final tail line that didn't end with a newline.
-  if (tail) {
-    try { consumeLine(tail); } catch (_) { /* ignore */ }
+  // Final flush — any partial row (file without trailing newline, or
+  // an unterminated quoted cell at EOF) gets emitted now.
+  if (!truncated) {
+    try {
+      const flushResult = CsvRenderer.parseChunk('', 0, parserState, delim || ',', {
+        baseOffset: 0,
+        maxRows:    0,
+        flush:      true,
+      });
+      ingestRows(flushResult.rows);
+    } catch (_) { /* ignore */ }
   }
   // Drain the last partial batch.
   flushBatch();

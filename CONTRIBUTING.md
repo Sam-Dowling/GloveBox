@@ -583,7 +583,7 @@ container:
 
 | Property | Type | Purpose |
 |---|---|---|
-| `container._rawText` | `string` | LF-normalised source text. Used by `_findIOCMatches()` / `_highlightMatchesInline()` and the encoded-content scanner for line numbers. |
+| `container._rawText` | `string` | LF-normalised source text. Used by `_findIOCMatches()` / `_highlightMatchesInline()` and the encoded-content scanner for line numbers. The CSV/TSV renderer (`src/renderers/csv-renderer.js`) writes the verbatim LF-normalised buffer here — including the literal `\n` chars that live inside RFC-4180 multi-line quoted cells. The grid viewer's per-row `rowOffsets` may therefore span multiple physical newlines for a single logical row; that is expected and click-to-focus byte ranges align correctly against `_rawText` because the parser preserves the original text exactly. |
 | `container._showSourcePane()` | `function` | Invoked before highlighting on renderers with a Preview/Source toggle (HTML, SVG, URL). |
 | `findings.augmentedBuffer` | `ArrayBuffer` | Optional. `app-load.js` hoists onto `app.currentResult.yaraBuffer` so auto-YARA scans the augmented surface while Copy / Save still serve the raw bytes. |
 

@@ -7,15 +7,25 @@
 // file's remaining jobs are:
 //
 //   1. Delimiter auto-detection (`,  ;  \t  |`) with quote-awareness.
-//   2. Parsing CSV/TSV text into rows + byte offsets. For large files
-//      (>2 MB) the parse runs in cooperative chunks so the main thread
-//      stays responsive: GridViewer paints the first ~1 k rows within
-//      200 ms and the rest streams in via `appendRows()`.
-//   3. Formula-injection security analysis (CWE-1236).
+//   2. Parsing CSV/TSV text into rows + byte offsets via an RFC-4180
+//      state-machine parser. The parser is quote-aware across newlines —
+//      a `\n` inside a `"..."` quoted cell is treated as literal cell
+//      content, not a row terminator. State threads across calls so the
+//      same parser drives both the in-memory sync path, the cooperative
+//      streaming path (>2 MB files), and the off-thread timeline worker
+//      (see src/workers/timeline.worker.js + src/app/timeline/timeline-view.js).
+//   3. For files >2 MB the parse runs in cooperative chunks so the main
+//      thread stays responsive: GridViewer paints the first ~1 k rows
+//      within 200 ms and the rest streams in via `appendRows()`.
+//   4. Formula-injection security analysis (CWE-1236).
 //
 // Exposes `render(text, fileName) → HTMLElement` and `analyzeForSecurity(text)`.
 // The returned root element carries `._rawText` + `._csvFilters` so the sidebar
-// click-to-focus engine in `app-sidebar-focus.js` works.
+// click-to-focus engine in `app-sidebar-focus.js` works. Note that with the
+// quote-aware parser a single logical row can span multiple physical `\n`
+// characters; the `start`/`end` offsets handed to the grid viewer therefore
+// span the whole multi-line cell, and `_rawText` remains the verbatim
+// LF-normalised buffer (unmodified) so click-to-focus byte ranges still align.
 // ════════════════════════════════════════════════════════════════════════════
 class CsvRenderer {
   constructor() {
@@ -24,6 +34,201 @@ class CsvRenderer {
     this.CHUNK_ROWS_FIRST    = 1000;              // first painted chunk size
     this.CHUNK_ROWS_STREAM   = 5000;              // subsequent streamed chunks
     this.MAX_ROWS            = RENDER_LIMITS.MAX_CSV_ROWS; // hard cap on rendered rows
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  //  RFC-4180 STATE-MACHINE PARSER (shared)
+  //
+  //  The single source of truth for CSV/TSV tokenisation in Loupe.
+  //  Three callers:
+  //    • this._parse              — sync in-memory parse (≤ CHUNK_BYTES_SYNC)
+  //    • this._parseStreaming     — cooperative-yield parse for big files
+  //    • timeline.worker.js       — chunked decoder feeding parser per chunk
+  //    • timeline-view.js         — main-thread fallback for the worker path
+  //
+  //  Quote-aware across `\n`. A `"..."` cell may span any number of
+  //  physical lines and contain literal `,` / `;` / `\t` / `|` / `\n`.
+  //  Doubled quotes (`""`) inside a quoted cell escape to a single `"`.
+  //
+  //  parseChunk threads state across calls so the worker can feed
+  //  successive decoded text chunks without ever materialising the full
+  //  decoded buffer, and the in-memory streaming path can yield to the
+  //  event loop between batches without losing parse state.
+  //
+  //  Returned rowOffsets are absolute char offsets into the caller's
+  //  reference buffer (`baseOffset` + local index). For callers that
+  //  don't care (the worker — it streams cells, not byte ranges) pass
+  //  baseOffset:0 and ignore the rowOffsets array.
+  // ═══════════════════════════════════════════════════════════════════════
+
+  /**
+   * Fresh parser state. Pass to parseChunk and reuse across calls.
+   *   inQuotes          — currently inside a `"..."` cell?
+   *   cur               — partial current cell content
+   *   cells             — completed cells of the current partial row
+   *   rowStart          — absolute char offset of the current partial
+   *                       row's first content char (-1 = no row in flight)
+   */
+  static initParserState() {
+    return { inQuotes: false, cur: '', cells: [], rowStart: -1 };
+  }
+
+  /**
+   * Parse text into rows, threading `state` across calls.
+   *
+   * @param {string} text       buffer to scan
+   * @param {number} fromIdx    char index to start from (inclusive)
+   * @param {object} state      parser state from initParserState()
+   * @param {string} delim      single-char field delimiter
+   * @param {object} [opts]
+   *   maxRows   {number}  emit at most this many rows then stop (0 = unbounded)
+   *   baseOffset{number}  absolute char offset of `text[0]` in caller buffer
+   *                       (used for rowOffsets); default 0
+   *   flush     {boolean} if true and EOT reached with a pending row, emit it
+   *                       (use on the FINAL parse call only)
+   * @returns {{rows:Array<Array<string>>, rowOffsets:Array<{start,end}>,
+   *           endIdx:number, endedInQuotes:boolean}}
+   *   endIdx          — char index in `text` where parsing stopped (resume here)
+   *   endedInQuotes   — true iff `flush` was true and the final emitted row
+   *                     terminated mid-quoted-cell (caller should flag it
+   *                     as malformed)
+   */
+  static parseChunk(text, fromIdx, state, delim, opts) {
+    opts = opts || {};
+    const maxRows    = opts.maxRows | 0;          // 0 = unbounded
+    const baseOffset = opts.baseOffset | 0;
+    const flush      = !!opts.flush;
+
+    const len = text.length;
+    const QUOTE = 34;   // '"'
+    const NL    = 10;   // '\n'
+    const delimCode = delim.charCodeAt(0);
+
+    const rows       = [];
+    const rowOffsets = [];
+
+    // Hoist state into locals — measurable speedup over property access in
+    // the hot loop on V8.
+    let inQuotes = state.inQuotes;
+    let cur      = state.cur;
+    let cells    = state.cells;
+    let rowStart = state.rowStart;
+
+    let i = fromIdx | 0;
+
+    while (i < len && (maxRows <= 0 || rows.length < maxRows)) {
+      // ── Fast path: at the start of a fresh row, scan ahead for the
+      //    next `\n` and the next `"`. If no quote appears before the
+      //    newline we're looking at a plain unquoted line, which we can
+      //    split natively (much faster than the char-by-char machine).
+      //    This preserves the throughput of the previous line-based
+      //    parser on the overwhelmingly common no-quote case.
+      if (!inQuotes && rowStart < 0 && cells.length === 0 && cur === '') {
+        const nlIdx = text.indexOf('\n', i);
+        const lineEnd = nlIdx === -1 ? len : nlIdx;
+        // Skip blank lines outright.
+        if (lineEnd === i) { i = lineEnd + 1; continue; }
+        const qIdx = text.indexOf('"', i);
+        if (qIdx === -1 || qIdx >= lineEnd) {
+          if (nlIdx === -1) {
+            // No trailing newline — pending partial row. Fall through
+            // to the char loop so flush semantics apply uniformly.
+          } else {
+            const line = text.substring(i, lineEnd);
+            rows.push(line.split(delim));
+            rowOffsets.push({ start: baseOffset + i, end: baseOffset + lineEnd });
+            i = lineEnd + 1;
+            continue;
+          }
+        }
+      }
+
+      const ch = text.charCodeAt(i);
+
+      if (inQuotes) {
+        if (ch === QUOTE) {
+          // RFC-4180: doubled quote inside a quoted cell escapes to one quote.
+          if (i + 1 < len && text.charCodeAt(i + 1) === QUOTE) {
+            cur += '"';
+            i += 2;
+            continue;
+          }
+          inQuotes = false;
+          i++;
+          continue;
+        }
+        // Every other char (incl. \n, delim) is literal cell content.
+        cur += text[i];
+        i++;
+        continue;
+      }
+
+      // Not in quotes.
+      if (ch === NL) {
+        // Blank physical line outside quotes — skip without emitting.
+        if (rowStart < 0 && cells.length === 0 && cur === '') {
+          i++;
+          continue;
+        }
+        cells.push(cur);
+        rows.push(cells);
+        rowOffsets.push({
+          start: rowStart < 0 ? baseOffset + i : rowStart,
+          end:   baseOffset + i,
+        });
+        cells = [];
+        cur = '';
+        rowStart = -1;
+        i++;
+        continue;
+      }
+
+      // Any non-newline char marks the start of a row.
+      if (rowStart < 0) rowStart = baseOffset + i;
+
+      if (ch === QUOTE) {
+        // Toggle into quoted mode. Mirrors the legacy _splitQuoted
+        // behaviour (quote anywhere toggles); permissive vs strict
+        // RFC-4180 (where a quote is only special at cell start) but
+        // matches what real-world spreadsheets emit.
+        inQuotes = true;
+        i++;
+        continue;
+      }
+      if (ch === delimCode) {
+        cells.push(cur);
+        cur = '';
+        i++;
+        continue;
+      }
+      cur += text[i];
+      i++;
+    }
+
+    let endedInQuotes = false;
+    if (flush && i >= len &&
+        (cells.length > 0 || cur.length > 0 || rowStart >= 0 || inQuotes)) {
+      // Final partial row — emit. If we're still inQuotes the cell was
+      // never closed; surface that so the caller can flag the row.
+      cells.push(cur);
+      rows.push(cells);
+      rowOffsets.push({
+        start: rowStart < 0 ? baseOffset + len : rowStart,
+        end:   baseOffset + len,
+      });
+      if (inQuotes) endedInQuotes = true;
+      cells = [];
+      cur = '';
+      rowStart = -1;
+      inQuotes = false;
+    }
+
+    state.inQuotes = inQuotes;
+    state.cur      = cur;
+    state.cells    = cells;
+    state.rowStart = rowStart;
+
+    return { rows, rowOffsets, endIdx: i, endedInQuotes };
   }
 
   /**
@@ -52,12 +257,31 @@ class CsvRenderer {
       return empty;
     }
 
-    // Parse header + decide whether to go fully-sync or chunked-streaming.
-    const firstNl    = text.indexOf('\n');
-    const headerLine = firstNl === -1 ? text : text.substring(0, firstNl);
-    const headerRow  = headerLine.indexOf('"') === -1
-      ? headerLine.split(delim)
-      : this._splitQuoted(headerLine, delim);
+    // Parse the header via the same state-machine parser as the body —
+    // this is what makes a multi-line quoted header cell work. The
+    // body parse resumes from `headerEndIdx`, so `_rawText` offsets
+    // returned for body rows align with the original normalised text.
+    const headerState = CsvRenderer.initParserState();
+    const headerResult = CsvRenderer.parseChunk(text, 0, headerState, delim, {
+      baseOffset: 0,
+      maxRows:    1,
+      flush:      false,
+    });
+    let headerRow;
+    let headerEndIdx;
+    if (headerResult.rows.length) {
+      headerRow    = headerResult.rows[0];
+      headerEndIdx = headerResult.endIdx;
+    } else {
+      // Single-line file with no trailing newline — flush to extract.
+      const flushResult = CsvRenderer.parseChunk(text, headerResult.endIdx, headerState, delim, {
+        baseOffset: 0,
+        maxRows:    0,
+        flush:      true,
+      });
+      headerRow    = flushResult.rows[0] || [];
+      headerEndIdx = text.length;
+    }
 
     const infoText = this._delimLabel(delim);
 
@@ -74,31 +298,28 @@ class CsvRenderer {
 
     // Small file — parse synchronously and hand the rows to the viewer.
     if (text.length <= this.CHUNK_BYTES_SYNC) {
-      const { rows, rowOffsets } = this._parse(text, delim, firstNl + 1);
+      const { rows, rowOffsets, endedInQuotes } = this._parse(text, delim, headerEndIdx);
       const { rows: capped, rowOffsets: cappedOff, truncated, originalCount } =
         this._capRows(rows, rowOffsets);
       const rowSearchText = new Array(capped.length);
-      // Detect malformed rows: wrong column count, or any cell containing an
-      // unbalanced '"' (suggesting quote-escape corruption the stream parser
-      // recovered from but should be flagged).
       const malformed = new Set();
       const expectedCols = headerRow.length;
       for (let i = 0; i < capped.length; i++) {
         const r = capped[i];
-        rowSearchText[i] = r.join(' ').toLowerCase();
-        if (r.length !== expectedCols) {
+        // Width policy: pad short rows silently (common for CSVs assembled
+        // from multiple sources); flag rows that have MORE columns than
+        // the header (more likely real corruption / quote-escape damage).
+        if (r.length > expectedCols) {
           malformed.add(i);
-          continue;
+        } else if (expectedCols && r.length < expectedCols) {
+          while (r.length < expectedCols) r.push('');
         }
-        // Unbalanced-quote heuristic: any cell whose `"` count is odd.
-        for (let c = 0; c < r.length; c++) {
-          const cell = r[c];
-          if (!cell || cell.indexOf('"') === -1) continue;
-          let qc = 0;
-          for (let k = 0; k < cell.length; k++) if (cell.charCodeAt(k) === 34) qc++;
-          if (qc & 1) { malformed.add(i); break; }
-        }
+        rowSearchText[i] = r.join(' ').toLowerCase();
       }
+      // An unterminated `"` at EOF means the last emitted row's final
+      // cell ate everything to the end of the file. Flag it so the
+      // analyst sees the malformed-row counter tick up by one.
+      if (endedInQuotes && capped.length) malformed.add(capped.length - 1);
       viewer.setRows(capped, rowSearchText, cappedOff);
       viewer._infoText = `${capped.length.toLocaleString()} rows × ${headerRow.length} columns · ${infoText}`;
       viewer._updateInfoBar();
@@ -120,7 +341,7 @@ class CsvRenderer {
     // Rough estimate of final row count: average a ~100-byte row.
     const estTotalRows = Math.min(this.MAX_ROWS, Math.max(1, Math.floor(text.length / 100)));
     viewer.beginParseProgress(estTotalRows);
-    this._parseStreaming(text, delim, firstNl + 1, headerRow.length, viewer);
+    this._parseStreaming(text, delim, headerEndIdx, headerRow.length, viewer);
     return viewer.root();
   }
 
@@ -155,59 +376,55 @@ class CsvRenderer {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  //  Auto-detect delimiter by counting unquoted occurrences in the first line.
+  //  Auto-detect delimiter by counting unquoted occurrences over the first
+  //  ~4 KB of the buffer. Quote-aware across newlines so a header with a
+  //  multi-line quoted cell doesn't poison the sniff. Stops at the first
+  //  *unquoted* `\n` (i.e. the end of the logical header row).
   // ═══════════════════════════════════════════════════════════════════════
   _delim(text) {
-    let nl = text.indexOf('\n');
-    if (nl === -1) nl = text.length;
-    const line = text.substring(0, nl);
+    const SAMPLE = 4096;
+    const limit = Math.min(text.length, SAMPLE);
     const c = { ',': 0, ';': 0, '\t': 0, '|': 0 };
     let inQ = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (ch === '"') inQ = !inQ;
-      else if (!inQ && c[ch] !== undefined) c[ch]++;
+    for (let i = 0; i < limit; i++) {
+      const ch = text[i];
+      if (ch === '"') { inQ = !inQ; continue; }
+      if (inQ) continue;
+      if (ch === '\n') break;        // end of logical header row
+      if (c[ch] !== undefined) c[ch]++;
     }
     return Object.entries(c).sort((a, b) => b[1] - a[1])[0][0];
   }
 
   // ═══════════════════════════════════════════════════════════════════════
   //  Full-buffer synchronous parse (used for files ≤ CHUNK_BYTES_SYNC).
-  //
-  //  Fast path: quote-free lines use native String.split — dramatically
-  //  faster than the per-character state machine. Lines that contain '"'
-  //  fall through to _splitQuoted for RFC-4180 correctness.
+  //  Thin wrapper around parseChunk with flush:true so any trailing
+  //  partial row (file ends without a newline, or mid-quoted-cell) is
+  //  emitted.
   // ═══════════════════════════════════════════════════════════════════════
   _parse(text, delim, startOffset) {
-    const rows = [];
-    const rowOffsets = [];
-    const len = text.length;
-    let offset = startOffset || 0;
-
-    while (offset < len) {
-      let lineEnd = text.indexOf('\n', offset);
-      if (lineEnd === -1) lineEnd = len;
-
-      // \n-only at this point — CRLF has already been normalised by render().
-      if (lineEnd > offset) {
-        const line = text.substring(offset, lineEnd);
-        const cells = line.indexOf('"') === -1
-          ? line.split(delim)
-          : this._splitQuoted(line, delim);
-        rows.push(cells);
-        rowOffsets.push({ start: offset, end: lineEnd });
-      }
-      offset = lineEnd + 1;
-    }
-    return { rows, rowOffsets };
+    const state = CsvRenderer.initParserState();
+    const result = CsvRenderer.parseChunk(text, startOffset || 0, state, delim, {
+      baseOffset: 0,
+      maxRows:    0,
+      flush:      true,
+    });
+    return {
+      rows:          result.rows,
+      rowOffsets:    result.rowOffsets,
+      endedInQuotes: result.endedInQuotes,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════
   //  Streaming parse — yields control back to the event loop every
   //  CHUNK_ROWS_STREAM rows so the first paint isn't blocked by a 50 MB
   //  parse. Feeds the viewer via `appendRows()` + `updateParseProgress()`.
+  //  Threads parser state across yields so multi-line quoted cells that
+  //  straddle a chunk boundary are handled correctly.
   // ═══════════════════════════════════════════════════════════════════════
   _parseStreaming(text, delim, startOffset, colCount, viewer) {
+    const state = CsvRenderer.initParserState();
     const len = text.length;
     let offset = startOffset || 0;
     let totalRows = 0;
@@ -226,11 +443,40 @@ class CsvRenderer {
       }
     };
 
+    const ingestRows = (chunkRows, chunkOffsets) => {
+      const chunkSearch = new Array(chunkRows.length);
+      for (let i = 0; i < chunkRows.length; i++) {
+        const r = chunkRows[i];
+        if (r.length > colCount) {
+          malformed.add(totalRows + i);
+        } else if (colCount && r.length < colCount) {
+          while (r.length < colCount) r.push('');
+        }
+        chunkSearch[i] = r.join(' ').toLowerCase();
+      }
+      viewer.appendRows(chunkRows, chunkSearch, chunkOffsets);
+      totalRows += chunkRows.length;
+      if (malformed.size) viewer.setMalformedRows(malformed);
+    };
+
     const self = this;
     const parseChunk = (chunkCap) => {
       if (viewer._destroyed) return;
+
       if (offset >= len || totalRows >= MAX) {
-        // End-of-file reached.
+        // EOF — final flush. If a partial row is still pending, emit it.
+        if (offset >= len && totalRows < MAX) {
+          const flushResult = CsvRenderer.parseChunk(text, offset, state, delim, {
+            baseOffset: 0,
+            maxRows:    0,
+            flush:      true,
+          });
+          if (flushResult.rows.length) {
+            ingestRows(flushResult.rows, flushResult.rowOffsets);
+            if (flushResult.endedInQuotes) malformed.add(totalRows - 1);
+            if (malformed.size) viewer.setMalformedRows(malformed);
+          }
+        }
         viewer._infoText =
           `${totalRows.toLocaleString()} rows × ${colCount} columns · ${self._delimLabel(delim)}`;
         viewer._updateInfoBar();
@@ -246,39 +492,24 @@ class CsvRenderer {
         return;
       }
 
-      const chunkRows    = [];
-      const chunkOffsets = [];
-      const chunkSearch  = [];
-      let parsed = 0;
-      while (offset < len && parsed < chunkCap && totalRows + parsed < MAX) {
-        let lineEnd = text.indexOf('\n', offset);
-        if (lineEnd === -1) lineEnd = len;
-        if (lineEnd > offset) {
-          const line = text.substring(offset, lineEnd);
-          const cells = line.indexOf('"') === -1
-            ? line.split(delim)
-            : self._splitQuoted(line, delim);
-          chunkRows.push(cells);
-          chunkOffsets.push({ start: offset, end: lineEnd });
-          chunkSearch.push(line.toLowerCase());
-          // Flag malformed: column count mismatch.
-          if (cells.length !== colCount) {
-            malformed.add(totalRows + parsed);
-          }
-          parsed++;
-        }
-        offset = lineEnd + 1;
-      }
-      if (totalRows + parsed >= MAX && offset < len) truncated = true;
+      const cap = Math.min(chunkCap, MAX - totalRows);
+      const result = CsvRenderer.parseChunk(text, offset, state, delim, {
+        baseOffset: 0,
+        maxRows:    cap,
+        flush:      false,
+      });
+      offset = result.endIdx;
 
-      if (chunkRows.length) {
-        viewer.appendRows(chunkRows, chunkSearch, chunkOffsets);
-        totalRows += chunkRows.length;
-        viewer.updateParseProgress(totalRows, Math.max(totalRows, Math.floor(len / Math.max(1, offset / Math.max(1, totalRows)))));
-        // Republish the malformed set as it grows so the ribbon counter
-        // animates up during the streaming parse.
-        if (malformed.size) viewer.setMalformedRows(malformed);
+      if (result.rows.length) {
+        ingestRows(result.rows, result.rowOffsets);
+        viewer.updateParseProgress(
+          totalRows,
+          Math.max(totalRows, Math.floor(len / Math.max(1, offset / Math.max(1, totalRows))))
+        );
       }
+
+      if (totalRows >= MAX && offset < len) truncated = true;
+
       yieldNext(() => parseChunk(self.CHUNK_ROWS_STREAM));
     };
 
@@ -287,9 +518,11 @@ class CsvRenderer {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  //  Split a CSV line into cells (RFC-4180 quoted handling).
-  //  Only used for lines that actually contain '"' — the common
-  //  quote-free case is handled by native String.split.
+  //  Legacy single-line splitter — retained for back-compat with any
+  //  external caller that imported the old shape (none in-tree as of
+  //  the parser refactor, but cheap to keep). Operates on a single line
+  //  and ASSUMES the caller has already pre-split on `\n`. New code
+  //  should use parseChunk instead.
   // ═══════════════════════════════════════════════════════════════════════
   _splitQuoted(line, delim) {
     const cells = [];

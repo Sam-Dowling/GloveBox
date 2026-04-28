@@ -1,0 +1,26 @@
+id	created	updated	priority	status	owner	reporter	tags	due	source	resolution	hash	notes
+T-1001	2024-09-04T08:12Z	2024-09-04T18:30Z	high	open	alice@example.com	bob@example.com	"triage,security
+external-report
+needs-followup
+breach-2024
+investigation-active"	2024-09-11	"Inbound mail from research@vendor.example
+Subject: ""possible RCE in /api/v2""
+Headers:
+  X-Priority: 1
+  X-Mailer: vendor-research-bot
+Body:
+  Reproducer attached as artefact.tar.gz"	pending
+T-1002	2024-09-04T09:01Z	high	closed	bob@example.com	alice@example.com	internal	"This is a
+multi-line
+note with several
+embedded newlines and a comma, just
+to demonstrate that the parser keeps
+the entire blob in one cell."
+T-1003	2024-09-05T11:45Z	low	open	carol@example.com	dave@example.com	"backlog
+research
+docs"	"User asked for help; reproducer:
+  step 1: open the file
+  step 2: click Export
+  step 3: observe the crash
+  step 4: collect the dump
+  step 5: open a ticket"	WIP
