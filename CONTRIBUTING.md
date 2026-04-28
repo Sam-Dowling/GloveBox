@@ -75,10 +75,7 @@ For the release-verification recipe see [SECURITY.md § Reproducible Build](SECU
 
 ### Continuous Integration
 
-`.github/workflows/ci.yml` runs on every push and PR. CI scope stops at
-static verification — Puppeteer / Playwright can't drive the native
-file-picker or drag-and-drop, which are the only entry points into a
-loaded file.
+`.github/workflows/ci.yml` runs on every push and PR.
 
 | Job | What it guarantees |
 |---|---|
@@ -86,6 +83,17 @@ loaded file.
 | `verify-vendored` | Every `vendor/*.js` matches its `VENDORED.md` SHA-256 pin. No pinned file missing; no unpinned file present. |
 | `static-checks` | On the **built** `docs/index.html`: CSP meta tag present, `default-src 'none'` intact, no inline event handlers (`onclick="…"`), no `'unsafe-eval'`, no remote hosts in CSP directives. |
 | `lint` | ESLint 9 over `src/**/*.js` using `eslint.config.mjs`. Targets real foot-guns (`no-eval`, `no-new-func`, `no-const-assign`, `no-unreachable`, …) rather than style. |
+| `test-build` | `python scripts/build.py --test-api` produces `docs/index.test.html` (the test-only sibling that exposes `window.__loupeTest`). Uploaded as the `loupe-html-test` artefact for the e2e job to consume. Never deployed; never signed. |
+| `unit` | `python make.py test-unit` — Node `node:test` over `tests/unit/`. Pure-module coverage in a `vm` sandbox. |
+| `e2e` | `python make.py test-e2e` — Playwright over `tests/e2e-fixtures/` + `tests/e2e-ui/`. Runs the test bundle from `loupe-html-test` against real fixtures from `examples/`. See `tests/README.md` for the runbook. |
+
+Earlier project notes (and an older revision of this paragraph) claimed
+"Puppeteer / Playwright can't drive the native file-picker or
+drag-and-drop". That's incorrect. `page.setInputFiles(selector, path)`
+drives a hidden `<input type="file">` exactly the way a real picker
+interaction does, and a synthetic `DragEvent` carrying a `DataTransfer`
+with a `File` reproduces the drag-and-drop ingress path. Both are
+covered in `tests/e2e-ui/`.
 
 Two additional workflows run on push-to-main + weekly cron:
 
@@ -120,6 +128,45 @@ When upgrading an action manually:
 curl -s https://api.github.com/repos/<owner>/<repo>/git/ref/tags/<vX.Y.Z> \
   | jq -r .object.sha
 ```
+
+---
+
+## Testing
+
+Loupe ships with three independent test layers. All are opt-in and **not
+part of `python make.py`'s default invocation** — the default loop
+remains `verify → build → contract → codemap`. Run the test pipeline
+explicitly:
+
+```bash
+python make.py test          # full pipeline: test-build → test-unit → test-e2e
+python make.py test-build    # rebuild docs/index.test.html (--test-api)
+python make.py test-unit     # Node node:test over tests/unit/
+python make.py test-e2e      # Playwright over tests/e2e-fixtures/ + tests/e2e-ui/
+```
+
+| Layer | Runner | What it covers |
+|---|---|---|
+| `tests/unit/` | Node `node:test` (stdlib, Node ≥ 20) | Pure modules from `src/` evaluated in a `vm.Context`. No DOM, no App, no renderers. |
+| `tests/e2e-fixtures/` | Playwright + `docs/index.test.html` | Real fixtures from `examples/` driven through `__loupeTest.loadBytes` → real `App._loadFile` → real renderer dispatch → asserted findings shape. |
+| `tests/e2e-ui/` | Playwright | UI ingress paths — file picker (`page.setInputFiles`), drag-drop (synthesised `DragEvent`), paste (planned). |
+
+The full runbook — including how Playwright is provisioned without a
+committed `node_modules`, the `--test-api` build flag, and the
+`window.__loupeTest` surface — is in `tests/README.md`.
+
+### Test build vs. release build
+
+`scripts/build.py --test-api` produces `docs/index.test.html` (a
+gitignored sibling) that includes `src/app/app-test-api.js` and the
+`window.__loupeTest` surface. The release path
+(`python scripts/build.py`) never passes the flag, and a
+`_check_no_test_api_in_release()` build gate re-reads the just-emitted
+`docs/index.html` and fails if either of the markers
+`__LOUPE_TEST_API__` / `__loupeTest` appears in it. The reproducibility
+guarantee in [SECURITY.md § Reproducible Build](SECURITY.md#reproducible-build)
+covers `docs/index.html` only — the test bundle is never deployed,
+never signed, and never byte-pinned.
 
 ---
 

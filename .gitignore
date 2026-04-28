@@ -21,6 +21,10 @@ desktop.ini
 # and deploys it to GitHub Pages + signs it on release. Contributors can
 # build locally to smoke-test but should never stage the result.
 docs/index.html
+# `docs/index.test.html` is the test-only sibling produced by
+# `scripts/build.py --test-api` (used by the Playwright e2e suite). It
+# embeds `window.__loupeTest` and must never be committed or shipped.
+docs/index.test.html
 loupe.html
 loupe.html.sha256
 loupe.html.sigstore
@@ -51,6 +55,13 @@ plans/
 node_modules/
 eslint-out.txt
 .eslintcache
+
+# Playwright e2e test artefacts (produced by `python make.py test-e2e`).
+# `dist/test-deps/` already covered by the `dist/` rule above; these are
+# the per-run output directories.
+test-results/
+playwright-report/
+.last-run.json
 
 # Logs
 logs_*

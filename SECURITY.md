@@ -202,6 +202,17 @@ confirms the signed bundle is what the public tree compiled to, not
 that the tree itself is safe. Cross-check the Sigstore signature for
 provenance.
 
+The reproducibility guarantee covers `docs/index.html` only.
+`scripts/build.py --test-api` produces a separate `docs/index.test.html`
+sibling for the Playwright e2e suite — that file embeds the
+`window.__loupeTest` test surface defined in `src/app/app-test-api.js`
+and is **never** deployed to GitHub Pages, **never** Sigstore-signed,
+and **never** a release artefact. A `_check_no_test_api_in_release()`
+build gate inside `scripts/build.py` re-reads the just-emitted release
+bundle and fails the build if the test-API markers
+(`__LOUPE_TEST_API__` or `__loupeTest`) leak into it. See
+`tests/README.md` for the full test-build / release-build separation.
+
 ---
 
 ## Reporting a Vulnerability

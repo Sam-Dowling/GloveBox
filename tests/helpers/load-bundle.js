@@ -1,0 +1,239 @@
+'use strict';
+// ════════════════════════════════════════════════════════════════════════════
+// load-bundle.js — Node:vm harness for Loupe unit tests.
+//
+// Loupe ships as a single concatenated inline <script>; everything is
+// implicit globals at build time. For unit tests we don't want to load the
+// full ~9 MB bundle into a fake DOM — we want to load the minimal subset
+// of `src/` files needed to exercise a pure module, and assert against the
+// resulting globals.
+//
+// `loadModules(filenames)` reads each file as text, concatenates them in
+// the given order, evaluates the result inside a fresh `vm.Context` with
+// just enough host shims (TextEncoder/Decoder, console) for the source
+// to run, and returns the populated context. Tests then read named
+// globals straight off the returned object.
+//
+// Why not just `require()` each file? Because the source uses `const X =`
+// at file scope (not `module.exports`) — exactly the shape it has inside
+// the inline <script> tag. `vm.runInContext` faithfully reproduces that
+// scope without us having to retrofit a CommonJS / ESM façade onto every
+// source file.
+//
+// Determinism:
+//   • Files are read with the project root resolved relative to THIS
+//     file, not `process.cwd()`. Tests behave identically whether they
+//     are launched from the repo root or from `tests/`.
+//   • The context is re-created for every `loadModules` call. Tests never
+//     leak state into each other.
+// ════════════════════════════════════════════════════════════════════════════
+
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+
+/**
+ * Resolve `relPath` (e.g. `'src/constants.js'`) against the repo root.
+ * Throws if the file is missing — silent fall-through would mask a typo
+ * with confusing "X is not defined" downstream.
+ */
+function resolveSrc(relPath) {
+  const abs = path.join(REPO_ROOT, relPath);
+  if (!fs.existsSync(abs)) {
+    throw new Error(`load-bundle: source file not found: ${relPath}`);
+  }
+  return abs;
+}
+
+/**
+ * Build the host shim object exposed as the vm sandbox. Mirrors the
+ * subset of browser globals the pure modules under test actually touch:
+ *   • `console`            — diagnostic only; tests assert nothing on it.
+ *   • `TextEncoder/Decoder`— Node has them globally since v11; we still
+ *                            re-expose explicitly so the contract is clear.
+ *   • `Uint8Array`/etc     — standard ES built-ins, cross-realm-safe to
+ *                            use directly; tests passing a Uint8Array
+ *                            constructed in this realm to a function
+ *                            evaluated in the sandbox realm works because
+ *                            `vm` shares the V8 heap.
+ *   • `setTimeout/clear*`  — `safeRegex` uses `setTimeout(0)` for its
+ *                            wall-clock budget probe in some paths.
+ * No DOM, no `window`, no `localStorage` — those modules belong in
+ * Playwright tests, not unit tests.
+ */
+function makeSandbox(extra) {
+  const sb = {
+    console,
+    TextEncoder,
+    TextDecoder,
+    Uint8Array,
+    Uint16Array,
+    Uint32Array,
+    Int8Array,
+    Int16Array,
+    Int32Array,
+    Float32Array,
+    Float64Array,
+    DataView,
+    ArrayBuffer,
+    SharedArrayBuffer: typeof SharedArrayBuffer === 'function' ? SharedArrayBuffer : undefined,
+    Promise,
+    Symbol,
+    Map,
+    Set,
+    WeakMap,
+    WeakSet,
+    Date,
+    Math,
+    JSON,
+    RegExp,
+    Error,
+    TypeError,
+    RangeError,
+    SyntaxError,
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    queueMicrotask,
+    Object,
+    Array,
+    Number,
+    String,
+    Boolean,
+    parseInt,
+    parseFloat,
+    isFinite,
+    isNaN,
+    // Some pure modules call `crypto.subtle` (none of the ones unit-tested
+    // today, but harmless to expose). `node:crypto.webcrypto` matches the
+    // browser API surface.
+    crypto: require('node:crypto').webcrypto,
+  };
+  if (extra) Object.assign(sb, extra);
+  return sb;
+}
+
+/**
+ * Concatenate and evaluate the listed `src/`-relative files inside a
+ * fresh `vm.Context`. Returns the sandbox object so tests can read the
+ * populated globals (e.g. `ctx.IOC`, `ctx.extractInterestingStringsCore`).
+ *
+ * IMPORTANT — `const`/`let` hoisting under `vm`:
+ * ----------------------------------------------
+ * `const X = …` at top level of a script does NOT become a property of
+ * the sandbox object — that's standard ES semantics, not a vm quirk.
+ * (In the production bundle this is fine: all `const`s live at the same
+ * script scope, so they see each other.) For unit tests we need to
+ * project named bindings onto the sandbox so the test can read them
+ * after evaluation. We do this by concatenating ALL source files into a
+ * single script PLUS a trailing snippet that does
+ *   `globalThis.<name> = (typeof <name> !== 'undefined') ? <name> : undefined;`
+ * for every requested name. The whole thing runs in one `vm.runInContext`
+ * call, so every file sees every other file's bindings exactly as they
+ * do in the browser bundle.
+ *
+ * @param {string[]} relPaths  e.g. `['src/constants.js', 'src/ioc-extract.js']`
+ * @param {object}   [opts]
+ * @param {string[]} [opts.expose]  names to surface onto the sandbox after
+ *                                  evaluation. Defaults to a sensible
+ *                                  superset covering every public symbol
+ *                                  the existing unit tests touch (cheap).
+ * @param {object}   [opts.shims]   extra shims merged into the sandbox
+ *                                  before evaluation (rarely needed).
+ * @returns {object} the sandbox after evaluation.
+ */
+function loadModules(relPaths, opts) {
+  if (!Array.isArray(relPaths) || relPaths.length === 0) {
+    throw new Error('load-bundle: relPaths must be a non-empty array');
+  }
+  const o = opts || {};
+  const expose = Array.isArray(o.expose) ? o.expose : DEFAULT_EXPOSE;
+  const sandbox = makeSandbox(o.shims);
+  vm.createContext(sandbox);
+
+  // Concatenate every source file into one script, separated by sentinel
+  // comments so a stack trace on a syntax error still localises to the
+  // right file (the line numbers won't match the original file's line
+  // numbers, but the sentinel + the column position get us close enough
+  // — and any real failure here is a build-gate level mistake, not an
+  // everyday test failure).
+  let combined = '';
+  for (const rel of relPaths) {
+    const abs = resolveSrc(rel);
+    combined += `\n// ─── load-bundle: ${rel} ───\n`;
+    combined += fs.readFileSync(abs, 'utf8');
+  }
+
+  // Trailing exposure block: project requested top-level bindings onto
+  // `globalThis`. The `typeof X !== 'undefined'` guard means a name not
+  // declared by any of the loaded files surfaces as `undefined` rather
+  // than throwing a ReferenceError, which keeps `expose` lists permissive
+  // (tests only assert on the names they care about).
+  combined += '\n// ─── load-bundle: expose ───\n';
+  for (const name of expose) {
+    // Whitelist identifier shape so we never inject a hostile name.
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) {
+      throw new Error(`load-bundle: refusing to expose non-identifier name: ${JSON.stringify(name)}`);
+    }
+    combined += `try { globalThis[${JSON.stringify(name)}] = (typeof ${name} !== 'undefined') ? ${name} : undefined; } catch (_) {}\n`;
+  }
+
+  vm.runInContext(combined, sandbox, {
+    filename: 'load-bundle:concatenated',
+    displayErrors: true,
+  });
+  return sandbox;
+}
+
+// Default expose set: every public symbol the unit tests in this repo
+// touch today, plus a few obvious neighbours (cheap to add — projecting
+// a name that isn't declared is a no-op). Keep this list sorted; if a
+// new test needs a symbol, add it here in the same PR.
+const DEFAULT_EXPOSE = [
+  // src/constants.js
+  'IOC',
+  'IOC_CANONICAL_SEVERITY',
+  'IOC_COPYABLE',
+  'PARSER_LIMITS',
+  'lfNormalize',
+  'looksLikeIpVersionString',
+  'pushIOC',
+  'safeExec',
+  'safeMatchAll',
+  'safeRegex',
+  'safeTest',
+  'stripDerTail',
+  // src/hashes.js
+  'computeImportHashFromList',
+  'computeRichHash',
+  'computeSymHash',
+  'md5',
+  'normalizePeImportToken',
+  // src/ioc-extract.js
+  'extractInterestingStringsCore',
+  // src/tar-parser.js
+  'TarParser',
+];
+
+/**
+ * Project an arbitrary vm-realm value into the host realm via a JSON
+ * round-trip. The default `node:assert/strict` comparators check
+ * prototype identity, so an Array returned from `vm.runInContext` fails
+ * `deepEqual` against a host-realm Array even when their contents are
+ * identical. Tests that need structural equality should wrap the value
+ * with `host(value)` before passing it to `assert.deepEqual` /
+ * `assert.deepStrictEqual`.
+ *
+ * Note: only valid for JSON-safe values. Maps, Sets, BigInts, functions,
+ * etc. lose information through this round-trip — but the surfaces this
+ * harness covers (findings, IOC entries, TAR entries) are deliberately
+ * JSON-safe in the production code, so this is fine.
+ */
+function host(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+module.exports = { loadModules, resolveSrc, REPO_ROOT, DEFAULT_EXPOSE, host };

@@ -18,12 +18,43 @@ output. The only time-derived byte in the bundle is the embedded
 
 See SECURITY.md § Reproducible Build for the full recipe and non-goals.
 """
+import argparse
 import os
 import subprocess
+import sys
 from datetime import datetime, timezone
 
 # scripts/build.py → repo root is the parent of this file's directory.
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# ── --test-api flag ──────────────────────────────────────────────────────────
+# When set, the build:
+#   * appends `src/app/app-test-api.js` to APP_JS_FILES so the
+#     `window.__loupeTest` test surface is wired up,
+#   * prepends `const __LOUPE_TEST_API__ = true;` to Block 1 so other code
+#     can statically detect the test build (and so the leak-gate has a
+#     unique sentinel string to search for in the released bundle),
+#   * writes the output to `docs/index.test.html` instead of
+#     `docs/index.html`.
+#
+# This bundle is NEVER deployed to Pages and NEVER signed for release — the
+# release pipeline (.github/workflows/release.yml + signed Sigstore artefact)
+# only ever consumes `docs/index.html`. See `_check_no_test_api_in_release`
+# below for the defence-in-depth gate that confirms the test-api markers
+# never reach the released bundle.
+_argparser = argparse.ArgumentParser(
+    description='Build Loupe — emits docs/index.html (release) or '
+                'docs/index.test.html (with --test-api, never released).',
+)
+_argparser.add_argument(
+    '--test-api', action='store_true',
+    help='Emit docs/index.test.html with window.__loupeTest exposed. '
+         'Never ship — see scripts/build.py header comment.',
+)
+# `parse_known_args` so a future `python make.py build` orchestrator pass-
+# through still works (make.py invokes this script with no extra args today).
+_args, _unknown = _argparser.parse_known_args()
+TEST_API = bool(_args.test_api)
 
 _epoch = os.environ.get('SOURCE_DATE_EPOCH')
 if not _epoch:
@@ -850,6 +881,26 @@ APP_JS_FILES = [
     'src/app/app-breadcrumbs.js',
 ]
 
+# `--test-api` builds append the `window.__loupeTest` surface AFTER every
+# regular App mixin so it can reuse `extendApp(...)` and
+# `_resetNavStack` / `_loadFile` / `_yaraScanInProgress`. Strictly opt-in:
+# release builds never include this file. The leak-gate
+# `_check_no_test_api_in_release` (run when TEST_API is False) re-validates
+# the released bundle does not contain the `__loupeTest` /
+# `__LOUPE_TEST_API__` markers.
+#
+# Note: `new App().init();` lives at the END of `app-breadcrumbs.js` and is
+# already statically embedded in that file's source — so the test-api file
+# loads AFTER the kick-off statement parsed, but BEFORE the app's first
+# microtask resolves (everything is synchronous on the page-load tick), so
+# the `(function(){ window.__loupeTest = … })()` IIFE at the bottom of
+# `app-test-api.js` is guaranteed to see `window.app` already populated.
+# That's why the IIFE polls instead of capturing once — the `init()` call
+# may schedule a setTimeout / requestIdleCallback before the App handle is
+# observable on the timeline; polling is cheap and tolerant.
+if TEST_API:
+    APP_JS_FILES.append('src/app/app-test-api.js')
+
 # Group A — pre-App essentials. Emitted as a standalone <script> block
 # *before* the heavy renderer vendors so its drag/drop/paste handlers
 # beat the slowest vendor compile to the parser. See EARLY_JS_FILES
@@ -1044,6 +1095,7 @@ _block_srcs = ['\n'.join(read(f) for f in g) for g in APP_BLOCKS]
 # `LOUPE_VERSION` and `DEFAULT_YARA_RULES`.
 _block_srcs[0] = (
     f"const LOUPE_VERSION = '{VERSION}';\n"
+    + (f"const __LOUPE_TEST_API__ = true;\n" if TEST_API else '')
     + default_yara_js
     + yara_worker_js
     + timeline_worker_js
@@ -1872,12 +1924,49 @@ HTML = f"""<!DOCTYPE html>
 </body>
 </html>"""
 
-# docs/index.html — served by GitHub Pages
+# Output path:
+#   • release build → docs/index.html (served by GitHub Pages, signed at release)
+#   • --test-api    → docs/index.test.html (NEVER deployed, NEVER signed)
 docs = os.path.join(BASE, 'docs')
 os.makedirs(docs, exist_ok=True)
-out = os.path.join(docs, 'index.html')
+out_filename = 'index.test.html' if TEST_API else 'index.html'
+out = os.path.join(docs, out_filename)
 with open(out, 'w', encoding='utf-8') as _f:
     _f.write(HTML)
 
 size = os.path.getsize(out)
-print(f"OK  Built {out}  ({size:,} bytes / {size//1024} KB)")
+print(f"OK  Built {out}  ({size:,} bytes / {size//1024} KB)"
+      + ('  [test-api]' if TEST_API else ''))
+
+
+# ── Build gate: test-API markers must NEVER appear in release bundles ─────────
+# Defence-in-depth against the test-API leaking into a shipped release. The
+# `--test-api` flag is the only path that ever embeds these markers, and the
+# CI release path never passes that flag — but if a future contributor edits
+# the orchestrator wrong, this gate catches the leak before it reaches Pages
+# / Sigstore signing.
+#
+# We re-read the just-written release bundle and assert neither
+# `__LOUPE_TEST_API__` nor `__loupeTest` (the public surface name) appears
+# in it. Both strings are unique enough that a false positive in vendored
+# code or YARA rules is not a concern (we sanity-check that assumption on
+# every build by greping rules + vendor for the same tokens — the gate
+# prints a clear error if anyone introduces such a substring).
+def _check_no_test_api_in_release():
+    if TEST_API:
+        return  # Only run when emitting the release bundle.
+    with open(out, 'r', encoding='utf-8') as _f:
+        bundle = _f.read()
+    leaks = []
+    for marker in ('__LOUPE_TEST_API__', '__loupeTest'):
+        if marker in bundle:
+            leaks.append(marker)
+    if leaks:
+        raise SystemExit(
+            'Build gate failed — test-API marker(s) leaked into release bundle: '
+            + ', '.join(leaks) + '\n'
+            'The `--test-api` flag must never be set when emitting '
+            'docs/index.html. See scripts/build.py header comment.'
+        )
+
+_check_no_test_api_in_release()

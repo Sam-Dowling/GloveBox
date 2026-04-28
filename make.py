@@ -26,6 +26,12 @@ Usage
     python make.py sbom                     # just generate_sbom.py  (opt-in)
     python make.py build contract codemap   # any subset, in the order given
 
+Test pipeline (opt-in; not part of the default run):
+    python make.py test                     # alias for test-build → test-unit → test-e2e
+    python make.py test-build               # build docs/index.test.html (--test-api flag)
+    python make.py test-unit                # node:test unit tests under tests/unit/
+    python make.py test-e2e                 # Playwright tests under tests/e2e-*/
+
 Exit code is the first non-zero exit code encountered. Subsequent steps are
 skipped on failure — there's no point generating a codemap for a tree that
 won't build.
@@ -54,22 +60,35 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 # tree-wide first, and the contract check then re-validates the renderer
 # surface for the structural rules (class + render method) the build gates
 # don't cover.
-STEPS: dict[str, tuple[str, str]] = {
-    'verify':   ('Verify vendored SHA-256 pins', 'scripts/verify_vendored.py'),
-    'regex':    ('Check regex safety annotations', 'scripts/check_regex_safety.py'),
-    'parity':   ('Check worker shim parity',     'scripts/check_shim_parity.py'),
-    'build':    ('Build docs/index.html',        'scripts/build.py'),
-    'contract': ('Check renderer contract',      'scripts/check_renderer_contract.py'),
-    'codemap':  ('Regenerate CODEMAP.md',        'scripts/generate_codemap.py'),
-    'sbom':     ('Generate CycloneDX SBOM',      'scripts/generate_sbom.py'),
+STEPS: dict[str, tuple[str, str, list[str]]] = {
+    'verify':     ('Verify vendored SHA-256 pins', 'scripts/verify_vendored.py',     []),
+    'regex':      ('Check regex safety annotations', 'scripts/check_regex_safety.py', []),
+    'parity':     ('Check worker shim parity',     'scripts/check_shim_parity.py',   []),
+    'build':      ('Build docs/index.html',        'scripts/build.py',               []),
+    'contract':   ('Check renderer contract',      'scripts/check_renderer_contract.py', []),
+    'codemap':    ('Regenerate CODEMAP.md',        'scripts/generate_codemap.py',    []),
+    'sbom':       ('Generate CycloneDX SBOM',      'scripts/generate_sbom.py',       []),
+    # ── Test pipeline (opt-in; not part of DEFAULT_STEPS) ───────────────────
+    # `test-build` reuses scripts/build.py with --test-api → docs/index.test.html
+    # `test-unit`  runs Node's stdlib `node:test` over tests/unit/
+    # `test-e2e`   runs Playwright via `npx --yes playwright@<pinned>` over
+    #              tests/e2e-fixtures/ + tests/e2e-ui/. Requires the
+    #              test-build artefact to exist.
+    # `test`       chains test-build → test-unit → test-e2e.
+    # See tests/README.md for the contract.
+    'test-build': ('Build docs/index.test.html (--test-api)', 'scripts/build.py', ['--test-api']),
+    'test-unit':  ('Run Node unit tests',         'scripts/run_tests_unit.py',     []),
+    'test-e2e':   ('Run Playwright e2e tests',    'scripts/run_tests_e2e.py',      []),
 }
 
 DEFAULT_STEPS = ['verify', 'regex', 'parity', 'build', 'contract', 'codemap']
+# `test` is a pseudo-alias expanded by `_parse_args`. Real steps are in STEPS.
+TEST_STEPS = ['test-build', 'test-unit', 'test-e2e']
 ALL_STEPS = list(STEPS.keys())
 
 
 def _run(step: str) -> int:
-    label, script = STEPS[step]
+    label, script, extra = STEPS[step]
     path = os.path.join(BASE, script)
     if not os.path.isfile(path):
         print(f"ERROR  {script} not found next to make.py", file=sys.stderr)
@@ -77,12 +96,13 @@ def _run(step: str) -> int:
 
     banner = f" {label} ".center(60, '─')
     print(f"\n{banner}")
-    print(f"$ python {script}", flush=True)
+    pretty_extra = ' '.join(extra)
+    print(f"$ python {script}{(' ' + pretty_extra) if pretty_extra else ''}", flush=True)
     t0 = time.perf_counter()
     # Run with the same interpreter so a venv / pyenv is honoured. cwd=BASE
     # so the child scripts' relative paths (src/, vendor/, docs/, …) resolve
     # exactly as they do when invoked directly.
-    rc = subprocess.call([sys.executable, path], cwd=BASE)
+    rc = subprocess.call([sys.executable, path] + list(extra), cwd=BASE)
     dt = time.perf_counter() - t0
     status = 'OK' if rc == 0 else f'FAIL ({rc})'
     print(f"[{status}] {step} — {dt:.2f}s")
@@ -108,9 +128,21 @@ def _parse_args(argv: list[str]) -> list[str]:
                     seen.add(s)
                     out.append(s)
             continue
+        if a == 'test':
+            # `test` is a pseudo-alias for the full test pipeline:
+            # test-build → test-unit → test-e2e. Each can still be run in
+            # isolation (e.g. `python make.py test-unit` after a previous
+            # test-build).
+            for s in TEST_STEPS:
+                if s not in seen:
+                    seen.add(s)
+                    out.append(s)
+            continue
         if a not in STEPS:
-            print(f"ERROR  unknown step '{a}'. Valid: {', '.join(ALL_STEPS)}, all",
-                  file=sys.stderr)
+            print(
+                f"ERROR  unknown step '{a}'. Valid: {', '.join(ALL_STEPS)}, "
+                f"all, test", file=sys.stderr,
+            )
             sys.exit(2)
         if a not in seen:
             seen.add(a)
