@@ -15175,6 +15175,18 @@ body.dark .grid-cell.tl-stack-text-35 {
   min-width: 0;
 }
 
+/* Bulk-value textarea — same chrome as `.tl-field-select` (above) but
+   stretched vertically so multi-line paste is the obvious affordance.
+   Monospace so pasted CSV / wordlists line up. */
+.tl-popover.tl-add-sus .tl-add-filter-form textarea.tl-field-select {
+  min-height: 64px;
+  resize: vertical;
+  line-height: 1.35;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  white-space: pre;
+  overflow: auto;
+}
+
 .tl-popover.tl-add-sus .tl-add-filter-hint {
   grid-column: 1 / -1;
   font-size: 11px;

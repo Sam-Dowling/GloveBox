@@ -3402,9 +3402,11 @@ class TimelineView {
 
   // ── "＋ Add Sus" popover ─────────────────────────────────────────────────
 
-  // Compact form anchored on the Add-Sus button. Pick a column + value
-  // and push onto `_susMarks` (persisted by column name). Sus marks
-  // tint rows but do NOT filter — use the query bar for row filtering.
+  // Compact form anchored on the Add-Sus button. Pick a column and one or
+  // more values (one per line, or comma-separated — paste a CSV / wordlist
+  // straight in) and push them onto `_susMarks` (persisted by column
+  // name). Sus marks tint rows but do NOT filter — use the query bar for
+  // row filtering.
   _openAddSusPopover(anchor) {
     this._closePopover();
     const menu = document.createElement('div');
@@ -3431,10 +3433,10 @@ class TimelineView {
           <select class="tl-field-select" data-f="col">${colOptions}</select>
         </label>
         <label class="tl-field tl-field-wide">
-          <span class="tl-field-label">Value</span>
-           <input type="text" class="tl-field-select" data-f="val" spellcheck="false" placeholder="text to flag (substring, case-insensitive)">
+          <span class="tl-field-label">Value(s)</span>
+           <textarea class="tl-field-select tl-field-textarea" data-f="val" rows="3" spellcheck="false" placeholder="one value per line, or comma-separated (substring, case-insensitive)"></textarea>
         </label>
-        <div class="tl-add-filter-hint">🚩 Sus marks tint rows red. Use <code>is:sus</code> in the query bar to filter to only sus rows.</div>
+        <div class="tl-add-filter-hint">🚩 Sus marks tint rows red. Paste multiple values — one per line, or comma-separated. Enter submits, Shift+Enter inserts a newline. Use <code>is:sus</code> in the query bar to filter to only sus rows.</div>
         <div class="tl-add-filter-actions">
           <button class="tl-tb-btn" type="button" data-act="cancel">Cancel</button>
           <button class="tl-tb-btn tl-tb-btn-primary" type="button" data-act="add">Mark suspicious</button>
@@ -3447,33 +3449,64 @@ class TimelineView {
 
     const submit = () => {
       const colIdx = parseInt(colSel.value, 10);
-      const val = valEl.value;
-      if (val === '') { valEl.focus(); return; }
+      // Bulk-add path: split on newlines and commas, trim, drop empties,
+      // dedupe within the batch (case-insensitive — matches the lower-case
+      // storage convention used everywhere else for sus marks). Lower-case
+      // at the split site so the dedupe / "already exists" checks below all
+      // operate on the canonical form.
+      const seen = new Set();
+      const tokens = [];
+      for (const part of String(valEl.value).split(/[\r\n,]+/)) {
+        const t = part.trim();
+        if (!t) continue;
+        const lc = t.toLowerCase();
+        if (seen.has(lc)) continue;
+        seen.add(lc);
+        tokens.push(lc);
+      }
+      if (tokens.length === 0) { valEl.focus(); return; }
+
       // colIdx === -1 is the "Any column" sentinel. Everything else must
       // resolve to a live column index.
-      if (colIdx === -1) {
-        // Toggle an "Any column" mark. Keyed on { any:true, val } so
-        // repeated adds of the same value de-dupe as a removal.
-        // Values are lower-cased for case-insensitive substring matching.
-        const valStr = String(val).toLowerCase();
-        const ix = this._susMarks.findIndex(m => m.any === true && m.val.toLowerCase() === valStr);
-        if (ix >= 0) this._susMarks.splice(ix, 1);
-        else this._susMarks.push({ any: true, colName: null, val: valStr });
+      const isAny = (colIdx === -1);
+      if (!isAny && (!Number.isFinite(colIdx) || colIdx < 0 || colIdx >= cols.length)) return;
+      const colName = isAny ? null : cols[colIdx];
+      if (!isAny && colName == null) return;
+
+      // Bulk add is purely additive: skip tokens that already match an
+      // existing mark for the same scope. (Single-add right-click toggles
+      // still work via `_addOrToggleChip(...,{op:'sus'})` — that path is
+      // unchanged.)
+      let pushed = 0;
+      for (const lc of tokens) {
+        const exists = isAny
+          ? this._susMarks.some(m => m.any === true && m.val.toLowerCase() === lc)
+          : this._susMarks.some(m => m.any !== true && m.colName === colName && m.val.toLowerCase() === lc);
+        if (exists) continue;
+        if (isAny) this._susMarks.push({ any: true, colName: null, val: lc });
+        else       this._susMarks.push({ colName, val: lc });
+        pushed++;
+      }
+
+      // Coalesce persist + bitmap rebuild + render to a single pass even
+      // when N tokens were pushed.
+      if (pushed > 0) {
         TimelineView._saveSusMarksFor(this._fileKey, this._susMarks);
         this._rebuildSusBitmap();
         this._recomputeFilter();
         this._scheduleRender(['chart', 'chips', 'grid', 'columns']);
-        this._closePopover();
-        return;
       }
-      if (!Number.isFinite(colIdx) || colIdx < 0 || colIdx >= cols.length) return;
-      this._addOrToggleChip(colIdx, val, { op: 'sus' });
       this._closePopover();
     };
     menu.querySelector('[data-act="add"]').addEventListener('click', submit);
     menu.querySelector('[data-act="cancel"]').addEventListener('click', () => this._closePopover());
     valEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); submit(); }
+      // Enter submits; Shift+Enter falls through so the textarea inserts
+      // a newline (keeps muscle memory from the old single-line input
+      // while still permitting multi-line composition by hand). Pasted
+      // multi-line content is unaffected — paste doesn't fire keydown for
+      // the inserted newlines.
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
       else if (e.key === 'Escape') { e.preventDefault(); this._closePopover(); }
     });
 
