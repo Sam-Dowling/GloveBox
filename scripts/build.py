@@ -838,6 +838,17 @@ APP_JS_FILES = [
     # APP_JS_FILES; provides the `RowStore` class type the adapter
     # delegates to).
     'src/app/timeline/timeline-row-view.js',
+    # timeline-dataset.js — owns the four parallel-array slots
+    # (`store` / `_timeMs` / `_evtxEvents` / `_extractedCols`) and
+    # enforces the `length === store.rowCount` invariant on every
+    # mutation. Pure data class; no DOM, no globals beyond
+    # `Float64Array`/`Array`. Loads AFTER row-store.js (uses RowStore
+    # shape) and BEFORE timeline-view.js (which holds an instance and
+    # forwards reads through it). NOT in the worker bundle — the
+    # worker builds RowStore + timeMs + evtx events as separate
+    # transferables and posts them; the dataset wrapper is consumed
+    # only on the main thread when the view is constructed.
+    'src/app/timeline/timeline-dataset.js',
     # timeline-wheel.js — outer-host scroll-continuation handler. Loads
     # before timeline-view.js so the installer (`window.installTimeline-
     # WheelContinuation`) is in scope when `_buildDOM` mounts `.tl-host`.

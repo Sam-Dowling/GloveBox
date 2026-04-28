@@ -461,6 +461,26 @@ class TimelineView {
     // based on the column's parse-ability. When true, `_timeMs[i]` holds the
     // raw numeric value (NOT milliseconds since epoch).
     this._timeIsNumeric = false;
+    // ── TimelineDataset wrapper ─────────────────────────────────────────────
+    // Shares references to `store` / `_timeMs` / `_evtxEvents` /
+    // `_extractedCols` and re-asserts the `length === rowCount`
+    // cardinality invariant on every mutation. Read-side consumers
+    // (timeline-summary, timeline-detections, the grid-render path)
+    // are migrating to `_dataset.cellAt` / `timeAt` / `evtxAt` /
+    // `extractedAt` (B1b/B1c) so that any future fifth parallel-array
+    // slot has exactly one place to land. Until that migration is
+    // complete, the slots above (`this._timeMs` / `this._evtxEvents` /
+    // `this._extractedCols`) and the dataset's internal references
+    // point at the SAME arrays — `_parseAllTimestamps` mutates the
+    // typed array in place and `_extractedCols.push(...)` is observed
+    // by the dataset. See `src/app/timeline/timeline-dataset.js` for
+    // the contract.
+    this._dataset = new TimelineDataset({
+      store: this.store,
+      timeMs: this._timeMs,
+      evtxEvents: this._evtxEvents,
+      extractedCols: this._extractedCols,
+    });
     this._parseAllTimestamps();
     this._dataRange = this._computeDataRange();
     this._window = null;
@@ -683,6 +703,10 @@ class TimelineView {
     this.store = null;
     this._baseColumns = null;
     this._extractedCols = null;
+    // The dataset wrapper holds references to `store` / `_timeMs` /
+    // `_evtxEvents` / `_extractedCols` — null it explicitly so the
+    // GC doesn't keep the parsed data alive via the dataset alone.
+    this._dataset = null;
     this._colStats = null;
     this._sortedFullIdx = null;
     this._filteredIdx = null;
@@ -2385,7 +2409,11 @@ class TimelineView {
         this._parseAllTimestamps();
         this._dataRange = this._computeDataRange();
       }
-      this._extractedCols = [];
+      // In-place clear (length = 0) so the TimelineDataset's reference
+      // to this same array stays valid. A naive `this._extractedCols
+      // = []` would replace the array reference and silently desync
+      // the dataset.
+      this._extractedCols.length = 0;
       this._jsonCache.clear();
       this._persistRegexExtracts();   // writes an empty list for this file
     }
