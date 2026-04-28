@@ -125,6 +125,33 @@ class YaraEngine {
 
     // ── Plaintext / catch-alls ──────────────────────────────────────────
     is_plaintext:       ['plaintext'],
+
+    // ── Decoded-payload tier (Loupe extension) ──────────────────────────
+    // Synthetic format tag stamped by `decoded-yara-filter.js` when the
+    // host re-scans decoded encoded-content payloads (post-Base64,
+    // post-XOR, post-decompression, …). Rules tagged
+    // `applies_to = "decoded-payload"` opt in to running against these
+    // tiny synthetic buffers and serve as the "is this decode actually
+    // interesting?" gate that boosts encoded-content retention. Rules
+    // NOT tagged with `decoded-payload` (the default) skip the second
+    // pass entirely, keeping the per-payload scan cost proportional to
+    // the curated subset of script / shellcode / LOLBin rules that make
+    // sense on a fragment of decoded bytes (see
+    // `src/decoded-yara-filter.js` for the dispatch site).
+    is_decoded_payload: ['decoded-payload'],
+
+    // ── Universal alias ─────────────────────────────────────────────────
+    // `applies_to = "any"` resolves to *every* known formatTag. This is
+    // the escape hatch for rules that want to remain universal while
+    // ALSO opting into the decoded-payload second pass — they declare
+    // `applies_to = "any, decoded-payload"` and `_matchesAppliesTo`
+    // returns true for any host-detected format AND for the synthetic
+    // `decoded-payload` formatTag stamped by `decoded-yara-filter.js`.
+    // Without this alias, adding `applies_to = "decoded-payload"` to a
+    // previously-untagged universal rule would silently restrict it to
+    // decoded payloads only — a behavioural regression. The token list
+    // is computed lazily so new format tags introduced later are
+    // automatically included; see `_resolveAppliesToToken`.
   });
 
   /**
@@ -151,6 +178,17 @@ class YaraEngine {
     if (!token) return [];
     const lower = String(token).trim().toLowerCase();
     if (!lower) return [];
+    // `any` / `is_any` ⇒ every known tag. Used by rules that want to
+    // remain universal while still opting into a synthetic format tag
+    // like `decoded-payload`. We deliberately exclude the synthetic
+    // `decoded-payload` tag from the `any` expansion: a rule that wants
+    // both must spell both (`applies_to = "any, decoded-payload"`),
+    // which keeps the in-source intent explicit and prevents every
+    // `any`-tagged rule from accidentally running on decoded payloads.
+    if (lower === 'any' || lower === 'is_any') {
+      const tags = Array.from(this._KNOWN_FORMAT_TAGS);
+      return tags.filter(t => t !== 'decoded-payload');
+    }
     const withPrefix = lower.startsWith('is_') ? lower : 'is_' + lower;
     if (this.FORMAT_PREDICATES[withPrefix]) {
       return this.FORMAT_PREDICATES[withPrefix];

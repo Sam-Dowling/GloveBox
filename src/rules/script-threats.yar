@@ -5,7 +5,7 @@ rule PS_Whitespace_Token_Obfuscation
         severity = "medium"
         category = "obfuscation"
         mitre       = "T1027"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $ws_pattern = /[A-Za-z]\s{2,}[A-Za-z]\s{2,}[A-Za-z]\s{2,}[A-Za-z]\s{2,}[A-Za-z]/ nocase
         $ws_cmdlet = /[Ww]\s{2,}[Rr]\s{2,}[Ii]\s{2,}[Tt]\s{2,}[Ee]/ nocase
@@ -21,7 +21,7 @@ rule PS_ScriptBlock_Reflection_Create
         severity = "high"
         category = "obfuscation"
         mitre       = "T1059.001"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $sb_reflect = "ScriptBlock].GetMethod" nocase
         $sb_create = /ScriptBlock\].*Create/ nocase
@@ -38,7 +38,7 @@ rule Python_Dynamic_Import_Getattr
         severity = "medium"
         category = "obfuscation"
         mitre       = "T1059.006"
-        applies_to  = "py, plaintext"
+        applies_to  = "py, plaintext, decoded-payload"
     strings:
         $import_builtins = "__import__('builtins')" nocase
         $import_os = "__import__('os')" nocase
@@ -57,7 +57,7 @@ rule JS_Comment_Injection_Obfuscation
         severity = "medium"
         category = "obfuscation"
         mitre       = "T1027"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $comment_dot = /\w+\s*\/\*[^*]*\*\/\s*\.\s*\/\*[^*]*\*\/\s*\w+/ nocase
         $comment_bracket = /\w+\s*\/\*[^*]*\*\/\s*\[\s*\/\*[^*]*\*\/\s*['"]/ nocase
@@ -73,7 +73,7 @@ rule JS_WSH_Dropper
         severity    = "critical"
         category    = "execution"
         mitre       = "T1059.007"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $wsh1 = "WScript.Shell" nocase
         $wsh2 = "WScript.CreateObject" nocase
@@ -98,7 +98,7 @@ rule JS_Obfuscated_Payload
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $cc1 = "fromCharCode" nocase
         $cc2 = "String.fromCharCode" nocase
@@ -119,7 +119,7 @@ rule Encoded_Script_File_JSE_VBE
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027.010"
-        applies_to  = "js, vbs, plaintext"
+        applies_to  = "js, vbs, plaintext, decoded-payload"
     strings:
         $marker_start = "#@~^" ascii
         $marker_end   = "^#~@" ascii
@@ -137,7 +137,7 @@ rule JS_WMI_Execution
         severity    = "critical"
         category    = "execution"
         mitre       = "T1047"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $a = "GetObject" nocase
         $b = "winmgmts" nocase
@@ -155,7 +155,7 @@ rule JS_Clipboard_Paste_Lure
         severity    = "high"
         category    = "execution"
         mitre       = "T1204.001"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $a = "navigator.clipboard" nocase
         $b = "document.execCommand" nocase
@@ -173,7 +173,7 @@ rule JS_Deobfuscation_Heavy
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1140"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $a = "atob(" nocase
         $b = "btoa(" nocase
@@ -194,7 +194,7 @@ rule VBS_Download_Execute
         severity    = "critical"
         category    = "execution"
         mitre       = "T1059.005"
-        applies_to  = "vbs, hta, plaintext"
+        applies_to  = "vbs, hta, plaintext, decoded-payload"
     strings:
         $http1 = "MSXML2.XMLHTTP" nocase
         $http2 = "WinHttp.WinHttpRequest" nocase
@@ -216,7 +216,7 @@ rule VBS_Registry_Persistence
         severity    = "critical"
         category    = "persistence"
         mitre       = "T1547.001"
-        applies_to  = "vbs, hta, plaintext"
+        applies_to  = "vbs, hta, plaintext, decoded-payload"
     strings:
         $a = "RegWrite" nocase
         $b = "CurrentVersion\\Run" nocase
@@ -233,7 +233,7 @@ rule VBS_Scheduled_Task
         severity    = "critical"
         category    = "persistence"
         mitre       = "T1053.005"
-        applies_to  = "vbs, hta, plaintext"
+        applies_to  = "vbs, hta, plaintext, decoded-payload"
     strings:
         $a = "Schedule.Service" nocase
         $b = "schtasks" nocase
@@ -251,7 +251,7 @@ rule VBS_Obfuscation_ChrW
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "vbs, hta, plaintext"
+        applies_to  = "vbs, hta, plaintext, decoded-payload"
     strings:
         $a = "ChrW(" nocase
         $b = "Chr(" nocase
@@ -269,7 +269,7 @@ rule PowerShell_Encoded_Command
         severity    = "critical"
         category    = "execution"
         mitre       = "T1059.001"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $ps  = "powershell" nocase
         $a   = "-EncodedCommand" nocase
@@ -291,7 +291,7 @@ rule PowerShell_Download_Cradle
         severity    = "critical"
         category    = "execution"
         mitre       = "T1059.001"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $iex1 = "Invoke-Expression" nocase
         $iex2 = "IEX"
@@ -314,7 +314,7 @@ rule PowerShell_AMSI_Bypass
         severity    = "critical"
         category    = "defense-evasion"
         mitre       = "T1562.001"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $a = "AmsiUtils" nocase
         $b = "amsiInitFailed" nocase
@@ -331,7 +331,7 @@ rule PowerShell_Reflective_Load
         severity    = "critical"
         category    = "defense-evasion"
         mitre       = "T1620"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $a = "Reflection.Assembly" nocase
         $b = "Assembly]::Load" nocase
@@ -351,7 +351,7 @@ rule PowerShell_Execution_Policy_Bypass
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1059.001"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $a = "-ExecutionPolicy" nocase
         $b = "Bypass" nocase
@@ -370,7 +370,7 @@ rule PowerShell_Hidden_Window
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1059.001"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $a = "-WindowStyle" nocase
         $b = "Hidden" nocase
@@ -389,7 +389,7 @@ rule PowerShell_Credential_Theft
         severity    = "critical"
         category    = "credential-access"
         mitre       = "T1003"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $a = "Get-Credential" nocase
         $b = "CredentialCache" nocase
@@ -408,7 +408,7 @@ rule PowerShell_Certutil_Combo
         severity    = "critical"
         category    = "defense-evasion"
         mitre       = "T1140"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $a = "certutil" nocase
         $b = "-decode" nocase
@@ -425,7 +425,7 @@ rule BAT_Download_Execute
         severity    = "critical"
         category    = "execution"
         mitre       = "T1059.003"
-        applies_to  = "bat, plaintext"
+        applies_to  = "bat, plaintext, decoded-payload"
     strings:
         $a = "certutil" nocase
         $b = "bitsadmin" nocase
@@ -448,7 +448,7 @@ rule BAT_Obfuscated_Variables
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "bat, plaintext"
+        applies_to  = "bat, plaintext, decoded-payload"
     strings:
         $a = /\%[a-zA-Z]+:~\d+,\d+\%/
         $b = "set " nocase
@@ -465,7 +465,7 @@ rule BAT_Recursive_Copy_Drop
         severity    = "high"
         category    = "execution"
         mitre       = "T1074.001"
-        applies_to  = "bat, plaintext"
+        applies_to  = "bat, plaintext, decoded-payload"
     strings:
         $a = "copy " nocase
         $b = "move " nocase
@@ -486,7 +486,7 @@ rule BAT_Registry_Persistence
         severity    = "critical"
         category    = "persistence"
         mitre       = "T1547.001"
-        applies_to  = "bat, plaintext"
+        applies_to  = "bat, plaintext, decoded-payload"
     strings:
         $a = "reg add" nocase
         $b = "CurrentVersion\\Run" nocase
@@ -503,7 +503,7 @@ rule JS_DocumentWrite_With_Obfuscation
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $dw    = "document.write" nocase
         $a     = "unescape" nocase
@@ -523,7 +523,7 @@ rule JS_Location_Redirect_Obfuscated
         severity    = "high"
         category    = "initial-access"
         mitre       = "T1566.002"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $loc1  = "window.location" nocase
         $loc2  = "document.location" nocase
@@ -545,7 +545,7 @@ rule JS_ActiveX_With_XMLHttp
         severity    = "critical"
         category    = "execution"
         mitre       = "T1059.007"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $ax    = "ActiveXObject" nocase
         $a     = "MSXML2.XMLHTTP" nocase
@@ -563,7 +563,7 @@ rule PowerShell_AddType_Inline_CSharp
         severity    = "critical"
         category    = "execution"
         mitre       = "T1059.001"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $a     = "Add-Type" nocase
         $b     = "-TypeDefinition" nocase
@@ -582,7 +582,7 @@ rule PowerShell_Invoke_Command_Remote
         severity    = "critical"
         category    = "lateral-movement"
         mitre       = "T1021.006"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $a     = "Invoke-Command" nocase
         $b     = "-ComputerName" nocase
@@ -600,7 +600,7 @@ rule PowerShell_Stealth_Flags_Combo
         severity    = "critical"
         category    = "execution"
         mitre       = "T1059.001"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $ps    = "powershell" nocase
         $a     = "-nop" nocase
@@ -621,7 +621,7 @@ rule WMIC_Process_Create
         severity    = "critical"
         category    = "execution"
         mitre       = "T1047"
-        applies_to  = "bat, plaintext"
+        applies_to  = "bat, plaintext, decoded-payload"
     strings:
         $a     = "wmic" nocase
         $b     = "process" nocase fullword
@@ -639,7 +639,7 @@ rule PowerShell_WMI_Event_Persistence
         severity    = "critical"
         category    = "persistence"
         mitre       = "T1546.003"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $a     = "__EventFilter" nocase
         $b     = "CommandLineEventConsumer" nocase
@@ -658,7 +658,7 @@ rule AMSI_ETW_Bypass_Patterns
         severity    = "critical"
         category    = "defense-evasion"
         mitre       = "T1562.001"
-        applies_to  = "ps1, bat, plaintext"
+        applies_to  = "ps1, bat, plaintext, decoded-payload"
     strings:
         $a     = "AmsiScanBuffer" nocase
         $b     = "amsiInitFailed" nocase
@@ -679,7 +679,7 @@ rule CMD_Caret_Obfuscation
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "bat, plaintext"
+        applies_to  = "bat, plaintext, decoded-payload"
     strings:
         $c1 = /[pP]\^[oO]\^[wW]\^[eE]\^[rR]\^[sS]\^[hH]\^[eE]\^[lL]\^[lL]/ ascii
         $c2 = /[cC]\^[mM]\^[dD]/ ascii
@@ -702,7 +702,7 @@ rule CMD_Set_Variable_Obfuscation
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "bat, plaintext"
+        applies_to  = "bat, plaintext, decoded-payload"
     strings:
         $set_pattern = /[sS][eE][tT]\s+\w{1,3}=\S{1,20}/ ascii
         $concat = /(%\w{1,3}%){3,}/ ascii
@@ -719,7 +719,7 @@ rule CMD_Environment_Substring_Abuse
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "bat, plaintext"
+        applies_to  = "bat, plaintext, decoded-payload"
     strings:
         $substr = /(%\w+:~\d{1,3},\d{1,3}%){3,}/ ascii
         $comspec = "%comspec:~" nocase
@@ -736,7 +736,7 @@ rule PS_String_Concatenation_Obfuscation
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $concat_single = /('[a-zA-Z]{1,4}'\s*\+\s*){4,}'[a-zA-Z]{1,4}'/ ascii
         $concat_double = /("[a-zA-Z]{1,4}"\s*\+\s*){4,}"[a-zA-Z]{1,4}"/ ascii
@@ -753,7 +753,7 @@ rule PS_Backtick_Obfuscation
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $bt1 = "In`v`o`k`e" ascii
         $bt2 = "Ne`w`-O`b`j" ascii
@@ -774,7 +774,7 @@ rule PS_Format_Operator_Obfuscation
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $fmt = /'\{0\}\{1\}\{2\}(\{3\})?(\{4\})?(\{5\})?' *-[fF] *'[^']{1,12}',\s*'[^']{1,12}',\s*'[^']{1,12}'/ ascii
 
@@ -789,7 +789,7 @@ rule PS_Char_Casting_Obfuscation
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $char = /(\[char\]\d{2,3}\s*\+\s*){4,}/ nocase
         $char_join = /\-join\s*\(\s*(\d{2,3}\s*,\s*){4,}/ nocase
@@ -806,7 +806,7 @@ rule PS_String_Reversal_Obfuscation
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $rev1 = /\[array\]::reverse\s*\(/ nocase
         $rev2 = /-join\s*\[regex\]::matches\([^)]+,\s*'\.'\s*,\s*'RightToLeft'\)/ nocase
@@ -823,7 +823,7 @@ rule PS_Replace_Chain_Obfuscation
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $rep = /(-replace\s*'[^']{1,20}'\s*,\s*'[^']{0,20}'\s*){3,}/ nocase
         $creplace = /(\.\s*replace\s*\(\s*'[^']{1,20}'\s*,\s*'[^']{0,20}'\s*\)\s*){3,}/ nocase
@@ -839,7 +839,7 @@ rule VBScript_Chr_Concatenation
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
-        applies_to  = "vbs, hta, plaintext"
+        applies_to  = "vbs, hta, plaintext, decoded-payload"
     strings:
         $chr = /([Cc][Hh][Rr]\s*\(\s*\d{2,3}\s*\)\s*(&|&amp;)\s*){5,}/ ascii
         $chrw = /([Cc][Hh][Rr][Ww]\s*\(\s*\d{2,5}\s*\)\s*(&|&amp;)\s*){5,}/ ascii
@@ -856,7 +856,7 @@ rule Python_Exec_Base64_Obfuscation
         category = "obfuscation"
         mitre       = "T1059.006"
         reference = "Python exec + base64 payload delivery"
-        applies_to  = "py, plaintext"
+        applies_to  = "py, plaintext, decoded-payload"
     strings:
         $exec_b64_1 = "exec(base64.b64decode(" nocase
         $exec_b64_2 = "exec(__import__('base64').b64decode(" nocase
@@ -880,7 +880,7 @@ rule Python_Eval_Codec_Obfuscation
         category = "obfuscation"
         mitre       = "T1059.006"
         reference = "Python eval with codec/zlib/marshal deobfuscation"
-        applies_to  = "py, plaintext"
+        applies_to  = "py, plaintext, decoded-payload"
     strings:
         $eval = "eval(" nocase
         $exec = "exec(" nocase
@@ -904,7 +904,7 @@ rule Python_Char_Construction
         category = "obfuscation"
         mitre       = "T1027"
         reference = "Python chr() string building"
-        applies_to  = "py, plaintext"
+        applies_to  = "py, plaintext, decoded-payload"
     strings:
         $chr_chain = /chr\(\d+\)\s*\+\s*chr\(\d+\)\s*\+\s*chr\(\d+\)/
         $chr_join = /join\s*\(\s*\[?\s*chr\s*\(\s*\d+\s*\)/ nocase
@@ -924,7 +924,7 @@ rule JS_ROT13_Cipher_Implementation
         category = "obfuscation"
         mitre       = "T1027"
         reference = "ROT13 character rotation in JavaScript"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $charcode_13 = /charCodeAt\s*\(\s*\w*\s*\)\s*[\+\-]\s*13/ nocase
         $replace_alpha = /replace\s*\(\s*\/\[a-zA-Z\]\// nocase
@@ -945,7 +945,7 @@ rule PS_Call_Operator_Obfuscation
         category = "obfuscation"
         mitre       = "T1027"
         reference = "PowerShell & operator with dynamic command construction"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $call_concat_1 = /&\s*\(\s*['"][a-zA-Z]+['"]\s*\+\s*['"][a-zA-Z]+['"]/ nocase
         $call_concat_2 = /&\s*\(\s*\$[a-zA-Z]+\s*\+\s*\$[a-zA-Z]+\s*\)/ nocase
@@ -964,7 +964,7 @@ rule PS_EnvVar_Payload_Execution
         category = "obfuscation"
         mitre       = "T1027"
         reference = "PowerShell $env: variable payload + IEX execution"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $env_set = /\$env:\w+\s*=\s*['"]/ nocase
         $env_set2 = /\[Environment\]::SetEnvironmentVariable\s*\(/ nocase
@@ -986,7 +986,7 @@ rule PS_Split_Join_Reassembly
         category = "obfuscation"
         mitre       = "T1027"
         reference = "PowerShell -split + -join pattern for payload reassembly"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $split_join_1 = /\-split\s*['"][^'"]+['"]\s*\-join\s*['"][^'"]*['"]/ nocase
         $split_join_2 = /\.Split\s*\(\s*['"][^'"]+['"]\s*\)\s*[-\.]join/ nocase
@@ -1009,7 +1009,7 @@ rule PS_Hashtable_Command_Construction
         category = "obfuscation"
         mitre       = "T1027"
         reference = "PowerShell @{} hashtable with call operator execution"
-        applies_to  = "ps1, plaintext"
+        applies_to  = "ps1, plaintext, decoded-payload"
     strings:
         $hashtable = /\$\w+\s*=\s*@\{/ nocase
         $call_key = /&\s*\(?\s*\$\w+\.\w+\s*\)?/ nocase
@@ -1028,7 +1028,7 @@ rule JS_Split_Join_Deobfuscation
         category = "obfuscation"
         mitre       = "T1027"
         reference = "JavaScript .split('x').join('') character stripping"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $split_join_empty = /\.split\s*\(\s*['"][^'"]+['"]\s*\)\s*\.join\s*\(\s*['"]['"]/ nocase
         $split_join_replace = /\.split\s*\(\s*['"][^'"]+['"]\s*\)\s*\.join\s*\(\s*['"][^'"]+['"]/ nocase
@@ -1049,7 +1049,7 @@ rule JS_Proxy_Function_Hiding
         category = "obfuscation"
         mitre       = "T1027"
         reference = "JavaScript Proxy handler wrapping suspicious invocations"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $proxy = "new Proxy(" nocase
         $handler_apply = /handler\s*[=:]\s*\{[^}]*apply\s*:/ nocase
@@ -1069,7 +1069,7 @@ rule JS_Bracket_Hex_Property_Execution
         category = "obfuscation"
         mitre       = "T1027"
         reference = "window['\\x65\\x76\\x61\\x6c'] style property access"
-        applies_to  = "js, html, hta, plaintext"
+        applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
         $hex_bracket_1 = /\w+\s*\[\s*['"]\\x[0-9a-fA-F]{2}(\\x[0-9a-fA-F]{2})+['"]\s*\]/ nocase
         $hex_bracket_2 = /\w+\s*\[\s*['"]\\u[0-9a-fA-F]{4}(\\u[0-9a-fA-F]{4})+['"]\s*\]/ nocase
@@ -1090,7 +1090,7 @@ rule Bash_Base64_Execution
         category = "obfuscation"
         mitre       = "T1059.004"
         reference = "eval $(echo ... | base64 -d) and similar patterns"
-        applies_to  = "bash, plaintext"
+        applies_to  = "bash, plaintext, decoded-payload"
     strings:
         $eval_b64_1 = /eval\s+\$\(\s*echo\s+[A-Za-z0-9\+\/=]+\s*\|\s*base64\s+-(d|decode)\s*\)/ nocase
         $eval_b64_2 = /eval\s+['"`]\$\(\s*base64\s+-(d|decode)/ nocase
@@ -1112,7 +1112,7 @@ rule Bash_Variable_Obfuscation
         category = "obfuscation"
         mitre       = "T1027"
         reference = "Bash ${var} abuse, IFS manipulation, and heredoc payloads"
-        applies_to  = "bash, plaintext"
+        applies_to  = "bash, plaintext, decoded-payload"
     strings:
         $ifs_manip = /IFS\s*=\s*['"][^'"]*['"]\s*;/ nocase
         $var_concat = /\$\{?\w+\}?\$\{?\w+\}?\$\{?\w+\}?/ nocase
@@ -1135,7 +1135,7 @@ rule Shell_Curl_Wget_Pipe_Exec
         category = "obfuscation"
         mitre       = "T1059.004"
         reference = "curl/wget piped to bash/sh for remote code execution"
-        applies_to  = "bash, plaintext"
+        applies_to  = "bash, plaintext, decoded-payload"
     strings:
         $curl_bash = /curl\s+[^\|]*\|\s*(ba)?sh/ nocase
         $wget_bash = /wget\s+[^\|]*\|\s*(ba)?sh/ nocase
@@ -1155,7 +1155,7 @@ rule Python_Reverse_Shell
         severity = "critical"
         category = "execution"
         mitre       = "T1059.006"
-        applies_to  = "py, plaintext"
+        applies_to  = "py, plaintext, decoded-payload"
     strings:
         $socket_import = "import socket" nocase
         $subprocess    = "import subprocess" nocase
@@ -1179,7 +1179,7 @@ rule NodeJS_Child_Process_Execution
         severity = "high"
         category = "execution"
         mitre       = "T1059.007"
-        applies_to  = "js, plaintext"
+        applies_to  = "js, plaintext, decoded-payload"
     strings:
         $require_cp = "require('child_process')" nocase
         $require_cp2 = "require(\"child_process\")" nocase

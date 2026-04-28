@@ -501,6 +501,35 @@ extendApp({
               .map(ef => detector.lazyDecode(ef))
           );
         }
+        // ── Phase 1 — YARA-gated retention (additive evidence pass) ──────
+        // Stamp `_yaraHits` on every retained decoded payload that matches
+        // the curated `applies_to = "decoded-payload"` rule subset. The
+        // gate is purely additive: findings the worker already kept stay
+        // kept, but each retained finding now carries the rule names that
+        // confirm "this decode is actually interesting". Bruteforce mode
+        // is skipped because the analyst has explicitly opted into noise.
+        // Any rejection (probe failure, supersession, watchdog) is a
+        // silent no-op — the existing `_pruneFindings` result still stands.
+        try {
+          if (window.DecodedYaraFilter
+              && typeof DecodedYaraFilter.applyDecodedYaraGate === 'function'
+              && typeof this._getAllYaraSource === 'function') {
+            const yaraSource = this._getAllYaraSource();
+            if (yaraSource) {
+              await DecodedYaraFilter.applyDecodedYaraGate(encodedFindings, {
+                source:     yaraSource,
+                bruteforce,
+                workerManager: window.WorkerManager,
+              });
+            }
+          }
+        } catch (yaraGateErr) {
+          // The gate is best-effort. Log via the breadcrumb channel but
+          // don't abort the post-encoded merge below — the existing
+          // worker-prune already removed the worst trash.
+          this._reportNonFatal('decoded-yara-gate', yaraGateErr, { silent: true });
+        }
+
         this.findings.encodedContent = encodedFindings;
         // Store raw bytes reference on compressed findings for lazy decompression
         for (const ef of encodedFindings) {

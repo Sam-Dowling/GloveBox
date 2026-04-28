@@ -3120,6 +3120,98 @@ body.dark .enc-depth-badge {
   color: #c4b5fd;
 }
 
+/* ── YARA evidence row (decoded-payload gate) ───────────────────────
+   Stamped by `src/decoded-yara-filter.js` after the encoded-content
+   worker returns. Each chip is a YARA rule name; severity controls the
+   tint (low=neutral, medium=amber, high/critical=red), matching the
+   payload-danger / compression palette already used by the chain pills.
+   The label and chips share the same gap rhythm as `.enc-finding-chain`
+   so the two rows visually rhyme — chain on top (decode steps), YARA
+   below (what the decoded bytes look like). */
+.enc-finding-yara {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  line-height: 1.6;
+}
+
+.enc-yara-label {
+  color: #888;
+  font-weight: 600;
+  margin-right: 2px;
+  font-size: 11px;
+}
+
+body.dark .enc-yara-label {
+  color: rgba(255, 255, 255, .45);
+}
+
+.enc-yara-chip {
+  display: inline-block;
+  font-family: 'Fira Code', 'Consolas', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  line-height: 1.4;
+  white-space: nowrap;
+  background: rgba(0, 0, 0, .04);
+  border-color: rgba(0, 0, 0, .08);
+  color: #555;
+}
+
+body.dark .enc-yara-chip {
+  background: rgba(255, 255, 255, .04);
+  border-color: var(--hairline);
+  color: rgba(255, 255, 255, .65);
+}
+
+/* Severity tints — mirror `.enc-chain-hop-*` palette exactly so the
+   colour grammar of the card stays consistent across rows. */
+.enc-yara-chip-medium {
+  background: rgba(251, 191, 36, .12);
+  border-color: rgba(251, 191, 36, .3);
+  color: #92400e;
+}
+
+body.dark .enc-yara-chip-medium {
+  background: rgba(251, 191, 36, .15);
+  border-color: rgba(251, 191, 36, .3);
+  color: #fcd34d;
+}
+
+.enc-yara-chip-high,
+.enc-yara-chip-critical {
+  background: rgba(220, 38, 38, .1);
+  border-color: rgba(220, 38, 38, .3);
+  color: #991b1b;
+  font-weight: 600;
+}
+
+body.dark .enc-yara-chip-high,
+body.dark .enc-yara-chip-critical {
+  background: rgba(248, 113, 113, .12);
+  border-color: rgba(248, 113, 113, .3);
+  color: #fca5a5;
+}
+
+/* Overflow chip — neutral, tooltip-only ("+N more" with full list). */
+.enc-yara-chip-more {
+  background: rgba(148, 163, 184, .1);
+  border-color: rgba(148, 163, 184, .3);
+  color: #475569;
+  cursor: help;
+}
+
+body.dark .enc-yara-chip-more {
+  background: rgba(203, 213, 225, .1);
+  border-color: rgba(203, 213, 225, .25);
+  color: rgba(203, 213, 225, .7);
+}
+
 /* ── Primary action button modifier ──────────────────────────────────
 
    Applied alongside `.enc-btn-alltheway` so the "All the way ⏩" button

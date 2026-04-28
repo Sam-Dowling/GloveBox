@@ -1038,6 +1038,55 @@ extendApp({
         details.appendChild(chainWrap);
       }
 
+      // ── YARA evidence row (Phase 1 of decoded-payload triage) ─────────
+      // Stamped by `src/decoded-yara-filter.js` when the curated
+      // `applies_to = "decoded-payload"` rule subset matched against the
+      // finding's decoded bytes. Renders as a row of small chips —
+      // each chip is a rule name. Tooltip carries severity + tags so the
+      // analyst can see WHY a noisy-looking decode survived. Click opens
+      // the rule in the YARA viewer dialog (mirrors the Detections-row
+      // navigation so the two surfaces feel consistent).
+      if (Array.isArray(finding._yaraHits) && finding._yaraHits.length > 0) {
+        const yaraRow = document.createElement('div');
+        yaraRow.className = 'enc-finding-yara';
+        const yaraLabel = document.createElement('span');
+        yaraLabel.className = 'enc-yara-label';
+        yaraLabel.textContent = 'YARA:';
+        yaraRow.appendChild(yaraLabel);
+        // Cap the visible chip count so a sample that hits 30 rules in
+        // one decoded payload doesn't blow the card height. Excess rules
+        // collapse into a "+N more" pill that tooltips with the full
+        // list. Keeps parity with the chain-pill ellipsis behaviour.
+        const MAX_YARA_CHIPS = 6;
+        const visible = finding._yaraHits.slice(0, MAX_YARA_CHIPS);
+        for (const hit of visible) {
+          const chip = document.createElement('span');
+          const sev = (hit && hit.severity) || '';
+          chip.className = `enc-yara-chip${sev ? ` enc-yara-chip-${sev}` : ''}`;
+          chip.textContent = hit.ruleName;
+          const tipBits = [hit.ruleName];
+          if (sev) tipBits.push(`severity: ${sev}`);
+          if (hit.tags) tipBits.push(`tags: ${hit.tags}`);
+          chip.title = tipBits.join(' · ');
+          if (typeof this._openYaraDialog === 'function') {
+            chip.style.cursor = 'pointer';
+            chip.addEventListener('click', (ev) => {
+              ev.stopPropagation();
+              try { this._openYaraDialog(hit.ruleName); } catch (_) {}
+            });
+          }
+          yaraRow.appendChild(chip);
+        }
+        if (finding._yaraHits.length > MAX_YARA_CHIPS) {
+          const more = document.createElement('span');
+          more.className = 'enc-yara-chip enc-yara-chip-more';
+          more.textContent = `+${finding._yaraHits.length - MAX_YARA_CHIPS} more`;
+          more.title = finding._yaraHits.slice(MAX_YARA_CHIPS).map(h => h.ruleName).join('\n');
+          yaraRow.appendChild(more);
+        }
+        details.appendChild(yaraRow);
+      }
+
       // ── Consolidated metadata strip ────────────────────────────────────
       // A single dense row of pill-chips that collapses what used to be
       // three separate rows (location, size-delta, entropy) into one

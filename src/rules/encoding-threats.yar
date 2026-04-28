@@ -43,6 +43,7 @@ rule Right_To_Left_Override
 rule Standalone_Script_Shell_Execution
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Two or more script/shell execution indicators co-located (standalone match)"
         severity    = "medium"
         category    = "execution"
@@ -65,6 +66,7 @@ rule Standalone_Script_Shell_Execution
 rule Standalone_COM_Objects
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Two or more COM object instantiation indicators co-located (standalone match)"
         severity    = "medium"
         category    = "execution"
@@ -83,6 +85,7 @@ rule Standalone_COM_Objects
 rule Standalone_Download_Network_Indicators
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Two or more network/download indicators co-located (standalone match)"
         severity    = "medium"
         category    = "command-and-control"
@@ -112,6 +115,7 @@ rule Standalone_Download_Network_Indicators
 rule Standalone_PowerShell_Indicators
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Two or more PowerShell indicators co-located (standalone match)"
         severity    = "medium"
         category    = "execution"
@@ -140,6 +144,7 @@ rule Standalone_PowerShell_Indicators
 rule Standalone_LOLBin_Indicators
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "LOLBin (Living Off The Land Binary) reference — may indicate abuse"
         severity    = "info"
         category    = "defense-evasion"
@@ -168,7 +173,7 @@ rule Standalone_HTML_Suspicious_Elements
         severity    = "info"
         category    = "execution"
         mitre       = "T1059.007"
-        applies_to  = "html, hta, svg, plaintext"
+        applies_to  = "html, hta, svg, plaintext, decoded-payload"
 
     strings:
         $script_tag     = /<script[\s>]/ nocase
@@ -209,7 +214,7 @@ rule Standalone_HTML_Code_Execution
         severity    = "medium"
         category    = "execution"
         mitre       = "T1059.007"
-        applies_to  = "html, hta, svg, plaintext"
+        applies_to  = "html, hta, svg, plaintext, decoded-payload"
 
     strings:
         $eval_call      = /eval\s*\(/ nocase
@@ -232,7 +237,7 @@ rule Standalone_HTA_VBScript_Indicators
         severity    = "medium"
         category    = "execution"
         mitre       = "T1059.005"
-        applies_to  = "hta, vbs, html, plaintext"
+        applies_to  = "hta, vbs, html, plaintext, decoded-payload"
 
     strings:
         $hta_tag        = /<HTA:APPLICATION[^>]*>/ nocase
@@ -259,7 +264,7 @@ rule Standalone_WSF_Script_Indicators
         severity    = "medium"
         category    = "execution"
         mitre       = "T1059"
-        applies_to  = "wsf, plaintext"
+        applies_to  = "wsf, plaintext, decoded-payload"
 
     strings:
         $wsf_job       = /<job\b/ nocase
@@ -351,7 +356,7 @@ rule Standalone_LNK_Argument_Patterns
         severity    = "high"
         category    = "execution"
         mitre       = "T1204.002"
-        applies_to  = "lnk, ps1, bat, plaintext"
+        applies_to  = "lnk, ps1, bat, plaintext, decoded-payload"
 
     strings:
         $enc_flag     = /-e(nc(odedcommand)?)\b/ nocase
@@ -367,6 +372,7 @@ rule Standalone_LNK_Argument_Patterns
 rule Encoded_Base64_PE_Header
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Base64-encoded PE executable (MZ header = TVqQ/TVpQ/TVro)"
         severity    = "high"
         category    = "defense-evasion"
@@ -384,6 +390,7 @@ rule Encoded_Base64_PE_Header
 rule Encoded_Base64_Gzip
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Base64-encoded gzip data (H4sI prefix)"
         severity    = "medium"
         category    = "defense-evasion"
@@ -399,6 +406,7 @@ rule Encoded_Base64_Gzip
 rule Encoded_Base64_OLE_Document
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Base64-encoded OLE/CFB compound document (0M8R prefix)"
         severity    = "medium"
         category    = "defense-evasion"
@@ -414,6 +422,7 @@ rule Encoded_Base64_OLE_Document
 rule Encoded_Base64_PDF
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Base64-encoded PDF document (JVBE prefix)"
         severity    = "medium"
         category    = "defense-evasion"
@@ -429,6 +438,7 @@ rule Encoded_Base64_PDF
 rule Encoded_Base64_ZIP
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Base64-encoded ZIP archive (UEsD prefix)"
         severity    = "medium"
         category    = "defense-evasion"
@@ -444,6 +454,7 @@ rule Encoded_Base64_ZIP
 rule Hex_Encoded_PE_Header
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Hex-encoded PE executable header (4D5A9000)"
         severity    = "high"
         category    = "defense-evasion"
@@ -460,6 +471,7 @@ rule Hex_Encoded_PE_Header
 rule Hex_Shellcode_Pattern
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Hex-encoded byte array pattern commonly used for shellcode"
         severity    = "medium"
         category    = "defense-evasion"
@@ -476,6 +488,7 @@ rule Hex_Shellcode_Pattern
 rule Stacked_Encoding_Indicators
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Indicators of multi-layer encoding/obfuscation"
         severity    = "high"
         category    = "defense-evasion"
@@ -498,6 +511,7 @@ rule Stacked_Encoding_Indicators
 rule Unicode_Escape_Obfuscation
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "File uses Unicode escape sequences to hide content combined with dynamic execution"
         severity    = "medium"
         category    = "defense-evasion"
@@ -516,6 +530,7 @@ rule Unicode_Escape_Obfuscation
 rule Obfuscated_IEX_Invocation
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "PowerShell uses obfuscated Invoke-Expression (IEX) patterns"
         severity    = "high"
         category    = "execution"
@@ -535,6 +550,7 @@ rule Obfuscated_IEX_Invocation
 rule Obfuscated_Download_Cradle
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "File contains obfuscated download cradle patterns"
         severity    = "high"
         category    = "execution"
@@ -563,6 +579,7 @@ rule Obfuscated_Download_Cradle
 rule Space_Delimited_Hex_Payload
 {
     meta:
+        applies_to  = "any, decoded-payload"
         description = "Detects space, colon, or dash delimited hex byte strings that may encode payloads"
         severity = "medium"
         category = "obfuscation"

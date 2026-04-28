@@ -647,6 +647,16 @@ APP_JS_FILES = [
     # is reused by `_encoded_worker_bundle_src` to keep the worker bundle in
     # sync. See CONTRIBUTING.md → Encoded-content split.
     *_DETECTOR_FILES,
+    # decoded-yara-filter.js — second-pass YARA gate for decoded encoded-
+    # content payloads (Phase 1 of the deobfuscation-triage work). Reads
+    # `window.WorkerManager.runDecodedYara` and exposes
+    # `window.DecodedYaraFilter.applyDecodedYaraGate`. Must load AFTER
+    # `_DETECTOR_FILES` (the EncodedContentDetector class root + helpers
+    # are what produces the findings tree this gate walks) and AFTER
+    # `worker-manager.js` (whose `runDecodedYara` is the only thing the
+    # filter calls). The host site is `src/app/app-load.js`'s post-encoded
+    # block; see the call site there for the integration shape.
+    'src/decoded-yara-filter.js',
     'src/qr-decoder.js',
 
     'src/docx-parser.js',

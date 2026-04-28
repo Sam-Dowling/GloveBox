@@ -415,6 +415,97 @@ window.WorkerManager = (function () {
   }
   function cancelYara() { _cancelChannel('yara'); }
 
+  /** Run a curated YARA pass against a list of decoded encoded-content
+   *  payloads. Returns a Promise.
+   *
+   *  Resolves with `{ hits, parseMs, scanMs, payloadCount, ruleCount }` —
+   *  `hits` is `[{ id, results }]` (only payloads with ≥1 rule match are
+   *  included; empty match sets are pruned worker-side to keep the
+   *  postback tight). `id` is the host-supplied key passed in the
+   *  matching slot of `payloads`.
+   *
+   *  Rejects with `Error('workers-unavailable')` when the probe failed
+   *  (caller should skip the gate — decoded findings stay as-is),
+   *  `Error('superseded')` when a newer load supersedes us, `Error(...)`
+   *  with `_watchdogTimeout=true` on timeout, or with the worker's reported
+   *  error otherwise.
+   *
+   *  Implementation: the payloads are concatenated into one Uint8Array
+   *  with an offsets table (length = N+1). The single resulting
+   *  ArrayBuffer is **transferred** — there's typically no host-side use
+   *  for the packed buffer after the postMessage call (the original
+   *  per-payload Uint8Array views are still owned by the host's findings
+   *  tree, separate from the packed copy made here). One ArrayBuffer
+   *  transfer instead of N is significantly cheaper at structured-clone
+   *  time on hundreds of small decoded payloads.
+   *
+   *  @param {Array<{id: string|number, bytes: Uint8Array}>} payloads
+   *  @param {string}    source     YARA rule source (parseRules input)
+   *  @param {object}    [opts]     `{ formatTag?: string }` — defaults to
+   *                                `'decoded-payload'`. The synthetic
+   *                                tag is registered in
+   *                                `YaraEngine.FORMAT_PREDICATES.is_decoded_payload`
+   *                                and rules opt in via
+   *                                `meta: applies_to = "decoded-payload"`. */
+  function runDecodedYara(payloads, source, opts) {
+    if (!Array.isArray(payloads) || payloads.length === 0) {
+      // Nothing to scan — resolve to an empty result so callers don't have
+      // to special-case the empty-input branch.
+      return Promise.resolve({
+        hits: [], parseMs: 0, scanMs: 0, payloadCount: 0, ruleCount: 0,
+      });
+    }
+    const formatTag = (opts && typeof opts.formatTag === 'string')
+      ? opts.formatTag
+      : 'decoded-payload';
+
+    // Compute total size + offsets table. Empty payloads collapse to a
+    // zero-length slice (no offset advancement) so `_dispatchMulti` skips
+    // them cheaply.
+    let total = 0;
+    const offsets = new Array(payloads.length + 1);
+    const ids     = new Array(payloads.length);
+    offsets[0] = 0;
+    for (let i = 0; i < payloads.length; i++) {
+      const p = payloads[i];
+      const len = (p && p.bytes && p.bytes.byteLength) || 0;
+      total += len;
+      offsets[i + 1] = total;
+      ids[i] = (p && p.id !== undefined) ? p.id : i;
+    }
+    const packed = new Uint8Array(total);
+    for (let i = 0; i < payloads.length; i++) {
+      const p = payloads[i];
+      const len = offsets[i + 1] - offsets[i];
+      if (len > 0) packed.set(p.bytes, offsets[i]);
+    }
+
+    return _runWorkerJob({
+      channel:   'yara',                      // shares the yara channel —
+                                              // a newer file load's
+                                              // auto-YARA supersedes us
+                                              // automatically, which is
+                                              // the desired behaviour.
+      bundleSrc: typeof __YARA_WORKER_BUNDLE_SRC !== 'undefined' ? __YARA_WORKER_BUNDLE_SRC : '',
+      payload: {
+        mode:    'multi',
+        source,
+        formatTag,
+        packed:  packed.buffer,
+        offsets,
+        ids,
+      },
+      transfers: [packed.buffer],
+      decodeDone: (m) => ({
+        hits:         m.hits         || [],
+        parseMs:      m.parseMs      || 0,
+        scanMs:       m.scanMs       || 0,
+        payloadCount: m.payloadCount || 0,
+        ruleCount:    m.ruleCount    || 0,
+      }),
+    });
+  }
+
   /** Run a Timeline parse in a worker. Returns a Promise.
    *  Resolves with the worker's `done` payload (shape varies by `kind`):
    *    { kind, columns, rows, formatLabel, truncated, originalRowCount,
@@ -590,6 +681,7 @@ window.WorkerManager = (function () {
   return {
     runYara,
     cancelYara,
+    runDecodedYara,
     runTimeline,
     cancelTimeline,
     runEncoded,

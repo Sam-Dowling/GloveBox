@@ -20,9 +20,36 @@
 //
 // postMessage protocol
 // --------------------
-//   in:  { buffer: ArrayBuffer (transferred), source: string,
+//   in (single):
+//        { buffer: ArrayBuffer (transferred), source: string,
 //          formatTag?: string }   // Loupe-detected file format
-//   out: { event: 'done',  results: [...], parseMs: N, scanMs: N }
+//   in (multi — decoded-payload pass, see src/decoded-yara-filter.js):
+//        { mode: 'multi',
+//          source:    string,             // YARA rule source
+//          formatTag: string,             // forwarded to YaraEngine.scan()
+//                                         // — typically 'decoded-payload'
+//          packed:    ArrayBuffer,        // single concat of every payload
+//                                         // (transferred)
+//          offsets:   number[],           // byte offsets into `packed`,
+//                                         // length = N + 1 (last entry is
+//                                         // the total byte count)
+//          ids:       (string|number)[]   // host-supplied keys; correspond
+//                                         // 1:1 with the offsets table
+//        }
+//   out (single):
+//        { event: 'done', results: [...], parseMs: N, scanMs: N }
+//   out (multi):
+//        { event: 'done', mode: 'multi',
+//          hits:     [{ id, results: [...] }, ...],   // only payloads
+//                                                     // with ≥1 match are
+//                                                     // included; empty
+//                                                     // matches are pruned
+//                                                     // before postback
+//          parseMs:  N,                               // one-shot rule parse
+//          scanMs:   N,                               // total across every
+//                                                     // payload
+//          payloadCount: N }
+//   out (any error):
 //        { event: 'error', message: string }
 //
 // `formatTag` is the value `RendererRegistry.detect()` produced for the
@@ -55,15 +82,24 @@
 
 self.onmessage = function (ev) {
   const msg = ev && ev.data ? ev.data : {};
-  const buffer = msg.buffer;
-  const source = msg.source || '';
-  const formatTag = (typeof msg.formatTag === 'string') ? msg.formatTag : null;
+  const mode = (msg && typeof msg.mode === 'string') ? msg.mode : 'single';
 
   try {
     if (typeof YaraEngine === 'undefined') {
       self.postMessage({ event: 'error', message: 'YaraEngine missing from worker bundle' });
       return;
     }
+
+    if (mode === 'multi') {
+      _dispatchMulti(msg);
+      return;
+    }
+
+    // ── Single-buffer path (legacy / auto-YARA / manual rescan) ──────────
+    const buffer = msg.buffer;
+    const source = msg.source || '';
+    const formatTag = (typeof msg.formatTag === 'string') ? msg.formatTag : null;
+
     if (!buffer) {
       self.postMessage({ event: 'error', message: 'no buffer transferred to worker' });
       return;
@@ -101,3 +137,88 @@ self.onmessage = function (ev) {
     self.postMessage({ event: 'error', message });
   }
 };
+
+// ── Multi-payload dispatch ────────────────────────────────────────────────
+//
+// Used by `src/decoded-yara-filter.js` to scan every decoded encoded-content
+// payload against the curated `applies_to = "decoded-payload"` subset of
+// the rule corpus. The host packs all payloads into one ArrayBuffer with
+// an offset table to avoid per-payload structured-clone overhead. Rules
+// are parsed once and reused across every payload. Empty match sets are
+// pruned before postback so the payload returned to the host is small even
+// when the input was hundreds of decoded payloads.
+function _dispatchMulti(msg) {
+  const source    = msg.source || '';
+  const formatTag = (typeof msg.formatTag === 'string') ? msg.formatTag : null;
+  const packed    = msg.packed;
+  const offsets   = Array.isArray(msg.offsets) ? msg.offsets : null;
+  const ids       = Array.isArray(msg.ids)     ? msg.ids     : null;
+
+  if (!packed || !offsets || !ids) {
+    self.postMessage({ event: 'error', message: 'multi: missing packed/offsets/ids' });
+    return;
+  }
+  if (offsets.length !== ids.length + 1) {
+    self.postMessage({
+      event:   'error',
+      message: 'multi: offsets table length must equal ids.length + 1',
+    });
+    return;
+  }
+
+  const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const parsed = YaraEngine.parseRules(source);
+  const rules  = (parsed && parsed.rules)  || [];
+  const errs   = (parsed && parsed.errors) || [];
+  const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+  if (errs.length && !rules.length) {
+    self.postMessage({ event: 'error', message: 'parse: ' + errs.join('; ') });
+    return;
+  }
+
+  // Pre-filter rules to only those that opt in to the decoded-payload pass.
+  // Without this, every rule's string-search runs against every tiny payload
+  // even though `applies_to` would short-circuit them inside `scan()` —
+  // doing the filter once up here saves the per-rule walk on every call.
+  const opted = [];
+  for (const rule of rules) {
+    if (rule.meta && rule.meta.applies_to) {
+      if (YaraEngine._matchesAppliesTo(rule.meta.applies_to, formatTag)) {
+        opted.push(rule);
+      }
+    }
+    // Rules with no `applies_to` are intentionally excluded from the
+    // decoded-payload pass — without an opt-in there's no signal that
+    // the rule's strings make sense on a fragment of decoded bytes.
+  }
+
+  const view = new Uint8Array(packed);
+  const hits = [];
+  for (let i = 0; i < ids.length; i++) {
+    const start = offsets[i];
+    const end   = offsets[i + 1];
+    if (end <= start) continue;
+    const slice = view.subarray(start, end);
+    const results = YaraEngine.scan(slice, opted, {
+      // No errorSink — per-string regex caps still apply but we don't
+      // surface them to the host (the host's auto-YARA path is the
+      // canonical place for that).
+      context: { formatTag },
+    });
+    if (results && results.length) {
+      hits.push({ id: ids[i], results });
+    }
+  }
+  const t2 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+
+  self.postMessage({
+    event:        'done',
+    mode:         'multi',
+    hits,
+    parseMs:      Math.max(0, t1 - t0),
+    scanMs:       Math.max(0, t2 - t1),
+    payloadCount: ids.length,
+    ruleCount:    opted.length,
+  });
+}

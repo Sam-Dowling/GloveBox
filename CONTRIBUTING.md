@@ -362,6 +362,7 @@ re-entry.
 | Path | Trigger | Thread | Gating |
 |---|---|---|---|
 | Auto-YARA (`_autoYaraScan`) | Every successful `_loadFile` | Worker; main-thread fallback when `Worker(blob:)` denied | Worker path: unbounded — `worker.terminate()` cancels mid-loop. Fallback: skipped above `PARSER_LIMITS.SYNC_YARA_FALLBACK_MAX_BYTES` (32 MiB). |
+| Decoded-payload gate (`runDecodedYara`) | After every `WorkerManager.runEncoded` returns, when `findings.encodedContent` is non-empty | Worker; bypassed entirely if workers unavailable | Default mode only — bruteforce skips the pass. Pre-filtered to rules with `applies_to` containing `decoded-payload`; per-payload size bounded `[16 B, 256 KiB]` and capped at 256 candidates per file. |
 | Manual scan tab | User clicks the YARA tab | Worker; main-thread fallback | Manual only; unrestricted |
 | Rules editor validate / preview | User edits rules dialog | Main, synchronous | Manual only |
 
@@ -432,7 +433,7 @@ workerised work is off-main-thread.
 
 | Worker | Spawner | Purpose |
 |---|---|---|
-| `yara.worker.js` | `WorkerManager.runYara` | Auto-YARA + manual-tab scans. Bundle = `yara-engine.js` + glue. |
+| `yara.worker.js` | `WorkerManager.runYara` (single-buffer mode) / `WorkerManager.runDecodedYara` (multi-payload mode) | Auto-YARA + manual-tab scans, plus the decoded-payload second pass. Bundle = `yara-engine.js` + glue. The two dispatch modes share a single worker bundle but use separate command shapes (`mode: 'multi'` for decoded payloads). |
 | `timeline.worker.js` | `WorkerManager.runTimeline` | **Parse-only** off-thread loader for CSV / TSV / EVTX / SQLite. Analysis stays on the main thread. Streams CSV/TSV in `{event:'rows', batch}` (50 000 rows / batch). |
 | `encoded.worker.js` | `WorkerManager.runEncoded` | Off-thread `EncodedContentDetector.scan()`. IOC merging stays on the main thread (host owns dedup, click-to-focus stamping). |
 | `vendor/pdf.worker.js` | `pdfjsLib` | PDF page rendering. Cancellation via `PdfRenderer.disposeWorker()`. |
@@ -467,6 +468,61 @@ append it to `_DETECTOR_FILES`), keep new methods on the prototype via
 the existing `Object.assign(...)` block at the bottom, never re-declare
 the class. Helpers must not depend on each other's load order — the
 contract is "class root first, helpers afterwards", nothing finer.
+
+### Decoded-payload YARA gate
+
+After `WorkerManager.runEncoded` returns the findings tree, the host
+runs a **second YARA pass** over every retained decoded payload. The
+gate lives in `src/decoded-yara-filter.js` and is wired into
+`src/app/app-load.js` immediately before the findings are merged into
+`this.findings.encodedContent`.
+
+The pass is **purely additive** — it stamps `_yaraHits` on findings that
+match curated rules and never removes anything from the tree. The
+existing `_pruneFindings` (inside `encoded.worker.js` via
+`encoded-content-detector.js`) still owns trash suppression; this gate
+adds an evidence row in the sidebar (`.enc-finding-yara`) so the
+analyst can see *why* a noisy-looking decode survived.
+
+**Rule curation.** Rules opt in by adding `decoded-payload` to their
+`meta: applies_to` list. The token is a synthetic format tag (declared
+in `YaraEngine.FORMAT_PREDICATES.is_decoded_payload`) that the host
+stamps onto the multi-dispatch worker call. Rules **without** the
+`decoded-payload` token are excluded from the second pass — keeps the
+per-payload cost proportional to the curated subset.
+
+For rules that should remain **universal** while also opting into the
+gate, declare `applies_to = "any, decoded-payload"`. The `any` alias
+expands to every known formatTag (excluding the synthetic
+`decoded-payload`), so the rule still matches every host-detected
+format AND fires on the decoded second pass. See
+`YaraEngine._resolveAppliesToToken` for the expansion rule.
+
+**Dispatch shape.** `WorkerManager.runDecodedYara(payloads, source,
+opts)` packs all decoded buffers into a single `ArrayBuffer` (one
+transfer) with an offsets / lengths table, and shares the `yara`
+channel with the auto-YARA scan so newer file loads supersede in-flight
+decoded passes automatically. The worker pre-filters rules once to the
+curated `applies_to`-tagged subset before iterating payloads — this
+avoids the per-rule walk on every tiny payload.
+
+**Bypassed in bruteforce mode.** `Bruteforce` is the analyst's
+"show me everything" escape hatch; the gate would be the wrong place to
+filter when the analyst has explicitly opted into noise.
+
+**Failure surface.** Any rejection (probe failure, supersession,
+watchdog) demotes to a no-op. Findings come through unchanged; the
+existing prune-pass result still stands. The breadcrumb is routed via
+`App._reportNonFatal('decoded-yara-gate', err, { silent: true })` so
+the issue still surfaces in the dev-mode breadcrumbs ribbon.
+
+**Tunables** (all on `window.DecodedYaraFilter`):
+
+| Constant | Default | Purpose |
+|---|---|---|
+| `MIN_PAYLOAD_BYTES` | `16` | Tiny buffers can't carry a meaningful YARA string match. |
+| `MAX_PAYLOAD_BYTES` | `256 KiB` | Upper cap on the per-call latin-1 string-build cost inside `YaraEngine.scan`. |
+| `MAX_PAYLOADS_PER_FILE` | `256` | Hard cap so a sample with thousands of tiny base64 literals doesn't amplify the per-call setup cost. |
 
 ### Iframe sandbox helper
 
