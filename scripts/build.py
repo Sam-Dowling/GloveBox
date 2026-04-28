@@ -705,6 +705,20 @@ APP_JS_FILES = [
     # BEFORE app-timeline.js (which replaced its local tree with this
     # shared one).
     'src/json-tree.js',
+    # row-store.js — flat-buffer immutable row container shared by GridViewer
+    # and the Timeline pipeline (worker + main thread). Fixes the OOM-tab-
+    # crash failure mode the legacy `string[][]` accumulator hit on multi-
+    # hundred-MB CSVs by replacing it with `{bytes: Uint8Array, offsets:
+    # Uint32Array, rowCount}` chunks transferred zero-copy across the
+    # worker boundary. Exposes `RowStore`, `RowStoreBuilder`, and the
+    # `packRowChunk(rows, colCount)` helper the timeline worker uses to
+    # pack `_parseCsv` batches before posting them. Must load AFTER
+    # constants.js (consumes RENDER_LIMITS shape implicitly via callers)
+    # and BEFORE grid-viewer.js (which reads RowStore via `setRows`) and
+    # the renderers that build it (csv / sqlite / evtx). Same dual-bundle
+    # pattern as `src/ioc-extract.js` — also concatenated into the
+    # timeline parse-only worker bundle below.
+    'src/row-store.js',
     # grid-viewer.js — bulletproof shared virtual-scroll grid (fixed-height
     # rows, absolute-positioned rows, right-side resizable drawer, unified
     # highlight state machine, chunked cooperative parse, mandatory
@@ -945,12 +959,18 @@ yara_worker_js = (
 # Bundle order matters — the shim defines `RENDER_LIMITS`, `EVTX_COLUMN_ORDER`,
 # `TIMELINE_MAX_ROWS`, the `IOC` proxy, and the `escalateRisk` / `pushIOC` /
 # `lfNormalize` no-op stubs the renderer sources reach for at module load.
+# `row-store.js` sits between the shim and the renderers so the worker-side
+# `packRowChunk` / `RowStore` / `RowStoreBuilder` symbols are defined before
+# `timeline.worker.js::_parseCsv` calls them; the SAME file is also in
+# APP_JS_FILES (main bundle) so the host receives the chunks the worker
+# packs and assembles them into a `RowStore` of its own.
 # The renderers then concatenate in the same order the main bundle uses
 # (csv → sqlite → evtx). The timeline.worker.js trailer carries the parse
 # functions and the `self.onmessage` dispatcher. EvtxDetector is deliberately
 # NOT included — analysis runs on the main thread.
 _timeline_worker_bundle_src = (
     read('src/workers/timeline-worker-shim.js') + '\n'
+    + read('src/row-store.js') + '\n'
     + read('src/renderers/csv-renderer.js') + '\n'
     + read('src/renderers/sqlite-renderer.js') + '\n'
     + read('src/renderers/evtx-renderer.js') + '\n'

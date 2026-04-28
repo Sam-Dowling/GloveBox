@@ -236,6 +236,37 @@ const RENDER_LIMITS = Object.freeze({
   LARGE_FILE_THRESHOLD: 200 * 1024 * 1024,  // 200 MB — use chunked decode unconditionally
   HUGE_FILE_WARN:       500 * 1024 * 1024,  // 500 MB — show warning toast before loading
   DECODE_CHUNK_BYTES:   16 * 1024 * 1024,   // 16 MB — TextDecoder chunk size for large files
+
+  // ── RowStore heap-budget gate (Chromium only) ─────────────────────────
+  // The Timeline route's `RowStore` (chunked Uint8Array bytes + Uint32Array
+  // offsets, populated incrementally from the timeline worker) needs roughly
+  // `file.size * ROWSTORE_HEAP_OVERHEAD_FACTOR` bytes on the main heap to
+  // hold the parsed grid (cell bytes + offsets + a small parallel-array
+  // overhead from `_timeMs` / `_filteredIdx` / `_susBitmap`). When
+  // `performance.memory.jsHeapSizeLimit` is observable (Chromium-only),
+  // `timeline-router.js` refuses to load a file whose projected RowStore
+  // footprint would exceed `jsHeapSizeLimit * ROWSTORE_HEAP_BUDGET_FRACTION`,
+  // preventing the OOM-tab-crash failure mode that the legacy
+  // `string[][]` accumulator hit on multi-hundred-MB CSVs.
+  //
+  // Other browsers (Firefox / Safari) skip this gate silently — they have
+  // no equivalent introspection API and the existing `LARGE_FILE_THRESHOLD`
+  // / sync-fallback refusal in `timeline-router.js` covers them with
+  // coarser granularity.
+  //
+  // 0.6 leaves headroom for the rest of the App (vendor compile, sidebar,
+  // YARA buffer copy, encoded-content scan working set) and is the
+  // empirically-derived ceiling at which Chromium begins minor-GC
+  // thrashing on a 16 GB machine.
+  ROWSTORE_HEAP_BUDGET_FRACTION: 0.6,
+  // Multiplier on `file.size` used to project peak RowStore main-thread
+  // footprint. Tuned to match observed memory growth: cell bytes ≈ input
+  // size, offsets ≈ `rowCount * (cols+1) * 4 bytes` ≈ 5–10 % of input,
+  // parallel arrays (`_timeMs`, `_filteredIdx`, `_susBitmap`) ≈ another
+  // 20–30 %. 1.6 is the conservative ceiling; raising it shrinks the
+  // populating universe of "loadable" files without protecting against
+  // additional failure modes.
+  ROWSTORE_HEAP_OVERHEAD_FACTOR: 1.6,
 });
 
 // ── EVTX column schema ────────────────────────────────────────────────────────
