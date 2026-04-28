@@ -984,6 +984,39 @@ _timeline_worker_bundle_src = (
     + read('src/renderers/evtx-renderer.js') + '\n'
     + read('src/workers/timeline.worker.js')
 )
+
+# ── Dual-bundle invariant: row-store.js MUST be in BOTH bundles ─────────────
+# `src/row-store.js` defines `RowStore` / `RowStoreBuilder` / `packRowChunk`,
+# which are referenced by main-thread consumers (GridViewer, every grid
+# renderer, the Timeline route) AND by the timeline parse-only worker
+# (which packs rows into chunks via `packRowChunk` and posts them as
+# transferable typed-array buffers). The two copies must stay in sync —
+# they're literally the same source file concatenated into both bundles.
+#
+# These asserts make a future "let's split row-store into a worker-only
+# fork" PR fail loudly at build time rather than silently producing a
+# main bundle without the class (no Timeline) or a worker bundle without
+# `packRowChunk` (no streaming). Cheap: the asserts run once per build,
+# the strings have already been read into memory.
+assert 'src/row-store.js' in APP_JS_FILES, (
+    'BUILD INVARIANT: src/row-store.js must be present in APP_JS_FILES '
+    '(main bundle). It is the sole producer of the RowStore class type '
+    'every grid renderer hands to GridViewer; without it the main '
+    'bundle has no row container and Timeline + every grid view fails '
+    'to mount.'
+)
+_ROW_STORE_SRC_FOR_ASSERT = read('src/row-store.js')
+assert _ROW_STORE_SRC_FOR_ASSERT in _timeline_worker_bundle_src, (
+    'BUILD INVARIANT: src/row-store.js must be concatenated into '
+    '_timeline_worker_bundle_src (timeline parse-only worker bundle). '
+    'The worker calls packRowChunk to pack streamed CSV/EVTX/SQLite '
+    'rows into transferable typed-array chunks; without the file in '
+    'the worker bundle the worker throws ReferenceError on the first '
+    "rows-chunk post and Timeline receives a zero-row store. See the "
+    'comment block above this assertion for the dual-home rationale.'
+)
+del _ROW_STORE_SRC_FOR_ASSERT
+
 timeline_worker_js = (
     'const __TIMELINE_WORKER_BUNDLE_SRC = `'
     + _esc_for_template(_timeline_worker_bundle_src)
