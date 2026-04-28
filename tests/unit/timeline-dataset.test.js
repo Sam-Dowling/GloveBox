@@ -392,6 +392,51 @@ test('clearExtractedCols mutates the array IN PLACE', () => {
   assert.equal(owned.length, 0);
 });
 
+// ── Migration parity ──────────────────────────────────────────────────────
+
+test('timeline-summary.js reads parallel arrays through the dataset wrapper', () => {
+  // Migration B1b: the summary builder previously read
+  // `this._evtxEvents` / `this._timeMs` directly. Those are now
+  // accessed via `this._dataset.evtxEvents` / `this._dataset.timeMs`
+  // (the bulk-access escape hatch) plus `this._dataset.timeAt(i)`
+  // for the cursor-position scalar read. A future hand-edit that
+  // reintroduces a bare `this._evtxEvents` / `this._timeMs`
+  // reference (other than in comments / string literals) would
+  // bypass the dataset's invariant — pin that.
+  const summarySrc = fs.readFileSync(
+    path.join(REPO_ROOT, 'src/app/timeline/timeline-summary.js'),
+    'utf8',
+  );
+  // Strip block + line comments before scanning so the comment that
+  // explains the migration ('the legacy `this._evtxEvents` reference')
+  // doesn't trip the test.
+  const stripped = summarySrc
+    // Block comments — non-greedy, multi-line.
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    // Line comments — to end-of-line.
+    .replace(/(^|[^:'"])\/\/[^\n]*/g, '$1');
+  // The exact reads we're hunting for. Backticks / single / double
+  // quotes inside a comment are already gone (above), so any match
+  // here is real code.
+  assert.doesNotMatch(
+    stripped,
+    /this\._evtxEvents\b/,
+    'timeline-summary.js must read evtx events via this._dataset.evtxEvents',
+  );
+  assert.doesNotMatch(
+    stripped,
+    /this\._timeMs\b/,
+    'timeline-summary.js must read parsed times via this._dataset.timeMs / timeAt',
+  );
+  // Sanity — the dataset reference must actually appear at least
+  // once (otherwise the file fakes-out the test by avoiding both).
+  assert.match(
+    stripped,
+    /this\._dataset\b/,
+    'timeline-summary.js must use this._dataset for parallel-array reads',
+  );
+});
+
 // ── Bundle membership ──────────────────────────────────────────────────────
 
 test('timeline-dataset.js is registered in build APP_JS_FILES', () => {

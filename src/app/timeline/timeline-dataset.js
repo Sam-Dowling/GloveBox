@@ -261,18 +261,40 @@ class TimelineDataset {
     this._extractedCols.length = 0;
   }
 
-  // ── Direct slot access (transitional) ───────────────────────────────────
+  // ── Bulk-array escape hatch (hot loops) ─────────────────────────────────
   //
-  // The migration plan (B1b/B1c) moves consumers off these slots one
-  // file at a time. Until that lands, callers reach in via these
-  // getters; once the migration is done, the migration-final commit
-  // (B1d) drops the getters and the slots become truly private.
+  // The `cellAt` / `timeAt` / `evtxAt` / `extractedAt` accessors above
+  // are the right choice for SCALAR reads (single row, often at a
+  // bounds-uncertain index — cursor position, navigation state, ...).
+  // They each pay a bounds-check per call.
+  //
+  // Hot loops that iterate every row in lock-step (the §6 EVTX
+  // aggregate walk, the time-cluster histogram, the chart bucketer)
+  // get the slot reference once and index it directly, paying ONE
+  // bounds-check at the loop guard. For those callers, going through
+  // `timeAt(i)` would add a per-row method call + bounds check that
+  // measurably slows large datasets — a 5 M-row histogram is
+  // observably worse on V8 / WebKit when the per-row read becomes
+  // a function call. The dataset deliberately exposes the underlying
+  // slots via these getters so loops can keep direct typed-array
+  // access.
+  //
+  // Contract for callers using these getters:
+  //   • The returned reference is the SAME typed-array / array
+  //     instance the dataset uses internally; mutating its contents
+  //     mutates the dataset's view.
+  //   • Iterate with `i < arr.length` (NOT a separate counter) so
+  //     the invariant `length === rowCount` is implicit.
+  //   • Don't store the reference past the next `setTimeMs` /
+  //     `addExtractedCol` / `clearExtractedCols` call — those may
+  //     replace the underlying array (currently only `setTimeMs`
+  //     does, but the contract reserves the right).
 
-  /** @deprecated Use `cellAt` / `timeAt` / `evtxAt` / `extractedAt`. */
+  /** Bulk-access escape hatch for the parsed-time typed array. */
   get timeMs() { return this._timeMs; }
-  /** @deprecated Use `evtxAt(orig)` (returns null for non-EVTX). */
+  /** Bulk-access escape hatch for the EVTX side-channel array (or null). */
   get evtxEvents() { return this._evtxEvents; }
-  /** @deprecated Use `extractedAt` / `extractedColumns()`. */
+  /** Bulk-access escape hatch for the extracted-columns array. */
   get extractedCols() { return this._extractedCols; }
 
   // ── Internal — invariant assertion ──────────────────────────────────────

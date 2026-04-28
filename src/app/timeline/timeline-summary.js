@@ -41,9 +41,14 @@
 // detection list, entity list, relationship cluster size).
 //
 // **Analysis-bypass.** Like the rest of `src/app/timeline/`, this
-// mixin only reads from `this._evtxEvents` / `this._evtxFindings`
-// (already-built side channels). It MUST NOT push to
+// mixin only reads from `this._dataset` (the parallel-array wrapper
+// — see `timeline-dataset.js`) and `this._evtxFindings` (the
+// pre-built Sigma-style detector output). It MUST NOT push to
 // `this._app.findings`, `pushIOC`, the sidebar, or any global state.
+// Bulk loop bodies index `this._dataset.timeMs` /
+// `this._dataset.evtxEvents` directly via the bulk-access escape
+// hatch; per-row scalar reads at uncertain indices use the bounds-
+// checked accessors `timeAt(i)` / `evtxAt(i)` / `cellAt(i, c)`.
 //
 // Loads AFTER timeline-detections.js (which it shares the IOC.*
 // label table with).
@@ -160,7 +165,12 @@
     // Runs strictly read-only against this view's pre-built EVTX side
     // channels.
     _summarizeAndCopy() {
-      if (!this._evtxFindings || !Array.isArray(this._evtxEvents)) {
+      // EVTX-only gate: the summary builder reads Sigma-style
+      // findings + per-row event objects, neither of which exist
+      // for CSV/SQLite timelines. Probe the dataset's evtxEvents
+      // slot rather than the legacy `this._evtxEvents` reference.
+      const evEvents = this._dataset ? this._dataset.evtxEvents : null;
+      if (!this._evtxFindings || !Array.isArray(evEvents)) {
         if (this._app && typeof this._app._toast === 'function') {
           this._app._toast('Summarize is only available for EVTX timelines', 'error');
         }
@@ -309,12 +319,20 @@
     // each become near-pure formatters. Cached on `this._tlsAgg` so
     // repeat invocations across SCALE variants are O(1).
     _tlsCollectAggregates() {
-      const events = this._evtxEvents || [];
+      // Read parallel-array slots through the dataset wrapper. The
+      // bulk-access getters (`evtxEvents` / `timeMs`) hand back the
+      // same references the dataset uses internally — see
+      // `timeline-dataset.js § Bulk-array escape hatch` for the
+      // contract. The §2.1 EVTX-truncation regression that motivated
+      // the dataset is now caught at construction; this consumer can
+      // walk the bulk arrays without re-asserting the invariant per
+      // row.
+      const events = (this._dataset && this._dataset.evtxEvents) || [];
       const findings = this._evtxFindings || {};
       const refs = Array.isArray(findings.externalRefs) ? findings.externalRefs : [];
 
-      // ── First/last timestamps + valid-event count from _timeMs ──
-      const tm = this._timeMs;
+      // ── First/last timestamps + valid-event count from timeMs ──
+      const tm = this._dataset ? this._dataset.timeMs : null;
       let first = Infinity, last = -Infinity, parsed = 0;
       if (tm && tm.length) {
         for (let i = 0; i < tm.length; i++) {
@@ -374,7 +392,11 @@
       }
 
       // Walk every event for per-EID stats + relationship harvest.
-      // `events[i]` aligns with `tm[i]` aligns with `this.store.getRow(i)`.
+      // `events[i]` aligns with `tm[i]` aligns with
+      // `this.store.getRow(i)` — TimelineDataset's constructor (and
+      // every mutation method) re-asserts
+      // `events.length === tm.length === store.rowCount`, so we can
+      // index in lock-step without per-row guards.
       for (let i = 0; i < events.length; i++) {
         const ev = events[i];
         if (!ev) continue;
@@ -637,7 +659,12 @@
     // This is the ONE section that reflects what the human is currently
     // looking at. The rest of the report is whole-file.
     _tlsBuildActiveViewSection(agg /*, rowCap, charCap */) {
-      const total = this._evtxEvents ? this._evtxEvents.length : 0;
+      // `total` reports the underlying dataset size (events.length for
+      // EVTX views); we keep the EVTX-only semantics — non-EVTX
+      // timelines never reach this section because the entry point
+      // `_summarizeAndCopy` early-returns when `_evtxEvents` is missing.
+      const evEvents = this._dataset ? this._dataset.evtxEvents : null;
+      const total = evEvents ? evEvents.length : 0;
       const visible = this._filteredIdx ? this._filteredIdx.length : total;
       const win = this._window;
       const winText = (win && Number.isFinite(win.min) && Number.isFinite(win.max))
@@ -658,8 +685,13 @@
       s += `| Time window | ${_tp(winText)} |\n`;
       s += `| Query | ${queryStr ? '`' + _tp(_short(queryStr, 600)) + '`' : '— none —'} |\n`;
       s += `| 🚩 Suspicious marks | ${sus.length} (matching ${susHitCount.toLocaleString()} rows) |\n`;
-      const cursorTs = (this._cursorDataIdx != null && this._timeMs)
-        ? this._timeMs[this._cursorDataIdx] : null;
+      // Single-row read at a cursor-derived index — go through the
+      // bounds-checked accessor so a stale `_cursorDataIdx` (lagging
+      // behind a re-parse, race after dispose) returns NaN rather
+      // than `undefined`. The `Number.isFinite` guard below handles
+      // both, but NaN is the typed contract.
+      const cursorTs = (this._cursorDataIdx != null && this._dataset)
+        ? this._dataset.timeAt(this._cursorDataIdx) : null;
       s += `| Cursor | ${cursorTs && Number.isFinite(cursorTs) ? _ts(cursorTs) : '— none —'} |\n`;
       s += `| Bucket | ${_tp(this._bucketId || '—')} |\n`;
       if (sus.length) {
@@ -1095,7 +1127,10 @@
       const span = agg.last - agg.first;
       const w = span / N;
       const buckets = new Array(N).fill(0);
-      const tm = this._timeMs;
+      // Hot loop — get the typed-array reference once and index it
+      // directly. `dataset.timeMs` is the documented escape hatch for
+      // this case (see `timeline-dataset.js`).
+      const tm = this._dataset ? this._dataset.timeMs : null;
       if (!tm || !tm.length) return '';
       for (let i = 0; i < tm.length; i++) {
         const v = tm[i];
