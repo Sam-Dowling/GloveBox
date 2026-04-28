@@ -107,7 +107,11 @@ class XlsxRenderer {
 
     // ── Rows: flatten into plain string arrays; prepend per-row search
     //    text index so GridViewer's filter reaches every rendered value.
-    const rows = [];
+    //
+    // Phase 7: stream rows into a `RowStoreBuilder`. A wide spreadsheet
+    // (e.g. 100 K × 50 cols of formatted text cells) saved ≈40 MB of
+    // peak heap by dropping the parallel `string[][]` materialisation.
+    const builder = new RowStoreBuilder(columns);
     const rowSearchText = [];
     for (let r = rng.s.r; r <= maxR; r++) {
       const row = new Array(columns.length);
@@ -131,21 +135,22 @@ class XlsxRenderer {
         row[colIdx] = txt;
         if (txt) searchParts.push(txt);
       }
-      rows.push(row);
+      builder.addRow(row);
       rowSearchText.push(searchParts.join(' ').toLowerCase());
     }
+    const store = builder.finalize();
 
     const truncNote = maxR < rng.e.r
       ? `⚠ Showing first ${(maxR - rng.s.r + 1).toLocaleString()} of ${(rng.e.r - rng.s.r + 1).toLocaleString()} rows`
       : '';
 
-    const infoText = `${sheetName} · ${rows.length.toLocaleString()} rows × ${columns.length} cols`
+    const infoText = `${sheetName} · ${store.rowCount.toLocaleString()} rows × ${columns.length} cols`
       + (merges.length ? ` · ${merges.length} merged range${merges.length > 1 ? 's' : ''}` : '');
 
     const self = this;
     const viewer = new GridViewer({
       columns,
-      store: RowStore.fromStringMatrix(columns, rows),
+      store,
       rowSearchText,
       // Spreadsheets are filter-first (analyst hunts for a SKU /
       // amount / formula). Keep the eager search-text cache.

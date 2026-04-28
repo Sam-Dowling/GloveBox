@@ -869,7 +869,11 @@ class SqliteRenderer {
     const LIMIT = 20000;
     const limit = Math.min(rawRows.length, LIMIT);
 
-    const rows = new Array(limit);
+    // Phase 7: stream rows into a `RowStoreBuilder` so the parallel
+    // `string[][]` accumulator is no longer needed; only the per-row
+    // `parts` array (built and dropped per iteration) and the
+    // `rowSearchText` cache remain on the side.
+    const builder = new RowStoreBuilder(cols);
     const rowSearchText = new Array(limit);
     for (let i = 0; i < limit; i++) {
       const src = rawRows[i];
@@ -880,9 +884,10 @@ class SqliteRenderer {
         row[j] = v;
         if (v) parts.push(v);
       }
-      rows[i] = row;
+      builder.addRow(row);
       rowSearchText[i] = parts.join(' ').toLowerCase();
     }
+    const store = builder.finalize();
 
     // Provide clean tab/newline-delimited text for IOC extraction. Without
     // this, DOM textContent merges adjacent cells (URL + Title + Visit Count
@@ -915,7 +920,7 @@ class SqliteRenderer {
 
     const viewer = new GridViewer({
       columns: cols,
-      store: RowStore.fromStringMatrix(cols, rows),
+      store,
       rowSearchText,
       // History grid is filter-first (analyst types a domain / fragment).
       // Keep the eager search-text cache the caller already built.
@@ -1037,7 +1042,9 @@ class SqliteRenderer {
     const total = tData.rows.length;
     const limit = Math.min(total, LIMIT);
 
-    const rows = new Array(limit);
+    // Phase 7: stream rows directly into a `RowStoreBuilder` (see
+    // `_buildHistoryTable` above for rationale).
+    const builder = new RowStoreBuilder(columns);
     const rowSearchText = new Array(limit);
     for (let i = 0; i < limit; i++) {
       const src = tData.rows[i];
@@ -1049,9 +1056,10 @@ class SqliteRenderer {
         row[j] = s;
         if (s && s !== 'NULL') parts.push(s);
       }
-      rows[i] = row;
+      builder.addRow(row);
       rowSearchText[i] = parts.join(' ').toLowerCase();
     }
+    const store = builder.finalize();
 
     const truncNote = total > limit
       ? `⚠ Showing first ${limit.toLocaleString()} of ${total.toLocaleString()} rows`
@@ -1062,7 +1070,7 @@ class SqliteRenderer {
 
     return new GridViewer({
       columns,
-      store: RowStore.fromStringMatrix(columns, rows),
+      store,
       rowSearchText,
       // Generic-table grid is filter-first (analyst types a fragment to
       // narrow a 10 K-row table). Keep the eager search-text cache.

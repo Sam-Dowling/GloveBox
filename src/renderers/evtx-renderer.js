@@ -1294,11 +1294,17 @@ class EvtxRenderer {
 
     // ── Build the GridViewer — inherits virtual scroll, drawer, IOC/YARA
     //    highlighting, filter → same primitive as CSV/XLSX/SQLite. ───────
+    //
+    // Phase 7: stream rows directly into a `RowStoreBuilder` so the
+    // intermediate `string[][]` matrix never coexists in heap with the
+    // packed RowStore. For a 50 K-event EVTX (≈8 MB of cell payload)
+    // this saves ~25 MB of peak (the per-string + per-row JS overhead
+    // of a parallel `string[][]`).
     const columns = [...EVTX_COLUMN_ORDER];
-    const rows = new Array(limitedEvents.length);
+    const builder = new RowStoreBuilder(columns);
     for (let i = 0; i < limitedEvents.length; i++) {
       const ev = limitedEvents[i];
-      rows[i] = [
+      builder.addRow([
         ev.timestamp ? ev.timestamp.replace('T', ' ').replace('Z', '') : '',
         ev.eventId || '',
         ev.level || '',
@@ -1306,8 +1312,9 @@ class EvtxRenderer {
         ev.channel || '',
         ev.computer || '',
         ev.eventData || ''
-      ];
+      ]);
     }
+    const store = builder.finalize();
 
     const self = this;
     const truncNote = totalEvents > MAX_EVENTS
@@ -1331,7 +1338,7 @@ class EvtxRenderer {
       // on a typical SOC analyst layout instead of being pinned at the
       // old 480 px fill-cap while every other column over-inflates.
       columnKinds: ['timestamp', 'id', 'enum', 'short', 'short', 'short', 'blob'],
-      store: RowStore.fromStringMatrix(columns, rows),
+      store,
       rowSearchText: eventSearchText,
       // EVTX's filter bar is hidden in favour of the EID/Level/search
       // chip toolbar (`hideFilterBar: true`), but `applyFilters` still

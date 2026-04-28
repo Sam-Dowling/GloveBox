@@ -316,7 +316,11 @@ class JsonRenderer {
   // ── Shared GridViewer construction ─────────────────────────────────────
 
   _buildGrid(arr, columns, limit, fileName, opts, getCell, meta) {
-    const rows = new Array(limit);
+    // Phase 7: stream rows into a `RowStoreBuilder` so the parallel
+    // `string[][]` accumulator is no longer needed; only the per-row
+    // `parts` array (built and dropped per iteration) and the
+    // `rowSearchText` cache remain on the side.
+    const builder = new RowStoreBuilder(columns);
     const rowSearchText = new Array(limit);
     const rowOffsets = opts.perItemRawLines ? new Array(limit) : null;
     const rawLines = [];
@@ -331,7 +335,7 @@ class JsonRenderer {
         row[c] = cell;
         if (cell) parts.push(cell);
       }
-      rows[i] = row;
+      builder.addRow(row);
       rowSearchText[i] = parts.join(' ').toLowerCase();
 
       // Raw text: one JSON-stringified line per row. Byte offsets line up
@@ -346,6 +350,7 @@ class JsonRenderer {
       }
     }
     const rawText = rawLines.join('\n');
+    const store = builder.finalize();
 
     // Toolbar bits
     const truncNotes = [];
@@ -369,7 +374,7 @@ class JsonRenderer {
     const self = this;
     const viewer = new GridViewer({
       columns,
-      store: RowStore.fromStringMatrix(columns, rows),
+      store,
       rowSearchText,
       // JSON tables (often arrays of objects) are filter-first; keep
       // the eager search-text cache.
