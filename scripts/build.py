@@ -854,6 +854,11 @@ APP_JS_FILES = [
     # WheelContinuation`) is in scope when `_buildDOM` mounts `.tl-host`.
     'src/app/timeline/timeline-wheel.js',
     'src/app/timeline/timeline-view.js',
+    # timeline-view-factories.js — TimelineView static-method mixin
+    # (B2a). Hosts `TimelineView.fromCsvAsync` / `fromEvtx` /
+    # `fromSqlite`; attaches via `Object.assign(TimelineView, {...})`.
+    # MUST load AFTER timeline-view.js so the class identifier exists.
+    'src/app/timeline/timeline-view-factories.js',
     'src/app/timeline/timeline-detections.js',
     'src/app/timeline/timeline-summary.js',
     'src/app/timeline/timeline-drawer.js',

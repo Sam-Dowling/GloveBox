@@ -44,6 +44,13 @@ const TIMELINE_VIEW_SRC = fs.readFileSync(
   path.join(REPO_ROOT, 'src/app/timeline/timeline-view.js'),
   'utf8',
 );
+// B2a: the static factories `fromCsvAsync` / `fromEvtx` / `fromSqlite`
+// were hoisted into a sibling mixin file. The semantic invariants
+// guarded here still hold; only the source location changed.
+const TIMELINE_FACTORIES_SRC = fs.readFileSync(
+  path.join(REPO_ROOT, 'src/app/timeline/timeline-view-factories.js'),
+  'utf8',
+);
 
 test('TimelineView constructor enforces _evtxEvents/store row-count invariant', () => {
   // The throw must reference both `evtxEvents.length` and `store.rowCount`
@@ -70,19 +77,22 @@ test('fromEvtx passes the truncated list (not the full events array) as evtxEven
   //   • `evtxEvents: events.slice(0, list.length)` (an alternative shape)
   // The shape that MUST NOT appear is `evtxEvents: events,` — that's
   // the regression we're defending against.
-  const fromEvtxStart = TIMELINE_VIEW_SRC.indexOf(
-    'static async fromEvtx(file, buffer)',
+  // Post-B2a: the factory lives in `timeline-view-factories.js` and
+  // is attached via `Object.assign(TimelineView, {...})`, so the
+  // signature is `async fromEvtx(file, buffer)` (no `static` keyword
+  // — implicit when assigned to the constructor).
+  const fromEvtxStart = TIMELINE_FACTORIES_SRC.indexOf(
+    'async fromEvtx(file, buffer)',
   );
-  assert.notEqual(fromEvtxStart, -1, 'fromEvtx static method must exist');
+  assert.notEqual(fromEvtxStart, -1, 'fromEvtx factory must exist in timeline-view-factories.js');
 
-  // Find the end of the function — the next `static ` declaration or
-  // the closing of the class. `fromSqlite` follows `fromEvtx`.
-  const fromSqliteStart = TIMELINE_VIEW_SRC.indexOf(
-    'static fromSqlite(',
+  // Find the end of the function — `fromSqlite` follows `fromEvtx`.
+  const fromSqliteStart = TIMELINE_FACTORIES_SRC.indexOf(
+    'fromSqlite(',
     fromEvtxStart,
   );
   assert.notEqual(fromSqliteStart, -1, 'fromSqlite must follow fromEvtx');
-  const fromEvtxBody = TIMELINE_VIEW_SRC.slice(fromEvtxStart, fromSqliteStart);
+  const fromEvtxBody = TIMELINE_FACTORIES_SRC.slice(fromEvtxStart, fromSqliteStart);
 
   // The forbidden shape — bare `events,` immediately after `evtxEvents:`.
   // Allow whitespace but nothing else.
