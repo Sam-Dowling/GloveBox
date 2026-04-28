@@ -2064,36 +2064,93 @@ extendApp({
   },
 
   /** Build a byte-offset → JS-char-offset map for the rendered rawText.
-   *  YARA reports byte offsets into the UTF-8 encoded file buffer, but the
-   *  text view (`plaintext-table`) works in JavaScript string (UTF-16 code
-   *  unit) coordinates. For files containing multi-byte UTF-8 characters
-   *  (e.g. `──` U+2500 = 3 bytes / 1 JS char) the two coordinate systems
-   *  diverge, causing highlights to land on the wrong text.
+   *  YARA reports byte offsets into the UTF-8 encoded file buffer it was
+   *  handed, but the text view (`plaintext-table`) works in JavaScript
+   *  string (UTF-16 code unit) coordinates over `_rawText`. The two
+   *  coordinate systems diverge in three ways:
    *
-   *  Returns a Map<byteOffset, charOffset> with entries at every character
-   *  boundary, plus a final entry at text.length for end-position lookups.
-   *  Returns null if no rawText is available. */
+   *    1. Multi-byte UTF-8 characters (e.g. `──` U+2500 = 3 bytes / 1 JS
+   *       char) make a naive 1:1 walk drift on every non-ASCII glyph.
+   *    2. `_rawText` is `lfNormalize(text)` — every CR / CRLF in the
+   *       source bytes is collapsed to a single LF, so a CRLF file shifts
+   *       every match by +1 byte per preceding line.
+   *    3. Renderers like HTML / SVG / Plist / Scpt feed YARA an
+   *       *augmented* buffer (raw bytes + appended `=== RENDERED DOM
+   *       TEXT ===` / `=== EXTRACTED … ===` sections) whose tail does
+   *       not exist in `_rawText` at all.
+   *
+   *  Walking the actual scanned buffer in lock-step with `_rawText` is
+   *  the only way to get all three right: CRLF skips advance the byte
+   *  cursor without consuming a char, and the moment a byte fails to
+   *  match (typically the start of an augmented `===` section) we stop
+   *  emitting entries — `_updateSidebarWithYara` then drops every match
+   *  whose byte offset has no char mapping, so we never highlight
+   *  phantom locations from synthesised regions.
+   *
+   *  Returns a Map<byteOffset, charOffset> with entries at every aligned
+   *  character boundary, plus a final entry at the last aligned position.
+   *  Returns null if no rawText / scan buffer is available. */
   _buildYaraByteToCharMap() {
     const pc = document.getElementById('page-container');
     const docEl = pc && pc.firstElementChild;
     const rawText = docEl && docEl._rawText;
     if (typeof rawText !== 'string' || !rawText.length) return null;
+
+    const cr = this.currentResult;
+    const buf = cr && (cr.yaraBuffer || cr.buffer);
+    if (!buf) return null;
+    const bytes = new Uint8Array(buf);
+
     const map = new Map();
-    let bi = 0;
-    for (let ci = 0; ci < rawText.length; ci++) {
-      map.set(bi, ci);
+    let bi = 0, ci = 0;
+    while (bi < bytes.length && ci < rawText.length) {
+      const b = bytes[bi];
       const code = rawText.charCodeAt(ci);
-      if (code < 0x80) bi += 1;
-      else if (code < 0x800) bi += 2;
-      else if (code >= 0xD800 && code <= 0xDBFF) {
-        // high surrogate: supplementary plane char is 4 UTF-8 bytes,
-        // and spans 2 JS chars (surrogate pair).
-        bi += 4; ci++;
-      } else {
-        bi += 3;
+
+      // ── CRLF → LF: byte buffer has \r\n, _rawText has just \n ────────
+      // Skip the bare CR byte without consuming a char; the next loop
+      // iteration consumes the LF byte as the LF char.
+      if (b === 0x0D && bi + 1 < bytes.length && bytes[bi + 1] === 0x0A && code === 0x0A) {
+        bi++; continue;
       }
+      // Bare CR in buffer → LF in _rawText (lfNormalize replaces lone \r).
+      if (b === 0x0D && code === 0x0A) {
+        map.set(bi, ci); bi++; ci++; continue;
+      }
+
+      // ── Aligned ASCII fast path ──────────────────────────────────────
+      if (code < 0x80) {
+        if (b !== code) break; // buffers diverged — stop mapping
+        map.set(bi, ci); bi++; ci++; continue;
+      }
+
+      // ── Multi-byte UTF-8 ─────────────────────────────────────────────
+      // Validate the leading byte of the encoded sequence matches what
+      // `_rawText`'s code point would produce; bail on mismatch so we
+      // don't paper over a real divergence with a guess.
+      let cpLen, leadByte;
+      if (code >= 0xD800 && code <= 0xDBFF) {
+        // Supplementary plane: 4 UTF-8 bytes, 2 JS chars (surrogate pair).
+        const low = rawText.charCodeAt(ci + 1);
+        if (low < 0xDC00 || low > 0xDFFF) break;
+        const cp = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+        leadByte = 0xF0 | (cp >> 18);
+        cpLen = 4;
+      } else if (code < 0x800) {
+        leadByte = 0xC0 | (code >> 6);
+        cpLen = 2;
+      } else {
+        leadByte = 0xE0 | (code >> 12);
+        cpLen = 3;
+      }
+      if (b !== leadByte) break;
+      map.set(bi, ci);
+      bi += cpLen;
+      ci += cpLen === 4 ? 2 : 1;
     }
-    map.set(bi, rawText.length);
+    // Final entry at the last aligned position so end-offset lookups for
+    // a match that ends exactly at the alignment boundary still resolve.
+    map.set(bi, ci);
     return map;
   },
 
@@ -2153,7 +2210,21 @@ extendApp({
         hits: (m.matches && m.matches.length) || 0,
       }));
 
-      // Build flat list of all match locations for click-to-highlight
+      // Build flat list of all match locations for click-to-highlight.
+      //
+      // Match offsets that don't translate cleanly into `_rawText`
+      // coordinates are *dropped* rather than leaked through as raw byte
+      // offsets. The previous fallback (use loc.offset as-is) caused
+      // catastrophic mis-highlights on three classes of file:
+      //   • CRLF files (every CRLF before the match shifts byte→char by +1)
+      //   • Files with multi-byte UTF-8 where the match straddles a glyph
+      //   • HTML/SVG/Plist/Scpt augmented-buffer matches whose offset
+      //     points into the synthesised `=== RENDERED DOM TEXT ===` /
+      //     `=== EXTRACTED … ===` tail that doesn't exist in `_rawText`.
+      // The rule itself still appears in the sidebar; only the unmappable
+      // *locations* are pruned. If every location for a string fails to
+      // map, the click-to-cycle simply finds no matches to scroll to —
+      // strictly better than scrolling to an unrelated line.
       const allMatches = [];
       for (const m of r.matches) {
         for (const loc of m.matches) {
@@ -2162,14 +2233,12 @@ extendApp({
           if (byteToChar) {
             const startChar = byteToChar.get(loc.offset);
             const endChar = byteToChar.get(loc.offset + loc.length);
-            // Only remap when both endpoints fall on char boundaries.
-            // If they don't (e.g. a hex-pattern match straddles a multi-byte
-            // char), fall back to the raw byte offsets — highlighting may be
-            // imprecise but at least won't be catastrophically wrong.
-            if (startChar !== undefined && endChar !== undefined) {
-              offset = startChar;
-              length = endChar - startChar;
+            if (startChar === undefined || endChar === undefined) {
+              // Unmappable — skip this location. See block comment above.
+              continue;
             }
+            offset = startChar;
+            length = endChar - startChar;
           }
           allMatches.push({ offset, length, stringId: m.id, value: m.value });
         }
