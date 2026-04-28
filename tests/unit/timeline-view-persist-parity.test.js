@@ -164,10 +164,29 @@ test('scripts/build.py registers timeline-view-persist.js after timeline-view.js
 // ── Caller surface ─────────────────────────────────────────────────────────
 
 test('callers still reach the persist helpers via TimelineView.<methodName>', () => {
-  // Construction-time hydration in `timeline-view.js` reads several
-  // helpers via `TimelineView._loadXxx(...)`. Pin the most load-bearing
-  // ones — if any of these stops resolving, the view defaults its
-  // entire persisted state to nothing on every reload.
+  // Construction-time hydration in `timeline-view.js` and other
+  // sibling mixins reads several persist helpers via
+  // `TimelineView._loadXxx(...)`. Pin the most load-bearing ones —
+  // if any of these stops resolving, the view defaults its entire
+  // persisted state to nothing on every reload.
+  //
+  // We scan both `timeline-view.js` AND the sibling mixins because
+  // call sites have migrated as the B2 split progressed (e.g.
+  // `_loadAutoExtractDoneFor` callers moved into
+  // `timeline-view-autoextract.js` during B2e).
+  const SIBLING_FILES = [
+    'src/app/timeline/timeline-view.js',
+    'src/app/timeline/timeline-view-factories.js',
+    'src/app/timeline/timeline-view-filter.js',
+    'src/app/timeline/timeline-view-popovers.js',
+    'src/app/timeline/timeline-view-autoextract.js',
+  ];
+  const COMBINED = SIBLING_FILES
+    .map(p => {
+      try { return fs.readFileSync(path.join(REPO_ROOT, p), 'utf8'); }
+      catch (_) { return ''; }
+    })
+    .join('\n');
   const SENTINELS = [
     'TimelineView._loadBucketPref',
     'TimelineView._loadSusMarksFor',
@@ -176,8 +195,8 @@ test('callers still reach the persist helpers via TimelineView.<methodName>', ()
   ];
   for (const s of SENTINELS) {
     assert.ok(
-      VIEW.includes(s),
-      `${s} caller still expected in timeline-view.js after B2b`,
+      COMBINED.includes(s),
+      `${s} caller still expected somewhere in the timeline-view family after B2`,
     );
   }
 });

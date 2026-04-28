@@ -891,6 +891,16 @@ APP_JS_FILES = [
     'src/app/timeline/timeline-detections.js',
     'src/app/timeline/timeline-summary.js',
     'src/app/timeline/timeline-drawer.js',
+    # timeline-view-autoextract.js — TimelineView prototype mixin (B2e).
+    # Hosts the silent best-effort auto-extract pass that runs on first
+    # open (`_autoExtractBestEffort`), its per-proposal applier
+    # (`_applyAutoProposal`), and the read-only heuristic scanner
+    # (`_autoExtractScan`) used both there AND by the Auto tab inside
+    # the Extraction dialog. MUST load AFTER `timeline-drawer.js`
+    # because it calls `_addJsonExtractedColNoRender` /
+    # `_addRegexExtractNoRender` / `_rebuildExtractedStateAndRender`
+    # (all hosted there).
+    'src/app/timeline/timeline-view-autoextract.js',
     'src/app/timeline/timeline-router.js',
 
     'src/app/app-load.js',
