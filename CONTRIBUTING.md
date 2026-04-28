@@ -836,6 +836,28 @@ gate is silent — the parse proceeds. See `SECURITY.md` →
 [Heap-budget gate (Chromium-only)](SECURITY.md#heap-budget-gate-chromium-only)
 for the full DoS-mitigation rationale.
 
+**Column-set mutation on a live grid.** When a renderer has already
+mounted a `GridViewer` and needs to add or remove columns (Timeline
+Mode's auto-extract, the Extract Values dialog, drawer right-click
+→ extract, and the per-column delete), call
+`viewer._updateColumns(newColumns)` rather than tearing the viewer
+down and constructing a fresh one. The destroy/rebuild path is
+visible to the user as a one-frame "flash" of the table — the freshly
+mounted grid blinks out and comes back with the new column set. The
+in-place helper swaps `this.columns`, prunes per-index state on
+shrink (`_hiddenCols`, `_userColWidths`, `_sortSpec` for a now-
+deleted column), and re-runs the full repaint chain
+(`_recomputeColumnWidths` → `_buildHeaderCells` →
+`_applyColumnTemplate` → `_forceFullRender`). Contract:
+`newColumns` MUST share its prefix with the existing column array —
+the helper supports tail-append and tail-truncate, NOT mid-array
+insert / reorder. Every in-tree caller satisfies that today; if a
+future caller needs reorder semantics, extend the helper rather than
+falling back to destroy/rebuild. Timeline's
+`_rebuildExtractedStateAndRender` is the canonical caller and keeps
+a destroy/rebuild fallback for cold-path (no grid yet) and
+defensive (helper threw) recovery.
+
 ### Renderer Matrix
 
 Combined dev matrix — replaces the legacy side-effect / reference /

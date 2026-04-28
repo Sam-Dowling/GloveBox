@@ -8,10 +8,14 @@
 //   • `_autoExtractBestEffort` — the entry point. Runs the scanner
 //     in one `requestIdleCallback` tick (or a `setTimeout(0)` Safari
 //     fallback), then applies the high-confidence proposals one per
-//     idle tick so the browser can paint between them. Coalesces a
-//     single `_rebuildExtractedStateAndRender` after the batch. The
-//     done-marker (`loupe_timeline_autoextract_done_<fileKey>`) is
-//     only written when the full pass completes — a `destroy()`
+//     idle tick so the browser can paint between them. Each apply
+//     calls `_rebuildExtractedStateAndRender` directly, which now
+//     hands the new column array to the live GridViewer via
+//     `_updateColumns` instead of destroying it — so the analyst
+//     sees columns slide in one per idle frame rather than the
+//     whole grid blinking out for a coalesced rebuild at the end.
+//     The done-marker (`loupe_timeline_autoextract_done_<fileKey>`)
+//     is only written when the full pass completes — a `destroy()`
 //     mid-run cancels the handle and leaves the marker unset so the
 //     next reopen retries.
 //
@@ -177,11 +181,8 @@ Object.assign(TimelineView.prototype, {
         if (this._destroyed) return;
 
         if (idx >= ranked.length) {
-          if (added > 0) {
-            this._rebuildExtractedStateAndRender();
-            if (this._app && typeof this._app._toast === 'function') {
-              this._app._toast(`Auto-extracted ${added} field${added === 1 ? '' : 's'}`, 'info');
-            }
+          if (added > 0 && this._app && typeof this._app._toast === 'function') {
+            this._app._toast(`Auto-extracted ${added} field${added === 1 ? '' : 's'}`, 'info');
           }
           TimelineView._saveAutoExtractDoneFor(this._fileKey);
           return;
@@ -190,7 +191,23 @@ Object.assign(TimelineView.prototype, {
         const p = ranked[idx++];
         const before = this._extractedCols.length;
         try { this._applyAutoProposal(p); } catch (_) { /* skip on error, keep going */ }
-        if (this._extractedCols.length > before) added++;
+        if (this._extractedCols.length > before) {
+          added++;
+          // Refresh per proposal — `_rebuildExtractedStateAndRender`
+          // now patches the live GridViewer in place via
+          // `_updateColumns` (no destroy/rebuild), so each idle tick
+          // appears as one new column sliding into the existing grid.
+          // Spreading the work across ticks (rather than coalescing a
+          // single batched rebuild at the end) eliminates the visible
+          // post-load "flash" — the analyst never sees the freshly-
+          // mounted grid blink out and come back with extra columns.
+          // The chart / chips / column-cards re-render is RAF-coalesced
+          // by `_scheduleRender`, so per-tick rebuild churn is
+          // bounded to the cheap `_buildHeaderCells` +
+          // `_applyColumnTemplate` + `_forceFullRender` pass inside
+          // `_updateColumns` (header cells are O(cols), not O(rows)).
+          try { this._rebuildExtractedStateAndRender(); } catch (_) { /* noop */ }
+        }
 
         // Yield between proposals — each `_applyAutoProposal` is itself
         // an O(rows) hot loop and will register as a LongTask on big

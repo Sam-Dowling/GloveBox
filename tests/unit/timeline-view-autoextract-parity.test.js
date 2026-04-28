@@ -138,6 +138,28 @@ test('_autoExtractScan caps at 200 sample rows', () => {
   );
 });
 
+test('_autoExtractBestEffort refreshes per proposal (no batched rebuild)', () => {
+  // Anti-flash invariant: the apply loop calls
+  // `_rebuildExtractedStateAndRender` from inside the per-proposal idle
+  // tick (so each new column slides into the live GridViewer via
+  // `_updateColumns` one tick at a time) rather than coalescing a
+  // single rebuild at the end of the batch (which manifested visually
+  // as a "blink" of the freshly-mounted grid). Pin the call site
+  // inside the apply step so a refactor that re-batches the rebuild
+  // is caught here. The check is structural — we look for the call
+  // appearing inside the body that also references `_applyAutoProposal`.
+  const applyBlock = MIXIN.match(/_applyAutoProposal[\s\S]*?_autoExtractIdleHandle\s*=\s*schedule\(applyStep\)/);
+  assert.ok(
+    applyBlock,
+    '_autoExtractBestEffort apply loop missing — refactor changed the scheduler shape',
+  );
+  assert.match(
+    applyBlock[0],
+    /_rebuildExtractedStateAndRender\s*\(/,
+    '_autoExtractBestEffort must call _rebuildExtractedStateAndRender inside the per-proposal apply step (not after the batch)',
+  );
+});
+
 // ── Build order ────────────────────────────────────────────────────────────
 
 test('scripts/build.py registers timeline-view-autoextract.js after timeline-drawer.js', () => {

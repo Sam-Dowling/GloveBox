@@ -285,13 +285,52 @@ Object.assign(TimelineView.prototype, {
   },
 
   _rebuildExtractedStateAndRender() {
-    // Any time the column set changes: recompute filter (chips may ref extracted cols),
-    // re-populate toolbar & pivot dropdowns, invalidate stats, kill the grid so it
-    // rebuilds with the new columns.
+    // Any time the column set changes: recompute filter (chips may ref
+    // extracted cols), re-populate toolbar & pivot dropdowns, and
+    // refresh the grid + chart + chips + column-cards surfaces.
+    //
+    // In-place vs destroy/rebuild — historically this method always
+    // destroyed `this._grid` and let `_renderGrid` reconstruct a fresh
+    // GridViewer with the new column set. On big files (and especially
+    // immediately after the post-load auto-extract pass) the user saw
+    // the just-painted grid blink out for a frame and then come back
+    // with the extra columns — visible "jank". When a grid is already
+    // mounted, we now hand the new column array to
+    // `_grid._updateColumns(...)` instead, which patches headers /
+    // widths / template / drawer pane in place. The grid DOM stays
+    // mounted; users see new columns appear next to the existing rows
+    // rather than the whole table flicker.
+    //
+    // Auto-extract calls this once per applied proposal (one column
+    // at a time, one per idle tick), so the visible result is a
+    // smooth column-by-column reveal over ~200 ms.
     this._recomputeFilter();
     this._populateToolbarSelects();
     this._populatePivotSelects();
-    // Destroy existing grid — column count changed.
+    if (this._grid && typeof this._grid._updateColumns === 'function') {
+      // Fast path — keep the GridViewer alive, swap its column array.
+      // `_updateColumns` runs `_recomputeColumnWidths` + `_buildHeaderCells`
+      // + `_applyColumnTemplate` + `_forceFullRender` so the grid is
+      // already painted with the new shape by the time we return.
+      // We still schedule a render of the OTHER surfaces (chart legend
+      // can reference extracted cols, chips render their value chips,
+      // and the column-cards strip needs to gain/lose a card) but skip
+      // 'grid' because the in-place path just handled it.
+      try { this._grid._updateColumns(this.columns); } catch (_) {
+        // If the in-place patch threw for any reason, fall back to the
+        // legacy destroy/rebuild path so we don't leave the grid in a
+        // half-updated state.
+        try { this._grid.destroy(); } catch (__) { /* noop */ }
+        this._grid = null;
+        this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns']);
+        return;
+      }
+      this._scheduleRender(['chart', 'scrubber', 'chips', 'columns']);
+      return;
+    }
+    // Cold path — first mount, or a grid implementation without the
+    // `_updateColumns` helper. Reconstruct via `_renderGrid` on the
+    // next RAF.
     if (this._grid) { try { this._grid.destroy(); } catch (_) { } this._grid = null; }
     this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns']);
   },

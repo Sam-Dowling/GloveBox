@@ -2406,6 +2406,78 @@ class GridViewer {
 
 
   /**
+   * Replace the column set on a live grid without tearing down the DOM.
+   *
+   * Used by Timeline Mode to apply auto-extracted / manually-extracted
+   * columns in place, so the analyst sees columns appear next to the
+   * already-mounted grid instead of the entire `<table>` blinking out
+   * during a destroy + reconstruct cycle (the "auto-extract flash" that
+   * `_rebuildExtractedStateAndRender` historically caused).
+   *
+   * Contract:
+   *   • `newColumns` is the full new column array (base + extracted).
+   *     The base prefix MUST match the existing prefix — this method
+   *     only supports append / tail-truncate, never insert / reorder.
+   *     That covers every in-tree caller (auto-extract, Extract dialog
+   *     add, drawer right-click extract, and `removeExtractedCol`).
+   *   • Per-column user state keyed by index (`_userColWidths`,
+   *     `_hiddenCols`, `_sortSpec.colIdx`) is preserved across grow.
+   *     On shrink, indices that fall off the tail are pruned (hidden
+   *     set / user-width map) or cleared (sort spec).
+   *   • The follow-up `_recomputeColumnWidths` resamples the new tail
+   *     columns against real row data, so kind / width are correct
+   *     immediately. No extra `setRows` call is required.
+   *
+   * Callers that want to swap rows AND columns in one go should call
+   * `_updateColumns` first, then `setRows` — the row swap path also
+   * runs `_recomputeColumnWidths` so the second pass is idempotent.
+   */
+  _updateColumns(newColumns) {
+    if (!Array.isArray(newColumns)) return;
+    const oldLen = this.columns.length;
+    const newLen = newColumns.length;
+    this.columns = newColumns.slice();
+
+    // Prune per-index state on shrink. Auto-extract only ever appends,
+    // but `removeExtractedCol` deletes from the tail of the extracted
+    // segment, so the shrink path is exercised on manual delete.
+    if (newLen < oldLen) {
+      // Hidden columns at indices that no longer exist.
+      if (this._hiddenCols && this._hiddenCols.size) {
+        for (const i of Array.from(this._hiddenCols)) {
+          if (i >= newLen) this._hiddenCols.delete(i);
+        }
+      }
+      // User-resized widths beyond the new tail.
+      if (this._userColWidths && this._userColWidths.size) {
+        for (const i of Array.from(this._userColWidths.keys())) {
+          if (i >= newLen) this._userColWidths.delete(i);
+        }
+      }
+      // Active sort on a now-deleted column → drop it.
+      if (this._sortSpec && this._sortSpec.colIdx >= newLen) {
+        this._sortSpec = null;
+        this._sortOrder = null;
+      }
+    }
+
+    // Re-sample column kinds / widths against real rows so the new tail
+    // columns get correct alignment + greedy treatment immediately.
+    this._recomputeColumnWidths();
+    this._buildHeaderCells();
+    this._applyColumnTemplate();
+    this._forceFullRender();
+    // Drawer (if open) shows every column as a key/value row — refresh
+    // it so newly added columns appear and removed ones disappear.
+    if (this.state && this.state.drawer && this.state.drawer.open
+      && typeof this._renderDrawerBody === 'function') {
+      try { this._renderDrawerBody(this.state.drawer.dataIdx); } catch (_) { /* noop */ }
+    }
+    this._updateInfoBar();
+  }
+
+
+  /**
    * Drop the "Empty file." placeholder added in _buildDOM when the grid
    * was constructed with zero rows. Called whenever a setRows() call
    * swaps in a non-empty store (CSV streaming path constructs the grid
