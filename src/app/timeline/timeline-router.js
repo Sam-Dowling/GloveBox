@@ -185,6 +185,44 @@ extendApp({
   },
 
   async _loadFileInTimeline(file, prefetchedBuffer /* optional */) {
+    // ── Chromium heap-budget pre-flight gate ──────────────────────────
+    // The Timeline path's RowStore peaks at roughly
+    // `file.size * ROWSTORE_HEAP_OVERHEAD_FACTOR` bytes on the main
+    // heap. When the browser exposes `performance.memory.jsHeapSizeLimit`
+    // (Chromium-only — Firefox / Safari intentionally don't expose it
+    // and skip this gate silently) we refuse loads whose projected
+    // footprint would exceed `jsHeapSizeLimit * ROWSTORE_HEAP_BUDGET_FRACTION`.
+    // Refusing here surfaces an actionable toast instead of an OOM
+    // tab-crash partway through parsing — the analyst can split or
+    // pre-process the file, or close other heavy tabs to free heap.
+    //
+    // The non-Timeline path keeps its own coarser `LARGE_FILE_THRESHOLD`
+    // gate (200 MB) and the existing sync-fallback refusal lower in
+    // this method — both still fire as belt-and-braces guards on the
+    // Chromium path AND as the only memory protection on
+    // Firefox / Safari.
+    try {
+      const heapLimit = (typeof performance !== 'undefined'
+        && performance.memory
+        && typeof performance.memory.jsHeapSizeLimit === 'number')
+        ? performance.memory.jsHeapSizeLimit : 0;
+      if (heapLimit > 0 && file && typeof file.size === 'number') {
+        const budget = heapLimit * RENDER_LIMITS.ROWSTORE_HEAP_BUDGET_FRACTION;
+        const projected = file.size * RENDER_LIMITS.ROWSTORE_HEAP_OVERHEAD_FACTOR;
+        if (projected > budget) {
+          const sizeMb = (file.size / (1024 * 1024)).toFixed(0);
+          const budgetMb = (budget / (1024 * 1024)).toFixed(0);
+          this._toast(
+            `File too large for available memory: ${sizeMb} MB needs ` +
+            `~${(projected / (1024 * 1024)).toFixed(0)} MB but only ` +
+            `~${budgetMb} MB heap is available. Close other tabs or ` +
+            `split the file before loading.`,
+            'error');
+          return;
+        }
+      }
+    } catch (_) { /* heap-introspection failure → skip gate, fall through */ }
+
     // Warn (non-blocking) for very large files so the analyst knows to
     // expect a longer load. The toast auto-dismisses after 5 s.
     if (file.size >= RENDER_LIMITS.HUGE_FILE_WARN) {
@@ -261,21 +299,57 @@ extendApp({
           const transferOriginal = (workerKind === 'csv');
           const transfer = transferOriginal ? buffer : buffer.slice(0);
 
-          // ── Streaming row sink (CSV / TSV only) ──
-          // The worker emits `{event:'rows', batch:[...]}` every
-          // 50 000 rows so a multi-million-row parse doesn't have to
-          // materialise the whole rows array in the worker AND post a
-          // single giant structured-clone payload back at the end.
-          // EVTX / SQLite still hand back rows in the terminal `done`.
-          const accumulatedRows = transferOriginal ? [] : null;
+          // ── Streaming RowStore builder (CSV / TSV only) ──
+          // The worker emits `{event:'rows-chunk', bytes, offsets,
+          // rowCount}` every 50 000 rows. Each chunk's two ArrayBuffers
+          // ride the postMessage transfer list (zero-copy across the
+          // worker boundary), so we wrap them in typed-array views and
+          // hand them straight to `RowStoreBuilder.addChunk`. The
+          // structured-clone of the legacy `string[][]` batch — which
+          // doubled main-thread peak memory on the postback hand-off —
+          // is gone.
+          //
+          // EVTX / SQLite still hand back rows in the terminal `done`
+          // (legacy shape, migrated in a later phase).
+          //
+          // The builder's columns aren't known until `done` arrives
+          // (the worker only emits them in the terminal payload), but
+          // the chunks landing during streaming carry no column info —
+          // they're just typed arrays sized by the agreed `colCount`.
+          // We park the chunks in a holding list and replay them into
+          // a real `RowStoreBuilder` once columns are in hand. This
+          // keeps the typed-array buffers transferred-once (no extra
+          // copy) and only costs an array-of-references during stream.
+          const pendingChunks = transferOriginal ? [] : null;
+          let rowsSeen = 0;
+          let lastSubtitleAt = 0;
           const onBatch = transferOriginal
             ? (m) => {
-                if (m && m.event === 'rows' && Array.isArray(m.batch)) {
-                  // Append rather than concat to avoid an O(n) copy of
-                  // the running array on every batch.
-                  for (let i = 0; i < m.batch.length; i++) {
-                    accumulatedRows.push(m.batch[i]);
-                  }
+                if (!m || m.event !== 'rows-chunk') return;
+                // Wrap the transferred buffers as typed-array views.
+                // Buffers are detached on the worker side post-transfer,
+                // so this is a zero-copy view into the bytes we own now.
+                const rc = m.rowCount | 0;
+                if (rc <= 0) return;
+                pendingChunks.push({
+                  bytes:    new Uint8Array(m.bytes),
+                  offsets:  new Uint32Array(m.offsets),
+                  rowCount: rc,
+                });
+                rowsSeen += rc;
+                // Live progress subtitle. Throttle updates to roughly
+                // one per 100 ms via a wall-clock comparison so high-
+                // frequency chunk flushes don't churn the DOM.
+                const now = (typeof performance !== 'undefined'
+                  && performance.now) ? performance.now() : Date.now();
+                if (now - lastSubtitleAt >= 100) {
+                  lastSubtitleAt = now;
+                  try {
+                    if (typeof this._setLoadingSubtitle === 'function') {
+                      this._setLoadingSubtitle(
+                        rowsSeen.toLocaleString() + ' rows…');
+                    }
+                  } catch (_) { /* best-effort progress UI */ }
                 }
               }
             : undefined;
@@ -299,13 +373,41 @@ extendApp({
                 onBatch, timeoutMs: sizeTimeout }
             : { timeoutMs: sizeTimeout };
           const msg = await window.WorkerManager.runTimeline(transfer, workerKind, opts);
-          // Splice any streamed rows back into the terminal payload so
-          // `_buildTimelineViewFromWorker` sees the same shape it always
-          // has (one big `rows` array on `msg`).
-          if (transferOriginal && accumulatedRows && accumulatedRows.length) {
-            msg.rows = (msg.rows && msg.rows.length)
-              ? accumulatedRows.concat(msg.rows)
-              : accumulatedRows;
+          // Clear the live "N rows…" subtitle the moment the worker
+          // hands back the terminal `done` — the build / mount phase
+          // has its own dedicated phrases so a stale row-count would
+          // be misleading. `_setLoading(false)` clears defensively too,
+          // but doing it here keeps the spinner clean during the
+          // intermediate RowStore-build window below.
+          if (transferOriginal) {
+            try {
+              if (typeof this._setLoadingSubtitle === 'function') {
+                this._setLoadingSubtitle('');
+              }
+            } catch (_) { /* best-effort */ }
+          }
+          // For CSV / TSV: assemble the streamed `rows-chunk` payloads
+          // into a `RowStore` keyed by the columns the worker resolved
+          // from the header row. The terminal `msg` carries metadata
+          // only — its `rows` array is empty by contract. We splice the
+          // RowStore onto `msg.rowStore` and hand the (still-rowless)
+          // msg to `_buildTimelineViewFromWorker`, which knows about
+          // the new shape.
+          if (transferOriginal) {
+            const cols = Array.isArray(msg.columns) ? msg.columns : [];
+            const builder = new RowStoreBuilder(cols);
+            const chunkList = pendingChunks || [];
+            for (let i = 0; i < chunkList.length; i++) {
+              builder.addChunk(chunkList[i]);
+            }
+            // Drop our reference to the chunk list so the typed arrays
+            // are uniquely owned by the builder (and, after finalize,
+            // by the resulting `RowStore`). This is purely defensive
+            // — `addChunk` already takes the typed-array views by
+            // reference, and `pendingChunks` will be unreachable once
+            // the surrounding promise resolves.
+            chunkList.length = 0;
+            msg.rowStore = builder.finalize();
           }
           view = this._buildTimelineViewFromWorker(
             file, workerKind, msg, transferOriginal ? null : buffer);
@@ -371,7 +473,10 @@ extendApp({
       // doesn't re-read the file from scratch. For very large files the
       // double-read was the primary cause of OOM / silent empty-string
       // returns from `file.text()`.
-      const rowCount = view && view.rows ? view.rows.length : 0;
+      const rowCount = view
+        ? (view.rows ? view.rows.length
+          : (view._rowStore ? view._rowStore.rowCount : 0))
+        : 0;
       const evtCount = view && view._evtxEvents ? view._evtxEvents.length : 0;
       if (rowCount === 0 && evtCount === 0) {
         if (view) { try { view.destroy(); } catch (_) { /* noop */ } }
@@ -461,7 +566,24 @@ extendApp({
   _buildTimelineViewFromWorker(file, kind, msg, originalBuffer) {
     if (!msg) return null;
     const columns = msg.columns || [];
-    const rows = msg.rows || [];
+    let rows = msg.rows || [];
+    // CSV / TSV path: the streamed `rows-chunk` events were assembled
+    // into a `RowStore` and parked on `msg.rowStore` by the caller.
+    // The legacy `TimelineView` constructor still expects a `string[][]`,
+    // so we materialise back here as a temporary bridge — this restores
+    // the pre-Phase-2 main-thread footprint at view-construction time
+    // but keeps the Phase 2 worker-side savings (no string accumulator
+    // in the worker, no structured-clone postback, chunked transfer
+    // semantics for the Phase 3 follow-up). The bridge will be removed
+    // when `TimelineView` is migrated to read directly from a RowStore.
+    let rowStore = null;
+    if (kind === 'csv' && msg.rowStore) {
+      rowStore = msg.rowStore;
+      const total = rowStore.rowCount;
+      const out = new Array(total);
+      for (let i = 0; i < total; i++) out[i] = rowStore.getRow(i);
+      rows = out;
+    }
     if (kind === 'evtx') {
       let securityFindings = null;
       try {
@@ -496,12 +618,18 @@ extendApp({
       return new TimelineView(out);
     }
     // csv / tsv — no analyzer side-channel.
-    return new TimelineView({
+    const v = new TimelineView({
       file, columns, rows,
       formatLabel: msg.formatLabel || (kind === 'csv' ? 'CSV' : 'TSV'),
       truncated: !!msg.truncated,
       originalRowCount: msg.originalRowCount || rows.length,
     });
+    // Stash the RowStore on the view for callers that already speak
+    // the new contract (none today; Phase 3 migrates `TimelineView`
+    // itself). Held as a non-enumerable-ish slot under `_rowStore`
+    // so existing `for (const k in view)` iteration is unaffected.
+    if (rowStore) v._rowStore = rowStore;
+    return v;
   },
 
   _clearTimelineFile() {

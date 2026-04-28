@@ -1035,8 +1035,24 @@ extendApp({
       // to the default analyser phrase pool. Without this the decode
       // pool would stay armed across the next file load.
       try { delete el.dataset.mode; } catch (_) { el.dataset.mode = ''; }
+      // Clear any progress subtitle a previous caller (e.g.
+      // `timeline-router.js`'s live row-count) wrote into the overlay.
+      // The element is hidden via `:empty` in core.css so leaving stale
+      // text would surface on the next loading run.
+      const sub = document.getElementById('loading-subtitle');
+      if (sub) sub.textContent = '';
     }
     el.classList.toggle('hidden', !on);
+  },
+
+  // Set the optional progress subtitle below the rotating phrase pool.
+  // Pass an empty string (or `null`) to clear. Callers MUST clear when
+  // their phase ends; `_setLoading(false)` also clears defensively.
+  // No-op when the loading overlay isn't in the DOM (test environments).
+  _setLoadingSubtitle(text) {
+    const sub = document.getElementById('loading-subtitle');
+    if (!sub) return;
+    sub.textContent = (text == null) ? '' : String(text);
   },
 
 

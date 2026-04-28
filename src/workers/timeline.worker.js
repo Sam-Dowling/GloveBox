@@ -46,18 +46,25 @@
 //      { kind: 'sqlite', buffer: ArrayBuffer (transferred) }
 //
 // out (CSV/TSV) — STREAMING:
-//   Zero or more intermediate row batches:
-//     { event: 'rows', batch: [[...], ...] }
+//   Zero or more intermediate packed-chunk events. Each chunk is the
+//   output of `packRowChunk(...)` (see `src/row-store.js`); both
+//   ArrayBuffers ride the postMessage transfer list (zero-copy):
+//     { event: 'rows-chunk',
+//       bytes:   ArrayBuffer (transferred — Uint8Array payload, UTF-8),
+//       offsets: ArrayBuffer (transferred — Uint32Array of length
+//                              rowCount * (colCount + 1)),
+//       rowCount: number }
 //   Then exactly one terminal:
 //     { event: 'done', kind: 'csv',
-//       columns: [...], rows: [],         (always empty — rows arrive in batches)
+//       columns: [...], rows: [],         (always empty — rows arrive in chunks)
 //       formatLabel: 'CSV'|'TSV',
 //       truncated: boolean, originalRowCount: number,
 //       parseMs: number }
 //   The host caller must register an `onBatch(msg)` sink via
-//   `WorkerManager.runTimeline(buffer, 'csv', { onBatch })` to accumulate
-//   the streamed batches; without one the rows are silently dropped on
-//   the floor. See `src/app/timeline/timeline-router.js::_loadFileInTimeline`.
+//   `WorkerManager.runTimeline(buffer, 'csv', { onBatch })` to feed the
+//   streamed chunks into a `RowStoreBuilder`; without one the rows are
+//   silently dropped on the floor. See
+//   `src/app/timeline/timeline-router.js::_loadFileInTimeline`.
 //
 // out (EVTX):
 //   { event: 'done', kind: 'evtx',
@@ -108,10 +115,10 @@
 // scope.
 // ════════════════════════════════════════════════════════════════════════════
 
-// ── CSV / TSV parse (streaming chunk-decode + line-tail buffer) ────────────
+// ── CSV / TSV parse (streaming chunk-decode + packed-chunk emit) ───────────
 //
 // Memory-conscious rewrite of the legacy "decode into one giant string,
-// then walk it" parser. Three differences from the prior implementation:
+// then walk it" parser. Four differences from the prior implementation:
 //
 //   1. We never materialise the entire decoded UTF-8 text — only the
 //      current decoded chunk plus a small tail buffer that holds the
@@ -119,17 +126,22 @@
 //      ASCII CSV the prior code peaked at ~1.3 GB transient (full UTF-16
 //      string ≈ 636 MB plus the `parts.join('')` doubling); the streaming
 //      version stays under ~50 MB on top of the input.
-//   2. Rows are emitted to the host in batches of 50 000 via
-//      `{event:'rows', batch:[...]}` postMessage events. The terminal
-//      `done` payload only carries metadata (`columns`, `formatLabel`,
-//      `truncated`, `originalRowCount`) plus an empty `rows: []` so the
-//      structured-clone postback isn't doubling peak memory at the very
-//      end.
-//   3. The legacy "if a quote-aware split throws, fall back to a
+//   2. Rows are packed into `RowStore` chunks of 50 000 via
+//      `packRowChunk(...)` and shipped to the host as
+//      `{event:'rows-chunk', bytes, offsets, rowCount}` with both
+//      ArrayBuffers in the postMessage transfer list. The structured-
+//      clone of the `string[][]` batch (which used to double main-thread
+//      peak memory at hand-off) is gone — the receiver wraps the
+//      transferred buffers in `Uint8Array` / `Uint32Array` views.
+//   3. The terminal `done` payload only carries metadata (`columns`,
+//      `formatLabel`, `truncated`, `originalRowCount`) plus an empty
+//      `rows: []`; the row data is entirely in the streamed chunks.
+//   4. The legacy "if a quote-aware split throws, fall back to a
 //      line-by-line split" branch is preserved: we wrap each chunk's
 //      row-extraction loop in try/catch and on the rare pathological
-//      input restart parsing of the chunk via a tighter forgiving
-//      splitter. Errors from outside the splitter still bubble.
+//      input the chunk is skipped instead of taking the rest of the
+//      stream down with it. Errors from outside the splitter still
+//      bubble.
 //
 // The `explicitDelim` argument lets the host force a delimiter (TSV
 // uses `\t`); when omitted we sniff using `CsvRenderer._delim` over the
@@ -137,7 +149,7 @@
 async function _parseCsv(buffer, explicitDelim) {
   const bytes = new Uint8Array(buffer);
   const DECODE_CHUNK = RENDER_LIMITS.DECODE_CHUNK_BYTES;
-  const BATCH_ROWS = 50_000;            // rows per `{event:'rows'}` postMessage
+  const BATCH_ROWS = 50_000;            // rows per `rows-chunk` postMessage
 
   const decoder = new TextDecoder('utf-8', { fatal: false });
   const r = new CsvRenderer();
@@ -162,12 +174,33 @@ async function _parseCsv(buffer, explicitDelim) {
   let truncated = false;
   let bytesConsumed = 0;                // for `originalRowCount` extrapolation
   let firstChunk = true;
-  let pendingBatch = [];
+  // Pending `string[][]` rows accumulated for the next chunk flush. Once
+  // full (BATCH_ROWS rows or end-of-stream) we hand the batch to
+  // `packRowChunk(...)` to produce two fresh ArrayBuffers and post them
+  // to the host with the transfer list — the source `string[][]` is
+  // then dropped so the GC can reclaim the per-cell strings immediately.
+  let pendingRows = [];
 
   const flushBatch = () => {
-    if (!pendingBatch.length) return;
-    self.postMessage({ event: 'rows', batch: pendingBatch });
-    pendingBatch = [];
+    if (!pendingRows.length) return;
+    // Defensive: a colLen of 0 means we never resolved a header (empty
+    // first row). `packRowChunk` would dutifully pack zero-cell rows,
+    // discarding the data — bail instead and surface the degenerate
+    // input via the empty-columns path in the terminal `done` payload.
+    if (!colLen) { pendingRows = []; return; }
+    const packed = packRowChunk(pendingRows, colLen);
+    self.postMessage(
+      {
+        event:    'rows-chunk',
+        bytes:    packed.bytes.buffer,
+        offsets:  packed.offsets.buffer,
+        rowCount: packed.rowCount,
+      },
+      [packed.bytes.buffer, packed.offsets.buffer],
+    );
+    // Drop reference to the source `string[][]` so the per-cell strings
+    // can be GC'd before the next chunk's pack pass starts.
+    pendingRows = [];
   };
 
   const padOrTrimCells = (cells) => {
@@ -198,9 +231,9 @@ async function _parseCsv(buffer, explicitDelim) {
         truncated = true;
         return true;                    // signal break-outer to caller
       }
-      pendingBatch.push(padOrTrimCells(cells));
+      pendingRows.push(padOrTrimCells(cells));
       rowCount++;
-      if (pendingBatch.length >= BATCH_ROWS) flushBatch();
+      if (pendingRows.length >= BATCH_ROWS) flushBatch();
     }
     return false;
   };

@@ -4128,6 +4128,24 @@ body:not(.dark) #hosted-bar {
   100%    { opacity: 0; }
 }
 
+/* Optional progress subtitle below the rotating phrase pool. Hidden
+   when empty (the router sets / clears `textContent` directly). Used
+   today by `timeline-router.js` to surface a live "N rows…" counter
+   while the timeline worker streams `RowStore` chunks back to the host;
+   any future caller that has a quantifiable progress signal can write
+   into the same element. Sized to match `.loading-msg`'s 320 px so the
+   subtitle and the phrase pool share visual width. */
+.loading-subtitle {
+  width: 320px;
+  text-align: center;
+  font-size: 0.875em;
+  opacity: 0.7;
+  min-height: 1.2em;
+}
+.loading-subtitle:empty {
+  display: none;
+}
+
 
 /* ── Toast ── */
 #toast {

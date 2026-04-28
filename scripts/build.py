@@ -1816,6 +1816,12 @@ HTML = f"""<!DOCTYPE html>
         <span class="lm-decode" style="--i:30">Brute-forcing politely</span>
         <span class="lm-decode" style="--i:31">Decoding all the way down</span>
       </div>
+      <!-- Optional progress subtitle. Empty by default; populated by
+           callers that have a meaningful progress signal (e.g.
+           `timeline-router.js` sets "1.2M rows…" as RowStore chunks
+           stream in from the worker). Lives below the rotating phrase
+           pool so the existing animation keeps running unchanged. -->
+      <div id="loading-subtitle" class="loading-subtitle"></div>
     </div>
   </div>
 
