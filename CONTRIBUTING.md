@@ -83,9 +83,8 @@ For the release-verification recipe see [SECURITY.md § Reproducible Build](SECU
 | `verify-vendored` | Every `vendor/*.js` matches its `VENDORED.md` SHA-256 pin. No pinned file missing; no unpinned file present. |
 | `static-checks` | On the **built** `docs/index.html`: CSP meta tag present, `default-src 'none'` intact, no inline event handlers (`onclick="…"`), no `'unsafe-eval'`, no remote hosts in CSP directives. |
 | `lint` | ESLint 9 over `src/**/*.js` using `eslint.config.mjs`. Targets real foot-guns (`no-eval`, `no-new-func`, `no-const-assign`, `no-unreachable`, …) rather than style. |
-| `test-build` | `python scripts/build.py --test-api` produces `docs/index.test.html` (the test-only sibling that exposes `window.__loupeTest`). Uploaded as the `loupe-html-test` artefact for the e2e job to consume. Never deployed; never signed. |
 | `unit` | `python make.py test-unit` — Node `node:test` over `tests/unit/`. Pure-module coverage in a `vm` sandbox. |
-| `e2e` | `python make.py test-e2e` — Playwright over `tests/e2e-fixtures/` + `tests/e2e-ui/`. Runs the test bundle from `loupe-html-test` against real fixtures from `examples/`. See `tests/README.md` for the runbook. |
+| `e2e` | `python make.py test-e2e` — Playwright over `tests/e2e-fixtures/` + `tests/e2e-ui/`. Builds `docs/index.test.html` inline (no artefact handoff), caches `dist/test-deps/node_modules` and `~/.cache/ms-playwright` keyed on the pinned Playwright version, then runs against real fixtures from `examples/`. See `tests/README.md` for the runbook. |
 
 Earlier project notes (and an older revision of this paragraph) claimed
 "Puppeteer / Playwright can't drive the native file-picker or

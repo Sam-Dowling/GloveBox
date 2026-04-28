@@ -10,11 +10,13 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { test, expect } from '@playwright/test';
-import { gotoBundle, loadFixture } from '../helpers/playwright-helpers';
+import { loadFixture, useSharedBundlePage } from '../helpers/playwright-helpers';
 
-test('PE renderer loads example.exe and surfaces metadata', async ({ page }) => {
-  await gotoBundle(page);
-  const findings = await loadFixture(page, 'examples/pe/example.exe');
+test.describe('PE renderer (fixture-driven)', () => {
+  const ctx = useSharedBundlePage();
+
+  test('PE renderer loads example.exe and surfaces metadata', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/pe/example.exe');
 
   // Smoke: a well-formed PE produces non-empty findings (imports,
   // resources, version strings, etc. all surface as IOCs / refs).
@@ -32,4 +34,5 @@ test('PE renderer loads example.exe and surfaces metadata', async ({ page }) => 
   // Auto-YARA must have completed; otherwise the snapshot was taken
   // before the scan settled and `yaraInProgress` would still be true.
   expect(findings.yaraInProgress).toBe(false);
+  });
 });

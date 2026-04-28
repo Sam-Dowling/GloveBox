@@ -125,6 +125,38 @@ cannot drive a file dialog; that's incorrect — `page.setInputFiles` is
 exactly the right API for the hidden `<input type="file">` Loupe wires
 its drop zone around.
 
+### Wall-time and parallelism
+
+The full e2e suite walks ~290 fixture loads across ~22 spec files in
+roughly 60–90 seconds locally (`python make.py test-e2e`). Two pieces
+make that possible:
+
+1. **Page reuse via `useSharedBundlePage()`** (in
+   `tests/helpers/playwright-helpers.ts`). Most fixture specs install a
+   `beforeAll` that opens one bundle page, then run their tests in
+   serial against that single page (`test.describe.configure({ mode:
+   'serial' })`). Re-using the page avoids the ~200 ms-per-test cost of
+   loading the 9 MB bundle from `file://`. Tests must therefore tolerate
+   prior-load state — see the cross-load reset in
+   `_testApiResetCrossLoadState` (`src/app/app-test-api.js`), which
+   clears `findings`, `currentResult`, `_fileMeta`, `_skipTimelineRoute`
+   and the in-flight Timeline mount before every load. UI specs
+   (`tests/e2e-ui/`) opt OUT — they need a virgin DOM and use
+   `beforeEach(gotoBundle)`.
+
+2. **Spec-file parallelism**. `tests/playwright.config.ts` sets
+   `fullyParallel: true` with `workers: '50%'` locally and `workers: 2`
+   on CI. Different `.spec.ts` files run on different workers; tests
+   inside one file remain serial because they share a page.
+
+The matrix and YARA-coverage walks (138 + 56 fixtures) deliberately
+collapse into single tests with `test.step` + `expect.soft` per record
+rather than minting 138 / 56 individual `test()` blocks. Each block
+would otherwise re-open the bundle, which dominated the previous wall
+time. The `test.step` form keeps per-record reporting intact (the
+failed step's `fixture` shows up in the report) without paying the
+per-test overhead.
+
 ### Playwright provisioning
 
 Loupe deliberately ships without a committed `package.json` /
@@ -170,8 +202,13 @@ test-API surface — no new ingress paths.
 encoding range-based assertions: `formatTag` pin, Timeline-route
 boolean, `riskFloor` (lower-bound band), `iocTypeMustInclude` subset,
 `iocCountAtLeast` lower bound, and a small `yaraRulesMustInclude` set
-of family-anchor rules. The spec walks every record and asserts the
-fixture against it — 138 tests, ~3 minutes.
+of family-anchor rules. The spec walks every record (138 fixtures)
+inside a single Playwright `test()` using `test.step` + `expect.soft`
+per record, sharing one bundle page across the walk. A failure in any
+step surfaces in the test report with the offending record's
+`fixture` field; `expect.soft` lets the walk continue past a single
+regression so the report enumerates *every* drift in one run instead
+of stopping at the first.
 
 Why ranges, not exact pins? See the comment block at the top of
 `snapshot-matrix.spec.ts`. Short version: a renderer that *adds* a row
@@ -193,7 +230,8 @@ corpus, the JSON manifest records its first-anchor fixture. The spec
 loads each anchor once and asserts every "rules anchored here"
 continues to fire. This catches the long tail of ~50 rules that
 `expected.jsonl` deliberately doesn't pin (it caps at three
-family-anchor rules per fixture).
+family-anchor rules per fixture). Same single-test + `test.step` +
+`expect.soft` pattern as the snapshot matrix.
 
 Unanchored rules (rules with no fixture coverage at all) are tracked
 in the manifest's `unanchoredRules` field — documentation only, not
@@ -253,8 +291,9 @@ input/textarea focus gate.
   manually editted the staged `package.json`.
 * **Chromium fails to launch on Linux** — set
   `PWBROWSER_DEPS=1 python make.py test-e2e` once to install the
-  Chromium runtime deps via apt (needs sudo). CI already provisions
-  these in the `e2e` job; this is only relevant for fresh
+  Chromium runtime deps via apt (needs sudo). CI's `e2e` job runs on
+  GitHub-hosted `ubuntu-latest` which already ships these libs, so
+  `PWBROWSER_DEPS` is not set there; this is only relevant for fresh
   workstations.
 * **Test-API leaks into release bundle** —
   `_check_no_test_api_in_release` in `scripts/build.py` will fail with

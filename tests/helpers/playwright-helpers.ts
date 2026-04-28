@@ -17,6 +17,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
 export const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -58,6 +59,56 @@ export async function gotoBundle(page: Page): Promise<void> {
     const w = window as unknown as { __loupeTest: { ready: Promise<void> } };
     return w.__loupeTest.ready;
   });
+}
+
+/**
+ * Install a `beforeAll`/`afterAll` pair that opens the test bundle in a
+ * single shared `Page` for the enclosing `describe`. Tests then reuse
+ * that page via `ctx.page` instead of taking a fresh `{ page }` fixture
+ * — the 9 MB bundle navigates once per file rather than once per test.
+ *
+ * Caller MUST also configure `test.describe.configure({ mode: 'serial' })`
+ * (or pass `serial: true` to this helper) to ensure tests in the
+ * describe run sequentially in the same worker. Otherwise concurrent
+ * tests will race on the shared `app.findings` / `app.currentResult`
+ * state inside the bundle.
+ *
+ * Across describes / files Playwright still parallelises on the
+ * worker pool — see `playwright.config.ts`.
+ *
+ * Usage:
+ *
+ *     test.describe('email renderer', () => {
+ *       const ctx = useSharedBundlePage();
+ *       test('phishing fixture', async () => {
+ *         const findings = await loadFixture(ctx.page, 'examples/...');
+ *       });
+ *     });
+ *
+ * `_testApiLoadBytes` already calls `_resetNavStack()` and runs a
+ * fresh `_loadFile` per call, so successive loads on the same page
+ * are functionally equivalent to fresh navs for the assertions Loupe's
+ * e2e suite makes today.
+ */
+export function useSharedBundlePage(opts?: { serial?: boolean }) {
+  if (opts?.serial !== false) {
+    test.describe.configure({ mode: 'serial' });
+  }
+  // We expose the page via a property on a stable object so callers
+  // can write `ctx.page` (the `beforeAll` runs lazily — the property
+  // is populated before any test body executes).
+  const ctx = { page: null as unknown as Page };
+  test.beforeAll(async ({ browser }) => {
+    ctx.page = await browser.newPage();
+    await gotoBundle(ctx.page);
+  });
+  test.afterAll(async () => {
+    if (ctx.page) {
+      await ctx.page.close();
+      ctx.page = null as unknown as Page;
+    }
+  });
+  return ctx as { readonly page: Page };
 }
 
 /**

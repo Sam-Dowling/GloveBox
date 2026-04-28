@@ -11,19 +11,17 @@
 
 import { test, expect } from '@playwright/test';
 import {
-  gotoBundle,
   loadFixture,
   isRiskAtLeast,
   ruleNames,
+  useSharedBundlePage,
 } from '../helpers/playwright-helpers';
 
 test.describe('Java renderer', () => {
-  test.beforeEach(async ({ page }) => {
-    await gotoBundle(page);
-  });
+  const ctx = useSharedBundlePage();
 
-  test('standalone .class file routes to JAR peek', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/java/Example.class');
+  test('standalone .class file routes to JAR peek', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/java/Example.class');
     // The jar renderer fires `Info_Contains_Java_Class` on the
     // single-class peek; the embedded MachO-magic false-positive
     // also lands as `Info_Contains_MachO_Binary` (acceptable —
@@ -31,21 +29,21 @@ test.describe('Java renderer', () => {
     expect(ruleNames(findings)).toContain('Info_Contains_Java_Class');
   });
 
-  test('plain .jar enumerates entries + URL strings', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/java/example.jar');
+  test('plain .jar enumerates entries + URL strings', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/java/example.jar');
     expect(findings.iocTypes).toContain('URL');
     expect(findings.iocTypes).toContain('Domain');
     expect(isRiskAtLeast(findings.risk, 'high')).toBe(true);
     expect(ruleNames(findings)).toContain('Info_Contains_Java_JAR');
   });
 
-  test('.war routes via archive viewer', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/java/example.war');
+  test('.war routes via archive viewer', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/java/example.war');
     expect(ruleNames(findings)).toContain('Info_Contains_Java_JAR');
   });
 
-  test('.ear routes via archive viewer', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/java/example.ear');
+  test('.ear routes via archive viewer', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/java/example.ear');
     expect(ruleNames(findings)).toContain('Info_Contains_Java_JAR');
   });
 });

@@ -163,7 +163,24 @@ extendApp({
   // magic + text sniff (see `_sniffTimelineContent`).
   _timelineTryHandle(file) {
     if (!this._isTimelineExt(file)) return false;
-    this._loadFileInTimeline(file);
+    // Fire-and-forget: `_loadFile` returns synchronously after we kick
+    // the Timeline mount so the drop-zone unblocks. Track the promise
+    // on the App so the test API can await full settlement before the
+    // next load starts — without this, the zero-row escape's outer
+    // `try { await _loadFile } finally { _skipTimelineRoute=false }`
+    // can leak `_skipTimelineRoute=true` into the next file's load
+    // (waitForIdle resolves on the inner `currentResult` set, before
+    // the outer `finally` runs). Promise rejections are intentionally
+    // swallowed here — the inner load's error path already toasts and
+    // logs; this catch exists only to keep the unhandled-rejection
+    // tracker quiet during tests.
+    const p = this._loadFileInTimeline(file)
+      .catch(() => { /* error already surfaced by _loadFileInTimeline */ });
+    this._timelineLoadInFlight = p;
+    p.then(() => {
+      // Only clear if no later call has overwritten us.
+      if (this._timelineLoadInFlight === p) this._timelineLoadInFlight = null;
+    });
     return true;
   },
 

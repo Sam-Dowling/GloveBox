@@ -48,13 +48,17 @@ export default defineConfig({
     'explore/**/*.spec.ts',
   ],
 
-  // Single worker by default. Loupe's bundle is large (~9 MB) and each
-  // page navigates to a `file://` URL; running many in parallel does
-  // not meaningfully speed things up for the small fixture corpus we
-  // ship today, and serialised output makes failure diagnosis easier.
-  // Override locally with `--workers=N` if you want concurrency.
-  workers: 1,
-  fullyParallel: false,
+  // Parallel by default. Each worker spins its own Chromium and
+  // navigates to a `file://` URL of the 9 MB bundle once per spec
+  // file (see the `beforeAll(gotoBundle)` pattern in the heavy
+  // specs). With ~290 tests across ~22 spec files the parallel
+  // speedup is substantial. Workers are capped on CI to keep
+  // Chromium memory pressure inside the runner's budget.
+  //
+  // Override with `--workers=N` for diagnosis (`--workers=1` reverts
+  // to the old serialised behaviour for clean failure logs).
+  workers: process.env.CI ? 2 : '50%',
+  fullyParallel: true,
 
   // Fail fast on local but never bail in CI — we want every failure
   // logged to the PR check run for triage.

@@ -14,33 +14,31 @@
 
 import { test, expect } from '@playwright/test';
 import {
-  gotoBundle,
   loadFixture,
   isRiskAtLeast,
   ruleNames,
+  useSharedBundlePage,
 } from '../helpers/playwright-helpers';
 
 test.describe('PDF renderer', () => {
-  test.beforeEach(async ({ page }) => {
-    await gotoBundle(page);
-  });
+  const ctx = useSharedBundlePage();
 
-  test('plain PDF parses with URL + Embedded_Compressed_Stream', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/pdf/example.pdf');
+  test('plain PDF parses with URL + Embedded_Compressed_Stream', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/pdf/example.pdf');
     expect(findings.iocTypes).toContain('URL');
     expect(ruleNames(findings)).toContain('Embedded_Compressed_Stream');
   });
 
-  test('JS-bearing PDF fires AutoOpen + JavaScript_Execution rules', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/pdf/javascript-example.pdf');
+  test('JS-bearing PDF fires AutoOpen + JavaScript_Execution rules', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/pdf/javascript-example.pdf');
     const rules = ruleNames(findings);
     expect(rules).toContain('PDF_AutoOpen_Action');
     expect(rules).toContain('PDF_JavaScript_Execution');
     expect(isRiskAtLeast(findings.risk, 'high')).toBe(true);
   });
 
-  test('QR-bearing PDF decodes the embedded URL', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/pdf/qr-example.pdf');
+  test('QR-bearing PDF decodes the embedded URL', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/pdf/qr-example.pdf');
     expect(findings.iocTypes).toContain('URL');
     expect(findings.iocTypes).toContain('Domain');
     // The phishing-QR companion rule must also fire.

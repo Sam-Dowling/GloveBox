@@ -14,19 +14,17 @@
 
 import { test, expect } from '@playwright/test';
 import {
-  gotoBundle,
   loadFixture,
   isRiskAtLeast,
   ruleNames,
+  useSharedBundlePage,
 } from '../helpers/playwright-helpers';
 
 test.describe('web renderer family', () => {
-  test.beforeEach(async ({ page }) => {
-    await gotoBundle(page);
-  });
+  const ctx = useSharedBundlePage();
 
-  test('HTML renderer decodes entity-obfuscated IOCs', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/web/encoded-entities.html');
+  test('HTML renderer decodes entity-obfuscated IOCs', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/web/encoded-entities.html');
     expect(findings.iocTypes).toContain('URL');
     // Entity-decoded URLs should still carry severity → risk should
     // escalate above the default `'low'` floor.
@@ -35,18 +33,18 @@ test.describe('web renderer family', () => {
     expect(rules).toContain('HTML_Entity_Obfuscated_Script');
   });
 
-  test('plain HTML surfaces URL', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/web/example.html');
+  test('plain HTML surfaces URL', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/web/example.html');
     expect(findings.iocTypes).toContain('URL');
   });
 
-  test('plain SVG fires Info_SVG_Image_Present', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/web/example.svg');
+  test('plain SVG fires Info_SVG_Image_Present', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/web/example.svg');
     expect(ruleNames(findings)).toContain('Info_SVG_Image_Present');
   });
 
-  test('malicious SVG escalates to critical with phish + iframe rules', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/web/example-malicious.svg');
+  test('malicious SVG escalates to critical with phish + iframe rules', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/web/example-malicious.svg');
     expect(isRiskAtLeast(findings.risk, 'critical')).toBe(true);
     const rules = ruleNames(findings);
     expect(rules).toContain('HTML_Credential_Phish_Form');
@@ -56,8 +54,8 @@ test.describe('web renderer family', () => {
     expect(findings.iocTypes).toContain('URL');
   });
 
-  test('HTA file fires HTA_Any_Presence + VBScript indicators', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/web/example.hta');
+  test('HTA file fires HTA_Any_Presence + VBScript indicators', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/web/example.hta');
     const rules = ruleNames(findings);
     expect(rules).toContain('HTA_Any_Presence');
     expect(rules).toContain('Standalone_HTA_VBScript_Indicators');

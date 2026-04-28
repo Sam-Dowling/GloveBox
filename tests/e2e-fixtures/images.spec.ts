@@ -16,16 +16,14 @@
 
 import { test, expect } from '@playwright/test';
 import {
-  gotoBundle,
   loadFixture,
   isRiskAtLeast,
   ruleNames,
+  useSharedBundlePage,
 } from '../helpers/playwright-helpers';
 
 test.describe('image renderer', () => {
-  test.beforeEach(async ({ page }) => {
-    await gotoBundle(page);
-  });
+  const ctx = useSharedBundlePage();
 
   test.describe('benign image formats — zero IOCs / no YARA hits', () => {
     const benign = [
@@ -37,8 +35,8 @@ test.describe('image renderer', () => {
     ];
     for (const path of benign) {
       const name = path.split('/').pop();
-      test(`${name} parses cleanly`, async ({ page }) => {
-        const findings = await loadFixture(page, path);
+      test(`${name} parses cleanly`, async () => {
+        const findings = await loadFixture(ctx.page, path);
         expect(findings.iocCount).toBe(0);
         expect(findings.risk).toBe('low');
         expect(findings.yaraInProgress).toBe(false);
@@ -46,23 +44,23 @@ test.describe('image renderer', () => {
     }
   });
 
-  test('ICO with embedded compressed stream fires YARA rule', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/images/example.ico');
+  test('ICO with embedded compressed stream fires YARA rule', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/images/example.ico');
     expect(ruleNames(findings)).toContain('Embedded_Compressed_Stream');
   });
 
-  test('JPEG with appended data fires JPEG_Appended_Data rule', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/images/example.jpg');
+  test('JPEG with appended data fires JPEG_Appended_Data rule', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/images/example.jpg');
     expect(ruleNames(findings)).toContain('Info_JPEG_Appended_Data');
   });
 
-  test('PNG with appended data fires PNG_Appended_Data rule', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/images/example.png');
+  test('PNG with appended data fires PNG_Appended_Data rule', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/images/example.png');
     expect(ruleNames(findings)).toContain('Info_PNG_Appended_Data');
   });
 
-  test('polyglot PNG/ZIP escalates risk and fires ZIP-in-non-archive rule', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/images/polyglot-example.png');
+  test('polyglot PNG/ZIP escalates risk and fires ZIP-in-non-archive rule', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/images/polyglot-example.png');
     expect(isRiskAtLeast(findings.risk, 'medium')).toBe(true);
     const rules = ruleNames(findings);
     expect(rules).toContain('Embedded_ZIP_In_Non_Archive');
@@ -70,8 +68,8 @@ test.describe('image renderer', () => {
     expect(findings.iocTypes).toContain('Pattern');
   });
 
-  test('QR-coded PNG decodes the embedded URL', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/images/qr-example.png');
+  test('QR-coded PNG decodes the embedded URL', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/images/qr-example.png');
     // QR decoder is async — `loadFixture` waits for `yaraInProgress`
     // to settle, but the QR sweep runs inside `analyzeForSecurity`
     // which is awaited before `_rebuildSidebar`. So the URL must be

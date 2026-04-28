@@ -27,7 +27,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { test, expect } from '@playwright/test';
-import { gotoBundle, REPO_ROOT } from '../helpers/playwright-helpers';
+import { REPO_ROOT, useSharedBundlePage } from '../helpers/playwright-helpers';
 
 interface ParityRow {
   type: string;
@@ -63,15 +63,12 @@ const PARITY_FIXTURES = [
   'examples/encoded-payloads/example-safelinks.txt',
 ];
 
-test.describe.configure({ mode: 'serial' });
-
 test.describe('IOC-extract worker ↔ host parity', () => {
-  test.beforeEach(async ({ page }) => {
-    await gotoBundle(page);
-  });
+  const ctx = useSharedBundlePage();
 
   for (const rel of PARITY_FIXTURES) {
-    test(`${rel} — worker output matches host output`, async ({ page }) => {
+    test(`${rel} — worker output matches host output`, async () => {
+      const page = ctx.page;
       const abs = path.join(REPO_ROOT, rel);
       const text = fs.readFileSync(abs, 'utf-8');
 

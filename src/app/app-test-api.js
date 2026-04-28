@@ -26,6 +26,72 @@
 
 extendApp({
 
+  /** Reset cross-load state so successive `loadBytes`/`loadFile` calls
+   *  observe a virgin App. The production `_loadFile` slow path tears
+   *  down most of this on the way in, but two paths leak across loads:
+   *
+   *    1. Timeline fast-path (`_timelineTryHandle`) returns *before*
+   *       any teardown — so a non-Timeline → Timeline transition
+   *       leaves `currentResult` / `_fileMeta` from the prior
+   *       renderer load intact and `dumpResult()` reports stale data.
+   *
+   *    2. Timeline zero-row escape sets `_skipTimelineRoute = true`
+   *       inside a `try/finally`. The finally is awaited by the
+   *       caller, but the test API's `waitForIdle` watches
+   *       `currentResult` / `_yaraScanInProgress` — both of which
+   *       can settle BEFORE the finally runs, leaking
+   *       `_skipTimelineRoute = true` into the next load and
+   *       diverting it away from the Timeline fast-path.
+   *
+   *  Tests that reuse a single page across fixtures
+   *  (`useSharedBundlePage` in the e2e helpers) rely on this clear
+   *  running before every load so the next file routes the same way
+   *  it would on a virgin page.
+   *
+   *  Test-only contract: never reaches into App state mid-pipeline
+   *  — only nulls cross-load fields that ARE about to be replaced
+   *  by the incoming file. The reset never runs while a load is in
+   *  flight (callers always `await _loadFile`/`waitForIdle` first).
+   *
+   *  We intentionally do NOT null `this.findings` here. The renderer
+   *  pipeline's `_renderSidebar` reads `findings.risk` early on the
+   *  Timeline-extensionless re-route path; nulling it pre-call
+   *  surfaces a TypeError before `_loadFile` can re-stamp the field.
+   *  Stale `findings` are overwritten by the next renderer's
+   *  `analyzeForSecurity`, and the Timeline path leaves them as the
+   *  empty projection the test API understands. */
+  _testApiResetCrossLoadState() {
+    if (this._timelineCurrent) {
+      try { this._timelineCurrent.destroy(); } catch (_) { /* noop */ }
+      this._timelineCurrent = null;
+      const tlHost = (typeof document !== 'undefined')
+        && document.getElementById('timeline-root');
+      if (tlHost) tlHost.innerHTML = '';
+      if (typeof document !== 'undefined') {
+        document.body.classList.remove('has-timeline');
+      }
+    }
+    this.currentResult = null;
+    this._fileMeta = null;
+    this._yaraResults = [];
+    // Drop renderer-populated findings so a Timeline-routed load (which
+    // never repopulates `findings`) doesn't surface IOCs from the
+    // previous renderer's `analyzeForSecurity` in `dumpFindings()`.
+    // Production `_clearFile` does the same on the close button. The
+    // renderer pipeline that nulls `_fileMeta` will overwrite this
+    // before any UI sees it; the early _renderSidebar that crashed on
+    // `findings.risk` (during the Timeline zero-row escape's leaked
+    // re-entry) is no longer reachable now that `waitForIdle` drains
+    // `_timelineLoadInFlight` before returning.
+    this.findings = null;
+    // The Timeline zero-row escape's finally clause runs after the
+    // test API's idle gate has already returned to the test body —
+    // see the doc-comment above. Force-clear here so the next load's
+    // fast-path sees a fresh slate.
+    this._skipTimelineRoute = false;
+    this._isCalledByTimelineFallback = false;
+  },
+
   /** Construct a synthetic File around `bytesOrU8` and feed it through the
    *  regular load path. `opts.skipNavReset` is forwarded to `_handleFiles`
    *  so drill-down tests don't clobber the nav stack. Resolves once
@@ -53,6 +119,7 @@ extendApp({
     const file = new File([u8], String(name || 'test.bin'),
       { type: o.type || 'application/octet-stream' });
     if (!o.skipNavReset) this._resetNavStack();
+    this._testApiResetCrossLoadState();
     await this._loadFile(file);
     await this._testApiWaitForIdle({ timeoutMs: o.timeoutMs || 15000 });
     return this._testApiDumpFindings();
@@ -63,6 +130,7 @@ extendApp({
   async _testApiLoadFile(file, opts) {
     const o = opts || {};
     if (!o.skipNavReset) this._resetNavStack();
+    this._testApiResetCrossLoadState();
     await this._loadFile(file);
     await this._testApiWaitForIdle({ timeoutMs: o.timeoutMs || 15000 });
     return this._testApiDumpFindings();
@@ -109,6 +177,24 @@ extendApp({
           `__loupeTest.waitForIdle: yara still in progress after ${timeoutMs}ms`);
       }
       await new Promise(r => setTimeout(r, 25));
+    }
+    // Drain in-flight Timeline mount. `_timelineTryHandle` kicks
+    // `_loadFileInTimeline` fire-and-forget; the zero-row escape inside
+    // that promise sets `_skipTimelineRoute=true` then re-enters
+    // `_loadFile` and clears the flag in a `finally`. The two prior
+    // wait loops resolve on `currentResult` / `_yaraScanInProgress`,
+    // both of which can settle inside the inner `_loadFile` BEFORE the
+    // outer `finally` runs — leaking `_skipTimelineRoute=true` into the
+    // next test's load. Await the tracked promise to flush the outer
+    // unwind before returning to the test body. Bounded by `timeoutMs`
+    // through `Promise.race`. Swallow errors: the inner load's
+    // failure path has already surfaced them via toast / console.
+    if (this._timelineLoadInFlight) {
+      const remaining = Math.max(0, timeoutMs - (Date.now() - t0));
+      await Promise.race([
+        this._timelineLoadInFlight.catch(() => {}),
+        new Promise(r => setTimeout(r, remaining)),
+      ]);
     }
   },
 

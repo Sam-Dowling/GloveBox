@@ -8,18 +8,16 @@
 
 import { test, expect } from '@playwright/test';
 import {
-  gotoBundle,
   loadFixture,
   isRiskAtLeast,
+  useSharedBundlePage,
 } from '../helpers/playwright-helpers';
 
 test.describe('npm tarball renderer', () => {
-  test.beforeEach(async ({ page }) => {
-    await gotoBundle(page);
-  });
+  const ctx = useSharedBundlePage();
 
-  test('npm-example.tgz enumerates entries and escalates risk', async ({ page }) => {
-    const findings = await loadFixture(page, 'examples/npm/npm-example.tgz');
+  test('npm-example.tgz enumerates entries and escalates risk', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/npm/npm-example.tgz');
     expect(findings.iocTypes).toContain('File Path');
     expect(findings.iocTypes).toContain('Pattern');
     expect(isRiskAtLeast(findings.risk, 'high')).toBe(true);

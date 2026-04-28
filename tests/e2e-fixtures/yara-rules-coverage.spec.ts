@@ -15,10 +15,11 @@
 //   first-anchor fixture and confirm the rule appears in the rule
 //   set.
 //
-// Each anchor fixture is loaded ONCE per spec run (a single test per
-// anchor, asserting the full subset of "rules-anchored-here"). With
-// ~56 anchor fixtures across 187 fired rules this stays well inside
-// the e2e wall-time budget.
+// Why ONE Playwright test that walks all anchors?
+//   Same rationale as `snapshot-matrix.spec.ts` — see that file's
+//   header. Each anchor runs as a `test.step` with `expect.soft`, so
+//   per-anchor diagnostic granularity survives while the per-test
+//   bookkeeping overhead collapses into one runner cycle.
 //
 // Unanchored rules are documentation only — see
 // `yara-rules-fired.json:unanchoredRules`. CI does NOT block on
@@ -30,9 +31,9 @@ import * as path from 'path';
 import { test, expect } from '@playwright/test';
 import {
   REPO_ROOT,
-  gotoBundle,
   loadFixture,
   ruleNames,
+  useSharedBundlePage,
 } from '../helpers/playwright-helpers';
 
 interface CoverageManifest {
@@ -56,49 +57,47 @@ function loadManifest(): CoverageManifest {
 }
 
 const MANIFEST = loadManifest();
-
-test.describe.configure({ mode: 'serial' });
+const ANCHOR_ENTRIES = Object.entries(MANIFEST.anchorFixtures);
 
 test.describe('YARA rule coverage (per-anchor)', () => {
-  test.beforeEach(async ({ page }) => {
-    await gotoBundle(page);
+  const ctx = useSharedBundlePage();
+
+  // Single test. Each anchor runs as a `test.step`, asserting the
+  // full subset of "rules anchored here" via `expect.soft` so a
+  // regression in one rule doesn't mask regressions in others.
+  test(`walks ${ANCHOR_ENTRIES.length} anchor fixtures`, async () => {
+    test.setTimeout(10 * 60 * 1000); // 10 min wall budget for the full walk
+
+    for (const [anchor, rules] of ANCHOR_ENTRIES) {
+      await test.step(`${anchor} (${rules.length} rules)`, async () => {
+        const findings = await loadFixture(ctx.page, anchor);
+        const seen = ruleNames(findings);
+        const missing: string[] = [];
+        for (const r of rules) {
+          if (!seen.includes(r)) missing.push(r);
+        }
+        expect.soft(
+          missing,
+          `${anchor}: rules expected to fire but didn't: ${missing.join(', ')}`,
+        ).toEqual([]);
+      });
+    }
   });
 
-  // One test per anchor fixture. The test loads the anchor and
-  // asserts that EVERY rule the manifest claims this anchor covers
-  // is in the post-load rule set. A regression where one anchored
-  // rule stops firing names the (anchor, rule) pair in the failure.
-  for (const [anchor, rules] of Object.entries(MANIFEST.anchorFixtures)) {
-    test(`${anchor} covers ${rules.length} rules`, async ({ page }) => {
-      const findings = await loadFixture(page, anchor);
-      const seen = ruleNames(findings);
-      const missing: string[] = [];
-      for (const r of rules) {
-        if (!seen.includes(r)) missing.push(r);
-      }
-      expect(
-        missing,
-        `${anchor}: rules expected to fire but didn't: ${missing.join(', ')}`,
-      ).toEqual([]);
-    });
-  }
-});
-
-// One stand-alone documentation test that exposes the coverage
-// summary in the test log. Always passes — it's purely informational.
-// (Playwright reports the test name + a short status; the
-// `console.log` is captured under `test-results/`.)
-test('YARA rule coverage summary (informational)', () => {
-  const s = MANIFEST.summary;
-  console.log(
-    `[yara-coverage] defined=${s.totalRulesDefined} `
-    + `fired=${s.rulesFiredInCorpus} `
-    + `unanchored=${s.rulesUnanchored} `
-    + `anchors=${s.anchorFixtures}`);
-  // Sanity: at least 30% of defined rules must have fixture
-  // coverage. Below that we've either shipped a rules-pack regression
-  // or the corpus has decayed — either way, manual investigation.
-  const pct = MANIFEST.summary.rulesFiredInCorpus
-    / Math.max(1, MANIFEST.summary.totalRulesDefined);
-  expect(pct).toBeGreaterThan(0.30);
+  // Stand-alone documentation test that exposes the coverage summary
+  // in the test log. Always passes — it's purely informational.
+  test('YARA rule coverage summary (informational)', () => {
+    const s = MANIFEST.summary;
+    console.log(
+      `[yara-coverage] defined=${s.totalRulesDefined} `
+      + `fired=${s.rulesFiredInCorpus} `
+      + `unanchored=${s.rulesUnanchored} `
+      + `anchors=${s.anchorFixtures}`);
+    // Sanity: at least 30% of defined rules must have fixture
+    // coverage. Below that we've either shipped a rules-pack regression
+    // or the corpus has decayed — either way, manual investigation.
+    const pct = MANIFEST.summary.rulesFiredInCorpus
+      / Math.max(1, MANIFEST.summary.totalRulesDefined);
+    expect(pct).toBeGreaterThan(0.30);
+  });
 });
