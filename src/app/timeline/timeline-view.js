@@ -92,7 +92,7 @@ class TimelineView {
 
     if (!norm || !norm.trim()) {
       return new TimelineView({
-        file, columns: [], rows: [],
+        file, columns: [], store: RowStore.empty([]),
         formatLabel: 'CSV', truncated: false, originalRowCount: 0,
       });
     }
@@ -217,8 +217,15 @@ class TimelineView {
     const originalRowCount = truncated
       ? Math.round(rows.length * (len / Math.max(1, offset)))
       : rows.length;
+    // Phase 8: build the RowStore here (the headerless-fallback above
+    // mutates `columns` after the parse loop, so we can't stream rows
+    // into a `RowStoreBuilder` mid-parse without losing that path).
+    // `RowStore.fromStringMatrix` preserves the same peak as the
+    // pre-Phase-8 constructor did internally.
+    const store = RowStore.fromStringMatrix(columns, rows);
+    rows.length = 0;
     return new TimelineView({
-      file, columns, rows,
+      file, columns, store,
       formatLabel: delim === '\t' ? 'TSV' : 'CSV',
       truncated, originalRowCount,
     });
@@ -259,17 +266,22 @@ class TimelineView {
       list = events.slice(0, TIMELINE_MAX_ROWS);
       truncated = true;
     }
-    const rows = new Array(list.length);
+    // Phase 8: stream rows directly into a `RowStoreBuilder` so the
+    // parallel `string[][]` accumulator is no longer needed. Each
+    // batch of `_ROWSTORE_CHUNK_ROWS_TARGET` rows (50 K) is packed
+    // into typed arrays as it forms; the per-row cell strings can GC
+    // before the builder reaches the next batch.
+    const builder = new RowStoreBuilder(columns);
     for (let i = 0; i < list.length; i++) {
       const ev = list[i] || {};
-      rows[i] = [
+      builder.addRow([
         ev.timestamp ? ev.timestamp.replace('T', ' ').replace('Z', '') : '',
         ev.eventId || '', ev.level || '', ev.provider || '',
         ev.channel || '', ev.computer || '', ev.eventData || '',
-      ];
+      ]);
     }
     return new TimelineView({
-      file, columns, rows,
+      file, columns, store: builder.finalize(),
       formatLabel: 'EVTX', truncated, originalRowCount: events.length,
       defaultTimeColIdx: 0, defaultStackColIdx: 1,
       evtxEvents: events, evtxFindings: securityFindings,
@@ -294,7 +306,7 @@ class TimelineView {
       console.warn('[timeline] SQLite parse failed:', e);
       // Return zero-row view — triggers fallback to regular analyser.
       return new TimelineView({
-        file, columns: [], rows: [],
+        file, columns: [], store: RowStore.empty([]),
         formatLabel: 'SQLite', truncated: false, originalRowCount: 0,
       });
     }
@@ -308,7 +320,7 @@ class TimelineView {
 
     if (!db.browserType || !srcRows || srcRows.length === 0) {
       return new TimelineView({
-        file, columns: [], rows: [],
+        file, columns: [], store: RowStore.empty([]),
         formatLabel: 'SQLite', truncated: false, originalRowCount: 0,
       });
     }
@@ -322,15 +334,18 @@ class TimelineView {
       truncated = true;
     }
 
-    // Ensure every cell is a string (visit_count comes through as a number).
-    const rows = new Array(list.length);
+    // Phase 8: stream rows directly into a `RowStoreBuilder` (see
+    // `fromEvtx` above for rationale). Each cell is normalised to a
+    // string here because `visit_count` and other numeric columns
+    // come through as numbers from the SQLite parser.
+    const builder = new RowStoreBuilder(columns);
     for (let i = 0; i < list.length; i++) {
       const src = list[i] || [];
       const row = new Array(colCount);
       for (let j = 0; j < colCount; j++) {
         row[j] = src[j] != null ? String(src[j]) : '';
       }
-      rows[i] = row;
+      builder.addRow(row);
     }
 
     const browserLabel = db.browserType === 'firefox' ? 'Firefox' : 'Chrome';
@@ -339,7 +354,7 @@ class TimelineView {
     const timeColIdx = useEvents ? 0 : 3;
     const stackColIdx = useEvents ? 1 : null;
     return new TimelineView({
-      file, columns, rows,
+      file, columns, store: builder.finalize(),
       formatLabel: 'SQLite \u2013 ' + browserLabel + ' History',
       truncated,
       originalRowCount: srcRows.length,
@@ -360,21 +375,24 @@ class TimelineView {
     // (see `src/app/timeline/timeline-row-view.js`) so no full row
     // matrix is ever materialised.
     //
-    //   - `opts.store`  : already-built RowStore (worker / router path).
-    //   - `opts.rows`   : legacy `string[][]` from the sync factory paths
-    //                     (`fromCsvAsync` fallback, `fromEvtx`,
-    //                     `fromSqlite`). Wrapped via `RowStore.fromStringMatrix`
-    //                     and the original array is dropped so it can be
-    //                     GC'd before the rest of the constructor runs.
-    if (opts.store) {
-      this.store = opts.store;
-    } else {
-      const rows = opts.rows || [];
-      this.store = RowStore.fromStringMatrix(this._baseColumns, rows);
-      // Drop the caller's reference if we own it; helps GC reclaim the
-      // `string[][]` before `_parseAllTimestamps` allocates the time array.
-      if (opts.rows) opts.rows = null;
+    // Phase 8: `opts.store` is REQUIRED. Every caller (the worker
+    // path's `_buildTimelineViewFromWorker` and the three sync
+    // factories `fromCsvAsync` / `fromEvtx` / `fromSqlite`) builds a
+    // `RowStore` via `RowStoreBuilder` or `RowStore.fromStringMatrix`
+    // before invoking the constructor. Throwing here on a missing
+    // store points at the call site immediately rather than producing
+    // a zero-row view that silently turns into a "file failed to
+    // parse" toast far downstream. Wrap legacy `string[][]` callers
+    // via `RowStore.fromStringMatrix(columns, rows)` (matches the
+    // analogous shape error in `GridViewer.setRows`).
+    if (!opts.store || typeof opts.store.getCell !== 'function') {
+      throw new TypeError(
+        'TimelineView: opts.store is required (RowStore-shaped). ' +
+        'Wrap legacy `string[][]` callers via ' +
+        '`RowStore.fromStringMatrix(columns, rows)`.',
+      );
     }
+    this.store = opts.store;
     this.formatLabel = opts.formatLabel || '';
     this.truncated = !!opts.truncated;
     this.originalRowCount = opts.originalRowCount || this.store.rowCount;
