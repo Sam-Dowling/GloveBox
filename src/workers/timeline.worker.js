@@ -123,6 +123,20 @@
 // EVTX and SQLite parsers can share it without forking the constant.
 const WORKER_CHUNK_ROWS = 50_000;
 
+// W1: ship the FIRST rows batch at a much smaller size so the host
+// thread can begin constructing `RowStoreBuilder` (and unblock its
+// `'columns-known'` mount preamble — see W4) while the worker is still
+// parsing the rest of the file. The host's `addChunk` path is cheap
+// (it just stores typed-array refs) but the *first* `rows-chunk`
+// arrival also triggers `RowStoreBuilder` construction, the column
+// count validation, and downstream RowStore wiring — work that must
+// happen in series with parsing on the worker. Sending the first
+// batch at 5 000 rows (≈10 % of the steady-state target) lets the
+// host land that one-time setup ~10× sooner. Steady-state continues
+// at WORKER_CHUNK_ROWS so we don't pay extra postMessage overhead
+// across the rest of the file.
+const WORKER_FIRST_CHUNK_ROWS = 5_000;
+
 // Pack one batch of `string[][]` rows and post a `rows-chunk` event with
 // both ArrayBuffers in the transfer list (zero-copy). `colCount` must
 // match the columns declared in the terminal `done` payload — the host
@@ -213,6 +227,11 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
   // to the host with the transfer list — the source `string[][]` is
   // then dropped so the GC can reclaim the per-cell strings immediately.
   let pendingRows = [];
+  // W1: small threshold for the first `rows-chunk` so the host can
+  // start its `RowStoreBuilder` setup early; subsequent flushes use
+  // the full-size threshold. Flipped to false after the first
+  // successful `flushBatch()`.
+  let firstBatchPending = true;
 
   const flushBatch = () => {
     if (!pendingRows.length) return;
@@ -225,7 +244,14 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
     // Drop reference to the source `string[][]` so the per-cell strings
     // can be GC'd before the next chunk's pack pass starts.
     pendingRows = [];
+    firstBatchPending = false;
   };
+
+  // W1: chunk-rows threshold the next `flushBatch` should fire at.
+  // Returns the small first-batch target until the first batch has
+  // been posted, then the steady-state target.
+  const currentBatchThreshold = () =>
+    firstBatchPending ? WORKER_FIRST_CHUNK_ROWS : WORKER_CHUNK_ROWS;
 
   const padOrTrimCells = (cells) => {
     if (!colLen) return cells;
@@ -257,7 +283,7 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
       }
       pendingRows.push(padOrTrimCells(cells));
       rowCount++;
-      if (pendingRows.length >= WORKER_CHUNK_ROWS) flushBatch();
+      if (pendingRows.length >= currentBatchThreshold()) flushBatch();
     }
     return false;
   };
@@ -318,7 +344,7 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
         }
         pendingRows.push(padOrTrimCells(cells));
         rowCount++;
-        if (pendingRows.length >= WORKER_CHUNK_ROWS) flushBatch();
+        if (pendingRows.length >= currentBatchThreshold()) flushBatch();
       }
       if (lineStart >= text.length) tail = '';
     }
@@ -460,10 +486,14 @@ async function _parseEvtx(buffer) {
   }
 
   // Stream rows in batches. We never materialise the full `string[][]`
-  // — once a batch reaches `WORKER_CHUNK_ROWS` it's packed and posted,
+  // — once a batch reaches the chunk threshold it's packed and posted,
   // then the array is dropped so the per-cell strings can GC before
   // the next batch is built.
+  // W1: ship the first batch at WORKER_FIRST_CHUNK_ROWS (small) so the
+  // host can start `RowStoreBuilder` setup early; subsequent flushes
+  // use the steady-state WORKER_CHUNK_ROWS.
   let pending = [];
+  let firstFlush = true;
   for (let i = 0; i < list.length; i++) {
     const ev = list[i] || {};
     pending.push([
@@ -471,14 +501,17 @@ async function _parseEvtx(buffer) {
       ev.eventId || '', ev.level || '', ev.provider || '',
       ev.channel || '', ev.computer || '', ev.eventData || '',
     ]);
-    if (pending.length >= WORKER_CHUNK_ROWS) {
+    const threshold = firstFlush ? WORKER_FIRST_CHUNK_ROWS : WORKER_CHUNK_ROWS;
+    if (pending.length >= threshold) {
       _postRowsChunk(pending, colCount);
       pending = [];
+      firstFlush = false;
     }
   }
   if (pending.length) {
     _postRowsChunk(pending, colCount);
     pending = [];
+    firstFlush = false;
   }
 
   // Strip the per-event `rawRecord` Uint8Array before transferring — those
@@ -551,8 +584,10 @@ function _parseSqlite(buffer) {
     truncated = true;
   }
 
-  // Stream rows in batches (see `_parseEvtx` for rationale).
+  // Stream rows in batches (see `_parseEvtx` for rationale, including
+  // the W1 first-batch dynamic-threshold motivation).
   let pending = [];
+  let firstFlush = true;
   for (let i = 0; i < list.length; i++) {
     const src = list[i] || [];
     const row = new Array(colCount);
@@ -560,14 +595,17 @@ function _parseSqlite(buffer) {
       row[j] = src[j] != null ? String(src[j]) : '';
     }
     pending.push(row);
-    if (pending.length >= WORKER_CHUNK_ROWS) {
+    const threshold = firstFlush ? WORKER_FIRST_CHUNK_ROWS : WORKER_CHUNK_ROWS;
+    if (pending.length >= threshold) {
       _postRowsChunk(pending, colCount);
       pending = [];
+      firstFlush = false;
     }
   }
   if (pending.length) {
     _postRowsChunk(pending, colCount);
     pending = [];
+    firstFlush = false;
   }
 
   const browserLabel = db.browserType === 'firefox' ? 'Firefox' : 'Chrome';
