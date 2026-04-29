@@ -214,9 +214,30 @@ Object.assign(TimelineView.prototype, {
         && Number.isFinite(this._app._fileMeta.size))
         ? this._app._fileMeta.size : 0;
       const HUGE_FILE_CAP = 12;
-      const capped = (fileSize >= RENDER_LIMITS.LARGE_FILE_THRESHOLD)
+      const fileCapped = (fileSize >= RENDER_LIMITS.LARGE_FILE_THRESHOLD)
         ? eligible.slice(0, HUGE_FILE_CAP)
         : eligible;
+
+      // Per-source-column cap. A single JSON blob with 30+ leaves
+      // would otherwise generate 30+ extracted columns from one
+      // source — the cascade is unbounded along the rank axis once
+      // the global file-size cap doesn't fire. Capping at 12 per
+      // source matches HUGE_FILE_CAP (the existing precedent for
+      // "this is too many extracted cols to be useful") and keeps
+      // the strongest 12 leaves per source so the analyst still
+      // sees the top of every JSON column's cascade. Applied AFTER
+      // the file-size cap so on huge files we keep the historical
+      // 12-total semantics; smaller files now see ≤12 per source
+      // instead of "every leaf that crossed the match-pct floor."
+      const PER_SRC_CAP = 12;
+      const perSrcCounts = new Map();
+      const capped = [];
+      for (const p of fileCapped) {
+        const n = perSrcCounts.get(p.sourceCol) || 0;
+        if (n >= PER_SRC_CAP) continue;
+        perSrcCounts.set(p.sourceCol, n + 1);
+        capped.push(p);
+      }
 
       // Group proposals by `sourceCol` (stable — preserves rank order
       // within each group). Every proposal touches its source column
