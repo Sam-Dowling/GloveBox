@@ -399,6 +399,18 @@ Object.assign(TimelineView.prototype, {
       while (i < total) {
         const end = Math.min(i + CHUNK, total);
         for (; i < end; i++) {
+          // In-loop staleness check. The post-yield check below catches
+          // stale generations between 50k-row chunks, but a single chunk
+          // on a wide grid (30 cols × 50k rows = 1.5M _cellAt calls) is
+          // already a multi-hundred-millisecond slab of work that we
+          // throw away. Sampling the generation every 4096 rows lets a
+          // newer scheduled computation supersede this one mid-chunk —
+          // critical during the auto-extract apply pump where columns
+          // are appended in rapid succession.
+          if ((i & 4095) === 0
+              && (self._colStatsGen !== generation || self._destroyed)) {
+            return null;
+          }
           const di = idx[i];
           for (let c = 0; c < cols; c++) {
             const v = self._cellAt(di, c);
