@@ -210,3 +210,17 @@ test('shouldSurfaceLowSeverity: returns true on null klass (no classifier output
   assert.equal(ctx.BinaryClass.shouldSurfaceLowSeverity(null, 'anti-debug'), true);
   assert.equal(ctx.BinaryClass.weightFor(null, 'low', 'anti-debug'), 1);
 });
+
+test('classify: `large` boolean is true at the large/huge size tiers', () => {
+  // PE renderer's reflective-DLL gate keys off `binaryClass.large` to
+  // demote the ubiquitous-API quorum on big SDKs (where coincidental
+  // VirtualAlloc + VirtualProtect + CreateThread is the norm).
+  const ctx = fresh();
+  const c = (n) => ctx.BinaryClass.classify({ sizeBytes: n, format: 'pe' });
+  assert.equal(c(1024).large, false, 'tiny');
+  assert.equal(c(500 * 1024).large, false, 'small');
+  assert.equal(c(5 * 1024 * 1024).large, false, 'medium');
+  assert.equal(c(10 * 1024 * 1024).large, true, 'large lower bound');
+  assert.equal(c(33 * 1024 * 1024).large, true, 'large mid');
+  assert.equal(c(100 * 1024 * 1024).large, true, 'huge');
+});

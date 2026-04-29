@@ -2399,11 +2399,15 @@ class ElfRenderer {
       // SONAME is the canonical lib identifier, Go Module Path leaks the
       // build-host VCS URL. Attribution fluff stays metadata-only per the
       // "Option B" classic-pivot policy.
+      //
+      // `Import Hash (MD5)` (telfhash-style ELF import hash) is family-
+      // clustering metadata, NOT an IOC — it is intentionally NOT
+      // mirrored into the IOC table. Same policy as PE Imphash/RichHash
+      // and Mach-O Import Hash / SymHash.
       mirrorMetadataIOCs(findings, {
         'Interpreter':        IOC.FILE_PATH,
         'SONAME':             IOC.FILE_PATH,
         'Go Module Path':     IOC.PATTERN,
-        'Import Hash (MD5)':  IOC.HASH,
         'Overlay SHA-256':    IOC.HASH,
       });
 
@@ -2458,20 +2462,31 @@ class ElfRenderer {
           'persist-ld-preload':      'persistence',
           'fileless-memfd':          'execution',
         };
+        // Helper: append a suppressed-capability row with a human-readable
+        // reason explaining why this capability didn't fire as an IOC.
+        const _classTag = () => {
+          if (!binaryClass) return 'unclassified';
+          const parts = [binaryClass.trust || 'unknown-trust'];
+          if (binaryClass.family) parts.push(binaryClass.family);
+          else if (binaryClass.kind && binaryClass.kind !== 'executable') parts.push(binaryClass.kind);
+          if (binaryClass.large) parts.push('large');
+          return parts.join(' ');
+        };
+        const _addSuppressed = (cap, reason) => {
+          const line = `${cap.name} — ${_classTag()}: ${reason}`;
+          const cur = findings.metadata['Suppressed Capability'];
+          findings.metadata['Suppressed Capability'] = cur ? cur + '\n' + line : line;
+        };
         for (const c of caps) {
           const cat = capCategory[c.id] || 'other';
           if ((c.severity === 'medium' || c.severity === 'low' || c.severity === 'info')
               && !_surface(cat)) {
-            findings.metadata['Suppressed Capability'] =
-              (findings.metadata['Suppressed Capability'] || '') +
-              (findings.metadata['Suppressed Capability'] ? ', ' : '') + c.name;
+            _addSuppressed(c, `${c.severity}-severity ${cat} not surfaced at this trust tier`);
             continue;
           }
           const w = _weight(c.severity, cat);
           if (w === 0) {
-            findings.metadata['Suppressed Capability'] =
-              (findings.metadata['Suppressed Capability'] || '') +
-              (findings.metadata['Suppressed Capability'] ? ', ' : '') + c.name;
+            _addSuppressed(c, `weight zeroed for ${c.severity} ${cat}`);
             continue;
           }
           pushIOC(findings, {

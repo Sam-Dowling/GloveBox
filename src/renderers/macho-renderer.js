@@ -2817,6 +2817,10 @@ class MachoRenderer {
       // Option-B pivots: UUID/Bundle ID/Source Version are all stable
       // cross-sample pivots. Bundle Name/Bundle Version stay metadata-
       // only (attribution fluff).
+      //
+      // `SymHash` is family-clustering metadata, NOT an IOC — kept in
+      // `findings.metadata` only. Same policy as PE Imphash/RichHash
+      // and ELF telfhash on the sister renderers.
       mirrorMetadataIOCs(findings, {
         'UUID':              IOC.GUID,
         'Bundle ID':         IOC.PATTERN,
@@ -2824,7 +2828,6 @@ class MachoRenderer {
         'Dynamic Linker':    IOC.FILE_PATH,
         'Library ID':        IOC.FILE_PATH,
         'Source Version':    IOC.PATTERN,
-        'SymHash':           IOC.HASH,
         'Overlay SHA-256':   IOC.HASH,
         'Fat Tail SHA-256':  IOC.HASH,
       });
@@ -2885,20 +2888,31 @@ class MachoRenderer {
               'persist-ld-preload':       'persistence',
               'fileless-memfd':           'execution',
             };
+            // Helper: append a suppressed-capability row with a
+            // human-readable reason (mirrors PE/ELF renderers).
+            const _classTag = () => {
+              if (!binaryClass) return 'unclassified';
+              const parts = [binaryClass.trust || 'unknown-trust'];
+              if (binaryClass.family) parts.push(binaryClass.family);
+              else if (binaryClass.kind && binaryClass.kind !== 'executable') parts.push(binaryClass.kind);
+              if (binaryClass.large) parts.push('large');
+              return parts.join(' ');
+            };
+            const _addSuppressed = (capObj, reason) => {
+              const line = `${capObj.name} — ${_classTag()}: ${reason}`;
+              const cur = findings.metadata['Suppressed Capability'];
+              findings.metadata['Suppressed Capability'] = cur ? cur + '\n' + line : line;
+            };
             for (const cap of caps) {
               const cat = capCategory[cap.id] || 'other';
               if ((cap.severity === 'medium' || cap.severity === 'low' || cap.severity === 'info')
                   && !_surface(cat)) {
-                findings.metadata['Suppressed Capability'] =
-                  (findings.metadata['Suppressed Capability'] || '') +
-                  (findings.metadata['Suppressed Capability'] ? ', ' : '') + cap.name;
+                _addSuppressed(cap, `${cap.severity}-severity ${cat} not surfaced at this trust tier`);
                 continue;
               }
               const w = _weight(cap.severity, cat);
               if (w === 0) {
-                findings.metadata['Suppressed Capability'] =
-                  (findings.metadata['Suppressed Capability'] || '') +
-                  (findings.metadata['Suppressed Capability'] ? ', ' : '') + cap.name;
+                _addSuppressed(cap, `weight zeroed for ${cap.severity} ${cat}`);
                 continue;
               }
               pushIOC(findings, {

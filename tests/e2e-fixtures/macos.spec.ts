@@ -77,11 +77,12 @@ test.describe('macOS system fixtures', () => {
     expect(findings.iocTypes).toContain('YARA Match');
   });
 
-  test('.dylib MachO parses with file paths + GUID + hash', async () => {
+  test('.dylib MachO parses with file paths + GUID', async () => {
     const findings = await loadFixture(ctx.page, 'examples/macos-system/example.dylib');
     expect(findings.iocTypes).toContain('File Path');
-    expect(findings.iocTypes).toContain('Hash');
     expect(findings.iocTypes).toContain('GUID');
+    // (SymHash and the file-trio hashes are clustering metadata, not
+    // IOCs — kept in `findings.metadata` only.)
   });
 
   test('overlay-random.dylib (MachO + appended random data) escalates risk', async () => {

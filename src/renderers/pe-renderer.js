@@ -2724,8 +2724,23 @@ class PeRenderer {
     const div = document.createElement('div');
     div.className = 'pe-imports';
 
-    // Search bar filters DLL-level <details> elements; risk toggle shows only DLLs with suspicious imports
-    this._addSearchBar(div, () => Array.from(div.querySelectorAll('.pe-import-dll')), 'Filter imports…', '.pe-import-warn');
+    // Search bar filters BOTH the DLL-level <details> AND individual
+    // function spans inside each DLL. Behaviour:
+    //   • Empty query           → all DLLs visible, all functions visible.
+    //   • Non-empty query       → DLL is visible if its name OR any of its
+    //                              function names matches; inside a visible
+    //                              DLL only matching functions are shown
+    //                              (unless the DLL name itself matched, in
+    //                              which case all functions stay visible);
+    //                              matched DLLs auto-open so the analyst
+    //                              sees the hits immediately.
+    //   • Risk-only toggle      → restricts to DLLs with at least one
+    //                              suspicious-flagged import.
+    //
+    // The generic `_addSearchBar` only filters parent items; the per-
+    // function pass below is what makes the input feel responsive on
+    // huge SDKs that import 200+ symbols from KERNEL32.
+    this._addImportsSearchBar(div);
 
     for (const imp of pe.imports) {
       const detail = document.createElement('details');
@@ -3354,6 +3369,94 @@ class PeRenderer {
       container.appendChild(btn);
     }
     return container;
+  }
+
+  // Specialised search bar for the Imports section: filters DLL-level
+  // <details> AND per-function spans inside each DLL. See `_renderImports`
+  // for the user-facing behaviour spec.
+  _addImportsSearchBar(container) {
+    const wrap = document.createElement('div');
+    wrap.className = 'bin-search-wrap';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.placeholder = 'Filter imports…';
+    const riskBtn = document.createElement('button');
+    riskBtn.className = 'bin-risk-toggle';
+    riskBtn.textContent = '⚠ Risky';
+    riskBtn.title = 'Show only DLLs with suspicious imports';
+    const count = document.createElement('span');
+    count.className = 'bin-search-count';
+    wrap.appendChild(input);
+    wrap.appendChild(riskBtn);
+    wrap.appendChild(count);
+
+    let riskOnly = false;
+
+    // Track which DLLs the user manually opened so we don't re-collapse
+    // them when the query clears. We only auto-open DLLs that had
+    // function-level matches under the current query.
+    const _autoOpened = new WeakSet();
+
+    const applyFilter = () => {
+      const q = input.value.toLowerCase().trim();
+      const dlls = Array.from(container.querySelectorAll('.pe-import-dll'));
+      let visibleDlls = 0;
+      for (const dll of dlls) {
+        const summaryEl = dll.querySelector(':scope > summary');
+        const dllName = (summaryEl ? summaryEl.textContent : '').toLowerCase();
+        const dllNameMatches = !q || dllName.includes(q);
+        const funcSpans = Array.from(dll.querySelectorAll('.pe-import-func'));
+
+        // Per-function filtering. When the DLL name itself matched OR the
+        // query is empty, every function stays visible; otherwise only
+        // matching function spans show.
+        let funcMatches = 0;
+        for (const span of funcSpans) {
+          const name = (span.textContent || '').toLowerCase();
+          const show = !q || dllNameMatches || name.includes(q);
+          span.classList.toggle('bin-hidden', !show);
+          if (show && q && !dllNameMatches && name.includes(q)) funcMatches++;
+        }
+
+        const hasRisk = !!dll.querySelector('.pe-import-warn');
+        const dllVisible =
+          (!q || dllNameMatches || funcMatches > 0)
+          && (!riskOnly || hasRisk);
+        dll.classList.toggle('bin-hidden', !dllVisible);
+        if (dllVisible) visibleDlls++;
+
+        // Auto-open DLLs that have function-level matches; restore
+        // collapsed state when the query clears (only for DLLs we
+        // auto-opened — leave user-opened ones alone).
+        if (q && !dllNameMatches && funcMatches > 0 && !dll.open) {
+          dll.open = true;
+          _autoOpened.add(dll);
+        } else if (!q && _autoOpened.has(dll)) {
+          dll.open = false;
+          _autoOpened.delete(dll);
+        }
+      }
+      count.textContent = (q || riskOnly) ? `${visibleDlls}/${dlls.length}` : '';
+    };
+
+    input.addEventListener('input', applyFilter);
+    riskBtn.addEventListener('click', () => {
+      if (riskBtn.disabled) return;
+      riskOnly = !riskOnly;
+      riskBtn.classList.toggle('active', riskOnly);
+      container.classList.toggle('risk-filter-active', riskOnly);
+      applyFilter();
+    });
+    setTimeout(() => {
+      const hasRisky = container.querySelector('.pe-import-warn');
+      if (!hasRisky) {
+        riskBtn.disabled = true;
+        riskBtn.title = 'No risky imports detected';
+      }
+    }, 0);
+
+    container.insertBefore(wrap, container.firstChild);
+    return wrap;
   }
 
   _addSearchBar(container, getItems, placeholder, riskSelector) {
@@ -4036,15 +4139,21 @@ class PeRenderer {
 
       // ── Mirror classic-pivot metadata into IOC table ────────────────
       // PE binaries carry a set of metadata fields that are actionable
-      // pivots (imphash clusters similar samples; PDB paths leak build
-      // hosts / usernames; OriginalFilename / InternalName survives
-      // renaming for tracking); these need to land in the sidebar IOC
-      // table, not just in the File Info metadata pane. Attribution
-      // fluff (CompanyName, FileDescription, ProductName) stays
-      // metadata-only per the "Option B" classic-pivot policy.
+      // pivots (PDB paths leak build hosts / usernames;
+      // OriginalFilename / InternalName survives renaming for tracking);
+      // these need to land in the sidebar IOC table, not just in the
+      // File Info metadata pane. Attribution fluff (CompanyName,
+      // FileDescription, ProductName) stays metadata-only per the
+      // "Option B" classic-pivot policy.
+      //
+      // Imphash and RichHash are family-clustering metadata, NOT IOCs —
+      // they're emitted into `findings.metadata` only (visible in the
+      // File Info pane and in the copy-analysis Markdown report) but
+      // deliberately omitted here so they don't appear in the sidebar
+      // IOC table, the IOC CSV/STIX/MISP exports, or the Summary IOC
+      // section. Same policy for ELF telfhash and Mach-O import-hash /
+      // SymHash on the sister renderers.
       mirrorMetadataIOCs(findings, {
-        'Imphash':           IOC.HASH,
-        'RichHash':          IOC.HASH,
         'PDB Path':          IOC.FILE_PATH,
         'Original Filename': IOC.FILE_PATH,
         'Internal Name':     IOC.FILE_PATH,
@@ -4214,25 +4323,71 @@ class PeRenderer {
           'persist-ld-preload':      'persistence',
           'fileless-memfd':          'execution',
         };
+        // Helper: append a suppressed-capability row with a human-readable
+        // reason explaining why this capability didn't fire as an IOC. The
+        // reason is composed from the binaryClass tier so the analyst can
+        // audit the gate that fired.
+        const _classTag = () => {
+          if (!binaryClass) return 'unclassified';
+          const parts = [binaryClass.trust || 'unknown-trust'];
+          if (binaryClass.family) parts.push(binaryClass.family);
+          else if (binaryClass.kind && binaryClass.kind !== 'executable') parts.push(binaryClass.kind);
+          if (binaryClass.large) parts.push('large');
+          return parts.join(' ');
+        };
+        const _addSuppressed = (cap, reason) => {
+          const line = `${cap.name} — ${_classTag()}: ${reason}`;
+          const cur = findings.metadata['Suppressed Capability'];
+          findings.metadata['Suppressed Capability'] = cur ? cur + '\n' + line : line;
+        };
         for (const c of caps) {
           const cat = capCategory[c.id] || 'other';
+          // Reflective-DLL Injection special-case: this rule fires on the
+          // ubiquitous trio VirtualAlloc + VirtualProtect + CreateThread.
+          // On large signed-trusted SDKs / runtimes those three appear by
+          // sheer happenstance; the simple-string match is too weak to
+          // claim "manual map" without corroborating shellcode evidence.
+          // Suppress on signed-trusted + benign-family entirely; demote to
+          // medium / weight 0.5 on signed-trusted + large otherwise.
+          if (c.id === 'proc-injection-reflective' && binaryClass) {
+            const trustedFamily = binaryClass.trust === 'signed-trusted' && (
+              binaryClass.family === 'media-sdk' ||
+              binaryClass.family === 'compiler-toolchain' ||
+              binaryClass.family === 'system-utility');
+            if (trustedFamily) {
+              _addSuppressed(c, 'reflective-DLL quorum (VirtualAlloc+VirtualProtect+CreateThread) too coincidental on this binary class');
+              continue;
+            }
+            if (binaryClass.trust === 'signed-trusted' && binaryClass.large) {
+              // Demote: treat as medium with reduced weight; still surfaces
+              // but no longer pushes risk to high on its own.
+              pushIOC(findings, {
+                type: IOC.PATTERN,
+                value: `${c.name} [${c.mitre}]`,
+                severity: 'medium',
+                note: c.description + ' — DEMOTED: signed-trusted large binary; ubiquitous-API quorum has high false-positive rate on big SDKs. ' +
+                      (c.evidence && c.evidence.length ? `Evidence: ${c.evidence.slice(0, 4).join(', ')}` : ''),
+                _noDomainSibling: true,
+              });
+              issues.push(`${c.name} (${c.mitre}) [demoted]`);
+              riskScore += (sevWeight['medium'] || 0) * 0.5;
+              continue;
+            }
+            // Fall through to default handling below for unsigned / signed-untrusted.
+          }
           // Suppress low-severity ubiquitous-API rows on signed-trusted
           // system-class binaries — exposes a metadata row instead so the
           // analyst can audit if needed.
           if ((c.severity === 'medium' || c.severity === 'low' || c.severity === 'info')
               && !_surface(cat)) {
-            findings.metadata['Suppressed Capability'] =
-              (findings.metadata['Suppressed Capability'] || '') +
-              (findings.metadata['Suppressed Capability'] ? ', ' : '') + c.name;
+            _addSuppressed(c, `${c.severity}-severity ${cat} not surfaced at this trust tier`);
             continue;
           }
           const w = _weight(c.severity, cat);
           // Drop the IOC entirely when weight is 0 (signed-trusted media-SDK
           // hitting a low-severity cluster).
           if (w === 0) {
-            findings.metadata['Suppressed Capability'] =
-              (findings.metadata['Suppressed Capability'] || '') +
-              (findings.metadata['Suppressed Capability'] ? ', ' : '') + c.name;
+            _addSuppressed(c, `weight zeroed for ${c.severity} ${cat}`);
             continue;
           }
           pushIOC(findings, {

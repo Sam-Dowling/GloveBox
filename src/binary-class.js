@@ -13,6 +13,10 @@
 //   BinaryClass.classify(ctx) → {
 //     size:        'tiny' | 'small' | 'medium' | 'large' | 'huge',
 //     sizeBytes:   number,
+//     large:       boolean — true when size tier is 'large' or 'huge'
+//                  (≥ 10 MB). Convenience flag used by renderers to demote
+//                  ubiquitous-API quorums whose false-positive rate
+//                  scales with binary size (e.g. reflective-DLL trio).
 //     trust:       'unsigned' | 'self-signed' | 'signed' | 'signed-trusted',
 //     trustBoost:  -1 | 0 | 1 | 2,
 //     kind:        'driver' | 'dll' | 'exe' | 'service' | 'installer' | 'library',
@@ -196,9 +200,18 @@ function classifyBinary(ctx) {
   const familyStr = family === 'unknown' ? '' : ' · ' + family;
   const summary = `${size} (${sizeStr}) · ${trust}${familyStr}`;
 
+  // Convenience boolean: "is this a large binary?". `large` is true when
+  // the size tier is `'large'` (≥ 10 MB, < 50 MB) or `'huge'` (≥ 50 MB).
+  // Capability gates that suffer from coincidental ubiquitous-API quorum
+  // matches (e.g. proc-injection-reflective on signed media SDKs) use
+  // this to suppress / demote on big binaries where the false-positive
+  // rate is highest.
+  const large = (size === 'large' || size === 'huge');
+
   return Object.freeze({
     size,
     sizeBytes,
+    large,
     trust,
     trustBoost,
     kind,

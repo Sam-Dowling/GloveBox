@@ -815,7 +815,10 @@ extendApp({
       for (const s of pe.sections) {
         const entropy = s.entropy !== undefined ? s.entropy.toFixed(2) : '—';
         const flags = (s.charFlags || []).join(', ') || tp(s.characteristics);
-        parts.push(`| ${tp(s.name)} | 0x${(s.virtualSize || 0).toString(16)} | 0x${(s.rawSize || 0).toString(16)} | ${entropy} | ${tp(flags)} |`);
+        // Field is `rawDataSize` on the parsed PE-section object (see
+        // `_parsePeFile` in pe-renderer.js). Earlier code read `s.rawSize`,
+        // which silently coerced to 0 — making every row print `0x0`.
+        parts.push(`| ${tp(s.name)} | 0x${(s.virtualSize || 0).toString(16)} | 0x${(s.rawDataSize || 0).toString(16)} | ${entropy} | ${tp(flags)} |`);
       }
     }
 

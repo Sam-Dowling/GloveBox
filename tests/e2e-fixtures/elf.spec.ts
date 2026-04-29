@@ -24,14 +24,13 @@ test.describe('ELF renderer', () => {
     expect(ruleNames(findings)).toContain('Info_Reverse_Shell_Patterns');
     // Expect a sizeable strings extraction.
     expect(findings.iocCount).toBeGreaterThan(20);
-    // Hash trio must surface.
-    expect(findings.iocTypes).toContain('Hash');
+    // (Telfhash-style import hash and file-trio hashes are family-
+    // clustering metadata, not IOCs — kept in `findings.metadata` only.)
   });
 
   test('shared object (.so) parses with file-path enumeration', async () => {
     const findings = await loadFixture(ctx.page, 'examples/elf/example.so');
     expect(findings.iocTypes).toContain('File Path');
-    expect(findings.iocTypes).toContain('Hash');
   });
 
   test('overlay-zip-elf polyglot loads as ELF first', async () => {
@@ -40,6 +39,5 @@ test.describe('ELF renderer', () => {
     // appended-data check happens inside the ELF renderer.
     const findings = await loadFixture(ctx.page, 'examples/elf/overlay-zip-elf');
     expect(isRiskAtLeast(findings.risk, 'high')).toBe(true);
-    expect(findings.iocTypes).toContain('Hash');
   });
 });
