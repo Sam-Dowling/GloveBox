@@ -347,10 +347,29 @@ extendApp({
         }
       }
       if (iocs.length || niceIocs.length) {
+        // Reset the per-render IP enrichment cache so the same provider
+        // results are reused across the IOCs section, the nicelisted
+        // sub-section, and any subsequent export the analyst triggers
+        // from the same render pass. See `_enrichIpForExport` in
+        // app-sidebar.js for the contract.
+        if (typeof this._resetEnrichIpCache === 'function') this._resetEnrichIpCache();
+        // Build a per-row Enrichment cell for IOC.IP rows (and only
+        // those). Empty string for everything else so the column reads
+        // cleanly when piped through awk.
+        const _enrichCell = (ioc) => {
+          if (ioc.type !== IOC.IP || !ioc.url) return '';
+          if (typeof this._enrichIpForExport !== 'function') return '';
+          const enr = this._enrichIpForExport(ioc.url);
+          if (!enr) return '';
+          const parts = [];
+          if (enr.geoStr) parts.push('🌍 ' + enr.geoStr);
+          if (enr.asnStr) parts.push('🛰 ' + enr.asnStr);
+          return tp(parts.join(' — '));
+        };
         const iocCap = rowCap(350);
-        let d = '\n## IOCs\n| Type | Value | Severity |\n|------|-------|----------|\n';
+        let d = '\n## IOCs\n| Type | Value | Severity | Enrichment |\n|------|-------|----------|------------|\n';
         for (const ioc of iocs.slice(0, iocCap)) {
-          d += `| ${tp(ioc.type)} | \`${tp(ioc.url)}\` | ${ioc.severity || 'info'} |\n`;
+          d += `| ${tp(ioc.type)} | \`${tp(ioc.url)}\` | ${ioc.severity || 'info'} | ${_enrichCell(ioc)} |\n`;
         }
         if (iocs.length > iocCap) d += `\n… and ${iocs.length - iocCap} more IOCs\n`;
         // Nicelisted bucket — separate sub-table so the row count is
@@ -358,10 +377,10 @@ extendApp({
         // this into a TIP can `grep -B999 '^### Nicelisted'` to discard.
         if (niceIocs.length && niceMode === 'group') {
           d += '\n### Nicelisted IOCs (matched Loupe nicelist — likely benign)\n';
-          d += '| Type | Value | Source |\n|------|-------|--------|\n';
+          d += '| Type | Value | Source | Enrichment |\n|------|-------|--------|------------|\n';
           const niceCap = rowCap(150);
           for (const ioc of niceIocs.slice(0, niceCap)) {
-            d += `| ${tp(ioc.type)} | \`${tp(ioc.url)}\` | ${tp(ioc._nicelistSource || 'nicelist')} |\n`;
+            d += `| ${tp(ioc.type)} | \`${tp(ioc.url)}\` | ${tp(ioc._nicelistSource || 'nicelist')} | ${_enrichCell(ioc)} |\n`;
           }
           if (niceIocs.length > niceCap) d += `\n… and ${niceIocs.length - niceCap} more nicelisted IOCs\n`;
         }
@@ -1464,10 +1483,19 @@ extendApp({
       generatedAt: new Date().toISOString(),
       tool: { name: 'Loupe', version: (typeof LOUPE_VERSION !== 'undefined' ? LOUPE_VERSION : 'dev') },
       file: this._fileSourceRecord(),
-      iocs: iocs.map(i => ({
-        type: i.type, value: i.value, severity: i.severity || 'info',
-        note: i.note || '', source: i.source || '',
-      })),
+      // `geo` and `asn` are optional fields, only emitted for IPv4 IOCs
+      // when the corresponding GeoIP / ASN provider returned a record.
+      // Schema stays at v1 — v1 readers that ignore unknown keys keep
+      // working unchanged. See `_collectIocs` for the source of truth.
+      iocs: iocs.map(i => {
+        const out = {
+          type: i.type, value: i.value, severity: i.severity || 'info',
+          note: i.note || '', source: i.source || '',
+        };
+        if (i.geo) out.geo = i.geo;
+        if (i.asn) out.asn = i.asn;
+        return out;
+      }),
     };
     this._copyToClipboard(JSON.stringify(payload, null, 2));
     this._toast(iocs.length
@@ -1527,6 +1555,13 @@ extendApp({
         && allRefs.some(r => r && typeof r._nicelisted === 'undefined')) {
       annotateNicelist(f);
     }
+    // IP geo / ASN enrichment is shared with the sidebar + Summary
+    // surfaces via `_enrichIpForExport` — reset the per-render cache so
+    // a re-export after the analyst uploaded an MMDB picks up the new
+    // provider. The cache scopes lookups so a CSV with 100 rows × the
+    // same 5 IPs only hits the provider 5 times. Independent of STIX /
+    // MISP — those exporters are deferred (see CONTRIBUTING / FEATURES).
+    if (typeof this._resetEnrichIpCache === 'function') this._resetEnrichIpCache();
     for (const r of allRefs) {
       if (!r || !r.url) continue;
       if (detectionTypes.has(r.type)) continue;       // detections live in `detections`, not here
@@ -1534,7 +1569,7 @@ extendApp({
       if (seen.has(key)) continue;
       seen.add(key);
       const stixType = this._classifyIocForStix(r.type, r.url);
-      out.push({
+      const row = {
         type: r.type,
         value: r.url,
         severity: r.severity || 'info',
@@ -1543,7 +1578,20 @@ extendApp({
         stixType,                                  // may be null for unmappable types (skipped by STIX)
         nicelisted: !!r._nicelisted,               // carried through to STIX/MISP/CSV
         nicelistSource: r._nicelistSource || null, // 'Default Nicelist' | user-list display name | null
-      });
+      };
+      // Attach geo / ASN enrichment for IPv4 IOCs only. Both fields are
+      // optional — only set when the corresponding provider returned a
+      // record. JSON exporter forwards `row.geo` / `row.asn`; CSV
+      // exporter spreads them into the geo_*/asn_* columns; STIX / MISP
+      // exporters ignore them (deferred).
+      if (r.type === IOC.IP && typeof this._enrichIpForExport === 'function') {
+        const enr = this._enrichIpForExport(r.url);
+        if (enr) {
+          if (enr.geo) row.geo = enr.geo;
+          if (enr.asn) row.asn = enr.asn;
+        }
+      }
+      out.push(row);
     }
     out.sort((a, b) => (a.type + a.value).localeCompare(b.type + b.value));
     return out;
@@ -1587,22 +1635,33 @@ extendApp({
     // quotes and embedded quotes are doubled. Sort order is done by caller
     // so diffing two exports of the same file is byte-stable.
     //
-    // Columns (extended 2026-04 to carry nicelist context downstream):
-    //   type, value, severity, note, source, nicelisted, nicelist_source
+    // Columns:
+    //   type, value, severity, note, source,
+    //   nicelisted, nicelist_source,                      ← added 2026-04
+    //   geo_country, geo_iso, geo_region, geo_city,       ← added 2026-04 (IP enrichment)
+    //   asn, asn_org                                      ← added 2026-04 (IP enrichment)
     //
     // The `nicelisted` column is `true`/`false`; `nicelist_source` is the
     // matching list's display name (`'Default Nicelist'` for built-ins,
-    // user-list label otherwise) or empty when not nicelisted. Analysts
-    // who want to drop the noise post-hoc can `awk -F, '$6=="false"'`
-    // without losing the underlying record. Earlier consumers that
-    // `head -1`'d the CSV will see the new columns appended at the end.
+    // user-list label otherwise) or empty when not nicelisted.
+    //
+    // The geo_* and asn_* columns are populated for IPv4 IOCs only when
+    // the corresponding GeoIP / ASN provider returned a record. Empty
+    // for every other IOC type and for IPv4s that missed in the
+    // bundled / uploaded MMDB. Earlier consumers that `head -1`'d the
+    // CSV will see the new columns appended at the end.
     const q = (v) => {
       const s = v == null ? '' : String(v);
       if (/[",\r\n]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
       return s;
     };
-    const lines = ['type,value,severity,note,source,nicelisted,nicelist_source'];
+    const lines = [
+      'type,value,severity,note,source,nicelisted,nicelist_source,'
+      + 'geo_country,geo_iso,geo_region,geo_city,asn,asn_org',
+    ];
     for (const i of iocs) {
+      const geo = i.geo || null;
+      const asn = i.asn || null;
       lines.push([
         q(i.type),
         q(i.value),
@@ -1611,6 +1670,12 @@ extendApp({
         q(i.source || ''),
         q(i.nicelisted ? 'true' : 'false'),
         q(i.nicelistSource || ''),
+        q(geo ? (geo.country || '') : ''),
+        q(geo ? (geo.iso || '') : ''),
+        q(geo ? (geo.region || '') : ''),
+        q(geo ? (geo.city || '') : ''),
+        q(asn ? (asn.asn != null ? 'AS' + asn.asn : '') : ''),
+        q(asn ? (asn.org || '') : ''),
       ].join(','));
     }
     // BOM-less UTF-8; use CRLF per RFC 4180 for maximal Excel friendliness.

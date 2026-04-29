@@ -81,34 +81,12 @@
 
 (function () {
   // ── IPv4 parser ────────────────────────────────────────────────────────
-  function isStrictIPv4(s) {
-    if (typeof s !== 'string') return false;
-    const len = s.length;
-    if (len < 7 || len > 15) return false;
-    let octets = 0;
-    let cur = 0;
-    let curDigits = 0;
-    for (let i = 0; i < len; i++) {
-      const c = s.charCodeAt(i);
-      if (c >= 48 && c <= 57) {
-        if (curDigits === 0 && c === 48 && i + 1 < len && s.charCodeAt(i + 1) >= 48 && s.charCodeAt(i + 1) <= 57) {
-          return false;
-        }
-        cur = cur * 10 + (c - 48);
-        curDigits++;
-        if (cur > 255 || curDigits > 3) return false;
-      } else if (c === 46) {  // '.'
-        if (curDigits === 0) return false;
-        octets++;
-        if (octets > 3) return false;
-        cur = 0;
-        curDigits = 0;
-      } else {
-        return false;
-      }
-    }
-    return curDigits > 0 && octets === 3;
-  }
+  // Lifted to `src/util/ipv4.js` so the sidebar / Summary IOC enrichment
+  // path can share one source of truth. The thin local alias below keeps
+  // every existing call site in this file untouched.
+  const isStrictIPv4 = (typeof Ipv4Util !== 'undefined' && Ipv4Util.isStrictIPv4)
+    ? Ipv4Util.isStrictIPv4
+    : function (s) { return typeof s === 'string' && /^(\d{1,3}\.){3}\d{1,3}$/.test(s); };
 
   // ── Geo skip-heuristic vocabulary ─────────────────────────────────────
   const GEO_HEADER_TOKENS = [

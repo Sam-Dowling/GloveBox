@@ -49,9 +49,107 @@ extendApp({
     safeStorage.set('loupe_ioc_hide_nicelisted', v ? '1' : '0');
   },
 
+  // ── IP IOC geo / ASN enrichment (sidebar + Summary + JSON/CSV) ─────────
+  // Single source of truth shared by:
+  //   • `_renderFindingsTableSection` (sidebar IOC rows)
+  //   • `_buildAnalysisText` (Summary markdown — Enrichment column)
+  //   • `_collectIocs` (IOC JSON / IOC CSV exports)
+  //
+  // Contract:
+  //   _enrichIpForExport(ip) → null    when ip is not a strict IPv4,
+  //                                    is private/loopback/multicast/CGNAT,
+  //                                    or no provider returned a record.
+  //                          → {                  // at least one field set:
+  //                              geo:    { country, iso, region?, city? },
+  //                              geoStr: 'United States/US/.../...',
+  //                              asn:    { asn, org },
+  //                              asnStr: 'Google LLC (AS15169)',
+  //                              vintage: 'GeoLite2-City built 2026-04-01',
+  //                            }
+  //
+  // Provider source: `this.geoip` (always set — bundled fallback) and
+  // `this.geoipAsn` (null until the analyst uploads an ASN MMDB; no
+  // bundled fallback). Mirrors the Timeline GeoIP enrichment mixin —
+  // see `src/app/timeline/timeline-view-geoip.js` for the parent
+  // contract.
+  //
+  // Per-render-pass cache: callers reset `this._enrichIpCache` at the
+  // start of each render cycle (sidebar paint, Summary build) so a CSV
+  // with 100 rows × the same 5 IPs only hits the provider 5 times.
+  // Missing cache initialises lazily.
+  _enrichIpForExport(ip) {
+    if (typeof Ipv4Util === 'undefined') return null;
+    if (!Ipv4Util.isStrictIPv4(ip)) return null;
+    if (Ipv4Util.isPrivateIPv4(ip)) return null;
+    if (!this._enrichIpCache) this._enrichIpCache = new Map();
+    const cached = this._enrichIpCache.get(ip);
+    if (cached !== undefined) return cached;
+
+    const geoProvider = this.geoip || null;
+    const asnProvider = this.geoipAsn || null;
+    if (!geoProvider && !asnProvider) {
+      this._enrichIpCache.set(ip, null);
+      return null;
+    }
+
+    const out = {};
+    let any = false;
+
+    if (geoProvider && typeof geoProvider.lookupIPv4 === 'function') {
+      let rec = null;
+      try { rec = geoProvider.lookupIPv4(ip); } catch (_) { rec = null; }
+      if (rec) {
+        out.geo = rec;
+        let geoStr = '';
+        if (typeof geoProvider.formatRow === 'function') {
+          try { geoStr = geoProvider.formatRow(rec) || ''; } catch (_) { geoStr = ''; }
+        }
+        if (geoStr) {
+          out.geoStr = geoStr;
+          any = true;
+        }
+      }
+      if (geoProvider.vintage && !out.vintage) out.vintage = geoProvider.vintage;
+    }
+
+    if (asnProvider && typeof asnProvider.lookupAsn === 'function') {
+      let rec = null;
+      try { rec = asnProvider.lookupAsn(ip); } catch (_) { rec = null; }
+      if (rec) {
+        out.asn = rec;
+        let asnStr = '';
+        if (typeof asnProvider.formatAsnRow === 'function') {
+          try { asnStr = asnProvider.formatAsnRow(rec) || ''; } catch (_) { asnStr = ''; }
+        }
+        if (asnStr) {
+          out.asnStr = asnStr;
+          any = true;
+        }
+      }
+    }
+
+    const result = any ? out : null;
+    this._enrichIpCache.set(ip, result);
+    return result;
+  },
+
+  // Reset the per-render enrichment cache. Called from `_renderSidebar`
+  // and `_buildAnalysisText` at the start of each render so duplicate
+  // IPs in the same table only hit the provider once but a re-render
+  // after a provider change picks up the new data.
+  _resetEnrichIpCache() {
+    this._enrichIpCache = new Map();
+  },
+
   _renderSidebar(fileName, analyzer) {
     // Clear any lingering encoded-content highlights from previous view
     this._clearEncodedHighlight();
+
+    // Reset the per-render IP enrichment cache so duplicate IPs in the
+    // IOCs table only hit the GeoIP/ASN provider once, but a re-render
+    // (e.g. after the user uploads an MMDB via Settings — `reEnrich()`
+    // in app-core.js triggers this path) picks up the new provider.
+    this._resetEnrichIpCache();
 
     // ── Pending return-navigation state ─────────────────────────────────
     // `_pendingSectionOpenState` carries the user's manual collapse/expand
@@ -1963,6 +2061,34 @@ extendApp({
         noteEl.textContent = '↳ ' + ref.note;
         td2.appendChild(noteEl);
       }
+
+      // ── IP geo/ASN enrichment ────────────────────────────────────────
+      // For IOC.IP rows, append a muted line per provider hit. Skips
+      // private / loopback / multicast / CGNAT addresses (those would
+      // miss anyway). When the analyst uploads an ASN MMDB after the
+      // sidebar has painted, `reEnrich()` in app-core.js triggers a
+      // re-render and the second line appears.
+      if (ref.type === IOC.IP && ref.url) {
+        const enr = this._enrichIpForExport(ref.url);
+        if (enr) {
+          const vintageTitle = enr.vintage ? ('Source: ' + enr.vintage) : '';
+          if (enr.geoStr) {
+            const geoEl = document.createElement('div');
+            geoEl.className = 'ioc-geo-enrich';
+            geoEl.textContent = '🌍 ' + enr.geoStr;
+            if (vintageTitle) geoEl.title = vintageTitle;
+            td2.appendChild(geoEl);
+          }
+          if (enr.asnStr) {
+            const asnEl = document.createElement('div');
+            asnEl.className = 'ioc-geo-enrich';
+            asnEl.textContent = '🛰 ' + enr.asnStr;
+            if (vintageTitle) asnEl.title = vintageTitle;
+            td2.appendChild(asnEl);
+          }
+        }
+      }
+
       if (IOC_COPYABLE.has(ref.type) && ref.url) {
         const cb = document.createElement('button'); cb.className = 'copy-url-btn';
         cb.textContent = '📋'; cb.title = 'Copy';

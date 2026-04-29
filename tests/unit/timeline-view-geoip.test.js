@@ -228,21 +228,38 @@ test('_detectIpColumns caps at 200 sample rows', () => {
 });
 
 test('_detectIpColumns uses the strict-IPv4 parser, not a regex', () => {
-  // The mixin defines `isStrictIPv4` as a non-allocating loop. A
-  // regression that swapped it for a regex (`/^\d+\.\d+\.\d+\.\d+$/`)
-  // would re-introduce ReDoS exposure that the strict parser was
-  // chosen to avoid. Pin both that the strict parser exists AND that
-  // `_detectIpColumns` calls it.
+  // The shared `Ipv4Util.isStrictIPv4` (src/util/ipv4.js) is the
+  // non-allocating-loop parser. A regression that swapped it for a
+  // regex (`/^\d+\.\d+\.\d+\.\d+$/`) would re-introduce ReDoS exposure
+  // that the strict parser was chosen to avoid. Pin both that the
+  // mixin aliases the shared util AND that `_detectIpColumns` calls
+  // the resulting `isStrictIPv4` symbol.
   assert.match(
     MIXIN,
-    /function\s+isStrictIPv4\s*\(/,
-    'mixin must define `isStrictIPv4` as the IPv4 shape gate',
+    /Ipv4Util(?:\.|\s*\?\s*\.)isStrictIPv4/,
+    'mixin must alias `Ipv4Util.isStrictIPv4` as its IPv4 shape gate',
   );
   assert.match(
     MIXIN,
     /isStrictIPv4\s*\(/,
     '_detectIpColumns must invoke `isStrictIPv4` to classify cells',
   );
+
+  // The shared util itself must still be a non-allocating loop, not a
+  // regex — this is the byte-equivalent guard the original test was
+  // checking via the mixin-private definition.
+  const UTIL = fs.readFileSync(
+    path.join(REPO_ROOT, 'src/util/ipv4.js'),
+    'utf8',
+  );
+  assert.match(
+    UTIL,
+    /function\s+isStrictIPv4\s*\(/,
+    'src/util/ipv4.js must define `isStrictIPv4` as a function',
+  );
+  // Heuristic: the parser body must walk character codes (`charCodeAt`)
+  // rather than relying on a single dotted-quad regex.
+  assert.match(UTIL, /charCodeAt/, 'isStrictIPv4 must remain a non-allocating loop, not a regex');
 });
 
 test('_classifyColumnNeighbourhood walks a ±3 window', () => {

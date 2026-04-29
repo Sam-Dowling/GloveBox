@@ -156,6 +156,23 @@ class App {
           if (this._timelineCurrent && typeof this._timelineCurrent._runGeoipEnrichment === 'function') {
             try { this._timelineCurrent._runGeoipEnrichment(); } catch (_) { /* noop */ }
           }
+          // Sidebar IOC + Summary surfaces consume `app.geoip` /
+          // `app.geoipAsn` via `_enrichIpForExport`. When the analyst
+          // uploads an MMDB (or the IndexedDB hydrate completes after
+          // first paint), re-render the sidebar so the geo / ASN lines
+          // appear without forcing a file reload. Cheap when the
+          // sidebar is hidden or no file is loaded — both early-exit.
+          try {
+            if (this.findings && typeof this._renderSidebar === 'function') {
+              const sb = (typeof document !== 'undefined') ? document.getElementById('sidebar') : null;
+              if (sb && !sb.classList.contains('hidden')) {
+                this._renderSidebar(
+                  (this._fileMeta && this._fileMeta.name) || '',
+                  this._currentAnalyzer || null,
+                );
+              }
+            }
+          } catch (_) { /* sidebar re-render is additive */ }
         };
         (async () => {
           try {

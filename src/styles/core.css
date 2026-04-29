@@ -2387,6 +2387,22 @@ body.dark .ioc-decoded-from {
   color: rgba(255, 255, 255, .58);
 }
 
+/* ── IP geo / ASN enrichment line under IOC.IP rows ──
+   One line per provider hit (🌍 country/ISO/region/city,
+   🛰 org (ASN)). Mirrors the muted-line shape of
+   `.ioc-decoded-from` so they stack cleanly under the IP value;
+   slightly less italic so the data string is still scannable. */
+.ioc-geo-enrich {
+  font-size: 9px;
+  color: #5a6273;
+  margin-top: 2px;
+  line-height: 1.4;
+}
+
+body.dark .ioc-geo-enrich {
+  color: rgba(255, 255, 255, .55);
+}
+
 /* ── Per-type IOC visual accents ──────────────────────── */
 .ext-table td.ioc-type {
   white-space: nowrap;

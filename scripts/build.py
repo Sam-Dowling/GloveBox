@@ -546,6 +546,16 @@ APP_JS_FILES = [
     # inline JS in <head>, not a `src/` module).
     'src/storage.js',
 
+    # util/ipv4.js — strict IPv4 parser + non-routable-range classifier.
+    # Single source of truth for "is this string a strict dotted-quad?"
+    # and "is this address private / loopback / multicast / CGNAT?".
+    # Consumed by:
+    #   • src/app/timeline/timeline-view-geoip.js  (timeline GeoIP enrichment)
+    #   • src/app/app-sidebar.js                   (sidebar IOC enrichment)
+    #   • src/app/app-ui.js                        (Summary + JSON/CSV exports)
+    # Pure JS, no dependencies. Must load BEFORE every consumer above.
+    'src/util/ipv4.js',
+
     # nicelist.js — known-good global infrastructure (NICELIST) used by the
     # sidebar IOC table to demote / hide benign cloud / registry / CA /
     # XML-namespace surfaces. Pure data + string helpers, no dependencies,
