@@ -832,7 +832,7 @@ extendApp({
         const funcs = imp.functions || [];
         const susp = funcs.filter(fn => fn.isSuspicious);
         if (susp.length) {
-          suspicious.push(`**${dll}** — ⚠ ${susp.map(fn => fn.name).join(', ')}${funcs.length > susp.length ? ` + ${funcs.length - susp.length} others` : ''}`);
+          suspicious.push(`**${dll}** (${susp.length} Suspicious, ${funcs.length} Total) — ⚠ ${susp.map(fn => fn.name).join(', ')}`);
         } else {
           normal.push(`**${dll}** (${funcs.length}) — ${funcs.slice(0, 8).map(fn => fn.name).join(', ')}${funcs.length > 8 ? '…' : ''}`);
         }
