@@ -146,17 +146,28 @@ function packRowChunk(rows, colCount) {
   // TextEncoder.encode is stateless.
   const encoder = (packRowChunk._encoder ||= new TextEncoder());
 
-  // Pass 1 — encode every cell into a flat array of Uint8Arrays so we
-  // can sum byte lengths to size the destination buffer exactly.
-  // For an empty / nullish cell we store `null` (no allocation) and
-  // emit a zero-length span at write time.
+  // Pass 1 — classify every cell as ASCII (pure 7-bit) or "needs UTF-8
+  // encoding", and sum byte lengths. For ASCII cells we keep the source
+  // string verbatim and skip the per-cell `TextEncoder.encode` call —
+  // this is the W3 hot-path saving on forensic-log inputs where ~95 %
+  // of cells are ASCII. Pass 2 writes ASCII cells via a `charCodeAt`
+  // loop directly into the destination buffer (no intermediate
+  // Uint8Array allocation, no GC pressure from N million per-cell
+  // typed-array headers).
+  //
+  // Slots:
+  //   • null         — empty / nullish cell
+  //   • a string `s` — ASCII fast-path; pass 2 writes `s.charCodeAt(i)`
+  //                    directly into `bytes` for `i` in `[0, s.length)`
+  //   • a Uint8Array — UTF-8 slow-path; pass 2 calls `bytes.set(e, pos)`
+  //
+  // The two-shape cell array is the source of W3's saving — keeping
+  // ASCII strings in their JS-string form means no per-cell `encoder.
+  // encode` allocation (which ran 2.4M times on the 100k×30 reference
+  // CSV and dominated worker-side GC).
   const encoded = new Array(rowCount * colCount);
   let totalBytes = 0;
-  // OR of every emitted byte. After Pass 2 we test `(highBitSeen & 0x80)`
-  // to decide `allAscii`. Tracking it during Pass 2 (the byte copy
-  // loop) costs one OR per byte — negligible relative to the `bytes.set`
-  // memcpy itself.
-  let highBitSeen = 0;
+  let anyNonAscii = false;
   for (let r = 0; r < rowCount; r++) {
     const row = rows[r];
     if (!row) {
@@ -172,13 +183,34 @@ function packRowChunk(rows, colCount) {
         continue;
       }
       const s = typeof v === 'string' ? v : String(v);
-      const bytes = encoder.encode(s);
-      encoded[r * colCount + c] = bytes;
-      totalBytes += bytes.byteLength;
+      // ASCII probe — `s.charCodeAt(i) >= 128` short-circuits on the
+      // first non-ASCII char. For pure-ASCII cells this is a single
+      // tight loop with no allocations; the cell is then stored as the
+      // source string. For UTF-8 cells we drop into `encoder.encode`
+      // and store the resulting Uint8Array instead.
+      let isAscii = true;
+      const sLen = s.length;
+      for (let i = 0; i < sLen; i++) {
+        if (s.charCodeAt(i) >= 128) { isAscii = false; break; }
+      }
+      if (isAscii) {
+        encoded[r * colCount + c] = s;
+        totalBytes += sLen;          // 1 byte/char for ASCII
+      } else {
+        const e = encoder.encode(s);
+        encoded[r * colCount + c] = e;
+        totalBytes += e.byteLength;
+        anyNonAscii = true;
+      }
     }
   }
 
-  // Pass 2 — copy into the destination buffer, recording offsets.
+  // Pass 2 — copy into the destination buffer, recording offsets. The
+  // ASCII branch writes bytes directly via `charCodeAt`; the UTF-8
+  // branch uses `bytes.set` (typed-array memcpy). The chunk-level
+  // `allAscii` flag is now determined by `anyNonAscii` from Pass 1
+  // (no need to OR every emitted byte) — a side benefit of the
+  // probe-first design.
   const bytes = new Uint8Array(totalBytes);
   const offsets = new Uint32Array(rowCount * stride);
   let pos = 0;
@@ -188,15 +220,23 @@ function packRowChunk(rows, colCount) {
     for (let c = 0; c < colCount; c++) {
       const e = encoded[r * colCount + c];
       if (e !== null) {
-        // OR every byte against the running mask. We don't short-circuit
-        // on first multibyte byte — pass-2 has to copy the bytes anyway,
-        // so the OR is amortised free. Branchless beats a `break`-out
-        // here in V8 jitted code.
-        for (let i = 0, n = e.byteLength; i < n; i++) {
-          highBitSeen |= e[i];
+        if (typeof e === 'string') {
+          // ASCII fast path. `charCodeAt(i)` returns a UTF-16 code
+          // unit which for ASCII inputs is identical to the byte
+          // value (high byte is zero). Storing into a Uint8Array
+          // truncates to 8 bits — for ASCII the truncation is a
+          // no-op. The inner loop is one of the hottest pieces of
+          // worker code on a CSV parse; keep it allocation-free
+          // and branchless beyond the bounds check.
+          const eLen = e.length;
+          for (let i = 0; i < eLen; i++) {
+            bytes[pos + i] = e.charCodeAt(i);
+          }
+          pos += eLen;
+        } else {
+          bytes.set(e, pos);
+          pos += e.byteLength;
         }
-        bytes.set(e, pos);
-        pos += e.byteLength;
       }
       offsets[baseO + c + 1] = pos;
     }
@@ -210,7 +250,7 @@ function packRowChunk(rows, colCount) {
     bytes,
     offsets,
     rowCount,
-    allAscii: (highBitSeen & 0x80) === 0,
+    allAscii: !anyNonAscii,
   };
 }
 
