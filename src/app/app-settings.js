@@ -241,19 +241,41 @@ extendApp({
     }
   },
 
-  // Surface for the GeoIP MMDB overrides. Two independent slots share
-  // one row, with a single bundled-summary line at the top:
+  // Surface for the GeoIP MMDB overrides. The row is laid out as:
   //
+  //   ┌ 🌍 GeoIP database ─────────────────────────────────────────────┐
+  //   │ ╭─ bundled info strip ─────────────────────────────────────╮   │
+  //   │ │ 🌐  Bundled: <vintage>   IPv4 → country, no setup needed │   │
+  //   │ ╰──────────────────────────────────────────────────────────╯   │
+  //   │ ╭─ Geo MMDB card ──────────────────────────────────────────╮   │
+  //   │ │ Geo MMDB    country / region / city                      │   │
+  //   │ │ No MMDB loaded                                           │   │
+  //   │ │ Need one? Download GeoLite2-City (free, ~26 MB).         │   │
+  //   │ │ [⬆ Upload .mmdb / .mmdb.gz]                             │   │
+  //   │ ╰──────────────────────────────────────────────────────────╯   │
+  //   │ ╭─ ASN MMDB card ──────────────────────────────────────────╮   │
+  //   │ │ … same shape, links to GeoLite2-ASN …                    │   │
+  //   │ ╰──────────────────────────────────────────────────────────╯   │
+  //   └────────────────────────────────────────────────────────────────┘
+  //
+  // Slot semantics:
   //   geo  — IPv4 → country / region / city (overrides the bundled
   //          provider when present; falls back to bundled when empty).
   //   asn  — IPv4 → AS number / organisation. Optional, no fallback.
   //
-  // Each slot has its own state line + Upload / Replace / Remove
-  // buttons. Uploads are schema-sniffed via `reader.detectSchema()` and
-  // rejected when the analyst pushes an obviously-wrong DB into the
-  // wrong slot ("ASN MMDB into the geo slot" → toast, no save). DBs
-  // whose schema can't be probed (every probe IP misses) are accepted
-  // — some private / regional DBs lack global coverage.
+  // Uploads are schema-sniffed via `reader.detectSchema()` and rejected
+  // when the analyst pushes an obviously-wrong DB into the wrong slot
+  // ("ASN MMDB into the geo slot" → toast, no save). DBs whose schema
+  // can't be probed (every probe IP misses) are accepted — some private
+  // / regional DBs lack global coverage.
+  //
+  // The "Need one? Download …" hint is rendered ONLY when the slot is
+  // empty so the UI stays quiet for users who already have an override
+  // configured. The links are plain `<a target="_blank">` to a public
+  // CDN — no `fetch`, no `<script src>`, no CSP relaxation needed
+  // (`default-src 'none'` does not gate `<a href>` navigation). The
+  // browser handles the download outside the app context, after which
+  // the user uploads the file via the slot's Upload button.
   //
   // The bundled provider is always present so analysts get useful
   // country data with zero configuration; the overrides exist for
@@ -269,42 +291,87 @@ extendApp({
     body.appendChild(row);
     const host = row.querySelector('#settings-geoip');
 
-    // Bundled summary — shared by both slots, rendered once.
+    // Bundled summary strip — shared by both slots, rendered once.
+    // Reads `BundledGeoip.vintage` so the strip stays accurate across
+    // bundle refreshes without any code change here.
     const bundled = document.createElement('div');
-    bundled.className = 'settings-geoip-bundled';
+    bundled.className = 'settings-geoip-bundled-strip';
     const bundledVintage = (typeof BundledGeoip !== 'undefined' && BundledGeoip.vintage)
-      ? BundledGeoip.vintage : 'Bundled IPv4 → country';
-    bundled.textContent = `Bundled: ${bundledVintage}`;
+      ? BundledGeoip.vintage : 'IPv4 → country';
+    bundled.innerHTML = `
+      <span class="settings-geoip-bundled-icon" aria-hidden="true">🌐</span>
+      <span class="settings-geoip-bundled-main">Bundled: ${this._escapeAttr(bundledVintage)}</span>
+      <span class="settings-geoip-bundled-sub">IPv4 → country, no setup needed</span>`;
     host.appendChild(bundled);
 
-    // Two slot panels.
-    const geoSlot = document.createElement('div');
-    geoSlot.className = 'settings-geoip-slot';
-    host.appendChild(geoSlot);
-    this._refreshGeoipSlot(geoSlot, 'geo', 'Geo MMDB (country / region / city)');
+    // One card per slot. Each card owns its own header + body and
+    // delegates body content (state line, hint, button row) to
+    // `_refreshGeoipSlot`, which re-renders in place after every
+    // Upload / Remove.
+    const geoCard = this._buildGeoipCard('geo', 'Geo MMDB', 'country / region / city');
+    host.appendChild(geoCard);
+    this._refreshGeoipSlot(
+      geoCard.querySelector('.settings-geoip-card-body'),
+      'geo',
+      'GeoLite2-City',
+      'https://cdn.jsdelivr.net/npm/@ip-location-db/geolite2-city-mmdb/geolite2-city-ipv4.mmdb',
+      '~30 MB',
+    );
 
-    const asnSlot = document.createElement('div');
-    asnSlot.className = 'settings-geoip-slot';
-    host.appendChild(asnSlot);
-    this._refreshGeoipSlot(asnSlot, 'asn', 'ASN MMDB (autonomous system / organisation)');
+    const asnCard = this._buildGeoipCard('asn', 'ASN MMDB', 'autonomous system / organisation');
+    host.appendChild(asnCard);
+    this._refreshGeoipSlot(
+      asnCard.querySelector('.settings-geoip-card-body'),
+      'asn',
+      'GeoLite2-ASN',
+      'https://cdn.jsdelivr.net/npm/@ip-location-db/geolite2-asn-mmdb/geolite2-asn-ipv4.mmdb',
+      '~10 MB',
+    );
   },
 
-  // Render one slot panel. Re-entrant: every Upload / Remove handler
-  // calls back into this function with the same `host` to refresh.
-  _refreshGeoipSlot(host, slot, label) {
+  // Construct the static card chrome (header + empty body) for a slot.
+  // The body is populated by `_refreshGeoipSlot`, which is reentrant so
+  // every Upload / Remove can refresh in-place without rebuilding the
+  // header.
+  _buildGeoipCard(slot, title, sub) {
+    const card = document.createElement('div');
+    card.className = 'settings-geoip-card';
+    card.dataset.slot = slot;
+    card.innerHTML = `
+      <div class="settings-geoip-card-header">
+        <span class="settings-geoip-card-title">${this._escapeAttr(title)}</span>
+        <span class="settings-geoip-card-sub">${this._escapeAttr(sub)}</span>
+      </div>
+      <div class="settings-geoip-card-body"></div>`;
+    return card;
+  },
+
+  // Render one slot's body content. Re-entrant: every Upload / Remove
+  // handler calls back into this function with the same `host` (the
+  // `.settings-geoip-card-body` element) to refresh state line, hint,
+  // and button row.
+  //
+  //   suggestionLabel — display text for the inline `<a>` (e.g.
+  //                     "GeoLite2-City"). Used in the hint that
+  //                     appears only when no MMDB is loaded.
+  //   suggestionUrl   — destination of the inline `<a>` (jsdelivr CDN
+  //                     URL pointing at a vetted public MMDB).
+  //   suggestionSize  — short size hint shown in parentheses after the
+  //                     link, e.g. "~70 MB".
+  _refreshGeoipSlot(host, slot, suggestionLabel, suggestionUrl, suggestionSize) {
     if (!host) return;
     host.innerHTML = '';
     const app = this;
-
-    const head = document.createElement('div');
-    head.className = 'settings-geoip-slot-label';
-    head.textContent = label;
-    host.appendChild(head);
 
     const stateLine = document.createElement('div');
     stateLine.className = 'settings-geoip-state';
     stateLine.textContent = '…';
     host.appendChild(stateLine);
+
+    // Inline hint (only shown when no MMDB is loaded — see renderState).
+    const hint = document.createElement('div');
+    hint.className = 'settings-geoip-hint';
+    host.appendChild(hint);
 
     const btnRow = document.createElement('div');
     btnRow.className = 'settings-geoip-btns';
@@ -319,6 +386,7 @@ extendApp({
     const renderState = (meta) => {
       stateLine.innerHTML = '';
       btnRow.innerHTML = '';
+      hint.innerHTML = '';
       if (meta) {
         const what = meta.databaseType || 'MMDB override';
         const when = meta.vintage || (meta.savedAt
@@ -326,6 +394,8 @@ extendApp({
           : '');
         const fname = meta.filename ? ` (${meta.filename})` : '';
         stateLine.textContent = `Loaded: ${what}${when ? ' — ' + when : ''}${fname}`;
+        // Hint is hidden once an MMDB is configured.
+        hint.style.display = 'none';
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'nicelist-btn';
@@ -349,11 +419,18 @@ extendApp({
           } else {
             app._toast('Could not remove (storage blocked?)');
           }
-          this._refreshGeoipSlot(host, slot, label);
+          this._refreshGeoipSlot(host, slot, suggestionLabel, suggestionUrl, suggestionSize);
         });
         btnRow.appendChild(remove);
       } else {
         stateLine.textContent = 'No MMDB loaded';
+        // Show the suggested-download hint only in the empty state.
+        hint.style.display = '';
+        const safeLabel = this._escapeAttr(suggestionLabel);
+        const safeUrl = this._escapeAttr(suggestionUrl);
+        const safeSize = this._escapeAttr(suggestionSize || '');
+        const sizeFrag = safeSize ? ` (free, ${safeSize})` : ' (free)';
+        hint.innerHTML = `Need one? Download <a href="${safeUrl}" target="_blank" rel="noopener">${safeLabel}</a>${sizeFrag}.`;
       }
       const upload = document.createElement('button');
       upload.type = 'button';
@@ -405,7 +482,7 @@ extendApp({
       if (app._timelineCurrent && typeof app._timelineCurrent._runGeoipEnrichment === 'function') {
         try { app._timelineCurrent._runGeoipEnrichment(); } catch (_) { /* noop */ }
       }
-      this._refreshGeoipSlot(host, slot, label);
+      this._refreshGeoipSlot(host, slot, suggestionLabel, suggestionUrl, suggestionSize);
     });
 
     // Kick off the meta fetch and render the appropriate state.

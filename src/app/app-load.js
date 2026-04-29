@@ -1883,6 +1883,28 @@ extendApp({
     const nav = document.getElementById('breadcrumbs');
     if (!nav) return;
 
+    // One-shot install of a debounced window-resize listener. Without
+    // this, the staged collapse routine only re-measured on the events
+    // that already triggered a render (load / drill-down / nav-jump),
+    // so dragging the window narrower never collapsed the trail and
+    // dragging it wider never restored full-width filenames. The
+    // listener is rAF-debounced (cheap) and only fires a re-render
+    // when a file is actually loaded.
+    if (!this._breadcrumbResizeBound) {
+      this._breadcrumbResizeBound = true;
+      let pending = false;
+      window.addEventListener('resize', () => {
+        if (pending) return;
+        pending = true;
+        requestAnimationFrame(() => {
+          pending = false;
+          if (this._fileMeta && this._fileMeta.name) {
+            try { this._renderBreadcrumbs(); } catch (_) { /* cosmetic */ }
+          }
+        });
+      });
+    }
+
     // No file loaded → hide breadcrumbs + restore base tab title
     if (!this._fileMeta || !this._fileMeta.name) {
       nav.classList.add('hidden');
@@ -1908,14 +1930,26 @@ extendApp({
     document.title = crumbs.map(c => c.name).join(' › ') + ' — Loupe';
 
     nav.classList.remove('hidden');
+    // Always start each render at the most-permissive width state — the
+    // staged collapse routine below re-applies `is-tight` /
+    // `is-very-tight` only if the natural (uncapped) trail overflows.
+    // Without these resets, widening the window after a drill-down would
+    // leave stale cap classes attached and ellipsises would persist.
+    nav.classList.remove('is-tight', 'is-very-tight');
     nav.innerHTML = '';
 
     // Render-helper: build a single crumb element (button for ancestors,
     // span for current). Keeps icon + label + optional meta consistent.
-    const renderCrumb = (c) => {
+    // The first crumb in a multi-entry trail gets the `crumb-root`
+    // modifier so the CSS shrink-hierarchy can have it surrender width
+    // before mid-stack ancestors on deep recursive-archive paths.
+    const renderCrumb = (c, opts) => {
+      const isRoot = !!(opts && opts.root);
       const tag = c.current ? 'span' : 'button';
       const el = document.createElement(tag);
-      el.className = 'crumb' + (c.current ? ' crumb-current' : '');
+      el.className = 'crumb'
+        + (c.current ? ' crumb-current' : '')
+        + (isRoot && !c.current ? ' crumb-root' : '');
       if (c.current) el.setAttribute('aria-current', 'page');
       else {
         el.type = 'button';
@@ -1952,29 +1986,44 @@ extendApp({
       nav.appendChild(sep);
     };
 
-    // Initial render: everything visible. Overflow handling below may
-    // replace the middle chunk with an `… ▾` chip.
+    // Initial render: everything visible at its natural width. The
+    // staged overflow routine below progressively tightens caps only if
+    // the natural layout doesn't fit.
     crumbs.forEach((c, i) => {
       if (i > 0) appendSep();
-      nav.appendChild(renderCrumb(c));
+      nav.appendChild(renderCrumb(c, { root: i === 0 && crumbs.length > 1 }));
     });
 
-    // ── Overflow collapse ────────────────────────────────────────────────
-    // If the trail is wider than the container, collapse middle crumbs
-    // (everything except root + current) into a `… ▾` chip with a
-    // dropdown. Measuring must happen after a layout pass so we defer
-    // with requestAnimationFrame.
-    const maybeCollapse = () => {
-      if (crumbs.length <= 2) return;                 // nothing to hide
-      if (nav.scrollWidth <= nav.clientWidth + 1) return;  // fits already
+    // ── Staged overflow handling ─────────────────────────────────────────
+    // Three cumulative stages, each only triggered if the previous one
+    // didn't make the trail fit. Measuring must happen after a layout
+    // pass so we defer with requestAnimationFrame.
+    //
+    //   Stage 1 — `is-tight`: per-crumb width caps kick in via CSS,
+    //             ellipsising the root crumb first (highest flex-shrink
+    //             weight + 120 px max-width), then mid-stack ancestors
+    //             (160 px max-width). Current crumb keeps full width.
+    //
+    //   Stage 2 — middle-collapse: rebuild with the original
+    //             `… ▾` overflow chip swallowing every crumb between
+    //             root and current. Only runs when there are crumbs
+    //             eligible to hide (`crumbs.length > 2`).
+    //
+    //   Stage 3 — `is-very-tight`: as a last resort the current
+    //             crumb's *label* is allowed to ellipsise. Its meta
+    //             suffix (` · 12 pages · 4.7 MB`) stays whole because
+    //             `.crumb-meta { flex-shrink: 0 }`.
+    const overflows = () => nav.scrollWidth > nav.clientWidth + 1;
 
-      // Rebuild with a collapsed middle
+    const buildCollapsedTrail = () => {
+      // Rebuild with a collapsed middle. Mirrors the original
+      // single-shot collapse but is now stage 2 of the staged routine.
       nav.innerHTML = '';
       const first = crumbs[0];
       const last = crumbs[crumbs.length - 1];
       const hidden = crumbs.slice(1, -1);
 
-      nav.appendChild(renderCrumb(first));
+      nav.appendChild(renderCrumb(first, { root: true }));
       appendSep();
 
       // Overflow chip
@@ -2014,6 +2063,22 @@ extendApp({
 
       appendSep();
       nav.appendChild(renderCrumb(last));
+    };
+
+    const maybeCollapse = () => {
+      if (!overflows()) return;
+      // Stage 1: shrink ancestors via CSS caps.
+      nav.classList.add('is-tight');
+      if (!overflows()) return;
+      // Stage 2: collapse middle into `… ▾` chip (only when there's
+      // something between root and current to hide).
+      if (crumbs.length > 2) {
+        buildCollapsedTrail();
+        // The collapsed trail also wants the tight ancestor caps.
+        if (!overflows()) return;
+      }
+      // Stage 3: allow current crumb's label to ellipsise too.
+      nav.classList.add('is-very-tight');
     };
     requestAnimationFrame(maybeCollapse);
   },

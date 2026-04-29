@@ -488,8 +488,12 @@ body.dark .tb-menu-item-active {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  max-width: 220px;
-  /* per-crumb truncation ceiling */
+  /* No per-crumb max-width here — `#breadcrumbs` already absorbs spare
+     toolbar width and `overflow: hidden`s anything that doesn't fit, so a
+     static cap was the thing forcing 75-char filenames to ellipsise even
+     when there were hundreds of free pixels to the right. The staged
+     collapse logic in `_renderBreadcrumbs` (app-load.js) re-applies a
+     cap via `#breadcrumbs.is-tight` when the trail genuinely overflows. */
   padding: 4px 8px;
   border: 1px solid transparent;
   border-radius: 6px;
@@ -502,7 +506,9 @@ body.dark .tb-menu-item-active {
   cursor: pointer;
   transition: background .15s ease, border-color .15s ease, color .15s ease;
   flex-shrink: 1;
-  min-width: 0;
+  /* Floor so a fully-shrunk ancestor still shows its icon + a couple of
+     letters — preserves "this is a path with three layers" affordance. */
+  min-width: 40px;
 }
 
 .crumb-icon {
@@ -530,18 +536,51 @@ body.dark .tb-menu-item-active {
 }
 
 /* Current crumb — active file, not clickable, styled as accent pill.
- * Inherits the 220 px truncation cap from `.crumb` but bumped slightly so
- * the meta suffix (size / pages) stays readable. DO NOT add `flex: 1` or
- * `max-width: none` here — the `#breadcrumbs` container already absorbs
- * spare toolbar width, and letting one crumb grow unbounded pushes the
- * trail off the right edge of the toolbar. */
+ * Refuses to shrink while alone (`flex-shrink: 0`) so a wide toolbar
+ * shows the full filename plus the size/page meta intact. The staged
+ * collapse logic in `_renderBreadcrumbs` only allows the current
+ * crumb's *label* to ellipsise (not its meta suffix) once the trail
+ * has been collapsed via `is-tight` + `… ▾` and STILL overflows; that
+ * extreme case is opted into via `#breadcrumbs.is-very-tight`. */
 .crumb-current {
   background: rgb(var(--accent-rgb) / .1);
   border-color: rgb(var(--accent-rgb) / .22);
   color: var(--accent-hover);
   font-weight: 600;
   cursor: default;
-  max-width: 320px;
+  flex-shrink: 0;
+}
+
+/* Root crumb (first entry on a deep drill-down). Surrenders width
+ * faster than mid-stack ancestors when space gets tight — on a
+ * recursive zip the root archive name is the least informative crumb
+ * (the user already loaded it; context is obvious) so it's the first
+ * to ellipsise. Only applied when the breadcrumb trail has more than
+ * one entry; a solo root reuses `.crumb-current`'s no-shrink rule. */
+.crumb-root {
+  flex-shrink: 2;
+}
+
+/* ── Tight-mode width caps ────────────────────────────────────────────
+ * Applied by `_renderBreadcrumbs` when the natural (uncapped) trail
+ * overflows `#breadcrumbs`. Stage 1: cap ancestor labels so they
+ * ellipsise; the root crumb gets the smallest cap because it has the
+ * highest `flex-shrink` weight. Stage 3 (`is-very-tight`) lets the
+ * current crumb's label ellipsise too — meta suffix stays whole. */
+#breadcrumbs.is-tight .crumb-root {
+  max-width: 120px;
+}
+
+#breadcrumbs.is-tight .crumb:not(.crumb-current):not(.crumb-root) {
+  max-width: 160px;
+}
+
+#breadcrumbs.is-very-tight .crumb-current {
+  /* Allow the current crumb to shrink as a last resort. Its
+     `.crumb-label` carries the ellipsis; `.crumb-meta` stays
+     `flex-shrink: 0` and remains fully visible. */
+  flex-shrink: 1;
+  min-width: 80px;
 }
 
 .crumb-current:hover {
@@ -555,10 +594,11 @@ body.dark .tb-menu-item-active {
   color: #666;
   margin-left: 4px;
   font-size: 11px;
-  flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  min-width: 0;
+  /* Meta suffix (` · 12 pages · 4.7 MB`) is short and informative;
+     truncating it mid-string is more confusing than truncating the
+     filename. Refuse to shrink so the label always loses width first. */
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 /* `›` separator between crumbs */
@@ -4616,73 +4656,146 @@ body.dark .settings-hint {
   color: rgba(255, 255, 255, .55);
 }
 
-/* ── GeoIP database row — compact two-line state + button strip ─────────
-   Lives inside `.settings-row` (Settings tab). One line for the bundled
-   provider's vintage, one for the override state, one row of action
-   buttons (Upload / Replace / Remove). Reuses `.nicelist-btn` styling
-   for the buttons so they match the rest of Settings without a new
-   button class. */
+/* ── GeoIP database row — bundled info strip + dual slot cards ──────────
+   Lives inside `.settings-row` (Settings tab). Layout:
+
+     ╭─ bundled info strip (accent-tinted pill) ────────────────╮
+     │ 🌐  Bundled: <vintage>   IPv4 → country, no setup needed │
+     ╰──────────────────────────────────────────────────────────╯
+     ╭─ Geo MMDB card ──────────────────────────────────────────╮
+     │ Geo MMDB   country / region / city                       │
+     │ ─────────                                                │
+     │ No MMDB loaded                                           │
+     │ Need one? Download GeoLite2-City (free, ~70 MB).         │
+     │ [⬆ Upload .mmdb / .mmdb.gz]                              │
+     ╰──────────────────────────────────────────────────────────╯
+     ╭─ ASN MMDB card (same shape) ─────────────────────────────╮
+     ╰──────────────────────────────────────────────────────────╯
+
+   Visual language reuses `.nicelist-card` border-weight + accent /
+   hairline tokens so the section sits next to Theme tiles, Phase
+   tiles, and Nicelist cards without feeling out of place. Buttons
+   reuse `.nicelist-btn` (no new button class). Dark-mode overrides
+   are limited to the surfaces that need a different background. */
 .settings-geoip {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 10px;
 }
 
-.settings-geoip-bundled {
+/* Bundled info strip — small accent-tinted pill row that calls out
+   what ships with Loupe (zero-config IPv4 → country). Uses the same
+   tint level as `.nicelist-card-builtin` so the "this is built-in"
+   visual cue matches the Nicelists tab. */
+.settings-geoip-bundled-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgb(var(--accent-rgb) / .25);
+  background: rgb(var(--accent-rgb) / .06);
+  border-radius: 8px;
   font-size: 12px;
-  color: #555;
+  flex-wrap: wrap;
 }
 
-body.dark .settings-geoip-bundled {
-  color: rgba(255, 255, 255, .65);
+body.dark .settings-geoip-bundled-strip {
+  border-color: rgb(var(--accent-rgb) / .3);
+  background: rgb(var(--accent-rgb) / .08);
+}
+
+.settings-geoip-bundled-icon {
+  flex: 0 0 auto;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.settings-geoip-bundled-main {
+  flex: 0 0 auto;
+  font-weight: 600;
+  color: var(--accent-hover);
+}
+
+body.dark .settings-geoip-bundled-main {
+  color: var(--accent);
+}
+
+.settings-geoip-bundled-sub {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  opacity: .7;
+}
+
+/* One card per MMDB slot (geo / asn). Mirrors `.nicelist-card`
+   spacing + radius so the two surfaces feel like siblings. */
+.settings-geoip-card {
+  border: 1px solid #d8dce3;
+  border-radius: 10px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+body.dark .settings-geoip-card {
+  background: rgba(255, 255, 255, .03);
+  border-color: var(--hairline-strong);
+}
+
+.settings-geoip-card-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eceef2;
+  flex-wrap: wrap;
+}
+
+body.dark .settings-geoip-card-header {
+  border-bottom-color: var(--hairline-soft);
+}
+
+.settings-geoip-card-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-geoip-card-sub {
+  font-size: 11px;
+  opacity: .6;
+}
+
+.settings-geoip-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px 12px;
 }
 
 .settings-geoip-state {
-  font-size: 12px;
+  font-size: 12.5px;
   color: #333;
+  font-variant-numeric: tabular-nums;
 }
 
 body.dark .settings-geoip-state {
   color: rgba(255, 255, 255, .82);
 }
 
+/* Inline suggested-download hint. Only rendered when the slot has no
+   MMDB loaded (see `_refreshGeoipSlot`'s renderState). The `<a>`
+   inside inherits `.settings-body a` styling (accent-coloured,
+   underlines on hover) so no per-element link rule is needed. */
+.settings-geoip-hint {
+  font-size: 11px;
+  opacity: .7;
+  line-height: 1.5;
+}
+
 .settings-geoip-btns {
   display: flex;
   gap: 8px;
-  margin-top: 4px;
+  margin-top: 2px;
   flex-wrap: wrap;
-}
-
-/* Dual-slot wrapper. Two `.settings-geoip-slot` blocks live inside
-   `.settings-geoip` (one per slot — geo + asn) under a shared
-   `.settings-geoip-bundled` summary line. Each slot is its own visually
-   distinct subgroup with a small label, state line, and button row.
-   Border-top separator (only on the second slot via `+` sibling) makes
-   the boundary readable without a heavy box. */
-.settings-geoip-slot {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-top: 6px;
-}
-
-.settings-geoip-slot + .settings-geoip-slot {
-  border-top: 1px solid rgba(0, 0, 0, .08);
-  margin-top: 4px;
-}
-
-body.dark .settings-geoip-slot + .settings-geoip-slot {
-  border-top-color: rgba(255, 255, 255, .12);
-}
-
-.settings-geoip-slot-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: #333;
-}
-
-body.dark .settings-geoip-slot-label {
-  color: rgba(255, 255, 255, .85);
 }
 
 /* ── Theme picker — 3×2 grid of preview cards ───────────────────────────
