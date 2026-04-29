@@ -243,3 +243,94 @@ test('_autoExtractScan does NOT enforce the MAX=12 cap (apply loop trims)', () =
     `scanner should emit > 12 proposals before the apply-loop cap; ` +
     `got ${proposals.length} — has the MAX cap leaked into the scanner?`);
 });
+
+// ── Issue 2 regression pins (text-host detection) ──────────────────────────
+//
+// These tests build a richer multi-column stub (one column per call to
+// `_cellAt`) so we can drive the text-host detection branch directly.
+// The default `buildScannerInstance` only varies col 7; for these we
+// override `_cellAt` with a per-column lookup table.
+
+function buildMultiColView(sandbox, columnsByIndex, baseColumns) {
+  const TimelineView = sandbox.TimelineView;
+  const view = new TimelineView();
+  view._baseColumns = baseColumns;
+  view.formatLabel = 'CSV';
+  view._jsonCache = new sandbox.Map();
+  const rowCount = Math.max(...Object.values(columnsByIndex).map(a => a.length));
+  view.store = {
+    rowCount,
+    colCount: baseColumns.length,
+    columns: baseColumns.slice(),
+  };
+  view._cellAt = function (row, col) {
+    const arr = columnsByIndex[col];
+    if (!arr) return '';
+    return arr[row] || '';
+  };
+  return view;
+}
+
+test('_autoExtractScan does NOT emit text-host proposal for ISO-8601 Timestamp column', () => {
+  // The unanchored `TL_HOSTNAME_INLINE_RE` matched the millisecond
+  // fragment `21.271Z` inside ISO-8601 timestamps and flagged Timestamp
+  // as a hostname column. After switching detection to `TL_HOSTNAME_RE`
+  // (anchored, full-cell), this junk proposal disappears. Pin it.
+  const sandbox = loadScannerSandbox();
+  const timestamps = [];
+  for (let i = 0; i < 50; i++) {
+    const ms = String(100 + i).padStart(3, '0');
+    timestamps.push(`2025-11-03T08:25:${String(20 + (i % 30)).padStart(2, '0')}.${ms}Z`);
+  }
+  const view = buildMultiColView(sandbox, { 0: timestamps }, ['Timestamp']);
+  const proposals = sandbox.TimelineView.prototype._autoExtractScan.call(view);
+  const textHostHits = proposals.filter(
+    p => p && p.kind === 'text-host' && p.sourceCol === 0);
+  assert.equal(textHostHits.length, 0,
+    `Timestamp column must not produce a text-host proposal; got ` +
+    `${textHostHits.length}: ${JSON.stringify(textHostHits)}`);
+});
+
+test('_autoExtractScan DOES emit text-host proposal for genuinely hostname-shaped column', () => {
+  // Sanity check on the anchored fix: legitimate hostname columns
+  // (whole-cell hostnames) must still be detected, otherwise we've
+  // over-corrected. Stays a behavioural pin in case someone later
+  // tightens the regex further (e.g. requires letter-only TLD) and
+  // breaks the common case.
+  const sandbox = loadScannerSandbox();
+  const hosts = [];
+  const samples = ['example.com', 'api.example.com', 'mail.google.com',
+    'cdn.cloudflare.com', 'status.github.com', 'login.microsoft.com',
+    'auth.okta.com', 'sso.example.org', 'web.example.net', 'srv.example.io'];
+  for (let i = 0; i < 50; i++) hosts.push(samples[i % samples.length]);
+  const view = buildMultiColView(sandbox, { 0: hosts }, ['Server']);
+  const proposals = sandbox.TimelineView.prototype._autoExtractScan.call(view);
+  const textHostHits = proposals.filter(
+    p => p && p.kind === 'text-host' && p.sourceCol === 0);
+  assert.ok(textHostHits.length >= 1,
+    `legitimate hostname column should produce >=1 text-host proposal; ` +
+    `got ${textHostHits.length}. All proposals: ` +
+    `${JSON.stringify(proposals.map(p => ({k: p.kind, c: p.sourceCol})))}`);
+});
+
+test('_autoExtractScan json-leaf proposals only come from JSON-shaped column 7 of fixture', () => {
+  // Defence-in-depth: confirm no JSON-leaf proposals leak from columns
+  // 0-6 of the real fixture (Timestamp, EventType, UserId, Department,
+  // Severity, Status, DurationMs). If any did, that would indicate
+  // either a regression in `_tlMaybeJson`'s gating or a bug where the
+  // JSON branch sees data from the wrong column.
+  const sandbox = loadScannerSandbox();
+  const col7 = readColumn7();
+  // Default buildScannerInstance returns dummy strings for cols 0-6,
+  // which suits us — they're not JSON-shaped, so they must not produce
+  // json-* proposals.
+  const view = buildScannerInstance(sandbox, col7);
+  const proposals = sandbox.TimelineView.prototype._autoExtractScan.call(view);
+  const jsonProposalsFromOtherCols = proposals.filter(
+    p => p && (p.kind === 'json-leaf' || p.kind === 'json-host' ||
+               p.kind === 'json-url') && p.sourceCol !== 7);
+  assert.equal(jsonProposalsFromOtherCols.length, 0,
+    `JSON-shaped proposals must only come from col 7 (Raw Data); got ` +
+    `${jsonProposalsFromOtherCols.length} from other cols: ` +
+    `${JSON.stringify(jsonProposalsFromOtherCols.map(p => ({k:p.kind, c:p.sourceCol})))}`);
+});

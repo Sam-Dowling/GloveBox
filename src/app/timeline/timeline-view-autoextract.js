@@ -100,11 +100,27 @@ Object.assign(TimelineView.prototype, {
     if (!this._els || !this._els.host) return;
     // Already done for this file — never re-add deleted columns.
     if (TimelineView._loadAutoExtractDoneFor(this._fileKey)) return;
-    // Persisted regex extracts already replayed in the constructor. If
-    // anything's there, the analyst has prior work for this file and we
-    // shouldn't pile on. The marker write at the end still fires so this
-    // only happens once.
-    if (this._extractedCols.length > 0) {
+    // Persisted extracts already replayed in the constructor. Bail only
+    // when the analyst has TRUE prior work — entries with `kind !==
+    // 'auto'` (manual `'regex'`, `'json'` from the Auto/Edit dialogs).
+    //
+    // Why not bail on any extracted column? Because `_persistRegexExtracts`
+    // only persists `kind: 'regex' | 'auto'` — the JSON-leaf / json-host /
+    // json-url branches produce `kind: 'json'` entries that AREN'T
+    // persisted. On reopen, a previous auto-extract pass that emitted
+    // (say) 1 text-host + 11 json-leaf columns leaves only the 1 text-
+    // host column behind in storage. Replay restores it; if we bailed
+    // on that single replayed column, the 11 JSON-leaf columns would be
+    // silently lost on every reopen. So we re-run the scan when only
+    // `'auto'` entries are present and let `_findDuplicateExtractedCol`
+    // inside the apply helpers dedupe the replayed regex extracts.
+    //
+    // Trade-off: a deleted JSON-leaf column will return on next reopen
+    // (the deletion isn't persisted because the column wasn't persisted
+    // in the first place). Acceptable because the alternative — silently
+    // losing 90 % of the extracted columns on every reopen — is worse.
+    const hasAnalystWork = this._extractedCols.some(e => e && e.kind !== 'auto');
+    if (hasAnalystWork) {
       TimelineView._saveAutoExtractDoneFor(this._fileKey);
       return;
     }
@@ -492,13 +508,29 @@ Object.assign(TimelineView.prototype, {
         }
 
         // Plain-text column: test URL + hostname patterns directly.
+        // Hostname detection uses the ANCHORED `TL_HOSTNAME_RE` (the
+        // entire trimmed cell must look like a hostname), not the
+        // unanchored inline variant. The unanchored form matched
+        // hostname-shaped FRAGMENTS inside structured cells — most
+        // visibly the `21.271Z` millisecond fragment of ISO-8601
+        // timestamps (`2025-11-03T08:25:21.271Z`), which made every
+        // CSV with a Timestamp column emit a junk `text-host` proposal.
+        // Anchored matching is also a better fit for forensic CSVs
+        // where each cell typically holds one structured value.
+        // The EXTRACTION regex (`TL_HOSTNAME_INLINE_RE.source` in
+        // `_applyAutoProposal` for `text-host`) stays unanchored so
+        // legitimate hostname columns extract cleanly even when the
+        // cell has stray surrounding whitespace.
         let urlHits = 0, hostHits = 0;
         let urlSample = '', hostSample = '';
         for (const s of samples) {
           if (TL_URL_RE.test(s.v)) { urlHits++; if (!urlSample) urlSample = s.v; }
           else {
-            const m = TL_HOSTNAME_INLINE_RE.exec(s.v);
-            if (m && m[1] && m[1].indexOf('.') > 0) { hostHits++; if (!hostSample) hostSample = m[1]; }
+            const trimmed = s.v.trim();
+            if (TL_HOSTNAME_RE.test(trimmed)) {
+              hostHits++;
+              if (!hostSample) hostSample = trimmed;
+            }
           }
         }
         const total = samples.length;
