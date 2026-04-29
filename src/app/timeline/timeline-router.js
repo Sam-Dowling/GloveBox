@@ -330,29 +330,63 @@ extendApp({
           // legacy `string[][]` batch — which doubled main-thread peak
           // memory on the postback hand-off — is gone for every kind.
           //
-          // The builder's columns aren't known until `done` arrives
-          // (the worker only emits them in the terminal payload), but
-          // the chunks landing during streaming carry no column info —
-          // they're just typed arrays sized by the agreed `colCount`.
-          // We park the chunks in a holding list and replay them into
-          // a real `RowStoreBuilder` once columns are in hand. This
-          // keeps the typed-array buffers transferred-once (no extra
-          // copy) and only costs an array-of-references during stream.
+          // W4: the worker now emits a `{event:'columns', columns}`
+          // event AHEAD of the first `rows-chunk`, so we can construct
+          // `RowStoreBuilder` and `addChunk` straight into it as the
+          // chunks land — no buffering. `pendingChunks` is the legacy
+          // fallback path: if a future worker bundle (or one that
+          // failed mid-header) never emits the early columns event,
+          // chunks accumulate in `pendingChunks` until the terminal
+          // `done` provides columns, then we replay them. Empty header
+          // files also hit the fallback (the worker skips
+          // `_postColumns` when `columns.length === 0`).
+          let builder = null;
           const pendingChunks = [];
           let rowsSeen = 0;
           let lastSubtitleAt = 0;
           const onBatch = (m) => {
-            if (!m || m.event !== 'rows-chunk') return;
+            if (!m) return;
+            if (m.event === 'columns') {
+              // W4 early-mount path. Build the RowStoreBuilder NOW
+              // and replay any chunks that snuck in before the
+              // columns event (shouldn't happen with the current
+              // worker, but the worker → host event order isn't
+              // strictly guaranteed by the postMessage contract, so
+              // tolerate either ordering).
+              const cols = Array.isArray(m.columns) ? m.columns : [];
+              if (cols.length && !builder) {
+                builder = new RowStoreBuilder(cols);
+                if (pendingChunks.length) {
+                  for (let i = 0; i < pendingChunks.length; i++) {
+                    builder.addChunk(pendingChunks[i]);
+                  }
+                  pendingChunks.length = 0;
+                }
+              }
+              return;
+            }
+            if (m.event !== 'rows-chunk') return;
             // Wrap the transferred buffers as typed-array views.
             // Buffers are detached on the worker side post-transfer,
             // so this is a zero-copy view into the bytes we own now.
             const rc = m.rowCount | 0;
             if (rc <= 0) return;
-            pendingChunks.push({
+            const chunk = {
               bytes:    new Uint8Array(m.bytes),
               offsets:  new Uint32Array(m.offsets),
               rowCount: rc,
-            });
+            };
+            if (builder) {
+              // W4 fast path — chunks land directly into the builder
+              // as they arrive, so the post-`done` "assemble" loop
+              // becomes a single `finalize()` call instead of an
+              // O(chunks) replay of buffered references.
+              builder.addChunk(chunk);
+            } else {
+              // Legacy fallback — buffer until the terminal `done`
+              // (or a late `columns` event) provides the column list.
+              pendingChunks.push(chunk);
+            }
             rowsSeen += rc;
             // Live progress subtitle. Throttle updates to roughly
             // one per 100 ms via a wall-clock comparison so high-
@@ -414,20 +448,31 @@ extendApp({
           // only — its `rows` array is empty by contract. We splice
           // the RowStore onto `msg.rowStore` and hand the (still-
           // rowless) msg to `_buildTimelineViewFromWorker`.
+          //
+          // W4: in the common case the builder was constructed during
+          // streaming (on the early `columns` event) and chunks were
+          // applied as they arrived, so this block becomes a single
+          // `finalize()` call. The fallback branch handles two cases:
+          // (a) the worker never emitted a `columns` event (older
+          // bundle, or an empty-header file), and (b) chunks arrived
+          // before the columns event for some reason — they're then
+          // replayed into a freshly-constructed builder here.
           {
-            const cols = Array.isArray(msg.columns) ? msg.columns : [];
-            const builder = new RowStoreBuilder(cols);
-            for (let i = 0; i < pendingChunks.length; i++) {
-              builder.addChunk(pendingChunks[i]);
+            if (!builder) {
+              const cols = Array.isArray(msg.columns) ? msg.columns : [];
+              builder = new RowStoreBuilder(cols);
             }
-            // Drop our reference to the chunk list so the typed arrays
-            // are uniquely owned by the builder (and, after finalize,
-            // by the resulting `RowStore`). This is purely defensive
-            // — `addChunk` already takes the typed-array views by
-            // reference, and `pendingChunks` will be unreachable once
-            // the surrounding promise resolves.
-            pendingChunks.length = 0;
+            if (pendingChunks.length) {
+              for (let i = 0; i < pendingChunks.length; i++) {
+                builder.addChunk(pendingChunks[i]);
+              }
+              // Drop the chunk list so the typed arrays are uniquely
+              // owned by the builder (and, after finalize, by the
+              // resulting RowStore).
+              pendingChunks.length = 0;
+            }
             msg.rowStore = builder.finalize();
+            builder = null;
           }
           view = this._buildTimelineViewFromWorker(
             file, workerKind, msg, transferOriginal ? null : buffer);

@@ -156,6 +156,27 @@ function _postRowsChunk(rows, colCount) {
   );
 }
 
+// W4: emit the resolved column list AHEAD of the first `rows-chunk` so
+// the host can construct `RowStoreBuilder` immediately rather than
+// buffering chunks until the terminal `done` arrives. The terminal
+// `done` payload still carries `columns` (host validates / falls back
+// when the early event is missing); this is purely additive — older
+// host bundles ignore the event silently per `worker-manager.js`'s
+// "events without an onBatch sink are dropped" contract.
+//
+// Posted exactly once per parse, after the header row has been
+// resolved (CSV/CLF) or after the column schema is known (EVTX/SQLite).
+// A no-op if `columns` is empty (the file had no parseable header) —
+// the host's existing fallback path constructs an empty-columns
+// RowStore from the terminal `done`.
+function _postColumns(columns) {
+  if (!Array.isArray(columns) || !columns.length) return;
+  self.postMessage({
+    event:   'columns',
+    columns: columns,
+  });
+}
+
 // ── CSV / TSV parse (streaming chunk-decode + packed-chunk emit) ───────────
 //
 // Memory-conscious rewrite of the legacy "decode into one giant string,
@@ -275,6 +296,11 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
         columns = cells.map(c => String(c == null ? '' : c).trim());
         colLen = columns.length;
         headerSeen = true;
+        // W4: announce columns AHEAD of the first rows-chunk so the
+        // host can construct RowStoreBuilder while the worker is
+        // still parsing the body. Additive — host falls back to the
+        // terminal `done` columns if the event is missed.
+        _postColumns(columns);
         continue;
       }
       if (rowCount >= TIMELINE_MAX_ROWS) {
@@ -337,6 +363,12 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
           columns = _tlCanonicalLogColumns(cells.length);
           colLen = columns.length;
           headerSeen = true;
+          // W4: see CSV ingestRows — announce columns ahead of the
+          // first rows-chunk so the host can construct RowStoreBuilder
+          // early. The CLF tail-flush below also resolves the header
+          // when the file has only one short line; that branch posts
+          // columns there too.
+          _postColumns(columns);
         }
         if (rowCount >= TIMELINE_MAX_ROWS) {
           truncated = true;
@@ -356,6 +388,8 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
           columns = _tlCanonicalLogColumns(cells.length);
           colLen = columns.length;
           headerSeen = true;
+          // W4 — see header-set branch above for rationale.
+          _postColumns(columns);
         }
         if (rowCount < TIMELINE_MAX_ROWS) {
           pendingRows.push(padOrTrimCells(cells));
@@ -478,6 +512,10 @@ async function _parseEvtx(buffer) {
 
   const columns = [...EVTX_COLUMN_ORDER];
   const colCount = columns.length;
+  // W4: announce columns ahead of the first rows-chunk so the host
+  // can construct RowStoreBuilder while we're still iterating events.
+  // EVTX has a fixed schema so we can post immediately.
+  _postColumns(columns);
   let truncated = false;
   let list = events;
   if (events.length > TIMELINE_MAX_ROWS) {
@@ -577,6 +615,11 @@ function _parseSqlite(buffer) {
 
   const columns = srcCols;
   const colCount = columns.length;
+  // W4: announce columns ahead of the first rows-chunk — see
+  // _parseEvtx for rationale. Posted only when we have a non-empty
+  // schema; the empty-cols early-return above handles the degenerate
+  // case via the terminal `done` payload alone.
+  _postColumns(columns);
   let truncated = false;
   let list = srcRows;
   if (list.length > TIMELINE_MAX_ROWS) {
