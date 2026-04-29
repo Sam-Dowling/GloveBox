@@ -320,6 +320,35 @@ Object.assign(TimelineView.prototype, {
     const showTimeBtn = this._columnLooksLikeTimestamp(colIdx)
       && colIdx !== this._timeCol;
 
+    // Show the "🌍 Look up GeoIP" entry only when the column actually
+    // contains IPv4 addresses. Walks up to 30 sampled cells via `_cellAt`
+    // so it works on both base and extracted (auto-extracted IP) columns.
+    // Hidden on geoip-output columns themselves (`<src>.geo`) — enriching
+    // an enrichment column makes no sense. The IPv4 shape check matches
+    // `isStrictIPv4` in `timeline-view-geoip.js` (intentionally inlined
+    // here so this file doesn't pull on the mixin's internals).
+    let showGeoipBtn = false;
+    if (this._app && this._app.geoip) {
+      const ext = this._isExtractedCol(colIdx) ? this._extractedColFor(colIdx) : null;
+      // Suppress on geoip output columns (`kind: 'geoip'`).
+      if (!(ext && ext.kind === 'geoip')) {
+        const sample = Math.min(this.store.rowCount, 30);
+        let nonEmpty = 0;
+        let hits = 0;
+        const ipRe = /^(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?:\.(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/; // safe: bounded literal, ANN-OK
+        for (let r = 0; r < sample; r++) {
+          const v = this._cellAt(r, colIdx);
+          if (!v) continue;
+          nonEmpty++;
+          if (ipRe.test(v)) hits++;
+        }
+        // Same 80 % bar `_detectIpColumns` uses; needs ≥ 4 non-empty cells
+        // in the small popover sample (lower than the detection-pass bar
+        // of 8 because the analyst already eyeballed the column).
+        showGeoipBtn = nonEmpty >= 4 && (hits / nonEmpty) >= 0.8;
+      }
+    }
+
     menu.innerHTML = `
       <div class="tl-colmenu-head">
         <strong>${_tlEsc(name)}</strong>
@@ -348,6 +377,9 @@ Object.assign(TimelineView.prototype, {
       <div class="tl-colmenu-section">
         <button class="tl-tb-btn" data-act="extract">ƒx Extract values</button>
         <button class="tl-tb-btn" data-act="autopivot">🧮 Auto pivot on this column</button>
+        ${showGeoipBtn
+          ? '<button class="tl-tb-btn" data-act="geoip" title="Force GeoIP enrichment for this column (bypasses auto-detect)">🌍 Look up GeoIP</button>'
+          : ''}
       </div>
       <div class="tl-colmenu-foot">
         <button class="tl-tb-btn" data-act="reset">Reset filters</button>
@@ -493,6 +525,17 @@ Object.assign(TimelineView.prototype, {
     if (removeExtractBtn) removeExtractBtn.addEventListener('click', () => {
       this._removeExtractedCol(colIdx);
       this._closePopover();
+    });
+    // 🌍 Look up GeoIP — bypass the IPv4-detection threshold AND the skip
+    // heuristic for this specific column. Same provider the auto-detect
+    // path uses (`this._app.geoip`). The mixin's per-source-col dedup
+    // means a click on an already-enriched column is a no-op.
+    const geoipBtn = menu.querySelector('[data-act="geoip"]');
+    if (geoipBtn) geoipBtn.addEventListener('click', () => {
+      this._closePopover();
+      if (typeof this._runGeoipEnrichment === 'function') {
+        this._runGeoipEnrichment({ forceCol: colIdx });
+      }
     });
     menu.querySelector('[data-act="reset"]').addEventListener('click', () => {
       // Strip every top-level clause targeting this column from the

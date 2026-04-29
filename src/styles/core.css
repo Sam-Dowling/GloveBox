@@ -4616,6 +4616,43 @@ body.dark .settings-hint {
   color: rgba(255, 255, 255, .55);
 }
 
+/* ── GeoIP database row — compact two-line state + button strip ─────────
+   Lives inside `.settings-row` (Settings tab). One line for the bundled
+   provider's vintage, one for the override state, one row of action
+   buttons (Upload / Replace / Remove). Reuses `.nicelist-btn` styling
+   for the buttons so they match the rest of Settings without a new
+   button class. */
+.settings-geoip {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settings-geoip-bundled {
+  font-size: 12px;
+  color: #555;
+}
+
+body.dark .settings-geoip-bundled {
+  color: rgba(255, 255, 255, .65);
+}
+
+.settings-geoip-state {
+  font-size: 12px;
+  color: #333;
+}
+
+body.dark .settings-geoip-state {
+  color: rgba(255, 255, 255, .82);
+}
+
+.settings-geoip-btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
 /* ── Theme picker — 3×2 grid of preview cards ───────────────────────────
    Six themes, always laid out 3 across × 2 down so the picker feels
    deliberate regardless of dialog width. Each card is a vertical stack:

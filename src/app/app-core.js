@@ -117,6 +117,46 @@ class App {
         }
       }
     } catch (_) { /* background is cosmetic */ }
+    // ── GeoIP provider resolver ─────────────────────────────────────────
+    // `app.geoip` is the single source of truth for IPv4 → location
+    // lookups consumed by the Timeline GeoIP enrichment mixin. Two
+    // providers, identical surface (`lookupIPv4`, `formatRow`,
+    // `getFieldName`, `vintage`, `providerKind`):
+    //
+    //   • BundledGeoip — RIR-derived IPv4-country, embedded in the bundle
+    //     as `__GEOIP_BUNDLE_B64`. Always present (~140 K ranges).
+    //   • MmdbReader   — user-uploaded `.mmdb` / `.mmdb.gz` via the
+    //     Settings dialog. Persisted in IndexedDB via GeoipStore. When
+    //     present, takes precedence (richer data — adds region + city).
+    //
+    // The bundled provider is set synchronously so the Timeline view's
+    // constructor (which fires shortly after init() returns) has a
+    // working provider on first paint. The MMDB hydrate is async; if
+    // it loads later than first paint, the Timeline mixin re-runs
+    // enrichment when Settings notifies it (see app-settings.js
+    // upload-success path).
+    if (typeof BundledGeoip !== 'undefined') {
+      this.geoip = BundledGeoip;
+      // Best-effort async hydrate from IndexedDB. Failures are silent
+      // — the bundled fallback already covers the common case.
+      if (typeof GeoipStore !== 'undefined' && typeof MmdbReader !== 'undefined') {
+        (async () => {
+          try {
+            const rec = await GeoipStore.load();
+            if (!rec || !rec.blob) return;
+            const reader = await MmdbReader.fromBlob(rec.blob);
+            this.geoip = reader;
+            // Re-run enrichment on the open Timeline view, if any.
+            // The view is stashed on `app._timelineCurrent` by the
+            // router (`src/app/timeline/timeline-router.js`).
+            if (this._timelineCurrent && typeof this._timelineCurrent._runGeoipEnrichment === 'function') {
+              try { this._timelineCurrent._runGeoipEnrichment(); } catch (_) { /* noop */ }
+            }
+          } catch (_) { /* MMDB hydrate is best-effort */ }
+        })();
+      }
+    }
+
     this._setupDrop();
 
 

@@ -98,6 +98,19 @@ pako_js      = read('vendor/pako.min.js')
 lzma_js      = read('vendor/lzma-d-min.js')
 jsqr_js      = read('vendor/jsqr.min.js')
 
+# ── Bundled GeoIP IPv4-country binary ───────────────────────────────────────
+# `vendor/geoip-country-ipv4.bin` is a hand-rolled fixed-record binary
+# produced by `scripts/fetch_geoip.py` from the five RIR delegated-stats
+# files (a public-domain source — no licence friction). 850 KB raw → 1.13 MB
+# base64. Inlined as a JS string constant so `src/geoip/bundled-geoip.js`
+# can decode it at module load and answer IPv4 → ISO-2 lookups offline.
+# See `VENDORED.md` (Generated vendored assets) for the regenerate vs
+# upgrade distinction; see `scripts/fetch_geoip.py` for the pipeline.
+import base64 as _base64
+with open(os.path.join(BASE, 'vendor', 'geoip-country-ipv4.bin'), 'rb') as _gf:
+    _geoip_b64 = _base64.b64encode(_gf.read()).decode('ascii')
+geoip_bundle_js = f"const __GEOIP_BUNDLE_B64 = '{_geoip_b64}';\n"
+
 # CSS files — concatenated in order.
 # Each optional theme overlay lives in src/styles/themes/<id>.css and contains
 # `body.theme-<id> { … }` rules that layer on top of the base palette.
@@ -667,6 +680,21 @@ APP_JS_FILES = [
     'src/worker-manager.js',
 
     'src/decompressor.js',
+    # ── GeoIP providers — bundled IPv4-country (offline, public-domain RIR
+    #    derivation) + user-uploaded MMDB override (IndexedDB-backed). Both
+    #    expose the same provider contract — `lookupIPv4(ipStr) → {country,
+    #    iso, region?, city?} | null`, `formatRow(rec) → string`,
+    #    `getFieldName() → 'geo'`, `vintage`, `providerKind`. Resolved by
+    #    `App.init()` in src/app/app-core.js into `app.geoip` (sync default
+    #    = BundledGeoip; async hydrates to MmdbReader if one is persisted).
+    #    Consumed by the Timeline GeoIP enrichment mixin
+    #    (timeline-view-geoip.js) — every other surface ignores them.
+    #    Must load AFTER decompressor.js (mmdb-reader uses Decompressor
+    #    for `.mmdb.gz`) and BEFORE app-core.js (init() reads the
+    #    providers). Independent of every renderer.
+    'src/geoip/bundled-geoip.js',
+    'src/geoip/mmdb-reader.js',
+    'src/geoip/geoip-store.js',
     # tar-parser.js — shared TAR archive parser with PAX extended header,
     # GNU long-name/link, GNU sparse, and base-256 numeric support.
     # Consumed by ZipRenderer (tar/tar.gz) and NpmRenderer (tgz tarballs).
@@ -981,6 +1009,17 @@ APP_JS_FILES = [
     # `_addRegexExtractNoRender` / `_rebuildExtractedStateAndRender`
     # (all hosted there).
     'src/app/timeline/timeline-view-autoextract.js',
+    # timeline-view-geoip.js — TimelineView prototype mixin that adds a
+    # `<ipcol>.geo` enrichment column next to each detected IPv4 column on
+    # first open. Reads `this._app.geoip` (resolved in App.init()) for the
+    # active provider — `BundledGeoip` (RIR IPv4→ISO-2) by default,
+    # `MmdbReader` if the user has uploaded one via Settings. Idempotent
+    # via a `kind: 'geoip'` sentinel + the same `_loadAutoExtractDoneFor`
+    # marker the auto-extract pass uses (so deletion is sticky).
+    # Must load AFTER timeline-view-autoextract.js so its constructor
+    # call sequence remains the canonical "post-mount enrichment" tail.
+    # Pure mixin via Object.assign(TimelineView.prototype, …).
+    'src/app/timeline/timeline-view-geoip.js',
     'src/app/timeline/timeline-router.js',
 
     'src/app/app-load.js',
@@ -1293,6 +1332,7 @@ _block_srcs[0] = (
     f"const LOUPE_VERSION = '{VERSION}';\n"
     + (f"const __LOUPE_TEST_API__ = true;\n" if TEST_API else '')
     + default_yara_js
+    + geoip_bundle_js          # __GEOIP_BUNDLE_B64 — read by src/geoip/bundled-geoip.js
     + yara_worker_js
     + timeline_worker_js
     + encoded_worker_js

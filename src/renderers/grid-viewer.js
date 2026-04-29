@@ -210,6 +210,45 @@ class GridViewer {
     //   onHeaderClick(colIdx, anchorEl)
     this._onHeaderClick = typeof opts.onHeaderClick === 'function' ? opts.onHeaderClick : null;
 
+    // Column-reorder hook — fired AFTER `_colOrder` has been mutated and
+    // the grid has re-rendered. Receives the new display-order array of
+    // REAL column indices. Hosts (Timeline Mode) use this to persist the
+    // user's preferred order under `loupe_timeline_grid_col_order_<file>`
+    // so it survives reload. The grid itself stores nothing — `_colOrder`
+    // is rehydrated by the host via `_setColumnOrder(...)` on mount.
+    //   onColumnReorder(realIndicesInDisplayOrder)
+    this._onColumnReorder = typeof opts.onColumnReorder === 'function' ? opts.onColumnReorder : null;
+
+    // ── Column display-order layer ────────────────────────────────────────
+    //
+    // GridViewer's data model and the column-kind / width / sort engines
+    // all key off REAL column indices (the position in `this.columns`
+    // and in the row arrays returned by `store.getRow`). For reorder
+    // support we add a thin presentation layer on top: `_colOrder` holds
+    // the real indices in DISPLAY order. `null` is the identity case
+    // (no user reorder yet) and is the default — every render path
+    // resolves the order on the fly via `_resolveColOrder()`, which
+    // returns the identity `[0, 1, …, columns.length-1]` when
+    // `_colOrder` is null. This keeps the in-memory shape of every
+    // grid that doesn't use reorder identical to the pre-feature path.
+    //
+    // The row-number column has no slot in `_colOrder` — it's stamped
+    // unconditionally as the first element of the CSS template and the
+    // first child of every header / data row by `_buildHeaderCells`
+    // and `_buildRow`. Hidden columns (`_hiddenCols`) continue to skip
+    // out of every iteration regardless of order; hiding does NOT
+    // reorder the surviving columns (a hidden column's slot in
+    // `_colOrder` is preserved so unhide restores it where it was).
+    //
+    // `_updateColumns` (used by Timeline auto-extract) extends
+    // `_colOrder` with the newly-appended real indices in append order,
+    // and prunes trailing entries on shrink — matching its existing
+    // "append/tail-truncate only" contract. Timeline's geo-enrichment
+    // path then optionally calls `_setColumnOrder([...with the new col
+    // moved next to its source])` to land the geo column adjacent to
+    // its IPv4 source instead of at the end.
+    this._colOrder = null;
+
     // Optional stacking: histogram bars are split by category when a stack
     // column is set. Default: single-density bars.
     //   timelineStackColumn : number   — index of the grouping column.
@@ -359,6 +398,82 @@ class GridViewer {
 
   _cellAt(dataIdx, colIdx) {
     return this.store.getCell(dataIdx, colIdx);
+  }
+
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  COLUMN DISPLAY ORDER
+  //
+  //  Thin presentation layer that lets headers + cells be reordered
+  //  without touching the underlying column / row indices used by the
+  //  classifier, width algorithm, sort engine, or persistence layer.
+  //  See the `_colOrder` field comment in the constructor for the full
+  //  contract.
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /** Resolve the current display order to a concrete real-index array
+   *  with `columns.length` entries. The returned array is fresh — safe
+   *  to mutate without affecting `_colOrder`. */
+  _resolveColOrder() {
+    const n = this.columns.length;
+    if (!Array.isArray(this._colOrder)) {
+      const out = new Array(n);
+      for (let i = 0; i < n; i++) out[i] = i;
+      return out;
+    }
+    // Defensive sanitiser: drop out-of-range, drop dupes, append any
+    // real index that's missing (so a stale `_colOrder` from a previous
+    // schema is healed gracefully — Timeline reorder + auto-extract
+    // race could otherwise leave a freshly-extracted column dangling).
+    const seen = new Set();
+    const out = [];
+    for (let i = 0; i < this._colOrder.length; i++) {
+      const v = this._colOrder[i];
+      if (!Number.isInteger(v) || v < 0 || v >= n) continue;
+      if (seen.has(v)) continue;
+      seen.add(v);
+      out.push(v);
+    }
+    for (let i = 0; i < n; i++) {
+      if (!seen.has(i)) out.push(i);
+    }
+    return out;
+  }
+
+  /** Return the current display order as a fresh real-index array.
+   *  Always exactly `columns.length` entries. */
+  _getColumnOrder() {
+    return this._resolveColOrder();
+  }
+
+  /** Replace the display order. `realIndices` must be a permutation of
+   *  `[0..columns.length)` — extra / missing / duplicate entries are
+   *  healed by `_resolveColOrder()`. Triggers a re-render of headers,
+   *  CSS template and rows; does NOT fire `onColumnReorder` (callers
+   *  that want host persistence call this from the reorder pipeline
+   *  AFTER computing the new order, then invoke the host callback
+   *  themselves — see `_commitColumnReorder` below). */
+  _setColumnOrder(realIndices) {
+    if (!Array.isArray(realIndices)) {
+      this._colOrder = null;
+    } else {
+      this._colOrder = realIndices.slice();
+    }
+    this._buildHeaderCells();
+    this._applyColumnTemplate();
+    this._forceFullRender();
+  }
+
+  /** Apply a new display order AND notify the host via `onColumnReorder`.
+   *  This is the path the drag-drop handler uses — separating the two
+   *  call sites lets host code (Timeline restore-from-storage) call
+   *  `_setColumnOrder` without re-firing the persistence callback. */
+  _commitColumnReorder(realIndices) {
+    this._setColumnOrder(realIndices);
+    if (this._onColumnReorder) {
+      try { this._onColumnReorder(this._resolveColOrder()); }
+      catch (_) { /* host bug; don't kill the grid */ }
+    }
   }
 
 
@@ -581,7 +696,15 @@ class GridViewer {
     this._header.appendChild(numCell);
     // Data cells — each is a button-ish clickable region that opens the
     // header dropdown menu (Sort asc/desc/clear · Copy column · Hide · Top values).
-    for (let i = 0; i < this.columns.length; i++) {
+    //
+    // Iteration is in DISPLAY order (post-reorder), but `data-col` and
+    // every closure capture remain the REAL column index — that way
+    // sort/hide/resize/right-click handlers and external consumers
+    // (Timeline's right-click menu, drawer, top-values popover) keep
+    // working identically whether the user has reordered columns or not.
+    const order = this._resolveColOrder();
+    for (let oi = 0; oi < order.length; oi++) {
+      const i = order[oi];
       if (this._hiddenCols.has(i)) continue;
       const cell = document.createElement('div');
       cell.className = 'grid-header-cell grid-header-clickable';
@@ -636,6 +759,14 @@ class GridViewer {
       // the handle to reset this column to its auto-calculated width.
       // Swallows click/mousedown so it can't reopen the header menu.
       this._wireColumnResize(cell, i);
+      // Drag-to-reorder — uses the HTML5 native DnD API so it cooperates
+      // with the existing click / right-click / resize handlers (only one
+      // is "winning" any given mousedown gesture). The cell starts
+      // un-draggable and only flips `draggable=true` when a mousedown
+      // lands on the body of the cell (NOT the resize handle, NOT the
+      // chevron). This is the same trick the Timeline `tl-col-card`
+      // uses to keep drag and click on the same element.
+      this._wireColumnDrag(cell, i);
       this._header.appendChild(cell);
     }
   }
@@ -904,11 +1035,19 @@ class GridViewer {
 
   _applyColumnTemplate() {
     // Build the list of visible (non-hidden) columns with their kind,
-    // base width, and greedy flag.
+    // base width, and greedy flag — IN DISPLAY ORDER, so the resulting
+    // CSS `grid-template-columns` track sizes line up with the order
+    // `_buildHeaderCells` / `_buildRow` lay out their children. Width
+    // and meta are still keyed by REAL column index in
+    // `_columnWidths` / `_columnWidthMeta`, so widths persist across
+    // reorder without re-sampling.
     const visIdx = [];
     const baseWs = [];
     const meta = [];
-    for (let i = 0; i < this._columnWidths.length; i++) {
+    const order = this._resolveColOrder();
+    for (let oi = 0; oi < order.length; oi++) {
+      const i = order[oi];
+      if (i >= this._columnWidths.length) continue;
       if (this._hiddenCols.has(i)) continue;
       visIdx.push(i);
       baseWs.push(this._columnWidths[i]);
@@ -1105,6 +1244,117 @@ class GridViewer {
       window.addEventListener('mouseup', onUp);
     });
     cell.appendChild(handle);
+  }
+
+
+  // ══════════════════════════════════════════════════════════════════════════
+  //  COLUMN DRAG-TO-REORDER
+  //
+  //  Native HTML5 DnD on every header cell. The cell becomes draggable
+  //  only when the user mouses down on the cell body (not on the resize
+  //  handle, not on the chevron) — flipping `draggable` on the fly is
+  //  what stops drag from hijacking left-click / right-click. Drop
+  //  resolution is midpoint-based: drop position is "before target"
+  //  if the pointer is in the left half of the target cell, "after"
+  //  otherwise. Mirrors the proven `tl-col-card` reorder UX.
+  //
+  //  Hidden columns are skipped during render (no draggable cell, so
+  //  they can't be dragged), but their slot in `_colOrder` is preserved
+  //  — unhide restores the column at its original display position.
+  //
+  //  Calls `_commitColumnReorder` on drop so the host's persistence
+  //  callback (`onColumnReorder`) fires exactly once per user gesture.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  _wireColumnDrag(cell, realIdx) {
+    // Only flip `draggable` ON when the press lands on the cell body
+    // (not the resize handle, not the chevron, not a button child).
+    cell.addEventListener('mousedown', (e) => {
+      const t = e.target;
+      if (!t) return;
+      if (t.classList && (
+        t.classList.contains('grid-col-resize-handle') ||
+        t.classList.contains('grid-header-chev')
+      )) {
+        cell.draggable = false;
+        return;
+      }
+      // Right-click / middle-click never starts a drag.
+      if (e.button !== 0) {
+        cell.draggable = false;
+        return;
+      }
+      cell.draggable = true;
+    });
+    cell.addEventListener('mouseup', () => { cell.draggable = false; });
+    cell.addEventListener('dragstart', (e) => {
+      // Stamp the source's REAL index on the dataTransfer so a drop
+      // resolves regardless of where the cell is in the live DOM.
+      try {
+        e.dataTransfer.setData('text/x-loupe-col', String(realIdx));
+        e.dataTransfer.effectAllowed = 'move';
+      } catch (_) { /* some browsers throw on setData inside non-user gesture */ }
+      cell.classList.add('grid-header-drag-source');
+      // Body-level flag lets CSS disable the resize handle for the
+      // duration of the drag so dragover always lands on the cell body
+      // and not the 6-px-wide handle on its right edge.
+      try { document.body.classList.add('grid-col-dragging'); } catch (_) { /* noop */ }
+    });
+    cell.addEventListener('dragend', () => {
+      cell.classList.remove('grid-header-drag-source');
+      cell.draggable = false;
+      try { document.body.classList.remove('grid-col-dragging'); } catch (_) { /* noop */ }
+      // Clear any lingering drop indicators across the row (drop fired
+      // somewhere else, or the user pressed Escape).
+      const all = this._header ? this._header.querySelectorAll(
+        '.grid-header-drag-over-before, .grid-header-drag-over-after'
+      ) : [];
+      for (const n of all) {
+        n.classList.remove('grid-header-drag-over-before', 'grid-header-drag-over-after');
+      }
+    });
+    cell.addEventListener('dragover', (e) => {
+      // Only accept loupe column drags. Without this guard a file drop
+      // on the header would be eligible.
+      const types = e.dataTransfer && e.dataTransfer.types;
+      if (!types || !Array.prototype.includes.call(types, 'text/x-loupe-col')) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      const rect = cell.getBoundingClientRect();
+      const before = (e.clientX - rect.left) < (rect.width / 2);
+      cell.classList.toggle('grid-header-drag-over-before', before);
+      cell.classList.toggle('grid-header-drag-over-after', !before);
+    });
+    cell.addEventListener('dragleave', () => {
+      cell.classList.remove('grid-header-drag-over-before', 'grid-header-drag-over-after');
+    });
+    cell.addEventListener('drop', (e) => {
+      const raw = e.dataTransfer && e.dataTransfer.getData('text/x-loupe-col');
+      cell.classList.remove('grid-header-drag-over-before', 'grid-header-drag-over-after');
+      if (raw == null || raw === '') return;
+      const fromReal = parseInt(raw, 10);
+      const toReal = realIdx;
+      if (!Number.isInteger(fromReal) || fromReal === toReal) return;
+      e.preventDefault();
+      const rect = cell.getBoundingClientRect();
+      const before = (e.clientX - rect.left) < (rect.width / 2);
+      // Compute the new order. Work in DISPLAY space: pull `fromReal`
+      // out of its current display slot, then insert it before/after
+      // `toReal`'s current display slot.
+      const order = this._resolveColOrder();
+      const fromPos = order.indexOf(fromReal);
+      if (fromPos < 0) return;
+      order.splice(fromPos, 1);
+      // Recompute target's position AFTER splice (it may have shifted).
+      let toPos = order.indexOf(toReal);
+      if (toPos < 0) {
+        // Target column got hidden mid-drag; bail without reordering.
+        return;
+      }
+      if (!before) toPos += 1;
+      order.splice(toPos, 0, fromReal);
+      this._commitColumnReorder(order);
+    });
   }
 
 
@@ -1674,9 +1924,14 @@ class GridViewer {
     numCell.textContent = String(virtualIdx + 1);
     tr.appendChild(numCell);
 
-    // Data cells
-    const cols = this.columns.length;
-    for (let c = 0; c < cols; c++) {
+    // Data cells — iterate in DISPLAY order so cell DOM matches the
+    // header's CSS-grid template column-by-column. `c` remains the REAL
+    // column index throughout the loop body, so every reference into
+    // the row array, kind table, augment hooks, and `data-col` stamp
+    // continues to use the original index space.
+    const order = this._resolveColOrder();
+    for (let oi = 0; oi < order.length; oi++) {
+      const c = order[oi];
       if (this._hiddenCols.has(c)) continue;
       const td = document.createElement('div');
       td.className = 'grid-cell';
@@ -1684,7 +1939,8 @@ class GridViewer {
       // Timeline's right-click handler) can resolve clicked column →
       // original column index without positional math. Doing the math
       // against `cell.parentNode.children` breaks the moment any column
-      // is hidden, because `_hiddenCols` entries are skipped above.
+      // is hidden, because `_hiddenCols` entries are skipped above —
+      // and the same is true once display reordering enters the picture.
       td.dataset.col = c;
       const rawCell = row ? (row[c] != null ? row[c] : '') : '';
       const displayCell = this._cellTextFn
@@ -2458,6 +2714,23 @@ class GridViewer {
       if (this._sortSpec && this._sortSpec.colIdx >= newLen) {
         this._sortSpec = null;
         this._sortOrder = null;
+      }
+      // Display order: drop entries that fell off the tail. We don't
+      // need to do anything when `_colOrder` is null (identity); the
+      // resolver reads `columns.length` directly.
+      if (Array.isArray(this._colOrder)) {
+        this._colOrder = this._colOrder.filter(i => Number.isInteger(i) && i < newLen);
+      }
+    }
+    // Grow: append new real-indices to `_colOrder` so newly-added
+    // columns land at the END of the display order — matching the
+    // legacy behaviour for callers that don't know about reorder.
+    // Timeline's geo-enrichment path overrides this immediately
+    // afterwards via `_setColumnOrder` to insert next to source.
+    if (newLen > oldLen && Array.isArray(this._colOrder)) {
+      const seen = new Set(this._colOrder);
+      for (let i = oldLen; i < newLen; i++) {
+        if (!seen.has(i)) this._colOrder.push(i);
       }
     }
 

@@ -89,6 +89,6 @@ test.describe('forensics / Timeline-routed renderers', () => {
     // canonical column names (`ip ident auth time request status
     // bytes referer user_agent`). See `_tlTokenizeClfLine` in
     // `src/app/timeline/timeline-helpers.js`.
-    await assertTimelineLoaded('examples/forensics/access-example.log');
+    await assertTimelineLoaded('examples/forensics/apache-access-example.log');
   });
 });

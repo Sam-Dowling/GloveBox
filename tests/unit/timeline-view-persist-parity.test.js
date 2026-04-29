@@ -41,8 +41,8 @@ const BUILD = fs.readFileSync(
   'utf8',
 );
 
-// Canonical list of methods that must move (15 load/save pairs = 30
-// methods). If a future commit adds a 31st helper, update this list.
+// Canonical list of methods that must move (16 load/save pairs = 32
+// methods). If a future commit adds a 17th pair, update this list.
 const PERSIST_METHODS = [
   '_loadBucketPref',         '_saveBucketPref',
   '_loadGridH',              '_saveGridH',
@@ -59,6 +59,7 @@ const PERSIST_METHODS = [
   '_loadPivotSpec',          '_savePivotSpec',
   '_loadQueryFor',           '_saveQueryFor',
   '_loadSusMarksFor',        '_saveSusMarksFor',
+  '_loadGridColOrderFor',    '_saveGridColOrderFor',
 ];
 
 // ── Removal asserts ────────────────────────────────────────────────────────
@@ -101,16 +102,16 @@ test('timeline-view-persist.js defines every _load/_save helper exactly once', (
 
 // ── Storage-key inventory ──────────────────────────────────────────────────
 
-test('TIMELINE_KEYS inventory in timeline-view-persist.js is the canonical 15-key set', () => {
-  // The 15 keys these helpers are responsible for. Any change here
+test('TIMELINE_KEYS inventory in timeline-view-persist.js is the canonical 16-key set', () => {
+  // The 16 keys these helpers are responsible for. Any change here
   // would be a localStorage format break — bump CONTRIBUTING.md's
   // Persistence Keys table in the same commit if you have a real
   // reason to do so.
   const EXPECTED_KEYS = [
     'AUTOEXTRACT_DONE', 'BUCKET', 'CARD_ORDER', 'CARD_WIDTHS',
     'CHART_H', 'DETECTIONS_GROUP', 'ENT_ORDER', 'ENT_PINNED',
-    'GRID_H', 'PINNED_COLS', 'PIVOT', 'QUERY', 'REGEX_EXTRACTS',
-    'SECTIONS', 'SUS_MARKS',
+    'GRID_COL_ORDER', 'GRID_H', 'PINNED_COLS', 'PIVOT', 'QUERY',
+    'REGEX_EXTRACTS', 'SECTIONS', 'SUS_MARKS',
   ];
   const found = new Set();
   const re = /TIMELINE_KEYS\.([A-Z_]+)/g;

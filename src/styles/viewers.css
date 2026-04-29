@@ -4703,6 +4703,33 @@ body.grid-resizing .grid-col-resize-handle {
   background: rgb(var(--accent-rgb) / .25);
 }
 
+/* ── Column drag-to-reorder visuals (HTML5 DnD via _wireColumnDrag).
+      The native drag-image is fine for "what is being dragged"; the
+      additional source-cell dimming + drop-position bar make the
+      target slot legible at a glance. The bars are drawn as a 2 px
+      accent-coloured edge so they line up with the cell border without
+      reflowing the grid template. */
+.grid-header-cell.grid-header-drag-source {
+  opacity: .4;
+}
+
+.grid-header-cell.grid-header-drag-over-before {
+  box-shadow: inset 2px 0 0 0 rgb(var(--accent-rgb));
+}
+
+.grid-header-cell.grid-header-drag-over-after {
+  box-shadow: inset -2px 0 0 0 rgb(var(--accent-rgb));
+}
+
+/* While a drag is in flight the grid-resize handle would otherwise
+   capture the dragover for the next-cell-edge case (because it sits
+   over the right 6 px of the cell). Disable pointer events on it for
+   the duration of the drag so the dragover always lands on the cell
+   body. `body.grid-col-dragging` is toggled by the JS handler. */
+body.grid-col-dragging .grid-col-resize-handle {
+  pointer-events: none;
+}
+
 /* ── Popover (shared: header menu + top-values) ───────────────────────── */
 .grid-popover {
   position: fixed;

@@ -50,7 +50,7 @@
 {"formatTag":"plaintext","iocCountAtLeast":1,"iocTypeMustInclude":["IP Address","URL"],"path":"examples/encoded-payloads/nested-double-b64-ip.txt","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"bash","iocCountAtLeast":1,"iocTypeMustInclude":["File Path","IP Address","URL"],"path":"examples/encoded-payloads/nested-hex-b64-multi-ioc.sh","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"plaintext","iocCountAtLeast":1,"iocTypeMustInclude":["File Path"],"path":"examples/encoded-payloads/nested-triple-b64-url.txt","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["Obfuscated_Download_Cradle"]}
-{"formatTag":"LOG","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/access-example.log","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
+{"formatTag":"LOG","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/apache-access-example.log","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"SQLite \u2013 Chrome History","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/chromehistory-example.sqlite","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"EVTX","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/example-security.evtx","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"EVTX","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/example.evtx","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}

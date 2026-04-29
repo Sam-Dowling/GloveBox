@@ -325,6 +325,34 @@ Object.assign(TimelineView.prototype, {
         this._scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns']);
         return;
       }
+      // CRITICAL: The GridViewer's `store` is a `TimelineRowView`, which
+      // SNAPSHOTS `_extLen` / `_totalCols` in its constructor — even
+      // though it shares the live `_extractedCols` array reference, the
+      // length snapshot is stuck at whatever it was when the rowView was
+      // built. `_rowAt(r)` (used by `_buildRow` and `_classifyColumns`)
+      // truncates output to `_totalCols`, so cells for newly-added
+      // extracted columns render as `''` — the bug the GeoIP feature
+      // surfaced. Rebuild the rowView and hand it to GridViewer's
+      // `setRows` so the row materialiser sees the new column. Cheap:
+      // a few field assignments. `idx` is the same one the cold path
+      // would use (`_filteredIdx`); `preSorted: true` skips a Date.parse
+      // re-sort because the existing idx is already chrono-sorted.
+      try {
+        const ds = this._dataset;
+        const rowView = new TimelineRowView({
+          baseStore: ds ? ds.store : this.store,
+          extractedCols: ds ? ds.extractedCols : this._extractedCols,
+          baseLen: ds ? ds.baseColCount : this._baseColumns.length,
+          idx: this._filteredIdx || null,
+        });
+        this._grid.setRows(rowView, null, null, { preSorted: true });
+      } catch (_) { /* fall through to scheduled render */ }
+      // Re-apply persisted drag-reorder so a freshly-extracted column
+      // doesn't get stuck at the end after the user has previously
+      // dragged columns into a custom arrangement. _updateColumns just
+      // appended the new real-indices to `_colOrder`'s tail; this call
+      // overrides that with the user's saved name-keyed order.
+      this._applyGridColOrder();
       this._scheduleRender(['chart', 'scrubber', 'chips', 'columns']);
       return;
     }

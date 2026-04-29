@@ -230,6 +230,151 @@ extendApp({
       });
       phaseGrid.appendChild(tile);
     }
+
+    // ── GeoIP database row ─────────────────────────────────────────────
+    // Bundled provider info + uploader for the optional MMDB override.
+    // The Timeline view's GeoIP enrichment mixin reads `this._app.geoip`
+    // (resolved in App.init()) — uploads here re-run enrichment on the
+    // open view via `_runGeoipEnrichment()`.
+    if (typeof BundledGeoip !== 'undefined') {
+      this._renderGeoipRow(body);
+    }
+  },
+
+  // Surface for the GeoIP MMDB override. Three states share one row:
+  //
+  //   1. No override — only the bundled provider is loaded. Show the
+  //      bundled vintage and an "Upload .mmdb / .mmdb.gz" button.
+  //   2. Override loaded — show database type, build date, filename, and
+  //      a "Remove" button that reverts to bundled.
+  //   3. Override loading / failed — transient toasts (no inline state).
+  //
+  // The bundled provider is always present so analysts get useful country
+  // data with zero configuration; the override exists for users who want
+  // GeoLite2-City accuracy or DB-IP daily updates. See SECURITY.md for
+  // the rationale (no network → no licence-protected DB shipped).
+  _renderGeoipRow(body) {
+    const row = document.createElement('div');
+    row.className = 'settings-row';
+    row.innerHTML = `
+      <div class="settings-row-label">🌍 GeoIP database</div>
+      <div class="settings-geoip" id="settings-geoip"></div>`;
+    body.appendChild(row);
+    this._refreshGeoipRow(row.querySelector('#settings-geoip'));
+  },
+
+  _refreshGeoipRow(host) {
+    if (!host) return;
+    host.innerHTML = '';
+    const app = this;
+
+    // Bundled summary line — always shown.
+    const bundled = document.createElement('div');
+    bundled.className = 'settings-geoip-bundled';
+    const bundledVintage = (typeof BundledGeoip !== 'undefined' && BundledGeoip.vintage)
+      ? BundledGeoip.vintage : 'Bundled IPv4 → country';
+    bundled.textContent = `Bundled: ${bundledVintage}`;
+    host.appendChild(bundled);
+
+    // Override state — async fetch via GeoipStore.getMeta(). While we're
+    // resolving, show a hint placeholder so the row never renders empty.
+    const stateLine = document.createElement('div');
+    stateLine.className = 'settings-geoip-state';
+    stateLine.textContent = '…';
+    host.appendChild(stateLine);
+
+    const btnRow = document.createElement('div');
+    btnRow.className = 'settings-geoip-btns';
+    host.appendChild(btnRow);
+
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = '.mmdb,.gz';
+    fileInput.style.display = 'none';
+    host.appendChild(fileInput);
+
+    const renderState = (meta) => {
+      stateLine.innerHTML = '';
+      btnRow.innerHTML = '';
+      if (meta) {
+        const what = meta.databaseType || 'MMDB override';
+        const when = meta.vintage || (meta.savedAt
+          ? `saved ${new Date(meta.savedAt).toISOString().slice(0, 10)}`
+          : '');
+        const fname = meta.filename ? ` (${meta.filename})` : '';
+        stateLine.textContent = `Override: ${what}${when ? ' — ' + when : ''}${fname}`;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'nicelist-btn';
+        remove.textContent = '✕ Remove override';
+        remove.addEventListener('click', async () => {
+          const ok = await GeoipStore.clear();
+          if (ok) {
+            // Snap `app.geoip` back to bundled and notify the open
+            // Timeline view to re-run enrichment with the new provider.
+            if (typeof BundledGeoip !== 'undefined') app.geoip = BundledGeoip;
+            if (app._timelineCurrent && typeof app._timelineCurrent._runGeoipEnrichment === 'function') {
+              try { app._timelineCurrent._runGeoipEnrichment(); } catch (_) { /* noop */ }
+            }
+            app._toast('GeoIP override removed — using bundled IPv4 → country');
+          } else {
+            app._toast('Could not remove override (storage blocked?)');
+          }
+          this._refreshGeoipRow(host);
+        });
+        btnRow.appendChild(remove);
+      } else {
+        stateLine.textContent = 'No override loaded';
+      }
+      const upload = document.createElement('button');
+      upload.type = 'button';
+      upload.className = 'nicelist-btn';
+      upload.textContent = meta ? '⬆ Replace…' : '⬆ Upload .mmdb / .mmdb.gz';
+      upload.title = 'Use a MaxMind / DB-IP MMDB file for richer (region + city) lookups';
+      upload.addEventListener('click', () => fileInput.click());
+      btnRow.appendChild(upload);
+    };
+
+    fileInput.addEventListener('change', async () => {
+      const f = fileInput.files && fileInput.files[0];
+      fileInput.value = '';
+      if (!f) return;
+      let reader;
+      try {
+        reader = await MmdbReader.fromBlob(f);
+      } catch (e) {
+         
+        console.warn('[geoip] mmdb load failed:', e);
+        app._toast(`MMDB rejected: ${e && e.message ? e.message : 'invalid file'}`);
+        return;
+      }
+      const meta = {
+        filename: f.name,
+        size: f.size,
+        savedAt: Date.now(),
+        vintage: reader.vintage,
+        databaseType: reader.databaseType,
+      };
+      const ok = await GeoipStore.save(f, meta);
+      if (!ok) {
+        app._toast('Could not save MMDB (storage quota or blocked)');
+        return;
+      }
+      app.geoip = reader;
+      app._toast(`MMDB loaded: ${reader.vintage}`);
+      // Push the new provider into the open Timeline view, if any.
+      if (app._timelineCurrent && typeof app._timelineCurrent._runGeoipEnrichment === 'function') {
+        try { app._timelineCurrent._runGeoipEnrichment(); } catch (_) { /* noop */ }
+      }
+      this._refreshGeoipRow(host);
+    });
+
+    // Kick off the meta fetch and render the appropriate state.
+    if (typeof GeoipStore !== 'undefined') {
+      GeoipStore.getMeta().then(renderState).catch(() => renderState(null));
+    } else {
+      renderState(null);
+    }
   },
 
   // ── Nicelists tab ──────────────────────────────────────────────────────

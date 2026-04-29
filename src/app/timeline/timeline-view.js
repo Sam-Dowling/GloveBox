@@ -235,6 +235,12 @@ class TimelineView {
     this._cardWidths = TimelineView._loadCardWidthsFor(this._fileKey);
     this._cardOrder = TimelineView._loadCardOrderFor(this._fileKey);
     this._pinnedCols = TimelineView._loadPinnedColsFor(this._fileKey);
+    // Per-file grid column display-order (drag-reorder persistence).
+    // Array of column NAMES in display order, or `null` for identity.
+    // Resolved to real indices and applied via
+    // `GridViewer._setColumnOrder` on grid mount + after every
+    // `_updateColumns` call so it survives auto-extract.
+    this._gridColOrder = TimelineView._loadGridColOrderFor(this._fileKey);
     // Entities-section parity with Top values: pinned types + drag-reorder
     // saved per-file under their own keys so they don't collide with
     // `pinnedCols` / `cardOrder` (which key on column names — entity cards
@@ -290,6 +296,19 @@ class TimelineView {
     // reopen. The full Extract Values dialog still exists for analysts
     // who want to opt into lower-coverage proposals manually.
     setTimeout(() => this._autoExtractBestEffort(), 60);
+    // GeoIP enrichment runs on the same post-mount tick as auto-extract,
+    // but slightly later so its idempotence-marker check sees any
+    // analyst-deleted columns from auto-extract first. The mixin
+    // (`timeline-view-geoip.js`) reads `this._app.geoip` for the active
+    // provider and is a no-op when `_app` isn't wired yet (which happens
+    // briefly on the synchronous factory path — `_app` is assigned by
+    // the router after `view.root()` is mounted). The router calls
+    // `_runGeoipEnrichment()` again after stamping `_app` for that case.
+    setTimeout(() => {
+      if (typeof this._runGeoipEnrichment === 'function') {
+        try { this._runGeoipEnrichment(); } catch (_) { /* enrichment is additive */ }
+      }
+    }, 100);
   }
 
 
@@ -1097,6 +1116,7 @@ class TimelineView {
     this._cardWidths = {};
     this._cardOrder = null;
     this._pinnedCols = [];
+    this._gridColOrder = null;
     this._pendingCtrlSelect = null;
     if (this._root && this._root.style) {
       this._root.style.setProperty('--tl-grid-h', TIMELINE_GRID_DEFAULT_H + 'px');

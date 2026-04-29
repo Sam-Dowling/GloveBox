@@ -1197,6 +1197,7 @@ filter, and (c) auditable against this table.
 | `loupe_timeline_sections` | JSON object | section-chevron clicks | `{ chart: bool, grid: bool, columns: bool, pivot: bool, … }` — `true` = collapsed. |
 | `loupe_timeline_card_widths` | JSON object | edge resize on `.tl-col-card` / `.tl-entity-group` | `{ "<fileKey>": { "<key>": { span: N }, … } }` — file key = `name|size|lastModified`. Span = `grid-column: span N`. |
 | `loupe_timeline_card_order` | JSON object | drag-to-reorder card headers | `{ "<fileKey>": ["colName1", …] }`. |
+| `loupe_timeline_grid_col_order` | JSON object | drag a header in the Timeline grid | `{ "<fileKey>": ["colName1", …] }`. Persists the grid column DISPLAY order independently of `card_order` (which only sorts the Top-values cards section). Stored by column NAME so extracted columns survive reload at a different real index. Resolved back to live indices via `_applyGridColOrder` on grid mount AND after every `_updateColumns` call. Cleared by Timeline ↺ Reset via the `loupe_timeline_*` prefix wipe. |
 | `loupe_timeline_pinned_cols` | JSON object | 📌 pin button | `{ "<fileKey>": [...] }`. Pinned cards sort to top-left. |
 | `loupe_timeline_entity_pinned` | JSON object | 📌 on Entities cards | `{ "<fileKey>": ["entity:<IOC_TYPE>", …] }`. |
 | `loupe_timeline_entity_order` | JSON object | drag-to-reorder Entities | `{ "<fileKey>": ["entity:<IOC_TYPE>", …] }`. |
@@ -1226,6 +1227,38 @@ sweep and needs no additional wiring.
 3. Validate on read — never trust the stored value. Out-of-range falls
    back to a hard-coded default.
 4. Add a row to this table in the same PR.
+
+### IndexedDB Stores
+
+`localStorage` is the default for state because it's synchronous,
+ubiquitous, and easy to grep. Use IndexedDB **only** for binary blobs
+that are too large for `localStorage`'s ~5 MB string quota. Each store
+is fronted by a tiny accessor module under `src/<feature>/` so the
+`open()` boilerplate lives in exactly one place.
+
+| Database | Object store | Accessor | What it holds | Quota considerations |
+|---|---|---|---|---|
+| `loupe-geoip` | `mmdb` (key: `'active'`) | `src/geoip/geoip-store.js` (`GeoipStore.load()` / `save({name, bytes})` / `clear()`) | A user-uploaded MaxMind-format MMDB binary (Country / City / ASN). Loaded asynchronously by `App.init()` after the synchronous bundled provider is in place; the timeline re-fires GeoIP enrichment when it resolves. Survives reloads, never touches the network. | MMDB files are typically 8–80 MB. Settings shows the filename + size + build epoch from the file's metadata block. |
+
+**Adding a new IndexedDB store**
+
+1. Create `src/<feature>/<feature>-store.js` exposing `load()`,
+   `save(...)`, and `clear()`. Promise-returning. Wrap every IDB
+   request in a Promise so callers never deal with `onsuccess` /
+   `onerror` themselves.
+2. Use **one** database per feature, **one** object store per
+   database, with a **fixed key** (`'active'`, `'current'`, …) for the
+   single-blob case. Multiple-record stores need a documented key
+   schema.
+3. Bump `version` (the second arg to `indexedDB.open(name, version)`)
+   only if the schema changes; provide an `onupgradeneeded` migration.
+4. The accessor must be a no-op on browsers without IndexedDB (return
+   `null` from `load`, throw a clear error from `save`). Loupe must
+   keep working without the override.
+5. Add a row to the table above.
+6. Add a paragraph to `SECURITY.md` § "Persisted user data" explaining
+   what's stored, when it's wiped, and that the CSP prevents
+   exfiltration.
 
 ---
 

@@ -29,6 +29,34 @@ threat model is deliberately narrow:
 - **Side-channel attacks** — Spectre-class timing side-channels are out
   of scope for a file-analysis tool.
 
+### Persisted user data (IndexedDB)
+
+Most user state lives in `localStorage` under the `loupe_` prefix
+(themes, sidebar widths, per-file extracted columns, etc.). One
+exception: the **GeoIP MMDB override**.
+
+If you upload a MaxMind-format MMDB via ⚙ Settings → "GeoIP database",
+the file is stored in IndexedDB under database name `loupe-geoip`,
+object store `mmdb`. Storage is per-browser-profile and per-origin:
+
+- The DB is opaque to the network — there is no API or extension that
+  can read it; the CSP `default-src 'none'` rule means even Loupe
+  itself cannot exfiltrate it.
+- It survives page reloads and full app rebuilds, but is wiped if you
+  clear site data, use a private window, or switch browser profiles.
+- There is no telemetry on which database is loaded; provider info
+  (filename, vintage, build epoch) appears only in the in-page Settings
+  dialog and the affected column's tooltip.
+- Click "Remove" in Settings to delete it. The bundled IPv4-country
+  binary (vendored in the HTML file itself, ≈830 KB) is the fallback
+  and is **not** stored in IndexedDB — it cannot be removed at runtime.
+
+The bundled binary is regenerated monthly by
+`.github/workflows/refresh-geoip.yml`, which opens a PR with a fresh
+`vendor/geoip-country-ipv4.bin` and an updated SHA-256 in
+[`VENDORED.md`](VENDORED.md). The PR's CI rebuilds the bundle so the
+verified SHA-256 chain is preserved end-to-end.
+
 ---
 
 ## Parser Limits

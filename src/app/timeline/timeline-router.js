@@ -524,6 +524,18 @@ extendApp({
       // Let the view emit toasts through the app.
       view._app = this;
 
+      // The constructor ran a self-scheduled `_runGeoipEnrichment()` 100 ms
+      // after mount, but `_app` was only assigned just now, so that call
+      // bailed early (the mixin no-ops when `_app` is null). Re-trigger
+      // enrichment now that the provider link is live. Idempotent — the
+      // mixin's done-marker + per-source dedup short-circuit subsequent
+      // calls on files that were already enriched.
+      if (typeof view._runGeoipEnrichment === 'function') {
+        setTimeout(() => {
+          try { view._runGeoipEnrichment(); } catch (_) { /* additive */ }
+        }, 0);
+      }
+
       // Mount the view into #timeline-root, creating it on demand. The
       // container exists purely to host the Timeline surface — there is
       // no persistent "Timeline mode" any more.

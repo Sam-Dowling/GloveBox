@@ -296,6 +296,25 @@ Object.assign(TimelineView.prototype, {
         // popover (same as the Top-Lists ▾ button). Right-click is
         // wired separately via `contextmenu` to open the sort/hide menu.
         onHeaderClick: role === 'main' ? (colIdx, anchor) => this._openColumnMenu(colIdx, anchor) : null,
+        // Column drag-reorder persistence — only on the main grid
+        // (the suspicious-rows mini-grid is read-only). Receives the
+        // post-reorder real-index array from GridViewer; we translate
+        // it to column NAMES (stable across schema mutations) and save
+        // it to the per-file `loupe_timeline_grid_col_order` map. On
+        // next mount, `_applyGridColOrder` converts the saved names
+        // back to live real indices and re-applies via
+        // `viewer._setColumnOrder`. Without this hook, drags work for
+        // the session but are lost on reload.
+        onColumnReorder: role === 'main' ? (realIdxs) => {
+          const names = [];
+          for (const i of realIdxs) {
+            if (Number.isInteger(i) && i >= 0 && i < this.columns.length) {
+              names.push(this.columns[i] || `col${i}`);
+            }
+          }
+          this._gridColOrder = names;
+          TimelineView._saveGridColOrderFor(this._fileKey, names);
+        } : null,
         // Drawer → key right-click menu → promote the JSON leaf to a
         // virtual (extracted) column and optionally chain a filter chip.
         // `colIdx` is the column index in the GridViewer's column array,
@@ -475,6 +494,11 @@ Object.assign(TimelineView.prototype, {
           viewer._buildHeaderCells();
           viewer._forceFullRender();
         }
+        // Re-apply persisted drag-reorder, if any. Done AFTER the
+        // sort-spec stamp so the rebuilt header rows reflect both the
+        // sort indicator AND the saved order. `_applyGridColOrder` is a
+        // no-op when `_gridColOrder` is null or empty.
+        this._applyGridColOrder();
       }
     } else {
       // Preserve columns in case new extracted columns were added.
@@ -928,6 +952,53 @@ Object.assign(TimelineView.prototype, {
     }
     this._cardOrder = order;
     TimelineView._saveCardOrderFor(this._fileKey, order);
+  },
+
+  // Resolve `_gridColOrder` (column NAMES) → live real indices and
+  // hand them to GridViewer. Called from three sites:
+  //   1. After first mount of `this._grid` in `_renderGridInto` so a
+  //      saved order is honoured on every page reload.
+  //   2. After `_grid._updateColumns(this.columns)` in the fast path
+  //      of `_rebuildExtractedStateAndRender`, because `_updateColumns`
+  //      appends newly-added real-indices to `_colOrder`'s tail —
+  //      `_applyGridColOrder` then re-asserts the user's preferred
+  //      arrangement (extracted column may belong somewhere in the
+  //      middle, not at the end).
+  //   3. From `_enrichSingleIpCol` after geo-extracting, to land the
+  //      new geo column adjacent to its IPv4 source. (Uses the same
+  //      pipeline: it computes the new name order, stores it on
+  //      `this._gridColOrder`, and calls `_applyGridColOrder`.)
+  //
+  // No-op when there's no grid mounted, no saved order, or the saved
+  // order resolves to the identity permutation (saves a re-render).
+  _applyGridColOrder() {
+    if (!this._grid || typeof this._grid._setColumnOrder !== 'function') return;
+    const names = this._gridColOrder;
+    if (!Array.isArray(names) || !names.length) return;
+    const n = this.columns.length;
+    if (!n) return;
+    // Resolve names → real indices. Any name that no longer exists
+    // (column deleted, schema changed) is silently skipped; the
+    // GridViewer-side resolver heals the residue by appending any
+    // missing real index.
+    const seen = new Set();
+    const realIdxs = [];
+    for (const name of names) {
+      const i = this.columns.indexOf(name);
+      if (i < 0) continue;
+      if (seen.has(i)) continue;
+      seen.add(i);
+      realIdxs.push(i);
+    }
+    // If the resolved order matches identity, skip the costly re-render.
+    let identity = realIdxs.length === n;
+    if (identity) {
+      for (let i = 0; i < n; i++) {
+        if (realIdxs[i] !== i) { identity = false; break; }
+      }
+    }
+    if (identity) return;
+    this._grid._setColumnOrder(realIdxs);
   },
 
   // Sus values keyed by column — for highlighting top-values cards.

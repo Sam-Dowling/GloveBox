@@ -30,6 +30,16 @@ const TIMELINE_KEYS = Object.freeze({
   SUS_MARKS: 'loupe_timeline_sus_marks',
   CARD_ORDER: 'loupe_timeline_card_order',
   PINNED_COLS: 'loupe_timeline_pinned_cols',
+  // Per-file grid column DISPLAY order — `{ [fileKey]: [colName, …] }`.
+  // Persists the analyst's drag-reordered column arrangement across
+  // reload. Stored as column NAMES (not real indices) because the real
+  // index of any extracted column is unstable across the auto-extract
+  // pass that runs ~100 ms post-load. On restore, names are resolved
+  // back to live real indices via `this.columns.indexOf(name)`; any
+  // name that no longer exists (column deleted, schema changed) is
+  // silently dropped and the surviving order is healed by
+  // `GridViewer._resolveColOrder`. Mirrors the `CARD_ORDER` shape.
+  GRID_COL_ORDER: 'loupe_timeline_grid_col_order',
   // Per-file marker — `{ [fileKey]: true }` — set the first time the
   // best-effort auto-extract pass runs against a given file, so we never
   // re-add columns the analyst has since deleted. Replaces the old

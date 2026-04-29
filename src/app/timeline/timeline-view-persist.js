@@ -79,6 +79,22 @@ Object.assign(TimelineView, {
     else delete all[fileKey];
     safeStorage.setJSON(TIMELINE_KEYS.CARD_ORDER, all);
   },
+  // Grid column display-order — same shape as CARD_ORDER (per-file
+  // map of column-name arrays). Returned `null` ⇒ no saved order ⇒
+  // GridViewer falls back to identity ordering (real-index = display-
+  // index). See `TIMELINE_KEYS.GRID_COL_ORDER` for why we persist names
+  // instead of real indices.
+  _loadGridColOrderFor(fileKey) {
+    const all = safeStorage.getJSON(TIMELINE_KEYS.GRID_COL_ORDER, null);
+    const arr = all && all[fileKey];
+    return Array.isArray(arr) ? arr : null;
+  },
+  _saveGridColOrderFor(fileKey, names) {
+    const all = safeStorage.getJSON(TIMELINE_KEYS.GRID_COL_ORDER, {}) || {};
+    if (names && names.length) all[fileKey] = names;
+    else delete all[fileKey];
+    safeStorage.setJSON(TIMELINE_KEYS.GRID_COL_ORDER, all);
+  },
   _loadPinnedColsFor(fileKey) {
     const all = safeStorage.getJSON(TIMELINE_KEYS.PINNED_COLS, null);
     const arr = all && all[fileKey];

@@ -74,7 +74,7 @@ test('timeline-view-factories.js attaches via Object.assign(TimelineView, ...)',
 });
 
 test('timeline-view-factories.js defines fromCsvAsync with the chunked-decode body', () => {
-  assert.match(MIXIN, /\basync\s+fromCsvAsync\s*\(\s*file\s*,\s*buffer\s*,\s*explicitDelim\s*\)/);
+  assert.match(MIXIN, /\basync\s+fromCsvAsync\s*\(\s*file\s*,\s*buffer\s*,\s*explicitDelim\s*,\s*kindHint\s*\)/);
   // Body anchor: the DECODE_CHUNK constant + the chunked yield helper
   // are both load-bearing and would be tedious to re-derive.
   assert.match(MIXIN, /RENDER_LIMITS\.DECODE_CHUNK_BYTES/);
