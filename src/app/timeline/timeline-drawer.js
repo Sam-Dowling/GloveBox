@@ -342,8 +342,17 @@ Object.assign(TimelineView.prototype, {
         // success path — the apply-pump terminus schedules it once.
         try { this._grid.destroy(); } catch (__) { /* noop */ }
         this._grid = null;
+        // D1: during the apply pump, also suppress 'chart' / 'scrubber' /
+        // 'chips' — the chart re-renders identical data on every
+        // proposal (filter / window / stack-col are all unchanged), so
+        // N back-to-back chart redraws are pure waste. Scrubber and
+        // chips are negligible CPU but suppressed for visual coherence
+        // (no flicker mid-pump). The terminus in
+        // `timeline-view-autoextract.js#applyStep` schedules the full
+        // task list `['columns', 'chart', 'scrubber', 'chips']` once
+        // after the last proposal lands.
         const fallbackTasks = this._autoExtractApplying
-          ? ['chart', 'scrubber', 'chips', 'grid']
+          ? ['grid']
           : ['chart', 'scrubber', 'chips', 'grid', 'columns'];
         this._scheduleRender(fallbackTasks);
         return;
@@ -376,27 +385,35 @@ Object.assign(TimelineView.prototype, {
       // appended the new real-indices to `_colOrder`'s tail; this call
       // overrides that with the user's saved name-keyed order.
       this._applyGridColOrder();
-      // Suppress the per-proposal `'columns'` task while the auto-extract
-      // apply pump is running. `_computeColumnStatsAsync` is O(rows × cols)
-      // and runs on every `'columns'` render — N back-to-back sweeps
-      // (one per applied proposal) would supersede each other and burn
-      // CPU on work the pump itself is about to invalidate. The pump's
-      // terminating branch (`applyStep` in timeline-view-autoextract.js)
-      // schedules `['columns']` exactly once after the last proposal
-      // lands, so the Top Values strip still populates correctly.
+      // Suppress per-proposal heavy tasks while the auto-extract apply
+      // pump is running. The grid is already updated in-place above; we
+      // skip 'chart' / 'scrubber' / 'chips' / 'columns' because:
+      //   - 'columns' triggers `_computeColumnStatsAsync` (O(rows×cols))
+      //     and N back-to-back sweeps would supersede each other.
+      //   - 'chart' calls `_renderChart` which re-rasters the histogram
+      //     using `_filteredIdx` / `_window` / `_stackCol` — none of
+      //     which change during the pump, so every redraw is identical
+      //     pixels (D1, ~1.28 s saved on a 100k-row CSV).
+      //   - 'scrubber' / 'chips' are cheap but suppressed for visual
+      //     coherence (no flicker as columns slide in).
+      // The pump's terminating branch (`applyStep` in
+      // timeline-view-autoextract.js) schedules
+      // `['columns', 'chart', 'scrubber', 'chips']` exactly once after
+      // the last proposal lands, so all suppressed surfaces refresh.
       const fastTasks = this._autoExtractApplying
-        ? ['chart', 'scrubber', 'chips']
+        ? []
         : ['chart', 'scrubber', 'chips', 'columns'];
-      this._scheduleRender(fastTasks);
+      if (fastTasks.length) this._scheduleRender(fastTasks);
       return;
     }
     // Cold path — first mount, or a grid implementation without the
     // `_updateColumns` helper. Reconstruct via `_renderGrid` on the
-    // next RAF. Same `'columns'` suppression as the fast path: the
-    // apply-pump terminus will schedule it once at the end.
+    // next RAF. Same suppression strategy as the fast path: during the
+    // apply pump we render only the grid; chart / scrubber / chips /
+    // columns are deferred to the terminus.
     if (this._grid) { try { this._grid.destroy(); } catch (_) { } this._grid = null; }
     const coldTasks = this._autoExtractApplying
-      ? ['chart', 'scrubber', 'chips', 'grid']
+      ? ['grid']
       : ['chart', 'scrubber', 'chips', 'grid', 'columns'];
     this._scheduleRender(coldTasks);
   },

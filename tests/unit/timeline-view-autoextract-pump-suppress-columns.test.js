@@ -1,20 +1,21 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
 // timeline-view-autoextract-pump-suppress-columns.test.js — pin the
-// performance fix that suppresses the per-proposal `'columns'` render
-// task during the auto-extract apply pump.
+// performance fixes (A1 + D1) that suppress per-proposal render tasks
+// during the auto-extract apply pump.
 //
-// CONTEXT — the regression this test exists to prevent:
+// CONTEXT — the regressions this test exists to prevent:
 //   `_autoExtractBestEffort` applies eligible proposals one per idle
 //   tick. Each apply calls `_rebuildExtractedStateAndRender` which —
-//   pre-fix — scheduled `['chart', 'scrubber', 'chips', 'columns']` on
-//   every tick. The `'columns'` task triggers `_computeColumnStatsAsync`,
-//   an O(rows × cols) sweep over the filtered index. With N proposals
-//   on a 100k-row file the sweeps superseded each other continuously
-//   (the cancel API correctly noticed but each in-flight sweep still
-//   ran a full 50 000-row chunk before yielding), burning ~28 s of
-//   main-thread CPU on work the apply pump itself was about to
-//   invalidate.
+//   pre-fix — scheduled the full task list on every tick:
+//     • `'columns'` triggered `_computeColumnStatsAsync`, an O(rows ×
+//       cols) sweep that superseded itself N times (A1 — ~28 s wasted
+//       on a 100k-row file).
+//     • `'chart'` re-rendered the histogram with identical data on
+//       every proposal (filter / window / stack-col are unchanged
+//       during the pump) — D1, ~1.28 s wasted on a 100k-row file.
+//     • `'scrubber'` / `'chips'` are cheap but suppressed for visual
+//       coherence (no flicker as columns slide in).
 //
 //   The fix:
 //     1. `TimelineView` declares `this._autoExtractApplying = false`
@@ -23,14 +24,18 @@
 //        before scheduling the FIRST `applyStep` tick (after the
 //        `if (!eligible.length) return;` early-exit) and clears it in
 //        the terminating `idx >= ranked.length` branch BEFORE the
-//        existing GeoIP retry block, then schedules `['columns']`
-//        exactly once so the Top Values strip populates from the
-//        final column set.
-//     3. `_rebuildExtractedStateAndRender` consults the flag and omits
-//        `'columns'` from the per-proposal `_scheduleRender(...)` call
-//        in BOTH the fast-path branch (in-place `_grid._updateColumns`)
-//        AND the cold-path branch (destroy + rebuild) AND the
-//        in-place-failure fallback branch.
+//        existing GeoIP retry block, then schedules
+//        `['columns', 'chart', 'scrubber', 'chips']` exactly once so
+//        every suppressed surface refreshes from the final column set.
+//     3. `_rebuildExtractedStateAndRender` consults the flag:
+//        - fast-path (in-place `_grid._updateColumns`) → schedule
+//          NOTHING during pump (grid is already updated; everything
+//          else is deferred to terminus). Guarded with
+//          `if (fastTasks.length)` to avoid an empty-array schedule.
+//        - cold-path (destroy + rebuild) and in-place-failure fallback
+//          → schedule ONLY `'grid'` during pump (the grid actually
+//          needs to be (re)mounted; chart/scrubber/chips/columns are
+//          deferred to terminus).
 //
 // What this test pins (static-text only — the runtime behaviour is
 // covered by `timeline-view-autoextract-real-fixture.test.js` and the
@@ -121,72 +126,81 @@ test('the `true` set sits immediately before the first schedule(applyStep) call'
     'timeline-view-autoextract.js');
 });
 
-test('apply-pump terminus clears the flag and schedules [\'columns\'] once', () => {
+test('apply-pump terminus clears the flag and schedules deferred surfaces once', () => {
   // The terminating branch (`idx >= ranked.length`) must:
   //   (a) clear `_autoExtractApplying` so subsequent
   //       `_rebuildExtractedStateAndRender` calls (e.g. from the GeoIP
-  //       retry below, or from any future user action) re-include
-  //       `'columns'` in their schedule;
-  //   (b) schedule `['columns']` exactly once so the Top Values strip
-  //       populates from the final column set.
+  //       retry below, or from any future user action) re-include the
+  //       full task list in their schedule;
+  //   (b) schedule the full deferred-surface list exactly once so the
+  //       Top Values strip, histogram, scrubber, and chip overlays all
+  //       refresh from the final column set. Per D1, the chart task is
+  //       suppressed during the pump (the histogram re-renders with
+  //       identical data on every proposal — pure waste) so the
+  //       terminus must include 'chart' alongside 'columns'.
   // Both lines must appear inside the terminus branch — assert their
   // co-location with a multi-line regex.
-  const re = /this\._autoExtractApplying\s*=\s*false\s*;\s*\n\s*this\._scheduleRender\(\[\s*'columns'\s*\]\)\s*;/;
+  const re = /this\._autoExtractApplying\s*=\s*false\s*;\s*\n\s*this\._scheduleRender\(\[\s*'columns'\s*,\s*'chart'\s*,\s*'scrubber'\s*,\s*'chips'\s*\]\)\s*;/;
   assert.ok(re.test(AUTOEXTRACT_SRC),
     'expected `this._autoExtractApplying = false;` followed by ' +
-    '`this._scheduleRender([\'columns\']);` in the apply-pump terminus ' +
-    'branch of timeline-view-autoextract.js');
+    '`this._scheduleRender([\'columns\', \'chart\', \'scrubber\', \'chips\']);` ' +
+    'in the apply-pump terminus branch of timeline-view-autoextract.js');
 });
 
 // ── Per-proposal schedule suppression (timeline-drawer.js) ─────────────────
 
-test('_rebuildExtractedStateAndRender omits \'columns\' while pump is running', () => {
-  // The fast-path branch (in-place `_grid._updateColumns`) must build
-  // its tasks list conditionally on `_autoExtractApplying`. We pin the
-  // ternary literal — a direct `_scheduleRender(['chart', 'scrubber',
-  // 'chips', 'columns'])` (the pre-fix line) would slip through this
-  // assertion and trigger N supersession-cancelled column-stats sweeps.
-  assert.ok(
-    /this\._autoExtractApplying[\s\S]{0,80}\['chart',\s*'scrubber',\s*'chips'\]/.test(DRAWER_SRC),
-    'expected fast-path tasks list to OMIT \'columns\' when ' +
-    '`_autoExtractApplying` is true (look for a `[\'chart\', \'scrubber\', ' +
-    '\'chips\']` literal under a `_autoExtractApplying ? ...` ternary)'
-  );
+test('fast-path schedules NOTHING during apply pump (D1)', () => {
+  // The fast-path branch (in-place `_grid._updateColumns`) updates the
+  // grid synchronously then schedules render tasks for the OTHER
+  // surfaces. Per D1, every one of those (chart / scrubber / chips /
+  // columns) is suppressed during the pump — the chart re-renders
+  // identical data, columns triggers an O(rows×cols) stats sweep, and
+  // scrubber/chips are cosmetic. So the fast-path conditional must
+  // produce an empty `fastTasks` array under the flag, and the call
+  // site must guard `if (fastTasks.length)` to avoid an empty-array
+  // schedule (which would queue an empty RAF callback for no reason).
+  const re = /const\s+fastTasks\s*=\s*this\._autoExtractApplying\s*\?\s*\[\s*\]\s*:\s*\[\s*'chart'\s*,\s*'scrubber'\s*,\s*'chips'\s*,\s*'columns'\s*\]\s*;\s*\n\s*if\s*\(\s*fastTasks\.length\s*\)\s*this\._scheduleRender\(fastTasks\)\s*;/;
+  assert.ok(re.test(DRAWER_SRC),
+    'expected fast-path to compute `fastTasks` as `[]` under ' +
+    '`_autoExtractApplying`, full list otherwise, and to guard the ' +
+    'schedule with `if (fastTasks.length)`');
 });
 
-test('_rebuildExtractedStateAndRender cold-path branch suppresses \'columns\' too', () => {
-  // The cold path (no live grid) and the in-place-failure fallback
-  // both rebuild via `_scheduleRender([..., 'grid', ...])`. They must
-  // also drop `'columns'` while the pump runs — otherwise a GridViewer
-  // crash mid-pump would re-enable the supersession churn.
-  // Two cold/fallback branches expected; both must drop 'columns' under
-  // the flag.
+test('cold-path and fallback branches schedule ONLY \'grid\' during apply pump (D1)', () => {
+  // Cold path (no live grid) and the in-place-failure fallback both
+  // need to (re)mount the grid, so they MUST keep `'grid'` in the task
+  // list — but every other surface is suppressed during the pump
+  // (per D1) and refreshed once at the terminus. Pin the literal
+  // ternary `_autoExtractApplying ? ['grid'] : full-list` for both
+  // branches.
   const matches = DRAWER_SRC.match(
-    /this\._autoExtractApplying[\s\S]{0,140}\['chart',\s*'scrubber',\s*'chips',\s*'grid'\]/g);
+    /this\._autoExtractApplying\s*\?\s*\[\s*'grid'\s*\]\s*:\s*\[\s*'chart'\s*,\s*'scrubber'\s*,\s*'chips'\s*,\s*'grid'\s*,\s*'columns'\s*\]/g);
   assert.ok(matches && matches.length >= 2,
-    `expected >= 2 cold/fallback branches that omit 'columns' under ` +
-    `\`_autoExtractApplying\`, got ${matches ? matches.length : 0}. ` +
+    `expected >= 2 cold/fallback branches with the literal ternary ` +
+    `\`_autoExtractApplying ? ['grid'] : ['chart', 'scrubber', 'chips', ` +
+    `'grid', 'columns']\`, got ${matches ? matches.length : 0}. ` +
     `One protects the destroy/rebuild cold path; one protects the ` +
     `in-place-update failure fallback.`);
 });
 
-test('post-fix drawer no longer emits a per-proposal columns schedule unconditionally', () => {
-  // Pre-fix the file contained the literal
-  //   this._scheduleRender(['chart', 'scrubber', 'chips', 'columns']);
-  // exactly once (the in-place success branch). Post-fix that line is
-  // gone — replaced by the conditional ternary. Pin its absence so a
-  // future "simplify" PR doesn't re-introduce the supersession churn.
-  // (The cold path's pre-fix line `['chart', 'scrubber', 'chips',
-  // 'grid', 'columns']` is also covered by being absent below.)
-  assert.ok(
-    !/_scheduleRender\(\[\s*'chart'\s*,\s*'scrubber'\s*,\s*'chips'\s*,\s*'columns'\s*\]\)/.test(DRAWER_SRC),
-    'expected the unconditional `_scheduleRender([\'chart\', \'scrubber\', ' +
-    '\'chips\', \'columns\'])` line to be GONE from timeline-drawer.js — ' +
-    'replaced by an `_autoExtractApplying ? ...` ternary');
-  assert.ok(
-    !/_scheduleRender\(\[\s*'chart'\s*,\s*'scrubber'\s*,\s*'chips'\s*,\s*'grid'\s*,\s*'columns'\s*\]\)/.test(DRAWER_SRC),
-    'expected the unconditional `_scheduleRender([\'chart\', \'scrubber\', ' +
-    '\'chips\', \'grid\', \'columns\'])` lines (cold path + fallback) to ' +
-    'be GONE — replaced by `_autoExtractApplying ? ...` ternaries'
-  );
+test('post-fix drawer no longer emits unconditional per-proposal schedules', () => {
+  // Guard against re-introduction of the pre-fix lines:
+  //   _scheduleRender(['chart', 'scrubber', 'chips', 'columns'])           // fast-path
+  //   _scheduleRender(['chart', 'scrubber', 'chips'])                      // A1 fast-path
+  //   _scheduleRender(['chart', 'scrubber', 'chips', 'grid', 'columns'])   // cold path
+  //   _scheduleRender(['chart', 'scrubber', 'chips', 'grid'])              // A1 cold path
+  // Each of these would re-introduce per-proposal redundant chart
+  // redraws (D1) or column-stats sweeps (A1).
+  const forbidden = [
+    /_scheduleRender\(\[\s*'chart'\s*,\s*'scrubber'\s*,\s*'chips'\s*,\s*'columns'\s*\]\)/,
+    /_scheduleRender\(\[\s*'chart'\s*,\s*'scrubber'\s*,\s*'chips'\s*\]\)/,
+    /_scheduleRender\(\[\s*'chart'\s*,\s*'scrubber'\s*,\s*'chips'\s*,\s*'grid'\s*,\s*'columns'\s*\]\)/,
+    /_scheduleRender\(\[\s*'chart'\s*,\s*'scrubber'\s*,\s*'chips'\s*,\s*'grid'\s*\]\)/,
+  ];
+  for (const re of forbidden) {
+    assert.ok(!re.test(DRAWER_SRC),
+      `forbidden literal ${re} found in timeline-drawer.js — D1/A1 ` +
+      `regression: chart/columns must be deferred to the apply-pump ` +
+      `terminus, not scheduled per proposal.`);
+  }
 });

@@ -287,12 +287,16 @@ Object.assign(TimelineView.prototype, {
           // Apply pump finished. Drop the suppression flag so any
           // `_rebuildExtractedStateAndRender` from here onwards (e.g.
           // the GeoIP retry below, or a user clicking through the
-          // Extract Values dialog) goes back to scheduling `'columns'`
-          // per call. Then schedule the deferred Top Values sweep
-          // exactly once so the strip populates from the final column
-          // set instead of churning per-proposal mid-pump.
+          // Extract Values dialog) goes back to its normal task list.
+          // Then schedule the deferred sweeps exactly once so all
+          // suppressed surfaces refresh from the final column set
+          // instead of churning per-proposal mid-pump:
+          //   - 'columns' → Top Values strip recomputes column stats
+          //   - 'chart'   → histogram redraws once with final stack
+          //   - 'scrubber'/'chips' → cosmetic refresh of overlay state
+          // The grid was already updated in-place during the pump.
           this._autoExtractApplying = false;
-          this._scheduleRender(['columns']);
+          this._scheduleRender(['columns', 'chart', 'scrubber', 'chips']);
           // Toast suppression: gated on the per-file `toast_shown`
           // marker captured at the top of `_autoExtractBestEffort`.
           // First open → toast fires + marker stamped. Reopens → no
