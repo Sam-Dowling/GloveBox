@@ -683,6 +683,12 @@ APP_JS_FILES = [
     # dependencies, must load BEFORE any renderer that consults it (none
     # do mandatorily today — adoption is opportunistic).
     'src/lolbas-map.js',
+    # email-spoof.js — display-name / brand-mismatch heuristics for the
+    # `From:` header. Used by both eml-renderer and msg-renderer to flag
+    # the canonical "PayPal Support <attacker@evil.tld>" phishing pretext
+    # (the existing T2.4 freemail-only check misses non-freemail throwaway
+    # domains; this closes that gap). Pure data + regex, no dependencies.
+    'src/email-spoof.js',
     # xlsx-extras.js — XLSX-only scanners that probe attack surfaces not
     # reachable through `_rels/*.rels`: xl/connections.xml (external data
     # connections — OLEDB/ODBC/web/text, with refreshOnLoad gating) and

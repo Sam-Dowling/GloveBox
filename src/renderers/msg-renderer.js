@@ -348,6 +348,25 @@ class MsgRenderer {
           f.externalRefs.push({ type: IOC.PATTERN, url: '1x1 or 0x0 image detected', severity: 'medium' });
       }
 
+      // Display-name / brand mismatch on the From header (M1.12). MSG
+      // exposes `msg.from` either as a bare address (`a@b.c`) or as a
+      // display-name + address concatenation (`Name <a@b.c>`); the helper
+      // handles both shapes.
+      if (msg.from && typeof EmailSpoof !== 'undefined') {
+        for (const d of EmailSpoof.analyseFromHeader(msg.from)) {
+          f.externalRefs.push({
+            type: IOC.PATTERN,
+            url: d.reason,
+            severity: d.severity,
+            note: d.kind === 'brand-mismatch'
+              ? 'Display-name brand keyword does not match sender domain — phishing pretext'
+              : 'Display-name embeds a different domain than the sender',
+          });
+          if (d.severity === 'high' && f.risk !== 'high') escalateRisk(f, 'high');
+          else if (d.severity === 'medium' && f.risk === 'low') escalateRisk(f, 'medium');
+        }
+      }
+
       if (f.externalRefs.some(r => r.severity !== 'info') && f.risk === 'low') escalateRisk(f, 'medium');
 
       // Mirror classic-pivot metadata into the IOC table. For .msg the

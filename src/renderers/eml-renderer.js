@@ -382,6 +382,25 @@ class EmlRenderer {
           });
           if (f.risk !== 'high') escalateRisk(f, 'high');
         }
+        // ── Brand / domain-literal mismatch (M1.12) ────────────────
+        // Catches the "PayPal Support <attacker@evil.tld>" pattern that
+        // the freemail check above misses (attacker uses a non-freemail
+        // throwaway domain). EmailSpoof.analyseFromHeader returns one
+        // detection per heuristic; both fire as IOC.PATTERN.
+        if (typeof EmailSpoof !== 'undefined') {
+          for (const d of EmailSpoof.analyseFromHeader(email.from)) {
+            f.externalRefs.push({
+              type: IOC.PATTERN,
+              url: d.reason,
+              severity: d.severity,
+              note: d.kind === 'brand-mismatch'
+                ? 'Display-name brand keyword does not match sender domain — phishing pretext'
+                : 'Display-name embeds a different domain than the sender',
+            });
+            if (d.severity === 'high' && f.risk !== 'high') escalateRisk(f, 'high');
+            else if (d.severity === 'medium' && f.risk === 'low') escalateRisk(f, 'medium');
+          }
+        }
       }
 
       // ── 3b. Return-Path / Message-ID domain mismatch (T2.5) ───────────
