@@ -726,6 +726,23 @@ class RendererRegistry {
       description: 'Windows Library / Search Connector',
     },
     {
+      // Managed Object Format — WMI schema language compiled by mofcomp.exe.
+      // Abused for ATT&CK T1546.003 (WMI Event Subscription persistence).
+      // The textSniff anchors on `#pragma namespace` (canonical MOF
+      // header) or `instance of` (instance-of-class declaration), both
+      // of which are extremely rare outside genuine MOF files.
+      id: 'mof',
+      className: 'MofRenderer',
+      exts: ['mof', 'mfl'],
+      textSniff: (ctx) => {
+        const h = ctx.head500;
+        if (/#pragma\s+namespace/i.test(h)) return true;
+        if (/\binstance\s+of\s+[A-Za-z_]/i.test(h)) return true;
+        return false;
+      },
+      description: 'Managed Object Format (.mof) — WMI Schema',
+    },
+    {
       id: 'wsf',
       className: 'WsfRenderer',
       exts: ['wsf', 'wsc', 'wsh'],

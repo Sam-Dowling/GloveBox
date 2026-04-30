@@ -1170,6 +1170,11 @@ extendApp({
       this.findings = r.analyzeForSecurity(buffer, file.name);
       return { docEl: r.render(buffer, file.name) };
     },
+    mof(file, buffer) {
+      const r = new MofRenderer();
+      this.findings = r.analyzeForSecurity(buffer, file.name);
+      return { docEl: r.render(buffer, file.name) };
+    },
     reg(file, buffer) {
       const r = new RegRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
