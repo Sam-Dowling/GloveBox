@@ -123,18 +123,23 @@ class CsvRenderer {
     // Hoist state into locals — measurable speedup over property access in
     // the hot loop on V8.
     //
-    // NOTE on per-char accumulation (`cur += text[i]`): an earlier
-    // attempt (P3-D, reverted) replaced this with a `chunkStart` cursor
-    // and a `flushRun(end)` lambda that emitted one `text.slice(...)`
-    // per cell boundary, on the theory that this would avoid per-char
-    // string-concat allocations. Empirically this REGRESSED CSV parse
-    // by ~15% on Firefox: SpiderMonkey already optimises `cur += ch`
-    // into rope concatenation (cheap O(1) appends with no per-char
-    // allocation), and the slice-then-concat form forced a fresh flat
-    // string per run plus the same rope-concat onto `cur`. Keep the
-    // straightforward per-char form. See commit log for the profile
-    // evidence (TenuringTracer::allocString + Arena::init dominated
-    // parseChunk's self-time post-revert-target).
+    // NOTE on accumulation strategy. An earlier P3-D attempt at
+    // run-coalescing was reverted: it used a `chunkStart`-cursor +
+    // `flushRun(end)` lambda design that emitted ONE `text.slice` per
+    // cell-boundary token regardless of run length, which on
+    // SpiderMonkey regressed CSV parse by ~15%. The form below differs
+    // in two ways that matter:
+    //   1. We coalesce *only* over `text.indexOf` jumps (large runs of
+    //      content chars), so the slice cost is amortised across many
+    //      bytes of cell content rather than paid per cell boundary.
+    //   2. The accumulator `cur` keeps its rope identity — runs are
+    //      appended via `cur += text.slice(...)`, which V8 + Spidermonkey
+    //      both rope-extend rather than re-flattening (no fresh flat
+    //      string per run). On the 100k-row instrumented fixture the
+    //      worker-internal `csvFirstChunkPosted → csvParseLoopEnd`
+    //      slice was ~5,741 ms with per-char appends; coalescing was
+    //      the prerequisite for closing the gap to the host-side
+    //      perf-after target. See the H1 perf commit for the report.
     let inQuotes = state.inQuotes;
     let cur      = state.cur;
     let cells    = state.cells;
@@ -170,29 +175,74 @@ class CsvRenderer {
         }
       }
 
-      const ch = text.charCodeAt(i);
-
       if (inQuotes) {
-        if (ch === QUOTE) {
-          // RFC-4180: doubled quote inside a quoted cell escapes to one quote.
-          if (i + 1 < len && text.charCodeAt(i + 1) === QUOTE) {
-            cur += '"';
-            i += 2;
-            continue;
-          }
-          inQuotes = false;
-          i++;
+        // Coalesced run: scan ahead for the NEXT `"` — the only sentinel
+        // inside a quoted cell. Everything before it (incl. literal
+        // `\n` and delimiter) is cell content. Two cases:
+        //   - found a quote: append the run [i, qIdx) and dispatch the
+        //     boundary char (close-quote vs `""` escape) below.
+        //   - no quote in the rest of the buffer: this chunk's tail is
+        //     entirely cell content. Append it all and exit the loop;
+        //     `state.cur` carries the partial cell to the next call.
+        const qIdx = text.indexOf('"', i);
+        if (qIdx === -1) {
+          if (i < len) cur += text.slice(i, len);
+          i = len;
           continue;
         }
-        // Every other char (incl. \n, delim) is literal cell content.
-        cur += text[i];
+        if (qIdx > i) cur += text.slice(i, qIdx);
+        i = qIdx;
+        // RFC-4180: doubled quote inside a quoted cell escapes to one quote.
+        if (i + 1 < len && text.charCodeAt(i + 1) === QUOTE) {
+          cur += '"';
+          i += 2;
+          continue;
+        }
+        // Lone `"` — close the cell. Cross-chunk note: if this is the
+        // last byte of the current chunk we close optimistically; the
+        // next chunk could in principle start with a second `"` to make
+        // an escape, but that requires the run to span a 16 MB decode
+        // boundary mid-`""`-pair, which the worker's chunker
+        // (decode-on-byte-boundaries via TextDecoder.decode({stream:true})
+        // — see timeline.worker.js) doesn't produce: a `"` is one
+        // ASCII byte, never split.
+        inQuotes = false;
         i++;
         continue;
       }
 
-      // Not in quotes.
+      // ── Not in quotes ──────────────────────────────────────────────
+      // Coalesced run: scan for the nearest of `"`, delim, `\n`. Use
+      // three indexOf calls and take the min; three native scans beat
+      // a per-char loop on every fixture we measured.
+      const qIdx = text.indexOf('"', i);
+      const dIdx = text.indexOf(delim, i);
+      const nIdx = text.indexOf('\n', i);
+      // Take the smallest non-negative index, defaulting unfound to len.
+      const qPos = qIdx === -1 ? len : qIdx;
+      const dPos = dIdx === -1 ? len : dIdx;
+      const nPos = nIdx === -1 ? len : nIdx;
+      let next = qPos;
+      if (dPos < next) next = dPos;
+      if (nPos < next) next = nPos;
+
+      if (next > i) {
+        // Pure content run. The run starts a row if rowStart wasn't
+        // already set — record absolute offset of the FIRST char.
+        if (rowStart < 0) rowStart = baseOffset + i;
+        cur += text.slice(i, next);
+        i = next;
+        // No sentinel found in the rest of the buffer — exit loop.
+        if (i >= len) continue;
+      }
+
+      const ch = text.charCodeAt(i);
+
       if (ch === NL) {
         // Blank physical line outside quotes — skip without emitting.
+        // (rowStart < 0 means no content char has been seen on this
+        // row yet; cells/cur are also empty in that case because the
+        // run-coalescer above didn't fire.)
         if (rowStart < 0 && cells.length === 0 && cur === '') {
           i++;
           continue;
@@ -211,7 +261,7 @@ class CsvRenderer {
         continue;
       }
 
-      // Any non-newline char marks the start of a row.
+      // Any non-newline sentinel marks (or continues) a row.
       if (rowStart < 0) rowStart = baseOffset + i;
 
       if (ch === QUOTE) {
@@ -223,13 +273,9 @@ class CsvRenderer {
         i++;
         continue;
       }
-      if (ch === delimCode) {
-        cells.push(cur);
-        cur = '';
-        i++;
-        continue;
-      }
-      cur += text[i];
+      // ch === delimCode (the only remaining sentinel).
+      cells.push(cur);
+      cur = '';
       i++;
     }
 
