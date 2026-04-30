@@ -7,7 +7,15 @@
 // ── Parser safety limits ──────────────────────────────────────────────────────
 const PARSER_LIMITS = Object.freeze({
   MAX_DEPTH:            32,                  // Max recursion / nesting depth
-  MAX_UNCOMPRESSED:     50 * 1024 * 1024,    // 50 MB — max decompressed output
+  MAX_UNCOMPRESSED:     256 * 1024 * 1024,   // 256 MB — max decompressed output
+                                             // Raised 50 → 256 MB to cover
+                                             // larger-but-legitimate payloads
+                                             // (modern .ipa/.appx, full debug
+                                             // symbol bundles, multi-sheet
+                                             // .xlsm with embedded media).
+                                             // The MAX_RATIO + MAX_ENTRIES
+                                             // caps still bound zip-bomb
+                                             // amplification — see SECURITY.md.
   MAX_RATIO:            100,                 // Per-entry compression ratio abort
   MAX_ENTRIES:          10_000,              // Max archive entries before truncation
                                              // (PER-archive cap — a single

@@ -73,7 +73,7 @@ const IOC = Object.freeze({
 // load to set its zip-bomb expansion cap. Match the main-thread value
 // exactly — see `src/constants.js`.
 const PARSER_LIMITS = Object.freeze({
-  MAX_UNCOMPRESSED: 50 * 1024 * 1024,  // 50 MB — must match constants.js
+  MAX_UNCOMPRESSED: 256 * 1024 * 1024,  // 256 MB — must match constants.js
 });
 
 // ── _trimPathExtGarbage (mirrors src/constants.js) ──────────────────────────

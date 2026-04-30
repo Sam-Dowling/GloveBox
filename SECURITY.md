@@ -66,7 +66,7 @@ the UI renders** — raising affects only completeness / memory.
 | Limit | Value | Purpose |
 |---|---|---|
 | `MAX_DEPTH` | 32 | Recursion cap (archives, encoded-content chains, OLE structured-storage walks) |
-| `MAX_UNCOMPRESSED` | 50 MB | Per-stream decompressed-size cap (zip-bomb defence) |
+| `MAX_UNCOMPRESSED` | 256 MB | Per-stream decompressed-size cap (zip-bomb defence). The companion `MAX_RATIO` (100×) bounds amplification independently — a 256 MB cap with a 100× ratio cap means a hostile archive needs at least 2.56 MB of compressed payload to reach the cap, exceeding what any drive-by drop-target trickle-feeds. |
 | `MAX_RATIO` | 100× | Per-entry compression ratio cap (zip-bomb defence) |
 | `MAX_ENTRIES` | 10 000 | Archive entry-count cap |
 | `TIMEOUT_MS` | 60 s | `ParserWatchdog` cap around the initial `file.arrayBuffer()` read |
