@@ -80,6 +80,21 @@
 // worker. The host ↔ worker boundary is `postMessage` only.
 // ════════════════════════════════════════════════════════════════════════════
 
+// ── throwIfAborted no-op (mirrors src/workers/encoded-worker-shim.js) ───────
+//
+// `throwIfAborted()` is the render-epoch / watchdog poll site defined in
+// `src/constants.js` for the host thread. Since 5f9ba2c the YARA scan loop
+// in `src/yara-engine.js::scan()` calls it once per rule so the host can
+// preempt long scans on supersession. Workers don't participate in the
+// host's render-epoch fence (they're terminated wholesale via
+// `worker.terminate()`), so this is a no-op stub. Without it the worker
+// throws `ReferenceError: throwIfAborted is not defined` on the very
+// first rule, the host sees `_yaraResults` stay null, and every YARA-
+// dependent assertion silently fails. Function-declaration hoisting
+// means the stub is visible from `yara-engine.js` even though the
+// `.worker.js` source file appears AFTER it in the build concatenation.
+function throwIfAborted() { /* no-op in worker */ }
+
 self.onmessage = function (ev) {
   const msg = ev && ev.data ? ev.data : {};
   const mode = (msg && typeof msg.mode === 'string') ? msg.mode : 'single';
