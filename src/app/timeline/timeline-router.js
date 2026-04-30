@@ -316,6 +316,39 @@ extendApp({
       }
       if (head.length >= 2 && hits / head.length >= 0.6) return 'syslog3164';
     }
+    // logfmt sniff. Lines look like `key=value key="quoted" k=v`
+    // — Heroku, Logrus, Hashicorp tools, many Go services. The
+    // signal is "≥2 distinct `<ident>=` pairs per line with no
+    // freeform unquoted spaces between them". This sits AFTER the
+    // CEF / LEEF / syslog probes because logfmt has no magic
+    // prefix and the simpler `key=value` shape can collide with
+    // CEF/LEEF extensions if those probes are skipped first. We
+    // also require ≥60 % of the first 5 lines to match — same
+    // threshold used by every other structured-log sniff.
+    //
+    // Per-line heuristic: count tokens of the form `<ident>=` at
+    // either start-of-line or after whitespace; require ≥2.
+    // Reject lines whose total length is dominated by free text
+    // before the first `=` (>60 % of line length is freeform
+    // prefix → likely a regular log line that happens to contain
+    // a `key=value` somewhere).
+    const _LOGFMT_KV_RE = /(?:^|\s)[A-Za-z_][\w.\-/]*=/g;
+    {
+      const head = lines.slice(0, 5);
+      let hits = 0;
+      for (let i = 0; i < head.length; i++) {
+        const probe = head[i].length > 400 ? head[i].slice(0, 400) : head[i];
+        const matches = probe.match(_LOGFMT_KV_RE);
+        if (!matches || matches.length < 2) continue;
+        // First `=` position vs line length — reject if the prefix
+        // before the first `key=` is more than 60 % of the line.
+        const firstEq = probe.search(/(?:^|\s)[A-Za-z_][\w.\-/]*=/);
+        if (firstEq < 0) continue;
+        if (firstEq > probe.length * 0.6) continue;
+        hits++;
+      }
+      if (head.length >= 2 && hits / head.length >= 0.6) return 'logfmt';
+    }
     const candidates = [',', '\t', ';', '|'];
     let best = { delim: null, cols: 0, confidence: 0 };
     for (const d of candidates) {
@@ -560,7 +593,7 @@ extendApp({
             || ext === 'syslog3164' || ext === 'syslog5424'
             || ext === 'zeek' || ext === 'jsonl'
             || ext === 'cloudtrail' || ext === 'cef'
-            || ext === 'leef') workerKind = 'csv';
+            || ext === 'leef' || ext === 'logfmt') workerKind = 'csv';
       else if (ext === 'sqlite' || ext === 'db') workerKind = 'sqlite';
 
       if (workerKind && window.WorkerManager
@@ -719,7 +752,7 @@ extendApp({
           const _structuredLog = (ext === 'syslog3164' || ext === 'syslog5424'
                                   || ext === 'zeek' || ext === 'jsonl'
                                   || ext === 'cloudtrail' || ext === 'cef'
-                                  || ext === 'leef');
+                                  || ext === 'leef' || ext === 'logfmt');
           const opts = (workerKind === 'csv')
             ? { explicitDelim: ext === 'tsv' ? '\t'
                   : (ext === 'log' ? ' ' : null),
@@ -862,7 +895,7 @@ extendApp({
         } else if (ext === 'syslog3164' || ext === 'syslog5424'
                 || ext === 'zeek' || ext === 'jsonl'
                 || ext === 'cloudtrail' || ext === 'cef'
-                || ext === 'leef') {
+                || ext === 'leef' || ext === 'logfmt') {
           // Structured-log fallback — mirrors the worker's
           // `_parseStructuredLog` for environments where workers
           // can't spawn (Firefox `file://`).

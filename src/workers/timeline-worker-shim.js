@@ -223,7 +223,7 @@ function _tlCanonicalLogColumns(width) {
 // Mirrors `_tlDecodePri`, `_tlInferYear`, `_tlTokenizeSyslog3164`,
 // `_tlTokenizeSyslog5424`, `_tlMakeJsonlTokenizer`,
 // `_tlMakeCloudTrailTokenizer`, `_tlMakeCEFTokenizer`,
-// `_tlMakeLEEFTokenizer`, `_tlMakeZeekTokenizer`, the
+// `_tlMakeLEEFTokenizer`, `_tlMakeLogfmtTokenizer`, `_tlMakeZeekTokenizer`, the
 // `_TL_SYSLOG{3164,5424}_COLS` constants, `_TL_JSONL_*` constants,
 // `_TL_CLOUDTRAIL_CANONICAL_COLS`, `_TL_CEF_HEADER_COLS`,
 // `_TL_LEEF_HEADER_COLS`, and `_TL_ZEEK_STACK_BY_PATH` in
@@ -827,6 +827,126 @@ function _tlMakeLEEFTokenizer() {
     return null;
   };
   const getFormatLabel = () => 'LEEF';
+  return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
+}
+
+// ── logfmt mirror ──
+// Canonical implementation lives in
+// `src/app/timeline/timeline-helpers.js::_tlMakeLogfmtTokenizer`.
+// Cross-realm parity is enforced by `tests/unit/timeline-logfmt.test.js`.
+const _TL_LOGFMT_MAX_COLUMNS = 256;
+function _tlMakeLogfmtTokenizer() {
+  let schema = null;
+  let schemaIndex = null;
+  const parseLine = (line) => {
+    let s = line;
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    const out = Object.create(null);
+    let i = 0;
+    const n = s.length;
+    let sawPair = false;
+    while (i < n) {
+      while (i < n) {
+        const c = s.charCodeAt(i);
+        if (c === 0x20 || c === 0x09) i++;
+        else break;
+      }
+      if (i >= n) break;
+      const keyStart = i;
+      while (i < n) {
+        const c = s.charCodeAt(i);
+        if ((c >= 0x30 && c <= 0x39) ||
+            (c >= 0x41 && c <= 0x5A) ||
+            (c >= 0x61 && c <= 0x7A) ||
+            c === 0x5F || c === 0x2E ||
+            c === 0x2D || c === 0x2F) {
+          i++;
+        } else {
+          break;
+        }
+      }
+      if (i === keyStart) { i++; continue; }
+      const key = s.slice(keyStart, i);
+      if (i < n && s.charCodeAt(i) === 0x3D) {
+        i++;
+        if (i < n && s.charCodeAt(i) === 0x22) {
+          i++;
+          let val = '';
+          while (i < n) {
+            const c = s.charCodeAt(i);
+            if (c === 0x5C && i + 1 < n) {
+              const nx = s.charAt(i + 1);
+              if (nx === 'n') val += '\n';
+              else if (nx === 'r') val += '\r';
+              else if (nx === 't') val += '\t';
+              else val += nx;
+              i += 2;
+              continue;
+            }
+            if (c === 0x22) { i++; break; }
+            val += s.charAt(i);
+            i++;
+          }
+          out[key] = val;
+          sawPair = true;
+        } else {
+          const valStart = i;
+          while (i < n) {
+            const c = s.charCodeAt(i);
+            if (c === 0x20 || c === 0x09) break;
+            i++;
+          }
+          out[key] = s.slice(valStart, i);
+          sawPair = true;
+        }
+      } else {
+        out[key] = '';
+      }
+    }
+    return sawPair ? out : null;
+  };
+  const tokenize = (line, _mtime) => {
+    if (!line) return null;
+    const flat = parseLine(line);
+    if (!flat) return null;
+    if (!schema) {
+      schema = Object.keys(flat).slice(0, _TL_LOGFMT_MAX_COLUMNS);
+      schemaIndex = Object.create(null);
+      for (let i = 0; i < schema.length; i++) schemaIndex[schema[i]] = i;
+    }
+    const cells = new Array(schema.length + 1).fill('');
+    let extras = null;
+    const keys = Object.keys(flat);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const idx = schemaIndex[k];
+      if (idx !== undefined) cells[idx] = flat[k];
+      else {
+        if (!extras) extras = Object.create(null);
+        extras[k] = flat[k];
+      }
+    }
+    if (extras) {
+      try { cells[schema.length] = JSON.stringify(extras); }
+      catch (_) { cells[schema.length] = ''; }
+    }
+    return cells;
+  };
+  const getColumns = (_width) => {
+    const cols = schema ? schema.slice() : [];
+    cols.push('_extra');
+    return cols;
+  };
+  const _STACK_CANDIDATES = ['level', 'severity', 'lvl', 'msg', 'status', 'method'];
+  const getDefaultStackColIdx = () => {
+    if (!schema) return null;
+    for (let i = 0; i < _STACK_CANDIDATES.length; i++) {
+      const idx = schemaIndex[_STACK_CANDIDATES[i]];
+      if (idx !== undefined) return idx;
+    }
+    return null;
+  };
+  const getFormatLabel = () => 'logfmt';
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
 

@@ -1,0 +1,10 @@
+time=2025-04-15T10:23:14Z level=info msg="server starting" service=api port=8080
+time=2025-04-15T10:23:15Z level=info msg="db connected" service=api dsn="postgres://app@10.0.0.1:5432/app" pool=10
+time=2025-04-15T10:23:18Z level=warn msg="slow query" service=api query="SELECT * FROM events" dur_ms=842
+time=2025-04-15T10:23:20Z level=info msg="request handled" service=api method=GET path=/api/v1/events status=200 dur_ms=12 client=10.0.0.5
+time=2025-04-15T10:23:21Z level=info msg="request handled" service=api method=POST path=/api/v1/login status=401 dur_ms=8 client=185.220.101.33 user=alice
+time=2025-04-15T10:23:22Z level=error msg="auth failed: bad password" service=api user=alice client=185.220.101.33 attempts=3
+time=2025-04-15T10:23:25Z level=info msg="request handled" service=api method=GET path=/health status=200 dur_ms=1 client=10.0.0.6
+time=2025-04-15T10:23:30Z level=warn msg="rate limit hit" service=api client=203.0.113.99 path=/api/v1/login limit=5
+time=2025-04-15T10:23:32Z level=info msg="config reload" service=api signal=SIGHUP version=1.4.2
+time=2025-04-15T10:23:35Z level=fatal msg="db connection lost" service=api err="dial tcp 10.0.0.1:5432: connection refused"

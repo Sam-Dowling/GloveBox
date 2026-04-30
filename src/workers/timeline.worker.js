@@ -500,6 +500,15 @@ const STRUCTURED_LOG_KINDS = {
     makeTokenizer: () => _tlMakeLEEFTokenizer(),
     label: 'LEEF',
   },
+  logfmt: {
+    // Stateful — flat `key=value key="quoted"` lines, no header.
+    // Schema locks from the first valid line's key set; later
+    // lines spill unknown keys into `_extra`. Used by Heroku
+    // routers, Logrus, Hashicorp tools (Consul/Vault/Nomad), and
+    // many Go services.
+    makeTokenizer: () => _tlMakeLogfmtTokenizer(),
+    label: 'logfmt',
+  },
 };
 
 async function _parseCsv(buffer, explicitDelim, kindHint) {

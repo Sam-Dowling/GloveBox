@@ -1292,6 +1292,169 @@ function _tlMakeLEEFTokenizer() {
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
 
+// ── logfmt tokeniser (Heroku / Logrus / Go services) ──────────────
+// Logfmt is a flat `key=value key="quoted value" key=` line format
+// without any header — it's the de-facto structured-log shape used
+// by Heroku's router logs, Logrus, Go services, Hashicorp tools
+// (Consul, Vault, Nomad), and many cloud-native pipelines. Spec:
+// https://brandur.org/logfmt.
+//
+// Grammar (per line):
+//   pair    := key '=' value | key
+//   key     := [A-Za-z_][\w.\-/]*
+//   value   := '"' (escaped-char | non-quote)* '"'   ; quoted form
+//            | non-whitespace*                         ; bare form
+//   line    := pair (whitespace+ pair)*
+//
+// Quoted-value escapes: `\"` `\\` `\n` `\r` `\t`. Bare values run
+// until the next ASCII whitespace. Pairs without `=` (bare keys)
+// are recorded with the empty string.
+//
+// Schema is locked from the first valid line's key set (cap 256);
+// later lines spill unknown keys into a trailing `_extra` JSON
+// sub-object. Default stack column probes the locked schema for
+// `[level, severity, lvl, msg, status, method]` (returns null if
+// none).
+const _TL_LOGFMT_MAX_COLUMNS = 256;
+function _tlMakeLogfmtTokenizer() {
+  let schema = null;          // string[] | null — locked on first record
+  let schemaIndex = null;     // Object<string,number>
+
+  // Walk a logfmt line, returning a flat key -> value map. Returns
+  // null when the line carries no `key=value` pair (bare-key-only
+  // lines without any `=` are not logfmt — they're free text).
+  const parseLine = (line) => {
+    let s = line;
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    const out = Object.create(null);
+    let i = 0;
+    const n = s.length;
+    let sawPair = false;
+    while (i < n) {
+      // Skip whitespace.
+      while (i < n) {
+        const c = s.charCodeAt(i);
+        if (c === 0x20 || c === 0x09) i++;
+        else break;
+      }
+      if (i >= n) break;
+      // Read key: alnum / underscore / dot / dash / slash.
+      const keyStart = i;
+      while (i < n) {
+        const c = s.charCodeAt(i);
+        // Allow letters, digits, _ . - /
+        if ((c >= 0x30 && c <= 0x39) ||           // 0-9
+            (c >= 0x41 && c <= 0x5A) ||           // A-Z
+            (c >= 0x61 && c <= 0x7A) ||           // a-z
+            c === 0x5F || c === 0x2E ||           // _ .
+            c === 0x2D || c === 0x2F) {           // - /
+          i++;
+        } else {
+          break;
+        }
+      }
+      if (i === keyStart) {
+        // Non-key char where a key was expected — skip and continue.
+        // This makes the parser tolerant of free-text prefixes.
+        i++;
+        continue;
+      }
+      const key = s.slice(keyStart, i);
+      // Optional `=value`.
+      if (i < n && s.charCodeAt(i) === 0x3D) {
+        i++;
+        // Quoted or bare value.
+        if (i < n && s.charCodeAt(i) === 0x22 /* " */) {
+          i++;
+          let val = '';
+          while (i < n) {
+            const c = s.charCodeAt(i);
+            if (c === 0x5C && i + 1 < n) {
+              const nx = s.charAt(i + 1);
+              if (nx === 'n') val += '\n';
+              else if (nx === 'r') val += '\r';
+              else if (nx === 't') val += '\t';
+              else val += nx;                       // \" \\ literal
+              i += 2;
+              continue;
+            }
+            if (c === 0x22) { i++; break; }
+            val += s.charAt(i);
+            i++;
+          }
+          out[key] = val;
+          sawPair = true;
+        } else {
+          // Bare value: run to next whitespace.
+          const valStart = i;
+          while (i < n) {
+            const c = s.charCodeAt(i);
+            if (c === 0x20 || c === 0x09) break;
+            i++;
+          }
+          out[key] = s.slice(valStart, i);
+          sawPair = true;
+        }
+      } else {
+        // Bare key (no `=`).
+        out[key] = '';
+      }
+    }
+    return sawPair ? out : null;
+  };
+
+  const tokenize = (line, _mtime) => {
+    if (!line) return null;
+    const flat = parseLine(line);
+    if (!flat) return null;
+    if (!schema) {
+      schema = Object.keys(flat).slice(0, _TL_LOGFMT_MAX_COLUMNS);
+      schemaIndex = Object.create(null);
+      for (let i = 0; i < schema.length; i++) schemaIndex[schema[i]] = i;
+    }
+    const cells = new Array(schema.length + 1).fill('');
+    let extras = null;
+    const keys = Object.keys(flat);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const idx = schemaIndex[k];
+      if (idx !== undefined) {
+        cells[idx] = flat[k];
+      } else {
+        if (!extras) extras = Object.create(null);
+        extras[k] = flat[k];
+      }
+    }
+    if (extras) {
+      try { cells[schema.length] = JSON.stringify(extras); }
+      catch (_) { cells[schema.length] = ''; }
+    }
+    return cells;
+  };
+
+  const getColumns = (_width) => {
+    const cols = schema ? schema.slice() : [];
+    cols.push('_extra');
+    return cols;
+  };
+
+  const _STACK_CANDIDATES = [
+    'level', 'severity', 'lvl', 'msg', 'status', 'method',
+  ];
+  const getDefaultStackColIdx = () => {
+    if (!schema) return null;
+    for (let i = 0; i < _STACK_CANDIDATES.length; i++) {
+      const idx = schemaIndex[_STACK_CANDIDATES[i]];
+      if (idx !== undefined) return idx;
+    }
+    return null;
+  };
+
+  const getFormatLabel = () => 'logfmt';
+
+  return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
+}
+
 function _tlMakeZeekTokenizer() {
   // Defaults match the Zeek convention; overridden on the fly if the
   // file's preamble carries a `#set_separator` / `#unset_field` /

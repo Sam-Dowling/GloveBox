@@ -67,6 +67,10 @@ TimelineView._STRUCTURED_LOG_KINDS = {
     makeTokenizer: () => _tlMakeLEEFTokenizer(),
     label: 'LEEF',
   },
+  logfmt: {
+    makeTokenizer: () => _tlMakeLogfmtTokenizer(),
+    label: 'logfmt',
+  },
 };
 
 Object.assign(TimelineView, {
