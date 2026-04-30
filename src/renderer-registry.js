@@ -694,6 +694,38 @@ class RendererRegistry {
       description: 'Excel IQY / SYLK Data Query',
     },
     {
+      // Windows Explorer Command — INI-format shell command file. Tiny
+      // (typically ≤ 200 bytes), weaponised for T1187 forced authentication
+      // when IconFile= points at a UNC path. We require the [Shell]
+      // section header in the textSniff so we don't fight the generic
+      // INI-as-plaintext fallback, and we keep the .scf extension match
+      // unconditional because legitimate SCFs are vanishingly rare.
+      id: 'scf',
+      className: 'ScfRenderer',
+      exts: ['scf'],
+      textSniff: (ctx) => {
+        const h = ctx.head200;
+        return /\[Shell\]/i.test(h) && /IconFile\s*=/i.test(h);
+      },
+      description: 'Windows Explorer Command (.scf)',
+    },
+    {
+      // .library-ms / .searchConnector-ms — both XML, both abused for
+      // T1187 via UNC paths in <simpleLocation>/<url>. The two formats
+      // share a renderer because the threat model and parser are
+      // identical; the renderer auto-detects which root element is
+      // present and labels accordingly.
+      id: 'libraryms',
+      className: 'LibraryMsRenderer',
+      exts: ['library-ms', 'searchconnector-ms'],
+      textSniff: (ctx) => {
+        const h = ctx.head500;
+        return /<libraryDescription\b/i.test(h)
+            || /<searchConnectorDescription\b/i.test(h);
+      },
+      description: 'Windows Library / Search Connector',
+    },
+    {
       id: 'wsf',
       className: 'WsfRenderer',
       exts: ['wsf', 'wsc', 'wsh'],

@@ -772,6 +772,8 @@ APP_JS_FILES = [
     'src/renderers/url-renderer.js',
     'src/renderers/onenote-renderer.js',
     'src/renderers/iqy-slk-renderer.js',
+    'src/renderers/scf-renderer.js',
+    'src/renderers/library-ms-renderer.js',
     'src/renderers/wsf-renderer.js',
     'src/renderers/reg-renderer.js',
     'src/renderers/inf-renderer.js',

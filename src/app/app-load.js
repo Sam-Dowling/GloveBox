@@ -1160,6 +1160,16 @@ extendApp({
       this.findings = r.analyzeForSecurity(buffer, file.name);
       return { docEl: r.render(buffer, file.name) };
     },
+    scf(file, buffer) {
+      const r = new ScfRenderer();
+      this.findings = r.analyzeForSecurity(buffer, file.name);
+      return { docEl: r.render(buffer, file.name) };
+    },
+    libraryms(file, buffer) {
+      const r = new LibraryMsRenderer();
+      this.findings = r.analyzeForSecurity(buffer, file.name);
+      return { docEl: r.render(buffer, file.name) };
+    },
     reg(file, buffer) {
       const r = new RegRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
