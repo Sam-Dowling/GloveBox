@@ -29,11 +29,11 @@ Closes #
 
 ## Build + verification
 
-- [ ] `python make.py` runs cleanly end-to-end (verify vendors → rebuild `docs/index.html` → regenerate `CODEMAP.md`)
+- [ ] `python make.py` runs cleanly end-to-end (verify vendors → rebuild `docs/index.html` → renderer-contract check)
 - [ ] Manually smoke-tested in a browser with at least one relevant sample from `examples/`
 
 *(`make.py` is a thin orchestrator — if you'd rather run them separately,
-`python scripts/verify_vendored.py && python scripts/build.py && python scripts/generate_codemap.py`
+`python scripts/verify_vendored.py && python scripts/build.py && python scripts/check_renderer_contract.py`
 is equivalent.)*
 
 ## Docs touched (tick whichever apply)

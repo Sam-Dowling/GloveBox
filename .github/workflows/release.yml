@@ -22,12 +22,12 @@ name: Release
 #     This keeps Pages and Releases in lockstep: CI is the single entry
 #     point, it decides whether a commit is shippable (build + lint +
 #     static checks + vendor hash verification), and only then does this
-#     workflow fire. The old `paths:` filter on src/ + vendor/ +
-#     scripts/build.py was asymmetric with ci.yml's unfiltered trigger,
-#     which let Pages deploy a new LOUPE_VERSION on doc-only commits
-#     while Release stayed behind — the very skew this file now prevents.
-#     Same-minute pushes still collapse to one Release thanks to the
-#     "tag already exists → skip" guard below.
+#     workflow fire. CI is filtered to skip `**/*.md` + `LICENSE` only;
+#     Release inherits that filter via `workflow_run`, so doc-only
+#     commits cleanly skip both Pages and Release in lockstep — no
+#     more LOUPE_VERSION bumps from a typo fix in README. Same-minute
+#     pushes still collapse to one Release thanks to the "tag already
+#     exists → skip" guard below.
 #
 #   * Because workflow_run-triggered jobs default to checking out the
 #     default branch's tip (which may have moved past the commit CI

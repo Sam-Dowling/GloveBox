@@ -14,11 +14,30 @@ name: CI
 # Scorecard's Pinned-Dependencies check. Dependabot bumps these
 # weekly — see .github/dependabot.yml.
 
+# Doc-only commits skip CI entirely. The `paths-ignore` filter below
+# matches Markdown + LICENSE — neither can change the built bundle's
+# bytes, the lint result, the test outcome, or the vendored hashes,
+# so running the full pipeline for them is pure waste. Anything else
+# (src/, vendor/, scripts/, tests/, .github/, eslint config, make.py,
+# .gitignore, .gitattributes, etc.) still triggers the full run.
+#
+# `release.yml` is downstream of this workflow via `workflow_run`, so
+# it inherits the same gate automatically — Pages and Releases stay
+# in lockstep with CI on every push.
+#
+# `workflow_dispatch` is intentionally unfiltered: a maintainer can
+# always force a rebuild from the Actions tab.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
   workflow_dispatch:
 
 permissions:

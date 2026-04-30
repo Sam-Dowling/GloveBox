@@ -4,7 +4,6 @@
 > - End-user docs: [README.md](README.md)
 > - Format / capability reference: [FEATURES.md](FEATURES.md)
 > - Threat model & vulnerability reporting: [SECURITY.md](SECURITY.md)
-> - Line-level index of every class, method, CSS section, and YARA rule: [CODEMAP.md](CODEMAP.md) (auto-generated)
 
 ---
 
@@ -16,25 +15,24 @@ turns into a sidebar / runtime regression in the wild. **Read this list
 before opening a PR.**
 
 1. `docs/index.html` is a build artefact — never commit it.
-2. `CODEMAP.md` is auto-generated — regenerate via `python make.py` after code changes.
-3. **No `eval`, no `new Function`, no network.** CSP rejects fetches, remote scripts, and dynamic code constructors. Find another way; do not relax the CSP.
-4. **IOC types must be `IOC.*` constants** (`src/constants.js`). Bare `type: 'url'` silently breaks sidebar filtering — caught by the build gate when paired with `severity:` outside `src/constants.js`.
-5. **Push IOCs through `pushIOC()`** — never hand-rolled `findings.interestingStrings.push({...})`. The helper pins the wire shape and auto-emits sibling `IOC.DOMAIN` rows for URL pushes via vendored `tldts`. Pass `_noDomainSibling: true` if you've already emitted a manual domain row.
-6. **Never pre-stamp `findings.risk = 'high'`.** Initialise `'low'`, escalate via `escalateRisk(findings, tier)`. Direct writes are rejected by a build gate.
-7. **`container._rawText` must be wrapped in `lfNormalize(...)`** from `src/constants.js`. Click-to-focus offsets misalign past the first CR otherwise. Build gate enforces.
-8. **User-input regex compiles must route through `safeRegex(...)`.** Every other `new RegExp(...)` site needs a `/* safeRegex: builtin */` annotation within 3 lines above. Enforced by `scripts/check_regex_safety.py`.
-9. **No comments in `.yar` files; meta keys are a strict whitelist (`description`, `severity`, `category`, `mitre`, `applies_to`) in canonical order.** `scripts/build.py` injects `// @category: <name>` separators — those are the only `//` lines the in-browser engine tolerates. Enforced by `scripts/lint_yara.py` (`python make.py yara-lint`); use `python scripts/lint_yara.py --fix` to autofix safe issues.
-10. **All persistence keys use the `loupe_` prefix** and live in the [Persistence Keys](#persistence-keys) table.
-11. **Untrusted markup → `SandboxPreview.create()`** from `src/sandbox-preview.js`. Don't hand-roll `<iframe sandbox>` boilerplate.
-12. **Workers spawn through `WorkerManager`** (`src/worker-manager.js`) only. A build gate rejects any `new Worker(` outside the allow-listed spawner / worker modules.
-13. **File downloads through `FileDownload.*`** (`src/file-download.js`) only. Never call `URL.createObjectURL` directly.
-14. **Per-dispatch size caps live in `PARSER_LIMITS.MAX_FILE_BYTES_BY_DISPATCH`.** When adding a new dispatch id, add a matching entry — falling back to `_DEFAULT` (128 MiB) silently is almost never what you want for archives, disk images, or executables.
-15. **No silent `catch (...) {}`** in the load chain (`src/app/app-load.js`, `src/app/app-yara.js`). Use `App._reportNonFatal(where, err, opts?)` from `src/app/app-core.js`. Build gate enforces.
-16. **Render-epoch supersession via `App._setRenderResult`** is the only path that mutates `_renderEpoch` and `currentResult`. See [Render-epoch contract](#render-epoch-contract) — the single most subtle invariant in the load chain.
-17. **Hot-path renderers must finish under `PARSER_LIMITS.RENDERER_TIMEOUT_MS` (30 s).** Wrap user-gated heavy work behind a click instead of running it in `static render()`.
-18. **Worker buffers cross as transferable `ArrayBuffer`.** The worker takes ownership; the main thread loses access. Re-read from the original `File` if needed.
-19. **Build determinism:** no `datetime.now()` (one gated `SOURCE_DATE_EPOCH` exception), no FS iteration order, no random IDs / UUIDs / nonces, no machine-local paths, no dict/set ordering that relies on hash randomisation.
-20. **`_DETECTOR_FILES` order in `scripts/build.py` is load-bearing:** class root first, helpers afterwards. Helpers attach via `Object.assign(EncodedContentDetector.prototype, {...})` and must not depend on each other's load order.
+2. **No `eval`, no `new Function`, no network.** CSP rejects fetches, remote scripts, and dynamic code constructors. Find another way; do not relax the CSP.
+3. **IOC types must be `IOC.*` constants** (`src/constants.js`). Bare `type: 'url'` silently breaks sidebar filtering — caught by the build gate when paired with `severity:` outside `src/constants.js`.
+4. **Push IOCs through `pushIOC()`** — never hand-rolled `findings.interestingStrings.push({...})`. The helper pins the wire shape and auto-emits sibling `IOC.DOMAIN` rows for URL pushes via vendored `tldts`. Pass `_noDomainSibling: true` if you've already emitted a manual domain row.
+5. **Never pre-stamp `findings.risk = 'high'`.** Initialise `'low'`, escalate via `escalateRisk(findings, tier)`. Direct writes are rejected by a build gate.
+6. **`container._rawText` must be wrapped in `lfNormalize(...)`** from `src/constants.js`. Click-to-focus offsets misalign past the first CR otherwise. Build gate enforces.
+7. **User-input regex compiles must route through `safeRegex(...)`.** Every other `new RegExp(...)` site needs a `/* safeRegex: builtin */` annotation within 3 lines above. Enforced by `scripts/check_regex_safety.py`.
+8. **No comments in `.yar` files; meta keys are a strict whitelist (`description`, `severity`, `category`, `mitre`, `applies_to`) in canonical order.** `scripts/build.py` injects `// @category: <name>` separators — those are the only `//` lines the in-browser engine tolerates. Enforced by `scripts/lint_yara.py` (`python make.py yara-lint`); use `python scripts/lint_yara.py --fix` to autofix safe issues.
+9. **All persistence keys use the `loupe_` prefix** and live in the [Persistence Keys](#persistence-keys) table.
+10. **Untrusted markup → `SandboxPreview.create()`** from `src/sandbox-preview.js`. Don't hand-roll `<iframe sandbox>` boilerplate.
+11. **Workers spawn through `WorkerManager`** (`src/worker-manager.js`) only. A build gate rejects any `new Worker(` outside the allow-listed spawner / worker modules.
+12. **File downloads through `FileDownload.*`** (`src/file-download.js`) only. Never call `URL.createObjectURL` directly.
+13. **Per-dispatch size caps live in `PARSER_LIMITS.MAX_FILE_BYTES_BY_DISPATCH`.** When adding a new dispatch id, add a matching entry — falling back to `_DEFAULT` (128 MiB) silently is almost never what you want for archives, disk images, or executables.
+14. **No silent `catch (...) {}`** in the load chain (`src/app/app-load.js`, `src/app/app-yara.js`). Use `App._reportNonFatal(where, err, opts?)` from `src/app/app-core.js`. Build gate enforces.
+15. **Render-epoch supersession via `App._setRenderResult`** is the only path that mutates `_renderEpoch` and `currentResult`. See [Render-epoch contract](#render-epoch-contract) — the single most subtle invariant in the load chain.
+16. **Hot-path renderers must finish under `PARSER_LIMITS.RENDERER_TIMEOUT_MS` (30 s).** Wrap user-gated heavy work behind a click instead of running it in `static render()`.
+17. **Worker buffers cross as transferable `ArrayBuffer`.** The worker takes ownership; the main thread loses access. Re-read from the original `File` if needed.
+18. **Build determinism:** no `datetime.now()` (one gated `SOURCE_DATE_EPOCH` exception), no FS iteration order, no random IDs / UUIDs / nonces, no machine-local paths, no dict/set ordering that relies on hash randomisation.
+19. **`_DETECTOR_FILES` order in `scripts/build.py` is load-bearing:** class root first, helpers afterwards. Helpers attach via `Object.assign(EncodedContentDetector.prototype, {...})` and must not depend on each other's load order.
 
 ---
 
@@ -43,17 +41,17 @@ before opening a PR.**
 Requires **Python 3.8+**, stdlib only — no `pip install`.
 
 ```bash
-python make.py                   # default: verify → regex → parity → yara-lint → build → contract → codemap
+python make.py                   # default: verify → regex → parity → yara-lint → build → contract
 python make.py <step> [<step>…]  # any subset, any order
 ```
 
 `make.py` is a thin orchestrator over `scripts/`. Steps:
 `verify` (vendor SHA-256 pins), `regex` (ReDoS scan), `parity` (JS/Py
 parity gates), `yara-lint` (meta-key + comment lint), `build`
-(`docs/index.html`), `contract` (renderer-contract check),
-`codemap` (regen `CODEMAP.md`). Opt-in: `sbom`, `perf`, `test`.
-`docs/index.html` is the single build output — gitignored, produced
-locally for smoke-testing or by CI for Pages / release signing.
+(`docs/index.html`), `contract` (renderer-contract check). Opt-in:
+`sbom`, `perf`, `test`. `docs/index.html` is the single build output —
+gitignored, produced locally for smoke-testing or by CI for Pages /
+release signing.
 
 ### Determinism & `SOURCE_DATE_EPOCH`
 
@@ -64,7 +62,14 @@ locally for smoke-testing or by CI for Pages / release signing.
 
 ### Continuous Integration
 
-`.github/workflows/ci.yml` runs on every push and PR.
+`.github/workflows/ci.yml` runs on every push and PR **except** when
+the diff is `**/*.md` or `LICENSE` only — those changes can't affect
+the bundle, the lint result, or the vendored hashes, so the full
+pipeline is skipped. Anything else (`src/`, `vendor/`, `scripts/`,
+`tests/`, `.github/`, eslint config, `make.py`, …) still triggers the
+full run. `release.yml` is downstream of CI via `workflow_run` and so
+inherits the same gate — doc-only commits also skip Pages and Release.
+Use `workflow_dispatch` on the Actions tab to force a rebuild.
 
 | Job | Guarantees |
 |---|---|
@@ -172,8 +177,6 @@ flowchart TD
     SBR --> CTF[Click-to-focus<br/>app-sidebar-focus.js]
     CTF --> CTFs[String search inside<br/>container._rawText]
 ```
-
-For line-level locations of every box, grep `CODEMAP.md`.
 
 ### Render-epoch contract
 
@@ -570,9 +573,9 @@ subtly misbehave.
 
 ### Build artefacts & source of truth
 
-- **`docs/index.html` and `CODEMAP.md` are generated.** `index.html`
-  is gitignored; `CODEMAP.md` is tracked — regenerate with
-  `python make.py codemap` after `src/` changes.
+- **`docs/index.html` is generated and gitignored.** Rebuild with
+  `python make.py build` (or the chained default) after `src/`
+  changes; CI publishes the canonical bytes.
 - **JS load order in `scripts/build.py` is load-bearing.** Three
   groups: `EARLY_JS_FILES` (capture-phase drag/drop/paste glue —
   first), `APP_JS_FILES` (constants → helpers → renderers → `App` +
@@ -726,7 +729,7 @@ schema changes; degrade gracefully when IndexedDB is unavailable
 ## Adding things
 
 Quick recipes. Always run `python make.py` after; stage only `src/`
-edits + regenerated `CODEMAP.md`.
+edits.
 
 ### File-format renderer
 
@@ -822,7 +825,7 @@ first paint (or stashes on `<html>` + one-shot `MutationObserver` if
 ## How to Contribute
 
 Fork → edit `src/` → `python make.py` → smoke-test the rebuilt
-`docs/index.html` → stage `src/` + regenerated `CODEMAP.md` only →
-PR. YARA rules, new parsers, and build improvements are especially
+`docs/index.html` → stage `src/` edits only → PR. YARA rules, new
+parsers, and build improvements are especially
 welcome. Vanilla JS by design (no frameworks, no bundlers beyond
 `scripts/build.py`) to keep the bundle auditable.

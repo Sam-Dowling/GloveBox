@@ -11,9 +11,9 @@ name: CodeQL
 #     TypeScript too even though Loupe is vanilla JS, which future-
 #     proofs the check.
 #   * python — analyses scripts/*.py (build.py, verify_vendored.py,
-#     generate_codemap.py, generate_sbom.py). These aren't user-facing
-#     but they DO produce the bytes that get signed + shipped, so
-#     bugs here have supply-chain impact.
+#     generate_sbom.py, …). These aren't user-facing but they DO
+#     produce the bytes that get signed + shipped, so bugs here have
+#     supply-chain impact.
 #
 # Loupe has no runtime package dependencies and no compiled step,
 # so the `autobuild` stage is a no-op — we skip it and let CodeQL
@@ -23,11 +23,22 @@ name: CodeQL
 # All actions pinned by full 40-char commit SHA per Scorecard's
 # Pinned-Dependencies check. Dependabot bumps these weekly.
 
+# Doc-only commits skip CodeQL on push/PR — Markdown changes can't
+# alter the JS or Python AST, so re-analysing them is wasted runner
+# time. The weekly cron still runs unconditionally so the Security
+# tab gets refreshed regardless of commit cadence, and
+# `workflow_dispatch` is unfiltered for manual reanalysis.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
   pull_request:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
   schedule:
     # Mondays 07:15 UTC — offset from the Scorecard cron (07:00) so
     # the two analysis jobs don't compete for runner slots.

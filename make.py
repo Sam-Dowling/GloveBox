@@ -1,31 +1,29 @@
 #!/usr/bin/env python3
 """make.py — single-command orchestrator for Loupe's build toolchain.
 
-Loupe ships with five standalone Python scripts under ``scripts/`` — each
+Loupe ships with several standalone Python scripts under ``scripts/`` — each
 intentionally usable on its own (and driven independently by CI):
 
   * scripts/verify_vendored.py          — SHA-256 pin-check every file in vendor/ against VENDORED.md
   * scripts/build.py                    — concatenate src/ + vendor/ into docs/index.html
   * scripts/check_renderer_contract.py  — static contract check for src/renderers/
-  * scripts/generate_codemap.py         — (re)generate CODEMAP.md from the current src/ tree
   * scripts/generate_sbom.py            — emit CycloneDX SBOM (dist/loupe.cdx.json) from VENDORED.md
 
 This orchestrator chains them into a single `python make.py` invocation for
-the common local workflow (verify → build → contract → codemap). The SBOM
-step is opt-in because it is only relevant at release time. The underlying
-scripts are untouched — CI and one-off usage keep working exactly as before.
+the common local workflow (verify → build → contract). The SBOM step is
+opt-in because it is only relevant at release time. The underlying scripts
+are untouched — CI and one-off usage keep working exactly as before.
 
 Usage
 -----
-    python make.py                          # run verify, regex, parity, yara-lint, build, contract, codemap (default)
+    python make.py                          # run verify, regex, parity, yara-lint, build, contract (default)
     python make.py all                      # same as default
     python make.py verify                   # just verify_vendored.py
     python make.py yara-lint                # just lint_yara.py — `python scripts/lint_yara.py --fix` to autofix
     python make.py build                    # just build.py
     python make.py contract                 # just check_renderer_contract.py
-    python make.py codemap                  # just generate_codemap.py
     python make.py sbom                     # just generate_sbom.py  (opt-in)
-    python make.py build contract codemap   # any subset, in the order given
+    python make.py build contract           # any subset, in the order given
 
 Test pipeline (opt-in; not part of the default run):
     python make.py test                     # alias for test-build → test-unit → test-e2e
@@ -34,8 +32,8 @@ Test pipeline (opt-in; not part of the default run):
     python make.py test-e2e                 # Playwright tests under tests/e2e-*/
 
 Exit code is the first non-zero exit code encountered. Subsequent steps are
-skipped on failure — there's no point generating a codemap for a tree that
-won't build.
+skipped on failure — there's no point running the contract check on a tree
+that won't build.
 """
 from __future__ import annotations
 
@@ -68,7 +66,6 @@ STEPS: dict[str, tuple[str, str, list[str]]] = {
     'yara-lint':  ('Lint YARA rule house style',   'scripts/lint_yara.py',           []),
     'build':      ('Build docs/index.html',        'scripts/build.py',               []),
     'contract':   ('Check renderer contract',      'scripts/check_renderer_contract.py', []),
-    'codemap':    ('Regenerate CODEMAP.md',        'scripts/generate_codemap.py',    []),
     'sbom':       ('Generate CycloneDX SBOM',      'scripts/generate_sbom.py',       []),
     # ── Test pipeline (opt-in; not part of DEFAULT_STEPS) ───────────────────
     # `test-build` reuses scripts/build.py with --test-api → docs/index.test.html
@@ -89,7 +86,7 @@ STEPS: dict[str, tuple[str, str, list[str]]] = {
     'perf':       ('Run Timeline perf harness',   'scripts/run_perf.py',           []),
 }
 
-DEFAULT_STEPS = ['verify', 'regex', 'parity', 'yara-lint', 'build', 'contract', 'codemap']
+DEFAULT_STEPS = ['verify', 'regex', 'parity', 'yara-lint', 'build', 'contract']
 # `test` is a pseudo-alias expanded by `_parse_args`. Real steps are in STEPS.
 TEST_STEPS = ['test-build', 'test-unit', 'test-e2e']
 ALL_STEPS = list(STEPS.keys())
@@ -130,7 +127,7 @@ def _parse_args(argv: list[str]) -> list[str]:
         if a == 'all':
             # 'all' inside a list just means "the rest of the defaults" —
             # expand and stop. To run every step including sbom, list them
-            # explicitly (e.g. `python make.py verify build codemap sbom`).
+            # explicitly (e.g. `python make.py verify build contract sbom`).
             for s in DEFAULT_STEPS:
                 if s not in seen:
                     seen.add(s)
