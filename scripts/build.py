@@ -151,6 +151,7 @@ YARA_FILES = [
     'src/rules/macos-installer-threats.yar',
     'src/rules/npm-threats.yar',
     'src/rules/wasm-threats.yar',
+    'src/rules/pcap-threats.yar',
 ]
 
 YARA_CATEGORIES = {
@@ -176,6 +177,7 @@ YARA_CATEGORIES = {
     'src/rules/macos-installer-threats.yar': 'macOS Installer',
     'src/rules/npm-threats.yar': 'npm',
     'src/rules/wasm-threats.yar': 'WebAssembly',
+    'src/rules/pcap-threats.yar': 'Packet Capture',
 }
 
 # ── File-level `applies_to` injection ──────────────────────────────────────
@@ -804,6 +806,7 @@ APP_JS_FILES = [
     'src/renderers/mof-renderer.js',
     'src/renderers/xslt-renderer.js',
     'src/renderers/wasm-renderer.js',
+    'src/renderers/pcap-renderer.js',
     'src/renderers/wsf-renderer.js',
     'src/renderers/reg-renderer.js',
     'src/renderers/inf-renderer.js',

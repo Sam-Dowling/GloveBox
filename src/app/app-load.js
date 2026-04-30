@@ -1188,6 +1188,11 @@ extendApp({
       this.findings = await r.analyzeForSecurity(buffer, file.name);
       return { docEl: r.render(buffer, file.name) };
     },
+    pcap(file, buffer) {
+      const r = new PcapRenderer();
+      this.findings = r.analyzeForSecurity(buffer, file.name);
+      return { docEl: r.render(buffer, file.name) };
+    },
     reg(file, buffer) {
       const r = new RegRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);

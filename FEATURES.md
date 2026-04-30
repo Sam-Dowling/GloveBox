@@ -49,6 +49,7 @@ Extensionless and renamed files are auto-routed via magic-byte sniff, extension 
 | **OpenPGP** | `.pgp` `.gpg` `.asc` `.sig` — ASCII-armored & binary packet streams; `.key` auto-disambiguated against X.509 |
 | **Java** | `.jar` `.war` `.ear` · `.class` |
 | **WebAssembly** | `.wasm` — sections / imports / exports / memory parsed; suspicious WASI and JS-bridge imports plus cryptominer / keylogger exports flagged; `modulehash` (SHA-256 over normalised import vector) for cluster pivoting. |
+| **Packet captures** | `.pcap` `.pcapng` `.cap` — global header / link-layer / capture window / top talkers; DNS query names, HTTP `Host:` headers, and TLS SNIs extracted as DOMAIN / IP IOCs; plaintext HTTP traffic and Authorization Basic headers flagged (T1040). |
 | **Scripts** | `.wsf` `.wsc` `.wsh` (parsed) · `.vbs` `.ps1` `.bat` `.cmd` `.js` |
 | **Logs** | `.evtx` (Windows Event Log — binary EVTX parser) · `.log` (Apache CLF default + syslog / Zeek / JSONL / CEF / LEEF / logfmt / Apache error sniff) · `.cef` `.leef` |
 | **Data** | `.csv` `.tsv` · `.json` `.ndjson` `.jsonl` (array-shaped → tabular grid) · `.sqlite` `.db` (Chrome / Firefox / Edge history auto-detect) |

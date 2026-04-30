@@ -774,6 +774,31 @@ class RendererRegistry {
       description: 'WebAssembly Binary Module (.wasm)',
     },
     {
+      // PCAP / PCAPNG — packet captures. Magic dispatch covers all four
+      // libpcap variants (μs/ns × LE/BE) plus the PCAPNG SHB type. We
+      // accept either signal (extension or magic) so .cap files (PCAP
+      // body, no extension hint) and PCAPNG-renamed-to-.pcap also route
+      // here. Both formats are handled by the single `pcap` dispatch
+      // (PcapRenderer auto-detects PCAP vs PCAPNG from the first 4
+      // bytes).
+      id: 'pcap',
+      className: 'PcapRenderer',
+      exts: ['pcap', 'pcapng', 'cap'],
+      magic: (ctx) => {
+        const b = ctx.bytes;
+        if (b.length < 4) return false;
+        // PCAPNG SHB block-type 0x0a0d0d0a (always BE on the wire).
+        if (b[0] === 0x0a && b[1] === 0x0d && b[2] === 0x0d && b[3] === 0x0a) return true;
+        // libpcap classic — four magic variants:
+        if (b[0] === 0xa1 && b[1] === 0xb2 && b[2] === 0xc3 && b[3] === 0xd4) return true; // μs BE
+        if (b[0] === 0xd4 && b[1] === 0xc3 && b[2] === 0xb2 && b[3] === 0xa1) return true; // μs LE
+        if (b[0] === 0xa1 && b[1] === 0xb2 && b[2] === 0x3c && b[3] === 0x4d) return true; // ns BE
+        if (b[0] === 0x4d && b[1] === 0x3c && b[2] === 0xb2 && b[3] === 0xa1) return true; // ns LE
+        return false;
+      },
+      description: 'Packet capture (.pcap / .pcapng / .cap)',
+    },
+    {
       id: 'wsf',
       className: 'WsfRenderer',
       exts: ['wsf', 'wsc', 'wsh'],
