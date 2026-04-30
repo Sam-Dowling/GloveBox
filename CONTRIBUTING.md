@@ -40,217 +40,93 @@ before opening a PR.**
 
 ## Building from Source
 
-Requires **Python 3.8+** (standard library only — no `pip install` needed).
+Requires **Python 3.8+**, stdlib only — no `pip install`.
 
 ```bash
-python make.py                   # One-shot: verify vendors, build, regenerate CODEMAP.md
+python make.py                   # default: verify → regex → parity → yara-lint → build → contract → codemap
+python make.py <step> [<step>…]  # any subset, any order
 ```
 
-`make.py` is a thin orchestrator that chains the stand-alone scripts under
-`scripts/`. Invoke any subset by name, in any order:
-
-```bash
-python make.py verify            # just scripts/verify_vendored.py
-python make.py build             # just scripts/build.py
-python make.py codemap           # just scripts/generate_codemap.py
-python make.py build codemap     # a subset, in the order given
-python make.py sbom              # emit dist/loupe.cdx.json from VENDORED.md
-```
-
-`docs/index.html` is the single build output and is **not committed to git**.
-It is produced locally for smoke-testing or by CI for Pages deployment and
-release signing.
+`make.py` is a thin orchestrator over `scripts/`. Steps:
+`verify` (vendor SHA-256 pins), `regex` (ReDoS scan), `parity` (JS/Py
+parity gates), `yara-lint` (meta-key + comment lint), `build`
+(`docs/index.html`), `contract` (renderer-contract check),
+`codemap` (regen `CODEMAP.md`). Opt-in: `sbom`, `perf`, `test`.
+`docs/index.html` is the single build output — gitignored, produced
+locally for smoke-testing or by CI for Pages / release signing.
 
 ### Determinism & `SOURCE_DATE_EPOCH`
 
-`build.py` is reproducible: given the same commit, the output is
-byte-identical. Only the embedded `LOUPE_VERSION` string is time-derived,
-resolved in this order:
-
-1. `SOURCE_DATE_EPOCH` env var — CI uses this at release time.
-2. `git log -1 --format=%ct HEAD` — auto-derived in a git checkout.
-3. `datetime.now()` — last-resort fallback for source archives that aren't a git checkout.
-
-For the release-verification recipe see [SECURITY.md § Reproducible Build](SECURITY.md#reproducible-build).
+`build.py` is reproducible: same commit → byte-identical output. Only
+`LOUPE_VERSION` is time-derived: `SOURCE_DATE_EPOCH` env →
+`git log -1 --format=%ct HEAD` → `datetime.now()` last-resort. See
+[SECURITY.md § Reproducible Build](SECURITY.md#reproducible-build).
 
 ### Continuous Integration
 
 `.github/workflows/ci.yml` runs on every push and PR.
 
-| Job | What it guarantees |
+| Job | Guarantees |
 |---|---|
-| `build` | `python scripts/build.py` succeeds and produces `docs/index.html`. SHA-256 + size go to the job summary; the bundle is uploaded as a retained artefact. |
-| `verify-vendored` | Every `vendor/*.js` matches its `VENDORED.md` SHA-256 pin. No pinned file missing; no unpinned file present. |
-| `static-checks` | On the **built** `docs/index.html`: CSP meta tag present, `default-src 'none'` intact, no inline event handlers (`onclick="…"`), no `'unsafe-eval'`, no remote hosts in CSP directives. |
-| `lint` | ESLint 9 over `src/**/*.js` using `eslint.config.mjs`. Targets real foot-guns (`no-eval`, `no-new-func`, `no-const-assign`, `no-unreachable`, …) rather than style. |
-| `unit` | `python make.py test-unit` — Node `node:test` over `tests/unit/`. Pure-module coverage in a `vm` sandbox. |
-| `e2e` | `python make.py test-e2e` — Playwright over `tests/e2e-fixtures/` + `tests/e2e-ui/`. Builds `docs/index.test.html` inline (no artefact handoff), caches `dist/test-deps/node_modules` and `~/.cache/ms-playwright` keyed on the pinned Playwright version, then runs against real fixtures from `examples/`. See `tests/README.md` for the runbook. |
+| `build` | `scripts/build.py` succeeds; SHA-256 + size in summary; bundle uploaded as artefact. |
+| `verify-vendored` | Every `vendor/*.js` matches its `VENDORED.md` SHA-256 pin (no missing, no unpinned). |
+| `yara-lint` | Comments, meta-key whitelist, canonical key order, severity values. |
+| `static-checks` | On the built `docs/index.html`: CSP meta present, `default-src 'none'` intact, no inline handlers, no `unsafe-eval`, no remote CSP hosts. |
+| `lint` | ESLint 9 over `src/**/*.js` (real foot-guns — `no-eval`, `no-new-func`, `no-const-assign`, …, not style). |
+| `unit` | Node `node:test` over `tests/unit/` in a `vm.Context`. |
+| `e2e` | Playwright over fixtures + UI; builds `docs/index.test.html` inline. |
+| `deploy-pages` | On `main` only: publishes `docs/index.html` to GitHub Pages. |
 
-Earlier project notes (and an older revision of this paragraph) claimed
-"Puppeteer / Playwright can't drive the native file-picker or
-drag-and-drop". That's incorrect. `page.setInputFiles(selector, path)`
-drives a hidden `<input type="file">` exactly the way a real picker
-interaction does, and a synthetic `DragEvent` carrying a `DataTransfer`
-with a `File` reproduces the drag-and-drop ingress path. Both are
-covered in `tests/e2e-ui/`.
+`codeql.yml` (push-to-main + weekly) runs the `security-extended`
+query pack; `scorecard.yml` publishes weekly OpenSSF Scorecard results
+to the Security tab + the README badge endpoint.
 
-Two additional workflows run on push-to-main + weekly cron:
+`release.yml` is chained off CI via `workflow_run`, fires only after a
+green `push`-triggered run on `main`, and checks out the exact
+`head_sha` CI validated — i.e. **a commit gets a GitHub Release ⇔ its
+CI run went green on `main` and was deployed to Pages**.
 
-| Workflow | What it guarantees |
-|---|---|
-| `codeql.yml` | GitHub CodeQL static analysis with `security-extended` query pack. Satisfies OpenSSF Scorecard SAST. |
-| `scorecard.yml` | Weekly OpenSSF Scorecard run; results publish to the Security tab + `api.securityscorecards.dev` (the README badge). |
-
-`.github/workflows/release.yml` is chained off CI via `workflow_run` — it
-only fires after a `push`-triggered CI run on `main` concludes
-successfully, and it checks out the exact `head_sha` that CI validated:
-
-> **A commit gets a GitHub Release ⇔ its CI run went green on `main`
-> and its bundle was deployed to Pages.**
-
-### GitHub Actions — SHA pinning & Dependabot
-
-Every `uses:` is pinned by **full 40-character commit SHA**, with the human-readable version in the trailing comment:
-
-```yaml
-- uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-```
-
-`.github/dependabot.yml` watches the `github-actions` ecosystem weekly and
-opens grouped PRs that rotate each SHA. There is no `npm` / `pip`
-ecosystem entry: Loupe has zero runtime package dependencies, and
-vendored libraries are hand-pinned by SHA-256 in `VENDORED.md`.
-
-When upgrading an action manually:
-
-```
-curl -s https://api.github.com/repos/<owner>/<repo>/git/ref/tags/<vX.Y.Z> \
-  | jq -r .object.sha
-```
+GitHub Actions are pinned by full 40-char commit SHA with the version
+in a trailing comment; Dependabot rotates them weekly. Loupe has zero
+runtime package dependencies; vendored libraries are hand-pinned by
+SHA-256 in `VENDORED.md`.
 
 ---
 
 ## Testing
 
-Loupe ships with three independent test layers. All are opt-in and **not
-part of `python make.py`'s default invocation** — the default loop
-remains `verify → build → contract → codemap`. Run the test pipeline
-explicitly:
+Three independent layers, all opt-in:
 
 ```bash
-python make.py test          # full pipeline: test-build → test-unit → test-e2e
+python make.py test          # test-build → test-unit → test-e2e
 python make.py test-build    # rebuild docs/index.test.html (--test-api)
 python make.py test-unit     # Node node:test over tests/unit/
-python make.py test-e2e      # Playwright over tests/e2e-fixtures/ + tests/e2e-ui/
+python make.py test-e2e      # Playwright (e2e-fixtures + e2e-ui)
 ```
 
-| Layer | Runner | What it covers |
+| Layer | Runner | Covers |
 |---|---|---|
-| `tests/unit/` | Node `node:test` (stdlib, Node ≥ 20) | Pure modules from `src/` evaluated in a `vm.Context`. No DOM, no App, no renderers. |
-| `tests/e2e-fixtures/` | Playwright + `docs/index.test.html` | Real fixtures from `examples/` driven through `__loupeTest.loadBytes` → real `App._loadFile` → real renderer dispatch → asserted findings shape. |
-| `tests/e2e-ui/` | Playwright | UI ingress paths — file picker (`page.setInputFiles`), drag-drop (synthesised `DragEvent`), paste (planned). |
+| `tests/unit/` | Node `node:test` (Node ≥ 20) | Pure modules in a `vm.Context`. No DOM, no App. |
+| `tests/e2e-fixtures/` | Playwright + `docs/index.test.html` | Real fixtures driven through `__loupeTest.loadBytes` → real `App._loadFile` → asserted findings shape. |
+| `tests/e2e-ui/` | Playwright | Ingress paths — file picker (`setInputFiles`), drag-drop (synthetic `DragEvent`), paste (planned). |
 
-The full runbook — including how Playwright is provisioned without a
-committed `node_modules`, the `--test-api` build flag, and the
-`window.__loupeTest` surface — is in `tests/README.md`.
+`scripts/build.py --test-api` produces `docs/index.test.html`
+(gitignored) including `src/app/app-test-api.js`. The release path
+never passes the flag; `_check_no_test_api_in_release()` re-reads the
+emitted bundle and fails on `__LOUPE_TEST_API__` / `__loupeTest`. The
+reproducibility guarantee in [SECURITY.md § Reproducible
+Build](SECURITY.md#reproducible-build) covers `docs/index.html` only.
 
-### Test build vs. release build
-
-`scripts/build.py --test-api` produces `docs/index.test.html` (a
-gitignored sibling) that includes `src/app/app-test-api.js` and the
-`window.__loupeTest` surface. The release path
-(`python scripts/build.py`) never passes the flag, and a
-`_check_no_test_api_in_release()` build gate re-reads the just-emitted
-`docs/index.html` and fails if either of the markers
-`__LOUPE_TEST_API__` / `__loupeTest` appears in it. The reproducibility
-guarantee in [SECURITY.md § Reproducible Build](SECURITY.md#reproducible-build)
-covers `docs/index.html` only — the test bundle is never deployed,
-never signed, and never byte-pinned.
-
-### Performance profiling — single-profile comparisons are unreliable
-
-The CSV worker path (`parseChunk` + `packRowChunk` in
-`src/renderers/csv-renderer.js` and `src/row-store.js`) has been measured
-at **4.75 s, 5.6 s, and 7.3 s worker CPU on the same commit, same
-Firefox build, same fixture, same machine** — a 50 %+ spread across runs.
-The variance correlates with SpiderMonkey GC mode for the byte-builder
-rope nodes in `parseChunk`: nursery-dominant runs (Minor GC ≫ Major GC)
-finish in ~5 s, major-heap-dominant runs (Minor GC ~30 ms, Major GC
-2 500 ms+) take ~7 s. This is a runtime decision driven by allocation-site
-profiling and JIT/IC warmth, not by the source code.
-
-When evaluating a worker-side perf change:
-
-- Capture **at least 3 profiles per HEAD** with `loupe_*` localStorage
-  cleared between captures (`Object.keys(localStorage).filter(k => k.startsWith('loupe_')).forEach(k => localStorage.removeItem(k))`).
-- Compare cluster means and minimums, not single captures.
-- A worker-CPU swing `< 50 %` between two single captures is almost
-  certainly noise — bisecting on it will waste hours.
-- Per-sample CPU efficiency (`threadCPUDelta` ÷ wall-clock Δt across
-  active samples) sits at ~0.96 on a healthy run; a drop below ~0.85
-  indicates thermal throttling or contention from another process,
-  not a real regression.
-- The `_parseCsv` inclusive sample count is a more stable signal than
-  total worker span when DevTools panels were open during one capture
-  but not another (panels add main-thread idle time without affecting
-  worker work).
-
-To rule out a runtime-state artefact when an apparent regression is
-seen: `git checkout <suspect-parent>`, `python make.py build`, capture
-2–3 profiles, restore HEAD, capture another 2–3 profiles. If the parent
-reproduces the "regressed" numbers, the variance is runtime-state, not
-source-level.
-
-### Performance harness — `python make.py perf`
-
-A scripted harness drives the file-picker path through a generated CSV
-(default 100 K rows × 30 cols, ≈160 MB) under Chromium and breaks the
-load → idle wall-time into five phases plus per-sub-phase markers from
-inside the page. Report-only — `make.py perf` is opt-in and never gates
-CI. Full runbook: [`tests/perf/README.md`](tests/perf/README.md).
-
-Sub-phase markers fire from the production code via a single global
-helper, `window.__loupePerfMark(name)`. The global is defined ONLY by
-the IIFE at the bottom of `src/app/app-test-api.js`, which the
-release build never includes — production cost is one undefined-property
-miss per call. Call sites short-circuit on the same property check:
-
-```js
-if (typeof window !== 'undefined' && window.__loupePerfMark) {
-  window.__loupePerfMark('parseTimestampsStart');
-}
-```
-
-The marker bag is read at the end of a perf run via the test-API
-`__loupeTest.perfState().marks` projection (a shallow copy of
-`app._perfMarks`); the harness computes per-sub-phase deltas and prints
-them as a Markdown table. Adding a new marker:
-
-1. Stamp it from a production code path with the global-helper guard
-   above.
-2. Append the new name to `PERF_MARKER_ORDER` in
-   `tests/perf/perf-helpers.ts`.
-3. Optionally add an entry to `PERF_SUBPHASES` so it appears as a row
-   in the Markdown summary.
-4. Extend `tests/unit/app-test-api-perf-state.test.js` if the marker
-   participates in a contract the harness depends on (e.g. the bundle
-   version → first-paint critical path).
-
-Worker-side parse time is plumbed separately. The CSV worker's
-terminal `done` event already includes `msg.parseMs`; the host-side
-handler in `src/app/timeline/timeline-router.js` forwards it to
-`window.__loupePerfWorkerParseMs(ms)`, which the IIFE writes to
-`app._perfWorkerParseMs`. The harness surfaces it in the Markdown
-summary as a separate row from the host-clock markers.
+Full runbook (Playwright provisioning, `__loupeTest` surface,
+performance harness): `tests/README.md` + `tests/perf/README.md`.
 
 ---
 
 ## Architecture & Signal Chain
 
-This section is the architectural map: the path a file takes from drop to
-sidebar, who mutates what, and the cross-cutting contracts that hold it
-together. The prescriptive renderer rules live in
-[Renderer Contract](#renderer-contract).
+The path a file takes from drop to sidebar, who mutates what, and the
+cross-cutting contracts that hold it together. Prescriptive renderer
+rules live in [Renderer Contract](#renderer-contract).
 
 ### Signal chain (ingress → render → sidebar)
 
@@ -297,64 +173,25 @@ flowchart TD
     CTF --> CTFs[String search inside<br/>container._rawText]
 ```
 
-`CODEMAP.md` is the inverse-index: every box maps to a file and line
-range. Surgical anchors:
-
-| Box | File · symbol |
-|---|---|
-| Drop zone | `src/app/app-core.js` · `_setupDrop` |
-| `_loadFile` | `src/app/app-load.js` · `App._loadFile` |
-| Registry dispatch | `src/renderer-registry.js` · `RendererRegistry.dispatch` |
-| Central dispatch helper | `src/render-route.js` · `RenderRoute.run` |
-| Per-renderer dispatch table | `src/app/app-load.js` · `_rendererDispatch` |
-| Sidebar render | `src/app/app-sidebar.js` · `_renderSidebar` |
-| Click-to-focus | `src/app/app-sidebar-focus.js` |
-| Auto-YARA | `src/app/app-yara.js` · `_autoYaraScan` |
-| `pushIOC` helper | `src/constants.js` · `pushIOC` |
-| Encoded-content recursion | `src/encoded-content-detector.js` |
+For line-level locations of every box, grep `CODEMAP.md`.
 
 ### Render-epoch contract
 
-`App` carries a monotonic counter, `app._renderEpoch`, that fences
-each renderer dispatch from late writes by an earlier one. Every
-renderer's contract is **mutate `app.findings` and `app.currentResult` in
-place** — there is no return-value-only path, so any renderer that keeps
-running after the watchdog has given up will otherwise paint over the
-fallback view's state.
+`app._renderEpoch` is a monotonic counter fencing each renderer
+dispatch from late writes by an earlier one. Renderers mutate
+`app.findings` / `app.currentResult` **in place**, so without it a
+hung renderer past the watchdog paints over a fallback view's state.
 
-The single chokepoint that bumps the counter is
-`App._setRenderResult(result)` (in `src/app/app-load.js`). It is the *only*
-place outside `RenderRoute._orphanInFlight` that writes
-`app.currentResult`, and the *only* place that writes `app._renderEpoch`.
-
-**The lifecycle:**
-
-1. The owning caller (`App._loadFile`, `App._restoreNavFrame`, or
-   `App._clearFile`) calls `this._setRenderResult(result)`, which
-   atomically increments `_renderEpoch` and swaps `currentResult` to
-   the supplied skeleton. It returns the new epoch value, which
-   `_loadFile` threads into `RenderRoute.run(file, buffer, this, null, epoch)`
-   as its 5th argument. `RenderRoute.run` itself never mutates the
-   counter — it only reads the caller-supplied epoch and compares it
-   later.
-2. The renderer is invoked under `ParserWatchdog.run(fn, …)`. The
-   watchdog hands `fn` an `AbortSignal` and aborts it on timeout
-   *before* the watchdog's promise rejects.
-3. On any fallback (watchdog timeout, size-cap, or thrown error)
-   `RenderRoute._orphanInFlight(app, buffer)` is called *before* the
-   plaintext handler runs:
-   - `Object.freeze(app.findings)` — any continued
-     `findings.X.push(...)` from the hung renderer throws under strict mode.
-   - `app.findings` and `app.currentResult` are replaced with fresh
-     empty objects so the hung renderer's late writes land on orphans.
-   - The epoch is **not** bumped here. `_orphanInFlight` is the
-     single sanctioned exception to the "all `currentResult` writes
-     go through `_setRenderResult`" rule, precisely because it must
-     *not* bump the epoch.
-4. Just before stamping the final `RenderResult`, `run()` checks
-   `epoch !== app._renderEpoch` and, if a newer dispatch has bumped
-   the counter mid-flight, returns a `{ _superseded: true }` sentinel.
-   `App._loadFile` early-returns on that sentinel.
+`App._setRenderResult(result)` (`src/app/app-load.js`) is the only
+bumper of `_renderEpoch`; `_loadFile` threads the new value into
+`RenderRoute.run(file, buf, app, null, epoch)`. On fallback (watchdog
+timeout / size-cap / thrown error), `RenderRoute._orphanInFlight`
+freezes old findings, swaps in fresh empties, and **does not** bump
+the epoch — the only sanctioned write to `currentResult` outside
+`_setRenderResult`. Before stamping the final result, `run()`
+compares captured `epoch !== app._renderEpoch` and returns
+`{_superseded: true}` if a newer dispatch has won; `_loadFile`
+early-returns on the sentinel.
 
 ```mermaid
 flowchart TD
@@ -392,12 +229,11 @@ capture `app._renderEpoch` at job-dispatch time and discard any
 
 ### IOC entry shape
 
-The canonical pusher is `pushIOC(findings, opts)` at `src/constants.js`.
-On-wire shape (same regardless of bucket):
+On-wire shape pushed by `pushIOC()` (same regardless of bucket):
 
 ```js
 {
-  type: IOC.URL,            // string constant from IOC.* table
+  type: IOC.URL,             // IOC.* constant
   url: '<value>',            // historical name; sidebar reads .url for any type
   severity: 'info'|'medium'|'high'|'critical',
   note?: string,
@@ -407,440 +243,231 @@ On-wire shape (same regardless of bucket):
 }
 ```
 
-`pushIOC` enforces the `IOC.*` constants and **auto-emits siblings** off
-a URL push via vendored `tldts`: a registrable `IOC.DOMAIN` for non-IP
-hosts, an `IOC.IP` row when the URL embeds a literal IP, and `IOC.PATTERN`
-rows for punycode/IDN homoglyphs and abuse-prone public suffixes. Pass
-`_noDomainSibling: true` if the caller already emitted a domain manually.
+See [IOC Push Helpers & Checklist](#ioc-push-helpers--checklist) for
+the helper API and sibling-emission rules.
 
 ### Drill-down: the `open-inner-file` event protocol
 
-Recursive dispatch is plumbed through a single bubbling `CustomEvent`
-named `open-inner-file`. The renderer that builds a child view
-dispatches; `App.openInnerFile(file, parentBuf?, ctx?)` listens at the
-`App` shell and re-enters `_loadFile` after pushing a nav-stack frame.
-
-| Field | Type | Meaning |
-|---|---|---|
-| `event.detail` | `File` | Real or synthetic `File` to load |
-| `event.detail.name` | `string` | Display name for breadcrumb / nav stack |
-| `event.detail._prefetchedBuffer` | `ArrayBuffer?` | Optional; lets the listener skip a re-read |
-
-Every container renderer (msg / eml / zip / pdf / msix / browserext / jar
-/ msi / pe / elf / macho overlay) calls `_wireInnerFileListener(docEl,
-parentName)` on its returned `docEl` so dispatched events forward to
-`openInnerFile()`. The encoded-content sidebar's `_drillDownToSynthetic`
-calls `openInnerFile` directly — same nav-stack push, same `_loadFile`
-re-entry.
+Recursive dispatch flows through a single bubbling `CustomEvent`
+named `open-inner-file` (`event.detail` is the synthetic `File`;
+optional `_prefetchedBuffer` skips a re-read). `App.openInnerFile`
+listens at the shell, pushes a nav frame, and re-enters `_loadFile`.
+Container renderers call `_wireInnerFileListener(docEl, parentName)`
+on their returned `docEl`. The encoded-content sidebar's
+`_drillDownToSynthetic` calls `openInnerFile` directly.
 
 ### YARA cost model
 
 | Path | Trigger | Thread | Gating |
 |---|---|---|---|
-| Auto-YARA (`_autoYaraScan`) | Every successful `_loadFile` | Worker; main-thread fallback when `Worker(blob:)` denied | Worker path: unbounded — `worker.terminate()` cancels mid-loop. Fallback: skipped above `PARSER_LIMITS.SYNC_YARA_FALLBACK_MAX_BYTES` (32 MiB). |
-| Decoded-payload gate (`runDecodedYara`) | After every `WorkerManager.runEncoded` returns, when `findings.encodedContent` is non-empty | Worker; bypassed entirely if workers unavailable | Default mode only — bruteforce skips the pass. Pre-filtered to rules with `applies_to` containing `decoded-payload`; per-payload size bounded `[16 B, 256 KiB]` and capped at 256 candidates per file. |
-| Manual scan tab | User clicks the YARA tab | Worker; main-thread fallback | Manual only; unrestricted |
-| Rules editor validate / preview | User edits rules dialog | Main, synchronous | Manual only |
+| Auto-YARA | Every `_loadFile` | Worker; main fallback | Worker unbounded; fallback skipped above `SYNC_YARA_FALLBACK_MAX_BYTES` (32 MiB). |
+| Decoded-payload gate | After `runEncoded` finds payloads | Worker (skip if unavailable) | Default mode only; `applies_to ⊇ decoded-payload`; payload `[16 B, 256 KiB]`, ≤256/file. |
+| Manual scan tab | User opens YARA tab | Worker; main fallback | Unrestricted. |
+| Rules editor preview | User edits dialog | Main, sync | Unrestricted. |
 
-**Per-string regex budgets.** `_findString` enforces three caps when
-evaluating a `regex`-typed string definition: `MAX` (1 000 retained
-match objects), `MAX_REGEX_ITERS` (10 000 `rx.exec` iterations), and
-`TIME_BUDGET_MS` (250 ms wall-clock, sampled every 256 iters). Compiled
-`RegExp`s are memoised on the parsed-rule object; failures set the slot
-to `null` so subsequent scans don't retry the broken pattern.
-
-`YaraEngine.scan(buffer, rules, opts)` accepts an optional 4th `opts`
-arg with a diagnostics sink `{ errors: [] }`; per-string failures append
-`{ ruleName, stringId, reason, message }` rows where `reason` is one of
-`'invalid-regex'` / `'iter-cap'` / `'time-cap'` / `'exec-error'`. The
-worker forwards these via `done.scanErrors`; `app-yara.js` renders them
-as a banner above manual-scan results.
+**Per-string regex budgets** (`_findString`): `MAX = 1 000` retained
+matches, `MAX_REGEX_ITERS = 10 000`, `TIME_BUDGET_MS = 250` (sampled
+every 256 iters). `RegExp`s memoise on the rule; failures null the
+slot. `YaraEngine.scan` accepts a `{errors: []}` sink; per-string
+failures append `{ruleName, stringId, reason, message}`
+(`reason ∈ {invalid-regex, iter-cap, time-cap, exec-error}`). Worker
+forwards as `done.scanErrors` → manual-scan banner.
 
 ### Worker subsystem
 
-Loupe spawns Web Workers from inline `blob:` URLs (CSP `worker-src
-blob:`). Today `pdf.js`, the in-tree YARA scanner, the Timeline parser,
-and the EncodedContentDetector all run in workers.
-
-**Module shape.** A worker module under `src/workers/<name>.worker.js`
-runs inside `WorkerGlobalScope`: no DOM, no `window`, no `app.*`. Pure
-functions over `ArrayBuffer` in / typed-message events out.
-
-**Build-time inlining.** `scripts/build.py` reads each
-`src/workers/*.worker.js` and emits a string constant per worker into
-the bundle. The spawner materialises the worker via:
-
-```js
-const blob = new Blob([__YARA_WORKER_SRC], { type: 'text/javascript' });
-const url  = URL.createObjectURL(blob);
-const w    = new Worker(url);          // CSP allows `worker-src blob:`
-URL.revokeObjectURL(url);              // safe: Worker keeps its own ref
-```
-
-This is the **only** sanctioned worker-spawn shape. A `scripts/build.py`
-regex gate rejects any `new Worker(` outside the allow-list
-(`src/workers/*.worker.js` plus `src/worker-manager.js`). pdf.js spawns
-its own worker from vendored code, read separately, so the gate doesn't
-false-positive.
-
-**Lifecycle.** Every spawn site wraps construction in
-`try { new Worker(url) } catch (_) { … main-thread fallback … }`.
-Firefox at `file://` denies `Worker(blob:)`; the spawner caches
-"workers unavailable" for the rest of the session and routes future
-calls to the synchronous fallback. Each load increments a cancellation
-token; stale `onmessage` deliveries from a terminated worker are
-dropped.
-
-**postMessage protocol.** Workers post tagged events; the host
-multiplexes on `event` (`columns` / `rows` / `iocs` / `progress` /
-`done` / `error`). Buffers cross as **transferable** `ArrayBuffer`: the
-worker takes ownership and the main thread loses access. If the host
-needs the bytes again, it re-reads from the original `File`.
-
-**Timeout & preemption.** Every `WorkerManager.run*` call is bracketed
-by `PARSER_LIMITS.WORKER_TIMEOUT_MS` (5 min default; Timeline scales
-with file size, capped at 30 min). On expiry, `worker.terminate()` —
-real preemption since the JS engine is killed mid-iteration — and the
-promise rejects with a `ParserWatchdog`-shaped error. The 5 min budget
-is intentionally larger than `RENDERER_TIMEOUT_MS` (30 s) because
-workerised work is off-main-thread.
-
-**Implemented workers:**
+Workers spawn from inline `blob:` URLs (CSP `worker-src blob:`).
+Modules live in `src/workers/<name>.worker.js`, inlined as string
+constants by `scripts/build.py`. `src/worker-manager.js` is the only
+sanctioned spawner outside `src/workers/`. Every spawn site
+try/catches `new Worker(blob:)` (Firefox at `file://` denies it); on
+probe failure the spawner caches "workers unavailable" and falls back
+to a sync main-thread path. Buffers transfer as `ArrayBuffer` (worker
+takes ownership). Each load bumps a cancellation token; stale
+`onmessage` from a terminated worker drops silently. `run*` brackets
+calls with `WORKER_TIMEOUT_MS` (5 min; Timeline 30 min); on expiry
+`terminate()` real-preempts the JS engine.
 
 | Worker | Spawner | Purpose |
 |---|---|---|
-| `yara.worker.js` | `WorkerManager.runYara` (single-buffer mode) / `WorkerManager.runDecodedYara` (multi-payload mode) | Auto-YARA + manual-tab scans, plus the decoded-payload second pass. Bundle = `yara-engine.js` + glue. The two dispatch modes share a single worker bundle but use separate command shapes (`mode: 'multi'` for decoded payloads). |
-| `timeline.worker.js` | `WorkerManager.runTimeline` | **Parse-only** off-thread loader for CSV / TSV / EVTX / SQLite. Analysis stays on the main thread. Streams CSV/TSV in `{event:'rows', batch}` (50 000 rows / batch). |
-| `encoded.worker.js` | `WorkerManager.runEncoded` | Off-thread `EncodedContentDetector.scan()`. IOC merging stays on the main thread (host owns dedup, click-to-focus stamping). |
-| `vendor/pdf.worker.js` | `pdfjsLib` | PDF page rendering. Cancellation via `PdfRenderer.disposeWorker()`. |
+| `yara.worker.js` | `runYara` / `runDecodedYara` | Auto + manual + decoded-payload second pass. |
+| `timeline.worker.js` | `runTimeline` | Off-thread parser for CSV / TSV / EVTX / SQLite. |
+| `encoded.worker.js` | `runEncoded` | Off-thread `EncodedContentDetector.scan()`. |
+| `vendor/pdf.worker.js` | `pdfjsLib` | PDF page rendering. |
 
-The YARA worker is the canonical reference. New workers should follow
-the same pattern: a single worker module that owns one CPU-heavy pass,
-a thin `worker-manager.js` host-side spawner that probes once and
-caches "workers unavailable" on probe failure, routing all callers
-through the same supersede-and-terminate token.
+YARA worker is the canonical reference for new workers.
 
 ### Encoded-content recursion
 
-`EncodedContentDetector` is the deepest single recursion in the
-codebase — it owns the nested base64 / hex / zlib / chararray /
-SafeLinks / PowerShell-mini chains every loaded file's text view is
-mined for. The class root in `src/encoded-content-detector.js`
-orchestrates the search; the per-encoding finders / decoders are split
-across eleven files under `src/decoders/`.
+`EncodedContentDetector` (root in `src/encoded-content-detector.js`,
+helpers under `src/decoders/`) drives nested base64 / hex / zlib /
+chararray / SafeLinks / PowerShell-mini decoding. `_processCandidate`
+is the only re-entry point with `depth + 1`; pre-transforming finders
+stash `_collapsed` at find time so the inner pass collapses one ply per
+round. Runs in `encoded.worker.js`; **IOC merging back into
+`findings.interestingStrings` always stays on the main thread** (host
+owns dedup, click-to-focus stamping, `_rawBytes` re-attachment).
 
-The recursion driver `_processCandidate` is the only place the detector
-re-enters `scan()` with `depth + 1`; every finder pre-transforms its
-candidate where it can (`Reversed`, `Spaced Tokens`, `String Concat`,
-`Comment-Stripped`, `Interleaved Separator` all stash `_collapsed` at
-find time) so the inner pass collapses one ply per round. The chain
-runs inside `encoded.worker.js`; **IOC merging back into
-`findings.interestingStrings` always stays on the main thread** so the
-host owns dedup, click-to-focus stamping, and `_rawBytes` re-attachment.
-
-When adding a new encoding family: pick the helper file under
-`src/decoders/` whose responsibility matches (or add a new file and
-append it to `_DETECTOR_FILES`), keep new methods on the prototype via
-the existing `Object.assign(...)` block at the bottom, never re-declare
-the class. Helpers must not depend on each other's load order — the
-contract is "class root first, helpers afterwards", nothing finer.
+To add an encoding family: drop a helper under `src/decoders/`,
+extend the prototype via the trailing `Object.assign(...)` block,
+append to `_DETECTOR_FILES` in `scripts/build.py`. Helpers must not
+depend on each other's load order beyond "root first, helpers after".
 
 ### JS string-array obfuscation resolver
 
-`src/decoders/js-assembly.js` is a **pure tokeniser** that defangs the
-canonical obfuscator.io / `javascript-obfuscator` shape: a string-array
-literal at the top of the script, an indexer function returning
-`arr[i ± N]`, and one or more sink calls (`eval`, `Function`,
-`setTimeout`, `setInterval`, `atob`) whose arguments are concatenations
-of `INDEXER(<numeric>)` calls and string literals. The resolver
-recovers the sink-call payload string and emits it as a
-`cmd-obfuscation` candidate, so severity scoring + IOC extraction +
-sidebar wiring all flow through the existing
-`_processCommandObfuscation` pipeline (`src/decoders/cmd-obfuscation.js`).
-
-Loads **after** `cmd-obfuscation.js` in `_DETECTOR_FILES` (it consumes
-`_processCommandObfuscation`). The `_findJsStringArrayCandidates` entry
-is invoked from the secondary-finder cascade in
-`encoded-content-detector.js`, defensively guarded so a missing
-prototype method (mixin order regression) doesn't blow up the bundle.
-
-**Trigger gate.** Two paths qualify a span as obfuscation-shaped:
-≥ `MIN_ENTRIES = 10` distinct array entries, OR
-≥ `MIN_BASE64_LOOKING = 5` base64-shaped entries (length ≥ 8, alphabet
-conforms). The gate also requires at least one indexer function and
-one sink call. Below those thresholds the finder returns `[]` cheaply.
-
-**All-or-nothing concat.** Inside a sink, every operand must resolve —
-either as a JS string literal or as a single `INDEXER(<numeric>)` call
-whose computed `i - offset` is in-bounds. One unresolvable operand
-drops the whole sink so the analyst doesn't chase a half-resolved
-payload. `setTimeout` / `setInterval` split on the top-level `,` and
-resolve only the first argument (the delay is ignored).
-
-**Out of scope (deliberate).** Multiple arrays, runtime array shuffles
-(`arr.push(arr.shift())` cycles), `Function.prototype.constructor`
-access, and bracket-property access on indexer-call returns. These
-shapes need real control-flow tracking, not a one-pass tokeniser.
-
-**Tunables** (file-local):
-
-| Constant | Default | Purpose |
-|---|---|---|
-| `MAX_SOURCE_BYTES` | `256 KiB` | Above this, almost certainly bundled libs (jQuery, lodash, webpack) — false-positive cost dwarfs analytic value. |
-| `MAX_ARRAY_ENTRIES` | `4096` | Hard cap on the recovered string-array. Real obfuscator output is typically 50–500 entries. |
-| `MIN_ENTRIES` / `MIN_BASE64_LOOKING` | `10` / `5` | Trigger-gate thresholds (see above). |
-| `MAX_RESOLVED_LEN` | `16 KiB` | Per-sink resolved-string cap; defends against pathological concat chains. |
+`src/decoders/js-assembly.js` defangs the canonical
+obfuscator.io / `javascript-obfuscator` shape (array literal + indexer
++ sinks into `eval`/`Function`/`setTimeout`/`atob`) and emits the
+recovered payload as a `cmd-obfuscation` candidate. Loads **after**
+`cmd-obfuscation.js` in `_DETECTOR_FILES`. Out of scope: multiple
+arrays, runtime shuffles, `Function.prototype.constructor`,
+bracket-property access on indexer returns.
 
 ### Decoded-payload YARA gate
 
-After `WorkerManager.runEncoded` returns the findings tree, the host
-runs a **second YARA pass** over every retained decoded payload. The
-gate lives in `src/decoded-yara-filter.js` and is wired into
-`src/app/app-load.js` immediately before the findings are merged into
-`this.findings.encodedContent`.
-
-The pass is **purely additive** — it stamps `_yaraHits` on findings that
-match curated rules and never removes anything from the tree. The
-existing `_pruneFindings` (inside `encoded.worker.js` via
-`encoded-content-detector.js`) still owns trash suppression; this gate
-adds an evidence row in the sidebar (`.enc-finding-yara`) so the
-analyst can see *why* a noisy-looking decode survived.
-
-**Rule curation.** Rules opt in by adding `decoded-payload` to their
-`meta: applies_to` list. The token is a synthetic format tag (declared
-in `YaraEngine.FORMAT_PREDICATES.is_decoded_payload`) that the host
-stamps onto the multi-dispatch worker call. Rules **without** the
-`decoded-payload` token are excluded from the second pass — keeps the
-per-payload cost proportional to the curated subset.
-
-For rules that should remain **universal** while also opting into the
-gate, declare `applies_to = "any, decoded-payload"`. The `any` alias
-expands to every known formatTag (excluding the synthetic
-`decoded-payload`), so the rule still matches every host-detected
-format AND fires on the decoded second pass. See
-`YaraEngine._resolveAppliesToToken` for the expansion rule.
-
-**Dispatch shape.** `WorkerManager.runDecodedYara(payloads, source,
-opts)` packs all decoded buffers into a single `ArrayBuffer` (one
-transfer) with an offsets / lengths table, and shares the `yara`
-channel with the auto-YARA scan so newer file loads supersede in-flight
-decoded passes automatically. The worker pre-filters rules once to the
-curated `applies_to`-tagged subset before iterating payloads — this
-avoids the per-rule walk on every tiny payload.
-
-**Bypassed in bruteforce mode.** `Bruteforce` is the analyst's
-"show me everything" escape hatch; the gate would be the wrong place to
-filter when the analyst has explicitly opted into noise.
-
-**Failure surface.** Any rejection (probe failure, supersession,
-watchdog) demotes to a no-op. Findings come through unchanged; the
-existing prune-pass result still stands. The breadcrumb is routed via
-`App._reportNonFatal('decoded-yara-gate', err, { silent: true })` so
-the issue still surfaces in the dev-mode breadcrumbs ribbon.
-
-**Tunables** (all on `window.DecodedYaraFilter`):
-
-| Constant | Default | Purpose |
-|---|---|---|
-| `MIN_PAYLOAD_BYTES` | `16` | Tiny buffers can't carry a meaningful YARA string match. |
-| `MAX_PAYLOAD_BYTES` | `256 KiB` | Upper cap on the per-call latin-1 string-build cost inside `YaraEngine.scan`. |
-| `MAX_PAYLOADS_PER_FILE` | `256` | Hard cap so a sample with thousands of tiny base64 literals doesn't amplify the per-call setup cost. |
+After `runEncoded` returns, `src/decoded-yara-filter.js` runs a second
+YARA pass over retained payloads. Purely additive — stamps `_yaraHits`,
+never prunes. Rules opt in via `meta: applies_to` ⊇ `decoded-payload`
+(synthetic format tag in `YaraEngine.FORMAT_PREDICATES`); use
+`applies_to = "any, decoded-payload"` for universal-rules-that-also-fire.
+Bypassed in bruteforce mode; failure demotes to no-op via
+`_reportNonFatal('decoded-yara-gate', …, {silent: true})`.
 
 ### Iframe sandbox helper
 
-`src/sandbox-preview.js` is the **single source of truth** for the
-"render untrusted markup in a sandboxed iframe with an overlay
-drag/scroll shield" recipe used by `html-renderer.js` and
-`svg-renderer.js`.
+`src/sandbox-preview.js` is the single source of truth for the
+sandboxed-iframe + overlay-drag-shield recipe used by `html-renderer`
+and `svg-renderer`. `window.SandboxPreview.create({html, …})` returns
+`{iframe, dragShield}` unmounted — append iframe first, drag shield
+second, into the same `position: relative` container.
 
-```js
-const { iframe, dragShield } = window.SandboxPreview.create({
-  html,
-  wrap: false,                           // html-renderer mode (default)
-  wrapStyle: '',                         // <style> block when wrap:true
-  csp: SandboxPreview.DEFAULT_INNER_CSP, // override the inner CSP literal
-  sandbox: 'allow-same-origin',          // iframe.sandbox
-  forwardScroll: true,
-  forwardTouchScroll: true,
-  forwardDragDrop: true,
-});
-```
-
-Returns `iframe` and `dragShield` **unmounted**. Convention: append
-**iframe first, then drag shield**, both into the same
-`position: relative` container.
-
-Pinned defaults — **do not drift these literals between renderers**:
+Pinned defaults (don't drift between renderers):
 
 - `DEFAULT_INNER_CSP = "default-src 'none'; style-src 'unsafe-inline'; img-src data:"`
-- `iframe.sandbox = 'allow-same-origin'` — required so the parent can
-  call `iframe.contentWindow.scrollBy(...)`. Inner content stays
-  scriptless because `script-src` is unset in the inner CSP.
-- Drag-drop interception re-dispatches `loupe-dragenter` /
-  `loupe-dragleave` / `loupe-drop` CustomEvents on `window`.
+- `iframe.sandbox = 'allow-same-origin'` (parent can call
+  `iframe.contentWindow.scrollBy(…)`; inner content stays scriptless
+  via the inner CSP).
+- Drag-drop re-dispatches as `loupe-dragenter` / `loupe-dragleave` /
+  `loupe-drop` CustomEvents on `window`.
 
-`scripts/build.py` loads `src/sandbox-preview.js` **before** the HTML
-and SVG renderers so `window.SandboxPreview` is on the global by render
-time.
+`build.py` loads `sandbox-preview.js` before HTML/SVG renderers so
+`window.SandboxPreview` exists at render time.
 
 ---
 
 ## Renderer Contract
 
 Renderers are self-contained classes exposing
-`static render(file, arrayBuffer, app)` that returns a DOM element (the
-"view container") or a `RenderResult` object.
-
-The five rules below subsume every other "your renderer must…"
-instruction. They are enforced by
-`scripts/check_renderer_contract.py`, which narrows the tree-wide build
-gates from `scripts/build.py` (risk pre-stamp / bare-string IOC `type:`
-/ `_rawText` LF) to `src/renderers/` and adds two structural checks:
-every non-helper file must declare a `class …Renderer` **and** a
-`render(` method. Helpers (`archive-tree.js`, `grid-viewer.js`,
-`ole-cfb-parser.js`, `protobuf-reader.js`) are allow-listed.
+`static render(file, arrayBuffer, app)` that returns a DOM element or
+a `RenderResult` object. The five rules below subsume every other
+"your renderer must…" instruction; enforced by
+`scripts/check_renderer_contract.py` (every non-helper file must
+declare `class …Renderer` and a `render(` method;
+`archive-tree.js` / `grid-viewer.js` / `ole-cfb-parser.js` /
+`protobuf-reader.js` are allow-listed helpers).
 
 **Per-dispatch size cap.** `RenderRoute.run` consults
-`PARSER_LIMITS.MAX_FILE_BYTES_BY_DISPATCH[dispatchId]` (falling back to
-`_DEFAULT`) **before** invoking the handler. If the file exceeds the
-cap, the heavy renderer is skipped: `app.findings` /
-`currentResult.binary` / `currentResult.yaraBuffer` are reset, dispatch
-reroutes to `plaintext`, and a single `IOC.INFO` row names the original
-id and the cap. Renderers therefore do **not** size-gate inside
-`static render()` for the structured-parse path. The `plaintext` id is
-intentionally uncapped (`Number.POSITIVE_INFINITY`).
+`PARSER_LIMITS.MAX_FILE_BYTES_BY_DISPATCH[dispatchId]` (`_DEFAULT`
+fallback) **before** invoking the handler. Over-cap files reroute to
+`plaintext` (uncapped) with a single `IOC.INFO` row. Renderers
+therefore do **not** size-gate inside `static render()`.
 
 ### The five rules
 
-1. **Return shape.** Either a bare `HTMLElement` or the canonical:
-   ```js
-   { docEl: HTMLElement, findings?, rawText?, binary?, navTitle?, analyzer? }
-   ```
-   `RenderRoute.run` normalises both shapes, wraps every dispatch in
-   `ParserWatchdog.run({timeout: PARSER_LIMITS.RENDERER_TIMEOUT_MS, name:
+1. **Return shape:** a bare `HTMLElement`, or
+   `{docEl, findings?, rawText?, binary?, navTitle?, analyzer?}`.
+   `RenderRoute.run` normalises both, wraps the dispatch in
+   `ParserWatchdog.run({timeout: RENDERER_TIMEOUT_MS, name:
    dispatchId})`, runs `rawText` through `lfNormalize()` once, and
-   stamps `app.currentResult`.
+   stamps `app.currentResult = {docEl, findings, rawText, buffer,
+   binary, yaraBuffer, navTitle, analyzer, dispatchId}` before the
+   handler runs.
 
-2. **Required `app.*` writes.** `RenderRoute.run` stamps
-   `app.currentResult = { docEl, findings, rawText, buffer, binary,
-   yaraBuffer, navTitle, analyzer, dispatchId }` before the handler
-   runs.
+2. **`app.*` write contract:**
 
    | Field | When | Read by |
    |---|---|---|
    | `app.findings` | always | sidebar, copy-analysis, exporters |
-   | `app.currentResult.yaraBuffer` | when augmenting (SVG / HTML inject decoded payload) | auto-YARA |
-   | `app.currentResult.binary = { format, parsed }` | binary renderers (PE / ELF / Mach-O) | verdict band, copy-analysis |
+   | `app.currentResult.yaraBuffer` | augmented surfaces (SVG / HTML inject decoded payload) | auto-YARA |
+   | `app.currentResult.binary = {format, parsed}` | PE / ELF / Mach-O | verdict band, copy-analysis |
    | `container._rawText` | every text-backed renderer | click-to-focus |
 
    `app.currentResult.buffer` is filled by `RenderRoute.run` from the
    `ArrayBuffer` argument — renderers never write it.
 
-3. **`container._rawText` must be LF-normalised — wrap the RHS in
-   `lfNormalize(...)`.** Click-to-focus offsets misalign past the first
-   CR otherwise. Build gate enforces; allow-listed only for
-   `src/constants.js` where the helper lives.
-
-4. **Never pre-stamp `findings.risk`.** Initialise `f.risk = 'low'` and
-   only escalate via `escalateRisk(findings, tier)`. Direct writes
-   (`f.risk = 'high'`) are rejected by the build gate. See
+3. **`container._rawText` must be `lfNormalize(...)`-wrapped** — build
+   gate enforces; offsets misalign past the first CR otherwise.
+4. **Never pre-stamp `findings.risk`** — see
    [Risk Tier Calibration](#risk-tier-calibration).
-
-5. **IOC `type` values must be `IOC.*` constants.** Push every IOC
-   through `pushIOC()` so the canonical shape is enforced and sibling
-   rows (registrable domain via `tldts`, embedded IPs, punycode/IDN
-   homoglyphs) come along for free. Build gate rejects any line
-   containing both `type: '<bare>'` and `severity:` outside
-   `src/constants.js`.
+5. **IOC `type` is always an `IOC.*` constant via `pushIOC()`** —
+   sibling rows (registrable domain, embedded IPs, punycode homoglyphs)
+   come along for free. Build gate rejects bare `type: '<string>'`
+   paired with `severity:` outside `src/constants.js`.
 
 ### Click-to-highlight hooks
 
-Optional hooks a text-based renderer attaches to its returned
-container:
+Optional hooks a text-backed renderer can attach to its container:
 
-| Property | Type | Purpose |
-|---|---|---|
-| `container._rawText` | `string` | LF-normalised source text. Used by `_findIOCMatches()` / `_highlightMatchesInline()` and the encoded-content scanner for line numbers. The CSV/TSV renderer (`src/renderers/csv-renderer.js`) writes the verbatim LF-normalised buffer here — including the literal `\n` chars that live inside RFC-4180 multi-line quoted cells. The grid viewer's per-row `rowOffsets` may therefore span multiple physical newlines for a single logical row; that is expected and click-to-focus byte ranges align correctly against `_rawText` because the parser preserves the original text exactly. |
-| `container._showSourcePane()` | `function` | Invoked before highlighting on renderers with a Preview/Source toggle (HTML, SVG, URL). |
-| `findings.augmentedBuffer` | `ArrayBuffer` | Optional. `app-load.js` hoists onto `app.currentResult.yaraBuffer` so auto-YARA scans the augmented surface while Copy / Save still serve the raw bytes. |
+| Hook | Purpose |
+|---|---|
+| `container._rawText: string` | LF-normalised source. Drives `_findIOCMatches` / `_highlightMatchesInline` and encoded-content line numbers. CSV/TSV writes the verbatim LF-normalised buffer (`\n` inside RFC-4180 multi-line cells included), so grid `rowOffsets` may span multiple physical newlines per logical row — expected, byte ranges align. |
+| `container._showSourcePane()` | Invoked before highlighting on renderers with a Preview/Source toggle (HTML, SVG, URL). |
+| `findings.augmentedBuffer: ArrayBuffer` | Optional. `app-load.js` hoists onto `app.currentResult.yaraBuffer` so auto-YARA scans the augmented surface while Copy / Save still serve the raw bytes. |
 
-If the renderer emits a `.plaintext-table` (one `<tr>` per line with a
-`.plaintext-code` cell) the sidebar gets character-level match
-highlighting, line-background cycling, and 5-second auto-clear for
-free. Renderers without a plaintext surface fall back to a best-effort
-TreeWalker highlight on the first match.
+A renderer that emits a `.plaintext-table` (one `<tr>` per line, a
+`.plaintext-code` cell) gets character-level match highlighting,
+line-background cycling, and 5-second auto-clear for free. Others
+fall back to a best-effort TreeWalker highlight on the first match.
 
 ### Risk Tier Calibration
 
-`analyzeForSecurity()` must emit `findings.risk` in
-`'low' | 'medium' | 'high' | 'critical'` (no `'info'`, no bespoke
-strings). Tier is **evidence-based**, not format-based.
+`findings.risk ∈ {'low', 'medium', 'high', 'critical'}` — never
+`'info'`, never a bespoke string. Tier is **evidence-based**, not
+format-based: initialise `'low'`, then at the end of
+`analyzeForSecurity()` derive from `externalRefs` severity counts:
 
-1. **Initialise `f.risk = 'low'`.** Do not pre-stamp on the grounds
-   that a format "can be abused".
-2. **Escalate from `externalRefs`.** Pattern at the end of
-   `analyzeForSecurity()`:
-   ```js
-   const highs   = f.externalRefs.filter(r => r.severity === 'high').length;
-   const hasCrit = f.externalRefs.some(r => r.severity === 'critical');
-   const hasMed  = f.externalRefs.some(r => r.severity === 'medium');
-   if      (hasCrit)      f.risk = 'critical';
-   else if (highs >= 2)   f.risk = 'high';
-   else if (highs >= 1)   f.risk = 'medium';
-   else if (hasMed)       f.risk = 'low';
-   ```
-3. **Use `escalateRisk()`.** The canonical helper applies the
-   rank-monotonic ladder
-   `{ info: 0, low: 1, medium: 2, high: 3, critical: 4 }` and is the
-   only path the build gate allows for writing `findings.risk`:
-   ```js
-   escalateRisk(f, tier);   // never lowers; safe to call repeatedly
-   ```
-4. **Detections must be mirrored first** into `externalRefs` as
-   `IOC.PATTERN`. Otherwise a YARA-only finding is invisible to the
-   risk calculation.
+```js
+const highs   = f.externalRefs.filter(r => r.severity === 'high').length;
+const hasCrit = f.externalRefs.some(r => r.severity === 'critical');
+const hasMed  = f.externalRefs.some(r => r.severity === 'medium');
+if      (hasCrit)    f.risk = 'critical';
+else if (highs >= 2) f.risk = 'high';
+else if (highs >= 1) f.risk = 'medium';
+else if (hasMed)     f.risk = 'low';
+```
 
-### IOC Push Helpers
+Always write through `escalateRisk(f, tier)` — rank-monotonic, never
+lowers, safe to repeat. Direct writes are rejected by the build gate.
+Mirror every Detection into `externalRefs` as `IOC.PATTERN` first or
+YARA-only findings are invisible to this calculation.
 
-`src/constants.js` ships two helpers every renderer should prefer over
-hand-rolling `findings.interestingStrings.push({...})`:
+### IOC Push Helpers & Checklist
+
+Two helpers in `src/constants.js`:
 
 - **`pushIOC(findings, {type, value, severity?, highlightText?, note?, bucket?})`**
-  writes a canonical IOC row into `interestingStrings` (or
-  `externalRefs` when `bucket: 'externalRefs'` is passed). It pins the
-  on-wire shape and **auto-emits a sibling `IOC.DOMAIN` row** when
-  `type === IOC.URL` and vendored `tldts` resolves the URL to a
-  registrable domain. Pass `_noDomainSibling: true` if you already
-  emit a manual domain row.
-
+  — canonical IOC row into `interestingStrings` (or `externalRefs`
+  via `bucket: 'externalRefs'`). Pins wire shape; auto-emits sibling
+  `IOC.DOMAIN` for URL pushes via `tldts`, plus `IOC.IP` for embedded
+  literals and `IOC.PATTERN` for punycode/IDN homoglyphs. Pass
+  `_noDomainSibling: true` if you've already emitted a manual domain.
 - **`mirrorMetadataIOCs(findings, {metadataKey: IOC.TYPE, ...}, opts?)`**
-  is a metadata → IOC mirror. The sidebar IOC table is fed only from
-  `externalRefs + interestingStrings`; values that live on
-  `findings.metadata` alone never reach the analyst's pivot list.
-  Mirror the **classic pivot** fields (hashes, paths, GUIDs, MAC,
-  emails, cert fingerprints) — array-valued metadata emits one IOC per
-  element. **Do not** mirror attribution fluff (`CompanyName`,
-  `FileDescription`, `ProductName`, `SubjectName`) — noise in a pivot
-  list and fattens exports for no gain.
+  — the sidebar table is fed only from `externalRefs +
+  interestingStrings`; values living only on `findings.metadata` never
+  reach the pivot list. Mirror **pivot** fields (hashes, paths, GUIDs,
+  MAC, emails, cert fingerprints); **not** attribution fluff
+  (`CompanyName`, `FileDescription`, `ProductName`, `SubjectName`).
 
-### IOC Push Checklist
+Push checklist:
 
-1. **Type is always an `IOC.*` constant.** Canonical set: `IOC.URL`,
-   `IOC.EMAIL`, `IOC.IP`, `IOC.FILE_PATH`, `IOC.UNC_PATH`,
-   `IOC.ATTACHMENT`, `IOC.YARA`, `IOC.PATTERN`, `IOC.INFO`, `IOC.HASH`,
-   `IOC.COMMAND_LINE`, `IOC.PROCESS`, `IOC.HOSTNAME`, `IOC.USERNAME`,
-   `IOC.REGISTRY_KEY`, `IOC.MAC`, `IOC.DOMAIN`, `IOC.GUID`,
-   `IOC.FINGERPRINT`.
-2. **Severity comes from `IOC_CANONICAL_SEVERITY`** unless renderer-specific
-   reason to escalate. Escalations must be *up*, not reductions.
-3. **Carry `_highlightText`, never raw offsets into a synthetic buffer.**
-   Offsets are only meaningful when they are true byte offsets into the
-   rendered surface.
-4. **Cap large IOC lists with an `IOC.INFO` truncation marker.** When a
-   renderer walks a large space (PE/ELF/Mach-O strings, EVTX fields,
-   ZIP attachments), enforce a cap and *after* it push exactly one
-   `IOC.INFO` row whose `url:` field explains the reason and cap count.
-5. **Mirror every `Detection` into `externalRefs` as `IOC.PATTERN`:**
+1. `type` is always an `IOC.*` constant.
+2. Severity defaults to `IOC_CANONICAL_SEVERITY[type]`; escalate up
+   only.
+3. Carry `_highlightText`; never raw offsets into synthetic buffers.
+4. Cap large IOC lists with an `IOC.INFO` truncation marker whose
+   `url:` field explains the reason and the cap.
+5. Mirror every `Detection` into `externalRefs` as `IOC.PATTERN` —
+   without this a detection shows in the banner but is invisible to
+   Summary / Share / STIX / MISP:
    ```js
    findings.externalRefs = findings.detections.map(d => ({
      type: IOC.PATTERN,
@@ -848,230 +475,91 @@ hand-rolling `findings.interestingStrings.push({...})`:
      severity: d.severity
    }));
    ```
-   Without this a detection shows up in the banner but is invisible to
-   Summary / Share / STIX-MISP exporters.
-6. **Every IOC value must be click-to-focus navigable.** `_rawText` for
-   plaintext renderers, `_showSourcePane()` for toggle-driven ones, or
-   a custom click handler that scrolls and flashes a highlight class.
-7. **Generic text extraction is capped per-type, not globally.**
-   `_extractInterestingStrings` walks `_rawText` after renderer-specific
-   IOCs are seeded and enforces `PER_TYPE_CAP` (currently 200) on each
-   `IOC.*` type. Drops surface via `findings._iocTruncation` → sidebar
-   warning banner. Renderer-seeded IOCs are **not** subject to this cap
-   — renderers own their own truncation (item 4).
+6. Every IOC must be click-to-focus navigable —
+   `container._rawText`, `_showSourcePane()`, or a custom handler.
+7. Generic text extraction is capped per-type
+   (`_extractInterestingStrings`, `PER_TYPE_CAP = 200`); drops surface
+   via `findings._iocTruncation`. Renderer-seeded IOCs are exempt —
+   renderers own their own caps via item 4.
 
 ### Native-binary capability rolls and the `binaryClass` gate
 
-Native-binary renderers (PE / ELF / Mach-O) produce most of Loupe's
-false positives because the same Win32 / POSIX APIs that show up in
-malware also show up in benign infrastructure (media SDKs, system
-utilities, compiler toolchains). The contract for noise reduction is:
+PE / ELF / Mach-O drive most false positives because Win32/POSIX APIs
+recur in benign tooling (media SDKs, system utilities, compilers). The
+noise-reduction contract:
 
-1. **Capability rolls go through `Capabilities.detect()`.** Don't push
-   bare `IOC.PATTERN` rows for "imports `WriteProcessMemory`" — wire
-   the API into a rule in `src/capabilities.js` so the cluster fires
-   only when the *named behaviour* is present (typically with a
-   `quorum`, `splitQuorum`, or full-AND rule body — never `any: true`
-   for a low-severity API). The capability id you pick must be stable;
-   the per-renderer `capCategory` map keys off it.
-
-2. **Compute `findings.binaryClass` exactly once per analyze pass.**
-   Call `BinaryClass.classify(...)` after the trust tier is known
-   (`TrustedCAs.classifyTrustTier(certs)` for PE / Mach-O, always
-   `'unsigned'` for ELF), stash the result on `findings.binaryClass`,
-   and surface a one-line `findings.metadata['Binary Class']` so the
-   Summary builder can show it.
-
-3. **Weight every per-cluster `riskScore` bump through the gate.** The
-   canonical pattern is two in-scope helpers at the top of
-   `analyzeForSecurity`:
+1. **Route capability rolls through `Capabilities.detect()`.** Don't
+   push bare `IOC.PATTERN` rows for "imports `WriteProcessMemory`" —
+   wire the API into a rule in `src/capabilities.js` so the cluster
+   fires only when the named *behaviour* is present (`quorum`,
+   `splitQuorum`, or full-AND — never `any: true` for low-severity).
+2. **Compute `findings.binaryClass` once** via `BinaryClass.classify(…)`
+   after the trust tier is known; mirror to
+   `findings.metadata['Binary Class']`.
+3. **Weight every cluster bump:**
    ```js
    const _weight  = (sev, cat) => BinaryClass.weightFor(binaryClass, sev, cat);
    const _surface = (cat)      => BinaryClass.shouldSurfaceLowSeverity(binaryClass, cat);
    ```
-   Use `_surface(cat)` to gate whether a low-severity cluster issue
-   gets emitted at all (returns `false` for ubiquitous-API noise on
-   signed-trusted system / media / compiler binaries). Use `_weight`
-   to scale the riskScore contribution.
+   `_surface(cat)` returns `false` for ubiquitous-API noise on
+   signed-trusted system / media / compiler binaries.
+4. **Critical clusters keep full weight regardless of trust** —
+   `weightFor` returns `1` for `critical`/`high` and `≥ 0.75` for the
+   BAD set (`injection`, `cred-theft`, `ransomware`, `hooking`,
+   `persistence`). A stolen-but-trusted cert must never suppress an
+   injection capability.
+5. **Suppressed capabilities go to `metadata['Suppressed
+   Capability']`** — never drop silently.
+6. **YARA detections are NEVER demoted** — the gate only consults
+   renderer-emitted clusters and `Capabilities.detect` results.
 
-4. **Critical clusters keep full weight regardless of trust.**
-   `BinaryClass.weightFor` returns `1` for `severity: 'critical' |
-   'high'` and `≥ 0.75` for the BAD category set (`injection`,
-   `cred-theft`, `ransomware`, `hooking`, `persistence`). Don't paper
-   over this with a renderer-local override; a stolen / leaked
-   code-signing cert that legitimately scores `signed-trusted` must
-   never suppress an injection capability.
+### Nicelist tagging — read tags, don't recompute
 
-5. **Capabilities suppressed by the gate go to `metadata['Suppressed
-   Capability']`.** Don't drop them silently — analysts auditing the
-   output need to see what was demoted and why.
-
-6. **YARA detections are NEVER demoted.** The `binaryClass` gate is
-   only consulted for renderer-emitted clusters and `Capabilities.detect`
-   results; YARA hits flow through `findings.detections` →
-   `IOC.PATTERN` mirror unchanged.
-
-### Nicelist tagging is centralised — read tags, don't recompute
-
-`annotateNicelist(findings)` (in `src/nicelist-annotate.js`) is the
-single canonical place that walks `findings.externalRefs` /
-`findings.interestingStrings` and stamps each entry with
-`_nicelisted` (boolean) and `_nicelistSource` (string | null). It is
-called once at the end of `_loadFile` (after the renderer's
-`analyzeForSecurity` resolves and the IOC worker's deferred patcher
-finishes) so every consumer — sidebar IOC table, Copy Analysis
-Summary builder, STIX bundle, MISP event, IOC CSV — sees the same
-view.
-
-Renderers do **not** call `annotateNicelist` themselves and **must
-not** read or set `_nicelisted` / `_nicelistSource` on the refs they
-push. The flags are added later, after `analyzeForSecurity` returns.
-A renderer that wants to suppress a benign cloud / CDN hostname
-should add an entry to the built-in `NICELIST` (`src/nicelist.js`),
-not pre-tag the ref.
-
-Downstream export consumers (`_collectIocs` in `app-ui.js`, the
-Summary builder, etc.) include a defensive `annotateNicelist` call
-guarded on `typeof r._nicelisted === 'undefined'` so synthetic
-findings shapes (test harnesses, future "report from saved JSON"
-paths) still get tagged correctly. The cost is one property read per
-ref when the tags are already present.
+`annotateNicelist(findings)` (`src/nicelist-annotate.js`) is the sole
+stamper of `_nicelisted` / `_nicelistSource` on
+`externalRefs` / `interestingStrings`, called once at the end of
+`_loadFile` so every consumer (sidebar, Summary, STIX, MISP, CSV) sees
+the same view. Renderers must **not** read or set these flags; to
+suppress a benign hostname, add an entry to `src/nicelist.js`. Export
+consumers re-call `annotateNicelist` defensively (guarded on
+`typeof r._nicelisted === 'undefined'`) so synthetic findings still
+get tagged.
 
 ### RowStore container contract
 
-Every renderer that feeds a tabular view (csv, tsv, evtx, sqlite,
-xlsx, json, timeline) hands `GridViewer` a `RowStore`-shaped object —
-the `string[][]` payload retired in Phase 4c is no longer accepted and
-the constructor throws `TypeError` if `opts.store` is missing or
-fails the `getCell` shape check. The contract lives in
-`src/row-store.js`.
-
-**Construction.** Three factories cover every in-tree caller:
+Every tabular renderer (csv, tsv, evtx, sqlite, xlsx, json, timeline)
+hands `GridViewer` a `RowStore` (`src/row-store.js`); the `string[][]`
+payload is retired — `GridViewer` throws if `opts.store` is missing or
+fails the `getCell` shape check.
 
 | Factory | Use when |
 |---|---|
-| `RowStore.fromStringMatrix(columns, rows)` | Sync builder. The renderer already has the full `string[][]` in memory (sqlite, evtx, xlsx, json, csv-renderer's small-file path). |
-| `RowStore.fromChunks(columns, chunks)` | Worker hand-off. Chunks are pre-packed via `packRowChunk` and arrive as transferable `Uint8Array` / `Uint32Array` (timeline-router). |
-| `RowStore.empty(columns)` | Placeholder. Used by csv-renderer's streaming path to construct the `GridViewer` immediately so the progress bar paints, then `setRows` swaps in the real store on EOF. |
+| `RowStore.fromStringMatrix(columns, rows)` | Full matrix in memory (sqlite, evtx, xlsx, json, small CSV). |
+| `RowStore.fromChunks(columns, chunks)` | Worker hand-off pre-packed via `packRowChunk`. |
+| `RowStore.empty(columns)` | Placeholder so the grid mounts immediately; `setRows` swaps in the real store. |
 
-For incremental construction (csv-renderer's chunked parse, the
-worker's `parseChunk` loop) use a `RowStoreBuilder`:
+Incremental construction: `RowStoreBuilder` — `addRow` / `addChunk`
+then `finalize()` (single-shot).
 
-```js
-const builder = new RowStoreBuilder(columns);
-for (const row of parsedRows) builder.addRow(row);   // or builder.addChunk(packed)
-const store = builder.finalize();                    // single-shot — throws on second call
-viewer.setRows(store, null, rowOffsets);
-```
+- **Hot-path:** `getCell(r, c)` is allocation-free — use it in inner
+  loops. `getRow(r)` allocates — exports + `TimelineRowView` only.
+- **Heap budget:** CSV/TSV ingress consults
+  `RENDER_LIMITS.ROWSTORE_HEAP_BUDGET_FRACTION` (0.6 × Chromium
+  `performance.memory`) before kicking off the worker parse; silent
+  no-op on Firefox/Safari.
+- **Live column mutation:** `viewer._updateColumns(newColumns)` swaps
+  `this.columns` in place — supports tail-append / tail-truncate
+  only (must share prefix with the existing array). Canonical caller:
+  Timeline's `_rebuildExtractedStateAndRender`. Use this instead of
+  destroy/rebuild (which the user sees as a one-frame flash).
 
-**Renderer hand-off.** Pass the finished store to `GridViewer` via
-`opts.store` (constructor) or `setRows(store, rowSearchText,
-rowOffsets, opts)`. Renderers whose primary navigation is the filter
-bar (csv, sqlite, evtx, xlsx, json) opt into the eager search-text
-cache by passing `searchTextCache: true`; the timeline path leaves
-the default `false` (no cache — its query DSL is primary, not the
-free-text filter bar). Phase 9 collapsed the legacy
-`searchCacheMode: 'always' | 'auto' | 'never'` tri-state to this
-boolean — only the two-state distinction had any caller.
+### Renderer registry
 
-**Hot-path read rule.** Inside renderer / GridViewer hot loops use
-`store.getCell(r, c)` — it returns the cell text without allocating.
-`store.getRow(r)` allocates a fresh `string[colCount]` per call and is
-reserved for export paths (clipboard / CSV / JSON / share) and the
-per-visible-row resolution inside `TimelineRowView`. The grep-able
-review rule is "no `store.getRow(...)` inside a per-row inner loop".
-
-**Heap budget.** The CSV / TSV ingress path consults
-`RENDER_LIMITS.ROWSTORE_HEAP_BUDGET_FRACTION` (0.6 of the Chromium
-`performance.memory` heap limit) before kicking off the worker parse.
-On Firefox / Safari (where `performance.memory` is unavailable) the
-gate is silent — the parse proceeds. See `SECURITY.md` →
-[Heap-budget gate (Chromium-only)](SECURITY.md#heap-budget-gate-chromium-only)
-for the full DoS-mitigation rationale.
-
-**Column-set mutation on a live grid.** When a renderer has already
-mounted a `GridViewer` and needs to add or remove columns (Timeline
-Mode's auto-extract, the Extract Values dialog, drawer right-click
-→ extract, and the per-column delete), call
-`viewer._updateColumns(newColumns)` rather than tearing the viewer
-down and constructing a fresh one. The destroy/rebuild path is
-visible to the user as a one-frame "flash" of the table — the freshly
-mounted grid blinks out and comes back with the new column set. The
-in-place helper swaps `this.columns`, prunes per-index state on
-shrink (`_hiddenCols`, `_userColWidths`, `_sortSpec` for a now-
-deleted column), and re-runs the full repaint chain
-(`_recomputeColumnWidths` → `_buildHeaderCells` →
-`_applyColumnTemplate` → `_forceFullRender`). Contract:
-`newColumns` MUST share its prefix with the existing column array —
-the helper supports tail-append and tail-truncate, NOT mid-array
-insert / reorder. Every in-tree caller satisfies that today; if a
-future caller needs reorder semantics, extend the helper rather than
-falling back to destroy/rebuild. Timeline's
-`_rebuildExtractedStateAndRender` is the canonical caller and keeps
-a destroy/rebuild fallback for cold-path (no grid yet) and
-defensive (helper threw) recovery.
-
-### Renderer Matrix
-
-Combined dev matrix — replaces the legacy side-effect / reference /
-spread tables. The user-facing capability matrix lives in
-[FEATURES.md → Renderer Capability Matrix](FEATURES.md#-renderer-capability-matrix).
-
-Legend: `✓` wired, `◐` partial / opt-out by design, `✗` not wired,
-`—` not applicable.
-
-| Renderer | Verdict band | Encoded recursion | Click-to-focus | Drill-down |
-|---|:-:|:-:|:-:|:-:|
-| `pe-renderer` | ✓ | ✓ | ✓ | ✓ (resources, overlay) |
-| `elf-renderer` | ✓ | ✓ | ✓ | ✓ (overlay) |
-| `macho-renderer` | ✓ | ✓ | ✓ | ✓ (overlay) |
-| `pdf-renderer` | — | ✓ | ◐ (page-anchored only) | ✓ (`/EmbeddedFile`, JS bodies, XFA) |
-| `eml-renderer` | — | ✓ | ✓ | ✓ (attachments) |
-| `msg-renderer` | — | ✓ | ✓ | ✓ (attachments) |
-| `onenote-renderer` | — | ✓ | ◐ (FileDataStoreObject only) | ✓ (FileDataStoreObject blobs) |
-| `image-renderer` | — | ✓ (EXIF / chunks / QR) | — | — |
-| `svg-renderer` | — | — (XML walker covers it) | ✓ (source toggle) | — |
-| `html-renderer` | — | — | ✓ (source toggle) | — |
-| `xlsx-renderer` | ✗ | ✗ | ◐ | ✓ (VBA, embeds) |
-| `doc-renderer` | ✗ | ✗ | ◐ | ✓ (VBA streams) |
-| `pptx-renderer` | ✗ | ✗ | ◐ | ◐ (delegates to xlsx) |
-| `ppt-renderer` | ✗ | ✗ | ◐ | ◐ |
-| `odp-renderer` | — | ✗ | ◐ | — |
-| `odt-renderer` | — | ✗ | ◐ | — |
-| `rtf-renderer` | — | ✗ | ✓ | ✓ (OLE objects) |
-| `lnk-renderer` | — | — | — | — |
-| `hta-renderer` | — | — | ✓ | — |
-| `wsf-renderer` | — | — | ✓ | — |
-| `inf-renderer` | — | ✗ | ✓ | — |
-| `reg-renderer` | — | ✗ | ✓ | — |
-| `url-renderer` | — | — | ✓ (source toggle) | — |
-| `msi-renderer` | — | ✗ | ◐ | ✓ (CustomActions, embedded CAB) |
-| `clickonce-renderer` | — | — | ✓ | — |
-| `msix-renderer` | — | — | ✓ | ✓ (inner files) |
-| `browserext-renderer` | — | — | ✓ | ✓ (manifest, scripts, icons) |
-| `npm-renderer` | — | — | ✓ | ✓ (`package/*`) |
-| `jar-renderer` | — | — | ◐ | ✓ (class files, manifest) |
-| `osascript-renderer` | — | ✗ | ✓ | — |
-| `plist-renderer` | — | — | ✓ | — |
-| `dmg-renderer` | ✗ | — | — | ◐ (listing-only) |
-| `pkg-renderer` | — | — | — | ✓ (xar TOC) |
-| `x509-renderer` | — | — | — | — |
-| `pgp-renderer` | — | — | — | — |
-| `evtx-renderer` | — | ◐ (per-row via Timeline) | — (Timeline grid) | — |
-| `sqlite-renderer` | — | ✗ | ✓ | — |
-| `csv-renderer` | — | ◐ (per-cell via Timeline) | — (Timeline grid) | — |
-| `json-renderer` | — | ✗ | ✓ | — |
-| `iqy-slk-renderer` | — | ✗ | ✓ | — |
-| `zip-renderer` | — | — (per-entry) | — | ✓ (per-entry) |
-| `seven7-renderer` | — | — | — | ◐ (listing-only — no LZMA) |
-| `rar-renderer` | — | — | — | ◐ (listing-only) |
-| `cab-renderer` | — | — | — | ✓ (uncompressed / MSZIP) |
-| `iso-renderer` | — | — | — | ✓ (ISO 9660 entries) |
-| `plaintext-renderer` | — | ✓ (catch-all) | ✓ | — |
-
-**Listing-only archive drill-down** (`7z` / `rar` / `dmg`) is `◐` by
-design: Loupe ships no LZMA / LZSS / PPMd / native APFS decoder. Do not
-extend without re-opening the underlying vendor decision.
+The authoritative list of every wired renderer is
+`src/renderer-registry.js` (probe → renderer-class map). Don't duplicate
+it here — it goes stale immediately. Listing-only archive drill-down
+(`7z` / `rar` / `dmg`) is by design: Loupe ships no LZMA / LZSS / PPMd /
+APFS decoder.
 
 ---
 
@@ -1082,444 +570,259 @@ subtly misbehave.
 
 ### Build artefacts & source of truth
 
-- **`docs/index.html` is a build artefact — not tracked in git.** It's
-  in `.gitignore`; do not commit it.
-- **`CODEMAP.md` is auto-generated.** Regenerate with
-  `python scripts/generate_codemap.py` after code changes.
-- **JS load order in `scripts/build.py` is load-bearing** and split
-  into three groups: `EARLY_JS_FILES` (capture-phase drag/drop/paste
-  glue), `APP_JS_FILES` (the App bundle: constants, helpers, every
-  renderer, `App` + every `Object.assign(App.prototype, …)` mixin),
-  and the heavy renderer-only vendors (JSZip, SheetJS, pdf.js,
-  highlight.js, UTIF, exifr, tldts, pako, LZMA, jsQR) emitted **after**
-  the App `<script>` so vendor compile cost no longer blocks
-  `App._setupDrop()` from binding listeners. Build gates iterate
-  `EARLY_JS_FILES + APP_JS_FILES` so coverage is preserved. The
-  trailing `new App().init();` lives at the end of the LAST entry in
-  `APP_JS_FILES` so every prototype mixin has landed before
-  `App.init()` fires.
-- **`Object.assign(App.prototype, …)` order matters.** Later files
-  override earlier methods. Key ordering rules:
-  - `app-copy-analysis.js` after `app-ui.js` (consumes `_formatMetadataValue`).
-  - `app-sidebar-focus.js` after `app-sidebar.js` (focus engine attaches
-    to the same prototype).
-  - `app-settings.js` after both `app-ui.js` and `app-copy-analysis.js`.
-  - `app-bg.js` before `app-core.js` and `app-ui.js` (exposes
-    `window.BgCanvas` referenced by `App.init()` / `_setTheme()`).
-  - `early-drop-bootstrap.js` must be the **first** entry in `JS_FILES`
-    so capture-phase listeners wire before vendor compile.
-- **Timeline route lives under `src/app/timeline/`** and owns the only
-  viewer path for CSV / TSV / EVTX / SQLite. The directory loads
-  immediately after `app-core.js`; the route is **analysis-bypass** —
-  nothing under `src/app/timeline/` pushes IOCs, mutates `app.findings`,
-  or runs `EncodedContentDetector` (EVTX is the sole exception, with
-  detection extraction routed through `EvtxDetector.analyzeForSecurity`
-  on the main thread).
-- **`EncodedContentDetector` split.** Class root in
-  `src/encoded-content-detector.js` keeps the constructor, recognition
-  tables, `scan()` orchestrator, recursion driver. Eleven helper modules
-  under `src/decoders/` attach via
-  `Object.assign(EncodedContentDetector.prototype, {...})`. Canonical
-  load order is encoded once in the `_DETECTOR_FILES` list at the top of
-  `scripts/build.py` and splatted into both the main bundle and the
-  encoded worker bundle so they cannot drift.
-
-### CSP & runtime safety
-
-- **No `eval`, no `new Function`, no network.** CSP (`default-src 'none'`
-  + `script-src 'unsafe-inline'` only) rejects fetches, remote scripts,
-  and dynamic code constructors. Don't relax CSP — find another way.
-- **Images / blobs only from `data:` and `blob:` URLs.** Anything else
-  is blocked at load.
-- **Sandboxed previews** (HTML / SVG / MHT iframes) carry their own
-  inner `default-src 'none'` CSP. Don't assume a preview can load any
-  resource the host can.
+- **`docs/index.html` and `CODEMAP.md` are generated.** `index.html`
+  is gitignored; `CODEMAP.md` is tracked — regenerate with
+  `python make.py codemap` after `src/` changes.
+- **JS load order in `scripts/build.py` is load-bearing.** Three
+  groups: `EARLY_JS_FILES` (capture-phase drag/drop/paste glue —
+  first), `APP_JS_FILES` (constants → helpers → renderers → `App` +
+  prototype mixins → `new App().init()` at the very end), and heavy
+  renderer-only vendors emitted **after** the App `<script>` so vendor
+  compile doesn't block `App._setupDrop()`.
+- **`Object.assign(App.prototype, …)` ordering rules** (later
+  overrides earlier): `app-bg.js` before `app-core.js` /
+  `app-ui.js`; `app-copy-analysis.js` after `app-ui.js`;
+  `app-sidebar-focus.js` after `app-sidebar.js`; `app-settings.js`
+  after `app-ui.js` and `app-copy-analysis.js`.
+- **Timeline route (`src/app/timeline/`) is analysis-bypass** — owns
+  the only viewer path for CSV / TSV / EVTX / SQLite, but pushes no
+  IOCs, mutates no `app.findings`, runs no `EncodedContentDetector`.
+  EVTX is the sole exception via `EvtxDetector.analyzeForSecurity`.
+- **`EncodedContentDetector` is split** — class root in
+  `src/encoded-content-detector.js`, helper modules under
+  `src/decoders/` attached via prototype mixin. Canonical load order
+  in `_DETECTOR_FILES` (`scripts/build.py`) is splatted into both the
+  main bundle and the encoded worker so they cannot drift.
 
 ### Regex Safety
 
-Loupe's threat model includes catastrophic-backtracking regex (ReDoS)
-on user-supplied patterns (Timeline DSL filters, Timeline regex-extract,
-YARA rule editor, archive-tree search) and built-in patterns that
-compile against attacker-controlled input.
+ReDoS is in scope for any pattern compiled against user input
+(Timeline DSL, Timeline regex-extract, YARA rule editor, archive-tree
+search) or attacker-controlled file content. `safeRegex(...)` /
+`safeExec` / `safeTest` / `safeMatchAll` (in `src/constants.js`)
+reject 2 KB+ patterns and the duplicate-adjacent-quantified-group
+shape, warn on nested unbounded quantifiers, and provide a wall-clock
+budget. Every other `new RegExp(...)` callsite must carry
+`/* safeRegex: builtin */` within 3 lines above; enforced by
+`scripts/check_regex_safety.py`.
 
-1. **Every user-input regex compile must route through `safeRegex(...)`**
-   defined in `src/constants.js`. The harness rejects patterns longer
-   than 2 KB or containing the duplicate-adjacent-quantified-group
-   shape, warns on nested unbounded quantifiers, and provides
-   `safeExec` / `safeTest` / `safeMatchAll` wrappers with a wall-clock
-   budget and guaranteed `lastIndex` advance on zero-width matches.
-
-2. **Every other `new RegExp(...)` callsite must carry**
-   `/* safeRegex: builtin */` within 3 lines above the constructor.
-   The check is enforced by `scripts/check_regex_safety.py`, run as
-   part of `python make.py`.
-
-Current user-regex compile sites (must use `safeRegex`):
+User-regex compile sites (must route through `safeRegex`):
 
 | Site | Budget | Failure mode |
 |------|--------|--------------|
-| Timeline regex-extract preview | 50 ms `safeExec` per row, 200-row sample | "Pattern timed out" status |
-| Timeline regex-extract commit | 1 K-row dry run via `safeExec` | Toast + refuse to commit |
+| Timeline regex-extract preview | 50 ms `safeExec` × 200-row sample | "Pattern timed out" status |
+| Timeline regex-extract commit | 1 K-row dry run | Toast + refuse to commit |
 | Timeline DSL filter compile | `safeRegex` shape rejection | Toast on filter apply |
 | Timeline drawer highlighter | `safeRegex` compile | Silent disable for that drawer |
 | YARA editor rule import | 2 KB pattern length cap | Validation error |
 
-### YARA rule files
-
-- **YARA rule files contain no comments.** `scripts/build.py`
-  concatenates `YARA_FILES` with `// @category: <name>` separator lines
-  — those are the only `//` lines the in-browser engine tolerates.
-  Inline comments break the parse or produce a no-match rule.
-  Explanations go in `meta:` fields.
-- **Category labels are inserted by `scripts/build.py`**, not authored
-  by hand.
-
 ### Renderer conventions
 
-- **Use `pushIOC()` over hand-rolled `interestingStrings.push(...)`.**
-- **`_rawText` must be `lfNormalize(...)`-wrapped.** Build gate enforces.
-- **Renderer roots must opt into full width.** `#viewer` is a flex
-  column with `align-items: center`, which shrink-wraps any
-  unconstrained child. A renderer root holding wide content must
-  declare `align-self: stretch; width: 100%; min-width: 0` (and, for
-  tables, `table-layout: fixed`).
-- **Soft-wrap pathologically long lines in display.** A single 2 MB
-  `<td>` tanks layout / paint / click-to-focus even with
-  `table-layout: fixed`. See `PlainTextRenderer.RICH_MAX_LINE_LEN` /
-  `SOFT_WRAP_CHUNK` for canonical values.
-- **Long IOC lists must end with an `IOC.INFO` truncation marker.**
-- **Two limit constants, two jobs.** `PARSER_LIMITS` is the *safety*
+- **Wide renderer roots must opt in.** `#viewer` is a flex column with
+  `align-items: center`, which shrink-wraps unconstrained children.
+  Declare `align-self: stretch; width: 100%; min-width: 0` (+
+  `table-layout: fixed` for tables).
+- **Soft-wrap pathologically long lines.** A 2 MB `<td>` tanks
+  layout / paint / click-to-focus. See `PlainTextRenderer.RICH_MAX_LINE_LEN`
+  / `SOFT_WRAP_CHUNK`.
+- **Two limit constants, two jobs:** `PARSER_LIMITS` is the *safety*
   envelope (`MAX_DEPTH`, `MAX_UNCOMPRESSED`, `MAX_RATIO`,
-  `MAX_ENTRIES`, `TIMEOUT_MS`, `RENDERER_TIMEOUT_MS`,
-  `SYNC_YARA_FALLBACK_MAX_BYTES`) — raising weakens defences.
-  `RENDER_LIMITS` caps how much **parsed data** the UI renders
-  (`MAX_TEXT_LINES`, `MAX_CSV_ROWS`, `MAX_TIMELINE_ROWS`,
+  `MAX_ENTRIES`, `RENDERER_TIMEOUT_MS`, `SYNC_YARA_FALLBACK_MAX_BYTES`)
+  — raising weakens defences. `RENDER_LIMITS` caps **parsed data** the
+  UI renders (`MAX_TEXT_LINES`, `MAX_CSV_ROWS`, `MAX_TIMELINE_ROWS`,
   `MAX_EVTX_EVENTS`) — raising affects only completeness / memory.
-- **EVTX column names live in `EVTX_COLUMNS` / `EVTX_COLUMN_ORDER`.**
-  Use constants instead of bare `'Event ID'` strings.
-- **`app.currentResult` is the canonical per-load state object.**
-  `RenderRoute.run` allocates it before invoking the handler. There
-  are no shadow fields.
-- **Hot-path renderers must finish under
-  `PARSER_LIMITS.RENDERER_TIMEOUT_MS` (30 s).** On timeout `_loadFile`
-  resets `findings` / `currentResult.binary` / `currentResult.yaraBuffer`,
-  falls back to `PlainTextRenderer`, and pushes an `IOC.INFO` row.
-  Watchdog timeouts carry `_watchdogTimeout`, `_watchdogName`,
-  `_watchdogTimeoutMs` sentinel fields.
-- **Silent `catch (...) {}` is banned in the load chain.**
-  `src/app/app-load.js` and `src/app/app-yara.js` form the file-load
-  chain. The replacement is
-  `App._reportNonFatal(where, err, opts?)` (in `src/app/app-core.js`):
-  ```js
-  this._reportNonFatal('encoded-content', err);
-  this._reportNonFatal('sidebar-refresh', err, { silent: true });
-  this._reportNonFatal('auto-yara', err, { severity: 'low' });
-  ```
-  Always emits a structured `[loupe] <where>: <message>` console
-  breadcrumb; unless `silent: true`, also pushes a single `IOC.INFO`
-  row and re-schedules a microtask-coalesced sidebar refresh. Use
-  `silent: true` when surrounding code already retries successfully or
-  when the call site is itself the sidebar-refresh path. Build gate
-  enforces; escape-hatch comment `// loupe-allow:silent-catch` on a
-  per-line basis (no in-tree call site uses it).
-- **New iframe previews go through `SandboxPreview.create()`.**
-- **Per-dispatch size caps are enforced centrally** in
-  `RenderRoute.run` via `PARSER_LIMITS.MAX_FILE_BYTES_BY_DISPATCH`.
-  When adding a new dispatch id, add a matching entry — falling back
-  to `_DEFAULT` (128 MiB) silently is almost never what you want.
+- **EVTX column names** live in `EVTX_COLUMNS` / `EVTX_COLUMN_ORDER`.
+  Use constants, not bare `'Event ID'` strings.
+- **`_reportNonFatal(where, err, opts?)`** (`src/app/app-core.js`)
+  replaces silent `catch {}`. Emits a `[loupe] <where>: <message>`
+  breadcrumb; unless `silent: true`, pushes an `IOC.INFO` row and
+  coalesces a sidebar refresh. Build gate enforces in `app-load.js` /
+  `app-yara.js`; escape-hatch comment `// loupe-allow:silent-catch`
+  (unused in tree).
 
-### Determinism (for `scripts/build.py` and anything it runs)
+### Determinism (`scripts/build.py` and anything it calls)
 
-- **No `datetime.now()`** except the one gated `SOURCE_DATE_EPOCH` fallback.
-- **No file-system iteration order.** Enumerate files from explicit
-  hardcoded lists (`JS_FILES`, `CSS_FILES`, `YARA_FILES`).
-- **No random IDs, UUIDs, or nonces.** Derive stable identifiers from
-  file contents (e.g. SHA-256 of inputs).
-- **No machine-local paths** in output. Read with relative paths.
-- **No dict/set ordering that relies on hash randomisation.** Sort first.
-
-### Docs & persistence
-
-- **Long single-line table cells break `replace_in_file`.** Cap at
-  ~140 characters / one sentence. Split rows or move detail elsewhere
-  with a one-liner pointer.
-- **New `localStorage` keys must use the `loupe_` prefix** and be added
-  to the [Persistence Keys](#persistence-keys) table below.
+No `datetime.now()` (one gated `SOURCE_DATE_EPOCH` fallback aside);
+no file-system iteration order (use explicit `JS_FILES` / `CSS_FILES`
+/ `YARA_FILES`); no random IDs / UUIDs / nonces (derive from input
+SHA-256); no machine-local paths in output; no dict/set ordering that
+relies on hash randomisation (sort first).
 
 ---
 
 ## Persistence Keys
 
-Every user preference lives in `localStorage` under the `loupe_` prefix
-so state is (a) easy to grep for, (b) easy to clear with a single
-filter, and (c) auditable against this table.
+Every user preference lives in `localStorage` under the `loupe_`
+prefix — easy to grep, easy to clear with one filter, auditable
+against this table.
 
-| Key | Type | Written by | Values / shape |
-|---|---|---|---|
-| `loupe_theme` | string | `_setTheme()` in `src/app/app-ui.js` | `light` / `dark` / `midnight` / `solarized` / `mocha` / `latte`. Applied before first paint by the inline `<head>` bootstrap; missing/invalid falls back to OS `prefers-color-scheme` then `dark`. |
-| `loupe_summary_target` | string | `_setSummaryTarget()` in `src/app/app-settings.js` | `default` / `large` / `unlimited`. Drives the build-full → measure → shrink-to-fit assembler. Char budgets `64 000` / `200 000` / `Infinity`. |
-| `loupe_uploaded_yara` | string | `setUploadedYara()` in `src/app/app-yara.js` | Raw concatenated `.yar` rule text. Merged with the default ruleset at scan time. |
-| `loupe_ioc_hide_nicelisted` | string | `_setHideNicelisted()` in `src/app/app-sidebar.js` | `"0"` (show, dimmed — default) or `"1"` (hide). |
-| `loupe_summary_include_nicelisted` | string | Settings → Copy Analysis (TBD) — read by Summary builder in `src/app/app-ui.js` | `"group"` (separate `### Nicelisted IOCs` sub-table — default), `"omit"` (drop nicelisted rows entirely), or `"inline"` (single combined table, no marker). |
-| `loupe_nicelist_builtin_enabled` | string | `setBuiltinEnabled()` in `src/nicelist-user.js` | `"1"` (on — default) or `"0"` (off). Master switch for the Default Nicelist. |
-| `loupe_nicelists_user` | string (JSON) | `save()` in `src/nicelist-user.js` | `{version:1, lists:[{id,name,enabled,createdAt,updatedAt,entries}]}`. Capped at 64 lists × 10 000 entries × 1 MB. |
-| `loupe_plaintext_highlight` | string | `PlainTextRenderer._writeHighlightPref()` | `"on"` (default) / `"off"`. Syntax-highlighting master switch for the plaintext / catch-all renderer. Hidden — and highlighting skipped — by the shared rich-render gate described under `loupe_plaintext_wrap` below, plus an extra requirement that hljs is loaded in this build. |
-| `loupe_plaintext_wrap` | string | `PlainTextRenderer._writeWrapPref()` | `"on"` (default) / `"off"`. Hidden — and wrap forced off — by the shared rich-render gate (`RICH_MAX_BYTES` 512 KB / `RICH_MAX_LINES` 10 000 / `RICH_MAX_LINE_LEN` 5 000 chars), which also gates `loupe_plaintext_highlight` so both toggles disappear together. |
-| `loupe_grid_drawer_w` | string (integer) | `_saveDrawerWidth()` in `src/renderers/grid-viewer.js` | Pixel width of the row-details drawer. Default `420`. Lower-bound `280` on read; upper bound dynamic. |
-| `loupe_grid_colW_<gridKey>` | string (JSON object) | `_saveUserColumnWidth()` | `{ "<colIdx>": pixelWidth, … }`. Per-renderer manual width overrides. Double-clicking a handle deletes the entry to restore auto sizing. |
-| `loupe_timeline_grid_h` | string (integer) | `.tl-splitter` drag | Height of the virtual-grid pane. Clamped on read. |
-| `loupe_timeline_chart_h` | string (integer) | `.tl-chart-resize` drag | Height of the histogram pane. Default 220 px. Clamped 120 – 600. |
-| `loupe_timeline_bucket` | string | Timeline toolbar bucket picker | One of `1m` / `5m` / `1h` / `1d` / …. |
-| `loupe_timeline_sections` | JSON object | section-chevron clicks | `{ chart: bool, grid: bool, columns: bool, pivot: bool, … }` — `true` = collapsed. |
-| `loupe_timeline_card_widths` | JSON object | edge resize on `.tl-col-card` / `.tl-entity-group` | `{ "<fileKey>": { "<key>": { span: N }, … } }` — file key = `name|size|lastModified`. Span = `grid-column: span N`. |
-| `loupe_timeline_card_order` | JSON object | drag-to-reorder card headers | `{ "<fileKey>": ["colName1", …] }`. |
-| `loupe_timeline_grid_col_order` | JSON object | drag a header in the Timeline grid | `{ "<fileKey>": ["colName1", …] }`. Persists the grid column DISPLAY order independently of `card_order` (which only sorts the Top-values cards section). Stored by column NAME so extracted columns survive reload at a different real index. Resolved back to live indices via `_applyGridColOrder` on grid mount AND after every `_updateColumns` call. Cleared by Timeline ↺ Reset via the `loupe_timeline_*` prefix wipe. |
-| `loupe_timeline_pinned_cols` | JSON object | 📌 pin button | `{ "<fileKey>": [...] }`. Pinned cards sort to top-left. |
-| `loupe_timeline_entity_pinned` | JSON object | 📌 on Entities cards | `{ "<fileKey>": ["entity:<IOC_TYPE>", …] }`. |
-| `loupe_timeline_entity_order` | JSON object | drag-to-reorder Entities | `{ "<fileKey>": ["entity:<IOC_TYPE>", …] }`. |
-| `loupe_timeline_detections_group` | string | "Group by ATT&CK tactic" toggle | `"1"` enabled / `"0"` disabled. |
-| `loupe_timeline_regex_extracts` | JSON object | ƒx Extract dialog | `{ "<fileKey>": [{ name, col, pattern, flags, group, kind }, …] }`. JSON-path extractions are not persisted. |
-| `loupe_timeline_pivot` | JSON object | Pivot section selectors | `{ rows, cols, aggOp: "count"\|"distinct"\|"sum", aggCol }`. |
-| `loupe_timeline_query` | string | Timeline DSL editor | Last-used query string. |
-| `loupe_timeline_query_history` | JSON array | ⌄ history button | Recent non-empty queries, capped ~20. |
-| `loupe_timeline_sus_marks` | JSON object | right-click → 🚩 Mark suspicious | Persisted **by column NAME** (not index) so extracted columns survive reload at a different index. Tints rows red but does **not** filter. |
-| `loupe_timeline_autoextract_toast_shown` | JSON object | toast suppression for the best-effort auto-extract pass | `{ "<fileKey>": true }`. Stamped the first time `_autoExtractBestEffort()` produces ≥1 extracted column for a file. Gates ONLY the post-apply "Auto-extracted N fields" toast — the extraction itself runs on every file open and re-derives the same proposals deterministically (auto-extracted columns are EPHEMERAL by design; only manual Regex-tab extracts persist via `loupe_timeline_regex_extracts`). Renamed from the pre-2026-Q2 `loupe_timeline_autoextract_done` (which used to gate extraction itself, breaking JSON-shaped CSVs because JSON extracts aren't persistable as regex). The legacy key is deleted on first call to `_loadAutoExtractToastShownFor` so existing browser profiles get cleaned up. Owned exclusively by `_autoExtractBestEffort` — GeoIP enrichment has its own marker (`loupe_timeline_geoip_done`). Cleared by Timeline ↺ Reset via the `loupe_timeline_*` prefix wipe. |
-| `loupe_timeline_geoip_done` | JSON object | GeoIP / ASN enrichment pass on file open | `{ "<fileKey>": true }`. Set the first time `_runGeoipEnrichment()` runs against a file (whether or not any IP columns were detected) so deleted geo / asn columns stay deleted on reopen and the IP-detect scan doesn't re-run for IP-less files. Distinct from `loupe_timeline_autoextract_toast_shown` — the two were briefly conflated under the pre-rename `loupe_timeline_autoextract_done` key, which silently disabled auto-extract for files with no IP columns. Cleared by Timeline ↺ Reset via the `loupe_timeline_*` prefix wipe. |
-| `loupe_hosted_dismissed` | string | `_checkHostedMode()` | `"1"` when the hosted-mode privacy bar is dismissed. |
-| `loupe_dev_breadcrumbs` | string | `_toggleDevBreadcrumbs()` | `"1"` when the dev-mode breadcrumbs ribbon is mounted. Toggle from devtools — no Settings UI. |
-| `loupe_deobf_selection_enabled` | string | `_setSelectionDecodeEnabled()` | `"1"` (default) / `"0"`. Master switch for the floating "🔍 Decode selection" chip. |
+All values are strings (JSON-encoded where the shape says so).
+"Written by" lists the named accessor; read sites validate against
+the documented values.
 
-**Timeline ↺ Reset wipes every Timeline preference** — clears every
-`loupe_timeline_*` key (not just the current file's) plus
+| Key | Written by | Values / shape |
+|---|---|---|
+| `loupe_theme` | `_setTheme` (`app-ui.js`) | `light` / `dark` / `midnight` / `solarized` / `mocha` / `latte`. FOUC bootstrap applies before first paint; missing/invalid falls back to OS `prefers-color-scheme` then `dark`. |
+| `loupe_summary_target` | `_setSummaryTarget` (`app-settings.js`) | `default` / `large` / `unlimited`. Drives the build-full → measure → shrink-to-fit assembler. Char budgets `64 000` / `200 000` / `Infinity`. |
+| `loupe_uploaded_yara` | `setUploadedYara` (`app-yara.js`) | Raw concatenated `.yar` text. Merged with the default ruleset at scan time. |
+| `loupe_ioc_hide_nicelisted` | `_setHideNicelisted` (`app-sidebar.js`) | `"0"` (show, dimmed — default) or `"1"` (hide). |
+| `loupe_summary_include_nicelisted` | Summary builder (`app-ui.js`) | `"group"` (separate sub-table — default), `"omit"` (drop nicelisted rows), or `"inline"` (single combined table, no marker). |
+| `loupe_nicelist_builtin_enabled` | `setBuiltinEnabled` (`nicelist-user.js`) | `"1"` (on — default) / `"0"` (off). |
+| `loupe_nicelists_user` | `save` (`nicelist-user.js`) | `{version:1, lists:[{id,name,enabled,createdAt,updatedAt,entries}]}`. Capped at 64 lists × 10 000 entries × 1 MB. |
+| `loupe_plaintext_highlight` | `PlainTextRenderer._writeHighlightPref` | `"on"` (default) / `"off"`. Hidden — and highlighting skipped — by the shared rich-render gate (see `loupe_plaintext_wrap`), plus a hljs-loaded check. |
+| `loupe_plaintext_wrap` | `PlainTextRenderer._writeWrapPref` | `"on"` (default) / `"off"`. Hidden — and wrap forced off — by the shared rich-render gate (`RICH_MAX_BYTES` 512 KB / `RICH_MAX_LINES` 10 000 / `RICH_MAX_LINE_LEN` 5 000 chars), which gates highlight too. |
+| `loupe_grid_drawer_w` | `_saveDrawerWidth` (`grid-viewer.js`) | Row-details drawer width in px. Default 420; min 280; max dynamic. |
+| `loupe_grid_colW_<gridKey>` | `_saveUserColumnWidth` | `{"<colIdx>": pxWidth, …}`. Per-renderer manual overrides; double-clicking a handle deletes the entry to restore auto-size. |
+| `loupe_timeline_grid_h` | `.tl-splitter` drag | Virtual-grid pane height in px (clamped on read). |
+| `loupe_timeline_chart_h` | `.tl-chart-resize` drag | Histogram pane height in px. Default 220; clamp 120 – 600. |
+| `loupe_timeline_bucket` | toolbar bucket picker | `1m` / `5m` / `1h` / `1d` / …. |
+| `loupe_timeline_sections` | section chevrons | `{chart, grid, columns, pivot, …}` — `true` = collapsed. |
+| `loupe_timeline_card_widths` | edge resize on `.tl-col-card` / `.tl-entity-group` | `{"<fileKey>": {"<key>": {span: N}, …}}`. fileKey = `name\|size\|lastModified`. |
+| `loupe_timeline_card_order` | drag card headers | `{"<fileKey>": ["colName", …]}`. |
+| `loupe_timeline_grid_col_order` | drag a Timeline grid header | `{"<fileKey>": ["colName", …]}`. Stored by NAME so extracted columns survive reload at different real index. Applied via `_applyGridColOrder` on mount + after `_updateColumns`. |
+| `loupe_timeline_pinned_cols` | 📌 pin | `{"<fileKey>": [...]}` — pinned cards sort top-left. |
+| `loupe_timeline_entity_pinned` | 📌 on Entities | `{"<fileKey>": ["entity:<IOC_TYPE>", …]}`. |
+| `loupe_timeline_entity_order` | drag-reorder Entities | `{"<fileKey>": ["entity:<IOC_TYPE>", …]}`. |
+| `loupe_timeline_detections_group` | "Group by ATT&CK tactic" | `"1"` / `"0"`. |
+| `loupe_timeline_regex_extracts` | ƒx Extract dialog | `{"<fileKey>": [{name, col, pattern, flags, group, kind}, …]}`. JSON-path extractions are NOT persisted. |
+| `loupe_timeline_pivot` | Pivot selectors | `{rows, cols, aggOp: "count"\|"distinct"\|"sum", aggCol}`. |
+| `loupe_timeline_query` | DSL editor | Last-used query string. |
+| `loupe_timeline_query_history` | ⌄ history button | Recent non-empty queries, capped ~20. |
+| `loupe_timeline_sus_marks` | right-click → 🚩 | Persisted by column NAME (not index). Tints rows red; does NOT filter. |
+| `loupe_timeline_autoextract_toast_shown` | post-apply auto-extract toast | `{"<fileKey>": true}` — gates ONLY the toast; the extraction re-runs deterministically on every open. Auto-extracted columns are EPHEMERAL (only Regex-tab extracts persist via `loupe_timeline_regex_extracts`). |
+| `loupe_timeline_geoip_done` | GeoIP/ASN enrichment | `{"<fileKey>": true}` — keeps deleted geo/asn columns deleted on reopen and skips IP-detect for IP-less files. |
+| `loupe_hosted_dismissed` | `_checkHostedMode` | `"1"` when the hosted-mode privacy bar is dismissed. |
+| `loupe_dev_breadcrumbs` | `_toggleDevBreadcrumbs` | `"1"` mounts dev-breadcrumb ribbon. Toggle from devtools — no Settings UI. |
+| `loupe_deobf_selection_enabled` | `_setSelectionDecodeEnabled` | `"1"` (default) / `"0"`. Floating "🔍 Decode selection" chip. |
+
+**Timeline ↺ Reset** wipes every `loupe_timeline_*` key plus
 `loupe_grid_drawer_w` and every `loupe_grid_colW_tl-grid-inner_*`
-override. Any new `loupe_timeline_*` key is covered by the same prefix
-sweep and needs no additional wiring.
+override. New `loupe_timeline_*` keys are covered by the prefix sweep
+automatically.
 
-**Adding a new key**
-
-1. Use the `loupe_<feature>` prefix.
-2. Read and write through a named accessor (`_getMyThing()` /
-   `_setMyThing(value)`) in the owning `app-*.js` file so the write
-   site is auditable.
-3. Validate on read — never trust the stored value. Out-of-range falls
-   back to a hard-coded default.
-4. Add a row to this table in the same PR.
+**Adding a key:** use the `loupe_<feature>` prefix; read/write through
+a named accessor in the owning `app-*.js`; validate on read with a
+hard-coded default fallback; add a row to this table in the same PR.
 
 ### IndexedDB Stores
 
-`localStorage` is the default for state because it's synchronous,
-ubiquitous, and easy to grep. Use IndexedDB **only** for binary blobs
-that are too large for `localStorage`'s ~5 MB string quota. Each store
-is fronted by a tiny accessor module under `src/<feature>/` so the
-`open()` boilerplate lives in exactly one place.
+Use IndexedDB **only** for binary blobs too large for `localStorage`'s
+~5 MB quota. Each store is fronted by an accessor module under
+`src/<feature>/` so `open()` boilerplate lives in one place.
 
-| Database | Object store | Accessor | What it holds | Quota considerations |
-|---|---|---|---|---|
-| `loupe-geoip` (v2) | `db` (keys: `mmdb-geo` / `mmdb-asn` + `*-meta`) | `src/geoip/geoip-store.js` (`GeoipStore.save(slot, blob, meta)` / `load(slot)` / `getMeta(slot)` / `getAllMeta()` / `clear(slot)`) | Two independent user-uploaded MMDB slots: `geo` (Country / City / Region) and `asn` (Autonomous System / Organisation). Both are loaded in parallel by `App.init()` after the synchronous bundled provider is in place; the timeline re-fires enrichment when either resolves. v1→v2 migration in `onupgradeneeded` moves the legacy single `mmdb` key into the geo slot. Survives reloads, never touches the network. | MMDB files are typically 8–80 MB each. Settings shows filename + vintage + database type + sniffed schema per slot. |
+| Database | Keys | Accessor | What it holds |
+|---|---|---|---|
+| `loupe-geoip` (v2) | `mmdb-geo` / `mmdb-asn` + `*-meta` | `src/geoip/geoip-store.js` | Two user-uploaded MMDB slots: `geo` (Country/City/Region) and `asn` (AS/Organisation). v1→v2 migration moves the legacy `mmdb` key into the geo slot. |
 
-**Adding a new IndexedDB store**
-
-1. Create `src/<feature>/<feature>-store.js` exposing `load()`,
-   `save(...)`, and `clear()`. Promise-returning. Wrap every IDB
-   request in a Promise so callers never deal with `onsuccess` /
-   `onerror` themselves.
-2. Use **one** database per feature, **one** object store per
-   database, with a **fixed key** (`'active'`, `'current'`, …) for the
-   single-blob case. Multiple-record stores need a documented key
-   schema.
-3. Bump `version` (the second arg to `indexedDB.open(name, version)`)
-   only if the schema changes; provide an `onupgradeneeded` migration.
-4. The accessor must be a no-op on browsers without IndexedDB (return
-   `null` from `load`, throw a clear error from `save`). Loupe must
-   keep working without the override.
-5. Add a row to the table above.
-6. Add a paragraph to `SECURITY.md` § "Persisted user data" explaining
-   what's stored, when it's wiped, and that the CSP prevents
-   exfiltration.
+**Adding a store:** `src/<feature>/<feature>-store.js` exposing
+Promise-returning `load()` / `save()` / `clear()`; one DB + one object
+store per feature; bump `version` + provide `onupgradeneeded` for
+schema changes; degrade gracefully when IndexedDB is unavailable
+(`load` returns `null`); add a row above and a `SECURITY.md` §
+"Persisted user data" paragraph.
 
 ---
 
-## Adding a New File Format Renderer
+## Adding things
 
-1. Create `src/renderers/foo-renderer.js` with a `FooRenderer` class
-   exposing `static render(file, arrayBuffer, app)`.
-2. Add format detection in `src/renderer-registry.js` (+ a route in
-   `src/app/app-load.js` if the extension needs it).
-3. Add to `JS_FILES` in `scripts/build.py` (before `app-core.js`, after
-   `renderer-registry.js`).
-4. Add viewer CSS to `src/styles/viewers.css` if needed.
-5. Rebuild and regenerate codemap: `python make.py`.
-6. **Docs:** add the extension + capability to the formats table in
-   `FEATURES.md`; if it's a headline capability, also add it to the
-   compact table in `README.md`.
+Quick recipes. Always run `python make.py` after; stage only `src/`
+edits + regenerated `CODEMAP.md`.
 
----
+### File-format renderer
 
-## Adding a New YARA Rule
+1. `src/renderers/foo-renderer.js` exposing
+   `static render(file, arrayBuffer, app)`.
+2. Register in `src/renderer-registry.js` (+ route in
+   `src/app/app-load.js` if extension-driven).
+3. Add to `JS_FILES` in `scripts/build.py` (after `renderer-registry.js`,
+   before `app-core.js`).
+4. Viewer styles → `src/styles/viewers.css`.
+5. **Docs:** formats row in `FEATURES.md`; headline capability also in
+   `README.md`.
 
-1. Choose the appropriate `.yar` file under `src/rules/` by category.
-2. Add your rule; rebuild with `python make.py` (or `python scripts/build.py`).
-3. **Never insert comments in YARA rule files.** `scripts/build.py`
-   injects `// @category: <name>` lines during concatenation — those
-   are the only `//` lines the engine tolerates. Enforced by
-   `scripts/lint_yara.py` (runs as the `yara-lint` step in
-   `python make.py`).
-4. **Meta-key contract.** Every rule's `meta:` block uses the strict
-   whitelist below, in this order. `description` is required; the
-   rest are optional but, when present, must appear in this order
-   relative to each other. Any other key is rejected by the linter.
+### YARA rule
 
-   | Order | Key           | Required | Notes                                                              |
-   |---|-------------------|----------|--------------------------------------------------------------------|
-   | 1 | `description`     | yes      | One-line summary surfaced in the sidebar / Copy Analysis.          |
-   | 2 | `severity`        | no       | One of `info`, `low`, `medium`, `high`, `critical`.                |
-   | 3 | `category`        | no       | Free-form taxonomy tag (e.g. `defense-evasion`, `execution`).      |
-   | 4 | `mitre`           | no       | MITRE ATT&CK technique id, or `""` for "no mapping".               |
-   | 5 | `applies_to`      | no       | Engine-level format gate (see `YaraEngine.FORMAT_PREDICATES`).     |
+1. Append to the appropriate `src/rules/*.yar` (no `//` comments — the
+   linter rejects them; explanations belong in `meta:`).
+2. `meta:` keys are a strict whitelist in this order:
+   `description` (required) · `severity`
+   (`info|low|medium|high|critical`) · `category` · `mitre` ·
+   `applies_to`. Other keys are rejected. `python scripts/lint_yara.py
+   --fix` normalises order, strips comments, trims whitespace.
+3. **Docs:** add a row to `FEATURES.md`'s security-analysis table only
+   if the rule flags a **new class** of threat.
 
-   Reach for `python scripts/lint_yara.py --fix` if you've copy-pasted
-   a rule from upstream — it normalises meta order, strips comments,
-   and trims trailing whitespace in one pass. It will *not* silently
-   drop unknown meta keys (typo guard); fix those by hand.
-5. **Docs:** if the rule flags a **new class of threat** not already
-   covered, add a row to the security-analysis table in `FEATURES.md`.
-   Ordinary new rules within an existing category need no doc change.
+### Export format
 
----
+Toolbar **📤 Export** is a declarative menu in `src/app/app-ui.js`.
+Exporters are offline, sync (or `async` for `crypto.subtle` only), and
+default to the clipboard.
 
-## Adding a New Export Format
+1. Add `_buildXxx(model)` + `_exportXxx()` to the
+   `Object.assign(App.prototype, {...})` block. Reuse `_collectIocs`,
+   `_fileMeta`, `fileHashes`, `findings`, `_fileSourceRecord`,
+   `_copyToClipboard` + `_toast`, `_buildAnalysisText(Infinity)`. For
+   actual file output use `_downloadText/Bytes/Json` /
+   `_exportFilename` — **never call `URL.createObjectURL` directly**;
+   add a helper to `src/file-download.js`.
+2. Register in `_getExportMenuItems()` —
+   `{ id, icon, label, action }`. Prefix label with `Copy ` for
+   clipboard actions; `{ separator: true }` for dividers.
+3. The dispatcher in `_openExportMenu()` wraps every action in
+   try/catch + error toast.
+4. **Don't** vendor a new library (use `crypto.subtle` /
+   existing `_uuidv5()`), fabricate vendor-specific extensions (e.g.
+   `x_loupe_*` STIX properties), or relax CSP.
+5. **Docs:** column in `FEATURES.md § Exports`.
 
-The toolbar's **📤 Export** dropdown is driven by a declarative menu in
-`src/app/app-ui.js`. All exporters are offline, synchronous (or `async`
-+ `await` for `crypto.subtle` hashing only), and must never reach the
-network. **Default to the clipboard** — every menu item except
-`💾 Save raw file` writes to the clipboard.
+### Theme
 
-1. **Write the builder.** Add `_buildXxx(model)` + `_exportXxx()` to
-   the `Object.assign(App.prototype, {...})` block. Reuse:
-   - `this._collectIocs()` — normalised IOC list.
-   - `this._fileMeta`, `this.fileHashes`, `this.findings`.
-   - `this._fileSourceRecord()` — `{name,size,detectedType,magic,entropy,hashes{…}}`.
-   - `this._copyToClipboard(text)` + `this._toast('Xxx copied to clipboard')`.
-   - `this._buildAnalysisText(Infinity)` — unbudgeted plaintext report.
-   - `this._downloadText/Bytes/Json(...)` / `this._exportFilename(suffix, ext)`
-     — only when the output is genuinely a file. **Never call
-     `URL.createObjectURL` directly** — add a helper to
-     `src/file-download.js` instead.
-2. **Register the menu item.** Add an entry to
-   `_getExportMenuItems()` — `{ id, icon, label, action: () => this._exportXxx() }`.
-   Use `{ separator: true }` for dividers. Prefix the label with
-   `Copy ` when the action writes to the clipboard.
-3. **Wrap it.** The click dispatcher in `_openExportMenu()` wraps every
-   action in `try { … } catch (err) { console.error(…); this._toast('Export failed — see console', 'error'); }`.
+A theme is a token overlay — never selectors / layout / components.
 
-**Docs:** add a column to the format × contents matrix in
-`FEATURES.md § Exports`.
+1. `src/styles/themes/<id>.css` scoped to `body.theme-<id>`,
+   re-declaring only tokens from `src/styles/core.css` (accent, risk
+   palette, hairlines, panels, text, banners). Never use a hardcoded
+   hex / `rgba(...)` in `body.dark` — there's a token for every
+   surface.
+2. Register in `CSS_FILES` (`scripts/build.py`).
+3. Register in `THEMES` (`src/app/app-ui.js`) —
+   `{ id, label, icon, dark }`.
+4. Add the id to `THEME_IDS` in the FOUC bootstrap inside
+   `scripts/build.py`; also `DARK_THEMES` if dark.
+5. *(Optional)* map an engine in `THEME_ENGINES` (`src/app/app-bg.js`):
+   `penroseLight`, `networkDark`, `penrose`, `cuteKitties`,
+   `cuteHearts`, or `null`.
+6. **Docs:** `FEATURES.md` if shipped in the picker; `README.md` only
+   if promoted.
 
-**Do not:**
+The FOUC bootstrap stamps the saved theme class on `<body>` before
+first paint (or stashes on `<html>` + one-shot `MutationObserver` if
+`<body>` hasn't parsed yet). Fallback: saved `loupe_theme` → OS
+`prefers-color-scheme` → `'dark'`.
 
-- Pull in a new vendored library just for an export format — use
-  `crypto.subtle` for hashing, the existing `_uuidv5()` helper for UUIDs.
-- Fabricate vendor-specific custom extensions (e.g. `x_loupe_*` STIX
-  properties) — either map to a standard field or skip the IOC.
-- Add network calls, `eval`, `new Function`, or anything that would
-  require a CSP relaxation.
+### Vendored library (new or upgrade)
 
----
+1. Drop upstream bytes at `vendor/<name>.js` **unmodified**.
+2. SHA-256 it (`sha256sum` / `Get-FileHash -Algorithm SHA256`).
+3. New library: read & inline it in `scripts/build.py`.
+4. **Docs (required):** rotate the row in `VENDORED.md` — path,
+   version, licence, SHA-256, upstream URL. A vendor change without a
+   `VENDORED.md` change fails CI.
 
-## Adding a New Theme
+### Security-relevant default (CSP / parser limits / sandbox flags)
 
-All built-in themes are driven by the same set of CSS custom properties
-("design tokens") defined in `src/styles/core.css`. A new theme is a
-pure overlay — only re-defines tokens, never touches selectors / layout
-/ component styles.
-
-### The token contract
-
-Canonical tokens at the top of `src/styles/core.css`:
-
-| Token | Purpose |
-|---|---|
-| `--accent` / `--accent-rgb` / `--accent-hover` / `--accent-deep` | Primary brand colour. `--accent-rgb` is the **space-separated** RGB triplet for `rgb(var(--accent-rgb) / .12)` syntax |
-| `--risk-high` / `--risk-high-rgb` / `--risk-med` / `--risk-low` / `--risk-info` | Four-tier risk palette |
-| `--hairline-soft` / `--hairline` / `--hairline-strong` / `--hairline-bold` | Four-tier border palette |
-| `--panel-bg` / `--panel-bg-inset` / `--panel-bg-raised` / `--panel-bg-section` | Four-tier panel surface palette |
-| `--panel-border` / `--input-border` | Solid-colour borders |
-| `--input-bg` / `--row-hover` | Form control background; row/list hover tint |
-| `--text` / `--text-muted` / `--text-faint` | Three-tier foreground palette |
-| `--banner-warn-*` / `--banner-danger-*` / `--banner-info-*` / `--banner-ok-*` | Per-severity banner tints (`-bg`, `-text`, `-border`) |
-
-**Never reach for a hardcoded hex or `rgba(255, 255, 255, …)` in a
-`body.dark` rule** — there is a semantic token for every
-renderer-chrome surface.
-
-### Recipe
-
-1. **Create the overlay** — `src/styles/themes/<id>.css` scoped to
-   `body.theme-<id>`. Only re-declare tokens; never write
-   component-level selectors.
-2. **Register in `CSS_FILES`** in `scripts/build.py`.
-3. **Register in `THEMES`** — add `{ id, label, icon, dark }` to the
-   `THEMES` array at the top of `src/app/app-ui.js`.
-4. **Update the FOUC bootstrap** — add the new id to `THEME_IDS` in the
-   inline `<script>` in `scripts/build.py`. If dark, also add to
-   `DARK_THEMES`.
-5. **(Optional) pick a backdrop engine** — map your id in `THEME_ENGINES`
-   in `src/app/app-bg.js` to one of: `penroseLight`, `penroseDark`,
-   `cuteHearts`, `cuteKitties`, `penrose`, or `null`.
-6. **Rebuild and test** — `python make.py`, click through every tile in
-   ⚙ Settings → Theme.
-
-**Docs:** `FEATURES.md` if added to the picker row; `README.md` only
-if promoted to the compact theme list.
-
-### FOUC prevention
-
-The inline `<script>` in `scripts/build.py` (`<head>`, after the
-`<style>` block) applies the saved theme class to `<body>` before first
-paint. If `<body>` has not been parsed yet, the bootstrap stashes the
-classes on `<html>` and copies them across via a one-shot
-`MutationObserver`.
-
-First-boot fallback order:
-1. Saved `localStorage['loupe_theme']` (if a valid id).
-2. OS `prefers-color-scheme: light` → Light, else Dark.
-3. Hard-coded `'dark'` if both fail.
-
----
-
-## Adding or Upgrading a Vendored Library
-
-1. Place the upstream release bytes under `vendor/<name>.js` — **do not modify**.
-2. Recompute its SHA-256 (`sha256sum vendor/<file>` / `Get-FileHash -Algorithm SHA256`).
-3. For a **new** library, read & inline it in `scripts/build.py` alongside the other vendor reads.
-4. **Docs (required):** add or rotate the row in `VENDORED.md` — file path, version, licence, SHA-256, upstream URL. A vendor change without a `VENDORED.md` change is a broken commit.
-
----
-
-## Changing a Security-Relevant Default
-
-(CSP, parser limits, sandbox flags)
-
-1. Make the change in the appropriate source file (`scripts/build.py`
-   for CSP, `src/parser-watchdog.js` / `src/constants.js` for
-   `PARSER_LIMITS`, etc.).
-2. **Docs (required):** update the relevant row in `SECURITY.md` —
-   either the threat-model property table or the Security Design
-   Decisions table. Also note user-visible changes in `FEATURES.md`.
+1. Edit the appropriate source (`scripts/build.py` for CSP,
+   `src/parser-watchdog.js` / `src/constants.js` for `PARSER_LIMITS`).
+2. **Docs (required):** update the relevant row in `SECURITY.md`
+   (threat model or design decisions); flag user-visible changes in
+   `FEATURES.md`.
 
 ---
 
 ## How to Contribute
 
-1. Fork the repo.
-2. Make your changes in `src/`.
-3. Run `python make.py` — chains `verify_vendored.py` → `build.py` → `generate_codemap.py`.
-4. Test by opening `docs/index.html` in a browser (the file is
-   `.gitignore`d — build locally, never commit it).
-5. Stage only your `src/` edits and the regenerated `CODEMAP.md`.
-6. Submit a pull request.
-
-YARA rule submissions, new format parsers, and build-process improvements
-are especially welcome. The codebase is vanilla JavaScript (no frameworks,
-no bundlers beyond `scripts/build.py`) to keep it auditable.
+Fork → edit `src/` → `python make.py` → smoke-test the rebuilt
+`docs/index.html` → stage `src/` + regenerated `CODEMAP.md` only →
+PR. YARA rules, new parsers, and build improvements are especially
+welcome. Vanilla JS by design (no frameworks, no bundlers beyond
+`scripts/build.py`) to keep the bundle auditable.

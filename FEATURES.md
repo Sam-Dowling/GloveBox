@@ -11,13 +11,12 @@
 ## 📑 Contents
 
 - [Supported Formats](#-supported-formats)
-- [Renderer Capability Matrix](#-renderer-capability-matrix)
 - [Security Analysis](#-security-analysis)
 - [Timeline](#-timeline)
 - [User Interface](#-user-interface)
 - [Exports](#-exports)
-- [Example Files (guided tour)](#-example-files-guided-tour)
 
+Sample files for every supported format, with a guided tour, are in [`examples/README.md`](examples/README.md).
 
 ---
 
@@ -50,54 +49,11 @@ Extensionless and renamed files are auto-routed via magic-byte sniff, extension 
 | **Java** | `.jar` `.war` `.ear` · `.class` |
 | **Scripts** | `.wsf` `.wsc` `.wsh` (parsed) · `.vbs` `.ps1` `.bat` `.cmd` `.js` |
 | **Forensics** | `.evtx` · `.sqlite` `.db` (Chrome / Firefox / Edge history auto-detect) |
+| **Logs** | `.log` (Apache CLF default + syslog / Zeek / JSONL / CEF / LEEF / logfmt / Apache error sniff) · `.cef` `.leef` |
 | **Data** | `.csv` `.tsv` · `.json` `.ndjson` `.jsonl` (array-shaped → tabular grid) · `.iqy` (Internet Query) · `.slk` (Symbolic Link) |
 | **Images** | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` — preview + steganography / polyglot detection |
 | **SVG** | `.svg` — sandboxed preview + source view, deep SVG-specific security analysis |
 | **Catch-all** | *Any file* — line-numbered text view (encoding auto-detect, syntax highlighting toggle, soft-wraps minified single-line files) or hex dump for binary data |
-
----
-
-## 🧮 Renderer Capability Matrix
-
-A bird's-eye view of which cross-cutting features each format gives you.
-
-**Legend:** ✅ supported · ◐ partial / inline-only · — not applicable
-
-| Format | Verdict band | Recursive decoding | Click-to-focus | Drill-down |
-|---|:-:|:-:|:-:|:-:|
-| **PE / ELF / Mach-O** (`.exe` `.dll` `.so` `.dylib` `.bundle` …) | ✅ | ✅ | ✅ | ✅ resources, overlay |
-| **PDF** | — | ✅ | ◐ page-anchored | ✅ embedded files, JS, XFA |
-| **Email** (`.eml` `.msg`) | — | ✅ | ✅ | ✅ attachments |
-| **OneNote** (`.one`) | — | ✅ | ◐ | ✅ embedded blobs |
-| **Images** | — | ✅ EXIF / chunks / QR | — | — |
-| **HTML / SVG** | — | covered by XML walker | ✅ source toggle | — |
-| **Office** (OOXML / OLE2 / ODF) | — | — | ◐ per-sheet / VBA | ✅ VBA, embeds |
-| **RTF** | — | — | ✅ | ✅ OLE objects |
-| **Windows shell** (`.lnk` `.hta` `.wsf` `.inf` `.sct` `.reg` `.url`) | — | — | ✅ | — |
-| **Installers** (`.msi` `.msix` `.appx` `.application`) | — | — | ✅ | ✅ inner files, custom actions |
-| **Browser extensions** (`.crx` `.xpi`) | — | — | ✅ | ✅ manifest, scripts, icons |
-| **npm packages** | — | — | ✅ | ✅ `package/*` entries |
-| **Java** (`.jar` `.war` `.ear` `.class`) | — | — | ◐ per-class | ✅ class files, manifest |
-| **macOS scripts / plist** (`.applescript` `.scpt` `.jxa` `.plist`) | — | — | ✅ | — |
-| **macOS installers** (`.dmg` `.pkg` `.mpkg`) | — | — | — | ◐ partition / xar TOC |
-| **Certificates** (`.pem` `.der` `.crt` `.p12`) | — | — | — | — |
-| **OpenPGP** | — | — | — | — |
-| **EVTX** | — | ◐ per-row | — | — (Timeline grid) |
-| **SQLite** | — | — | ✅ | — |
-| **CSV / TSV** | — | ◐ per-cell | — | — (Timeline grid) |
-| **Log files** (Apache · syslog · Zeek · CEF · LEEF · logfmt · W3C / IIS / AWS ALB / ELB / CloudFront · Apache error_log) | — | ◐ per-row | — | — (Timeline grid) |
-| **JSONL / NDJSON / CloudTrail** (`.jsonl` `.ndjson` · `.json` `{"Records":[…]}` wrapped form · container logs · fluentd / vector / Loki sinks) | — | ◐ per-row | — | — (Timeline grid) |
-| **JSON** (`.json` — single document, non-CloudTrail) | — | — | ✅ | — |
-| **Archives** (`.zip` `.tar` `.gz` `.cab` `.iso`) | — | — | — | ✅ per-entry |
-| **Listing-only archives** (`.7z` `.rar`, encrypted DMG) | — | — | — | ◐ entries locked (no in-browser decoder) |
-| **Plaintext / scripts** (`.vbs` `.ps1` `.bat` `.js` `.cmd`) · catch-all | — | ✅ | ✅ | — |
-
-**Column meanings**
-
-- **Verdict band** — Tier-A summary banner above the file (one-line human verdict, risk score, anomaly chips). Currently PE / ELF / Mach-O only.
-- **Recursive decoding** — Loupe peels nested Base64 / hex / gzip / zlib / Base32 / XOR layers and surfaces every layer in the sidebar with the full lineage.
-- **Click-to-focus** — clicking an IOC or YARA hit in the sidebar scrolls the viewer to and highlights the matching string. ◐ where the view isn't backed by a single text plane (Office sheets, PDF pages, JAR classes) — clicks scroll to the right card / sheet / page but cannot land on a per-character highlight.
-- **Drill-down** — opens nested files (archive entries, attachments, decoded payloads, binary overlays / resources) as fresh top-level analyses with Back navigation.
 
 ---
 
@@ -111,9 +67,9 @@ A bird's-eye view of which cross-cutting features each format gives you.
 | **YARA rule engine** | 500+ default rules covering scripts, documents, binaries, archives, and network indicators; auto-scans every file on load. Drag any `.yar` file onto Loupe to extend detection — rules are validated, saved locally, and rescans are instant. |
 | **File hashes** | MD5, SHA-1, SHA-256 computed in-browser with one-click VirusTotal lookup. |
 | **Document search** | In-toolbar search with match highlighting, match counter, `Enter`/`Shift+Enter` navigation (`F` to focus). |
-| **Recursive deobfuscation** | Peels nested Base64 / hex / Base32 / gzip / zlib / deflate / single-byte XOR layers; resolves PowerShell `$var` / `$env:` / hashtable indirection so `&($a+$b) $c` invocations surface as concrete commands; defangs obfuscator.io / `javascript-obfuscator` string-array lookups feeding `eval` / `Function` / `setTimeout` sinks; handles JS `\xHH` hex escapes, `String.fromCharCode` chains, reverse-string transforms, token-spaced obfuscation (`W r i t e - O u t p u t`), literal string-concat assembly, and identifier-split-by-comments. The sidebar walks the full nested-payload tree, with coloured hop pills showing the lineage and a per-layer size-delta row. |
-| **Decoded-payload YARA gate** | Every retained decoded layer is re-scanned against rules tagged `applies_to = "decoded-payload"` (script obfuscation, encoded-shellcode prologues, PowerShell / WSH / VBS / Python deobfuscation patterns). Matches surface as evidence chips on the encoded-content card. Additive only — never removes findings; bypassed in bruteforce mode. |
-| **Decode selection** | Click-drag any text in a content viewer to surface a floating **🔍 Decode selection** chip. Pipes the highlighted bytes through an aggressive variant of the deobfuscator — lower thresholds, deeper recursion, every Caesar shift, multi-byte XOR keys with crib-driven scoring, and an interleaved-separator decoder for `$\x00W\x00C\x00=\x00…`-style obfuscations. |
+| **Recursive deobfuscation** | Peels nested Base64 / hex / Base32 / gzip / zlib / deflate / single-byte XOR layers and PowerShell / JavaScript obfuscation shapes (variable indirection, string-array lookups, `String.fromCharCode` chains, token-spaced and concat-split identifiers). The sidebar shows the full nested-payload tree with hop pills and per-layer size deltas. |
+| **Decoded-payload YARA gate** | Every retained decoded layer is re-scanned against rules tagged `applies_to = "decoded-payload"`. Matches surface as evidence chips on the encoded-content card. Additive only — never removes findings; bypassed in bruteforce mode. |
+| **Decode selection** | Click-drag any text in a content viewer to surface a floating **🔍 Decode selection** chip — pipes the highlighted bytes through an aggressive variant of the deobfuscator (lower thresholds, deeper recursion, multi-byte XOR brute-force, interleaved-separator decoder). |
 | **Document metadata** | Author, title, dates, revision count extracted from `docProps/core.xml` (and equivalents). |
 
 ### IOC extraction
@@ -213,13 +169,6 @@ Accepts three input shapes — an `npm pack` gzip tarball (`.tgz`), a bare `pack
 | **npm YARA coverage** | Rules for lifecycle-hook downloaders, hook `eval` / `child_process` chains, repo-exfil / bundle-stealer staging, `.npmrc` token exfil, env-var / wallet / clipboard harvesting, webhook beacons, obfuscated code, native-binary droppers, typosquat lookalike strings, bin shell-wrappers, lockfile non-registry `resolved`. |
 | **Inner-file drill-down** | For `.tgz` tarballs the archive browser lists every `package/*` entry; click any file to re-analyse it (manifest → JSON viewer, JS → script analysis, etc.). |
 
-### Forensics
-
-| Capability | What you get |
-|---|---|
-| **EVTX analysis** | Parses Windows Event Log files; extracts Event ID, Level, Provider, Channel, Computer, timestamps, and EventData; flags suspicious events (4688, 4624 / 4625, 1102, 7045, 4104); extracts IOCs: usernames, hostnames, IPs, process paths, command lines, hashes, URLs, file / UNC paths. Event IDs get a plain-English tooltip in the grid and a summary + MITRE ATT&CK pill in the row-details drawer. Copy / Download as CSV. |
-| **SQLite / browser history** | Auto-detects Chrome / Edge / Firefox history databases; extracts URLs, titles, visit counts, timestamps. Browser history files open in Timeline mode with histogram, scrubber, query bar, and stacking. Generic table browser for non-history SQLite files. Copy / Download as CSV. |
-
 ### Crypto
 
 | Capability | What you get |
@@ -255,7 +204,7 @@ ZIP listings additionally surface per-entry risk signals classic archive viewers
 
 ## 📈 Timeline
 
-Every CSV / TSV / EVTX / `.log` / `.jsonl` / `.ndjson` / `.cef` / `.leef` file — and SQLite browser history databases (Chrome / Edge / Firefox) — opens directly in Timeline: scrubber, stacked-bar chart, virtual grid, and per-column top-value cards on one page. Extensionless drops are routed by magic-byte / text sniff. Generic (non-browser-history) SQLite databases use the tabbed-grid viewer.
+Every `.csv` / `.tsv` / `.evtx` / `.log` / `.jsonl` / `.ndjson` / `.cef` / `.leef` file — and SQLite browser history databases (Chrome / Edge / Firefox) — opens directly in Timeline: scrubber, stacked-bar chart, virtual grid, and per-column top-value cards on one page. Extensionless drops are routed by magic-byte / text sniff. Generic (non-browser-history) SQLite databases use the tabbed-grid viewer.
 
 `.log` files are dispatched by content sniff. Each format yields a stable column projection so filtering, sorting, and the histogram stack column behave consistently across vendor variants.
 
@@ -307,7 +256,7 @@ Every CSV / TSV / EVTX / `.log` / `.jsonl` / `.ndjson` / `.cef` / `.leef` file �
 |---|---|
 | **Hosted-mode privacy notice** | When Loupe is served via HTTP/HTTPS (e.g. GitHub Pages) instead of opened locally from `file://`, an amber-tinted drop-zone warning and a floating bar remind you to [download Loupe](https://github.com/Loupe-tools/Loupe/releases/latest/download/loupe.html) for full offline privacy. The bar is dismissable (persisted); the drop-zone tint stays as a gentle reminder. Your files never leave the browser either way. |
 | **Six-theme picker** | Light, Dark (default), Midnight OLED, Solarized, Mocha, Latte — chosen from the ⚙ Settings tile grid. Your choice persists and is applied before first paint so you never see a flash of the wrong palette. First-boot users are matched to their OS `prefers-color-scheme`. |
-| **Subtle animated backdrop** | Per-theme drop-zone backdrop: an aperiodic Penrose rhombic tiling on Light, a slow wandering-node network on Dark, a whisper-low Penrose tiling on Solarized, floating hearts on Mocha, floating kittens on Latte, and nothing at all on Midnight (pure-black stays pure-black for OLED). The animation is cosmetic only — it lives behind every chrome surface, hides the moment a file loads, and is suppressed entirely under `prefers-reduced-motion`. |
+| **Subtle animated backdrop** | Per-theme drop-zone backdrop: an aperiodic Penrose rhombic tiling on Light, a slow wandering-node network on Dark, a whisper-low Penrose tiling on Solarized, floating kittens on Mocha, floating hearts on Latte, and nothing at all on Midnight (pure-black stays pure-black for OLED). The animation is cosmetic only — it lives behind every chrome surface, hides the moment a file loads, and is suppressed entirely under `prefers-reduced-motion`. |
 | **Settings / Nicelists / Help dialog** | `⚙` toolbar button (or `,` for Settings, `?` / `H` for Help) — a unified three-tabbed modal. ⚙ Settings carries the theme picker and the Summarize-size picker (Default / Large / Unlimited); 🛡 Nicelists toggles the built-in Default Nicelist and manages user-defined custom lists (create / import CSV-JSON-TXT / edit / export / delete); ? Help lists every keyboard shortcut and the offline / release links. |
 | **Floating zoom** | 50 – 200 % zoom via a floating control that stays out of the way. |
 | **Click-and-drag panning** | Grab and drag to pan around rendered documents. |
@@ -317,7 +266,7 @@ Every CSV / TSV / EVTX / `.log` / `.jsonl` / `.ndjson` / `.cef` / `.leef` file �
 | **Archive browser** | Shared collapsible / searchable / sortable tree used by every archive-style renderer (ZIP, JAR / WAR / EAR, MSIX / APPX, CRX / XPI, TAR / `.tar.gz`, ISO / IMG, PKG / MPKG, CAB, RAR, 7z). Tree view with child counts and one-click drill-down; flat sortable table view; instant filter box; per-entry risk badges (executable, double-extension, ZipCrypto lock, tar-symlink target). |
 | **Keyboard shortcuts** | `Ctrl+Enter` Copy ⚡ Summary to clipboard · `S` sidebar · `Y` YARA dialog · `N` Nicelists · `,` Settings · `?` / `H` Help · `F` search document · `Ctrl+C` copy raw file (when nothing is selected) · `Ctrl+V` paste file for analysis · `Esc` close dialog / clear search. **Archive browser:** `/` focus filter · `↑ ↓` navigate rows · `← →` collapse / expand folder · `Enter` / `Space` open selected file. |
 | **Smart whole-token select** | Double-click in any monospace viewer selects the entire non-whitespace token — expanding past `/ . : = - _` and across visual line wraps — up to the nearest whitespace boundary. Great for URLs, hashes, base64 blobs, file paths, registry keys, PE imports, x509 fingerprints. |
-| **Tabular grid (CSV / TSV / EVTX / XLSX / SQLite / JSON-array)** | Fixed-row virtual scroller renders 150 000-row files without stutter. Streaming parse paints the first 1 000 rows in ~200 ms and fills the rest in the background with a progress chip. |
+| **Tabular grid (CSV / TSV / EVTX / XLSX / SQLite / JSON-array)** | Fixed-row virtual scroller renders million-row files without stutter. Streaming parse paints the first 1 000 rows immediately and fills the rest in the background with a progress chip. |
 | **Row-details drawer** | Click any row to open a resizable right-hand drawer with per-column key/value view; drawer width persists per-browser and can be dragged almost to the full viewport width for wide EventData payloads. A top-bar search box (or `Ctrl+F` while the drawer is focused) smooth-scrolls and highlights matches within the drawer, with `Enter` / `Shift+Enter` to cycle hits and `Esc` to clear. JSON cells render as a first-class collapsible tree — every node has a ＋ pick button that promotes the leaf (or subtree) to a new virtual column in the grid. |
 | **Column header menu** | Click any column header for Sort asc / desc / clear, Copy column (tab-separated to clipboard), Hide column, **Show hidden columns…** (when any are hidden), and **Top values…** — a mini bar chart of the 50 most frequent values with one-click filter-to-value. **Ctrl+Click** (or ⌘-click) any header is a shortcut for Hide; a `⊘ N hidden` chip in the filter bar lets you re-reveal them one-by-one or all at once. |
 | **Drag-to-reorder columns (Timeline)** | Grab any column header in the Timeline grid and drag it to a new position; a 2 px accent-coloured bar shows the drop slot. The arrangement persists per-file. Sort, hide, top-values, GeoIP / ASN enrichment, and right-click filters all use the original column index, so behaviour stays stable regardless of the visible order. |
@@ -395,64 +344,3 @@ The size is user-configurable in ⚙ Settings — **Default** (~16 K tokens / 64
 
 IOCs with Loupe severity `info` always force `to_ids: false` regardless of type.
 
----
-
-## 🎬 Example Files (guided tour)
-
-The [`examples/`](examples/) directory contains sample files for every supported format, grouped by category. Headline samples follow; each subdirectory has more.
-
-### Encoded payloads ([`examples/encoded-payloads/`](examples/encoded-payloads/))
-
-- [`nested-double-b64-ip.txt`](examples/encoded-payloads/nested-double-b64-ip.txt) — double Base64-encoded PowerShell with hidden C2 IP
-- [`encoded-zlib-base64.txt`](examples/encoded-payloads/encoded-zlib-base64.txt) — nested encoded content with compressed payloads
-- [`mixed-obfuscations.txt`](examples/encoded-payloads/mixed-obfuscations.txt) — combined obfuscation techniques
-
-### Office, PDF & email
-
-- [`office/example.docm`](examples/office/example.docm) — macro-enabled Word document with AutoOpen + Shell VBA
-- [`office/example.xlsm`](examples/office/example.xlsm) — macro-enabled Excel workbook
-- [`pdf/javascript-example.pdf`](examples/pdf/javascript-example.pdf) — PDF with `/OpenAction` triggering embedded JavaScript
-- [`email/phishing-example.eml`](examples/email/phishing-example.eml) — phishing email with SPF/DKIM/DMARC failures and a tracking pixel
-
-### Windows scripts, shortcuts & installers
-
-- [`windows-scripts/example.lnk`](examples/windows-scripts/example.lnk) — Windows shortcut with suspicious target path
-- [`windows-scripts/example.hta`](examples/windows-scripts/example.hta) — HTML Application with embedded scripts
-- [`windows-scripts/ps-obfuscation.ps1`](examples/windows-scripts/ps-obfuscation.ps1), [`encoded-powershell.bat`](examples/windows-scripts/encoded-powershell.bat) — obfuscated PowerShell / cmd
-- [`windows-installers/example.msi`](examples/windows-installers/example.msi) — Windows Installer (CustomActions, embedded CAB, Authenticode)
-- [`windows-installers/malicious-example.application`](examples/windows-installers/malicious-example.application) — ClickOnce deployment manifest with hijack indicators
-
-### Forensics & native binaries
-
-- [`forensics/example-security.evtx`](examples/forensics/example-security.evtx) — Windows Security log (auto-flags 4688 / 4624 / 1102) — opens straight in Timeline
-- [`forensics/chromehistory-example.sqlite`](examples/forensics/chromehistory-example.sqlite) — Chrome browsing history → Timeline
-- [`pe/signed-example.dll`](examples/pe/signed-example.dll) — Authenticode-signed DLL with PE analysis + cert chain
-- [`pe/tls-callback.exe`](examples/pe/tls-callback.exe) — minimal PE32 with a TLS callback (T1546.009)
-- [`pe/rcdata-dropper.exe`](examples/pe/rcdata-dropper.exe) — PE with a second PE embedded as a resource (T1027.009)
-- [`pe/overlay-post-authenticode.exe`](examples/pe/overlay-post-authenticode.exe) — signed PE with bytes appended *past* the Authenticode blob — flags **T1553.002 (critical)**
-- [`elf/example`](examples/elf/example) — Linux ELF with symbols, segments, security checks
-- [`macos-system/example.dylib`](examples/macos-system/example.dylib) — Mach-O with load commands and code signature
-
-### macOS scripts, system & installers
-
-- [`macos-scripts/example.applescript`](examples/macos-scripts/example.applescript) — AppleScript source with macOS-specific security analysis
-- [`macos-system/example.plist`](examples/macos-system/example.plist) — XML property list with LaunchAgent / persistence detection
-- [`macos-system/example.dmg`](examples/macos-system/example.dmg) — Apple Disk Image with partition + `.app` enumeration
-- [`macos-system/example.pkg`](examples/macos-system/example.pkg) — flat PKG (xar) installer with pre/post-install script flagging
-
-### Crypto, web, Java & images
-
-- [`crypto/example-selfsigned.pem`](examples/crypto/example-selfsigned.pem) — self-signed X.509 certificate with suspicious SANs
-- [`crypto/example-with-key.pem`](examples/crypto/example-with-key.pem) — certificate with embedded private key + weak 1024-bit RSA key
-- [`crypto/example.pgp`](examples/crypto/example.pgp), [`example.asc`](examples/crypto/example.asc) — binary + ASCII-armored OpenPGP packet streams
-- [`web/example-malicious.svg`](examples/web/example-malicious.svg) — SVG with embedded scripts, `<foreignObject>` phishing form
-- [`java/example.jar`](examples/java/example.jar) — Java archive with class files and constant pool analysis
-- [`images/polyglot-example.png`](examples/images/polyglot-example.png) — PNG with a ZIP appended past the IEND marker
-
-### Browser extensions & archives
-
-- [`browser-extensions/suspicious-chrome.crx`](examples/browser-extensions/suspicious-chrome.crx) — `nativeMessaging`, `<all_urls>`, `unsafe-eval` CSP, non-store update URL
-- [`browser-extensions/ublock-example.xpi`](examples/browser-extensions/ublock-example.xpi) — real-world uBlock Origin XPI
-- [`archives/recursive-example.zip`](examples/archives/recursive-example.zip) — nested-archive ZIP (drill-down depth)
-- [`archives/encrypted-example.zip`](examples/archives/encrypted-example.zip) — ZipCrypto-encrypted entries
-- [`archives/example.iso`](examples/archives/example.iso) — ISO 9660 with clickable filesystem drill-down

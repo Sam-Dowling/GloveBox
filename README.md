@@ -31,8 +31,8 @@ No server, no uploads, no tracking — just drop a file and inspect it.
 SOC analysts, MDR responders, phishing teams, and DFIR practitioners need to inspect suspicious files **without uploading them anywhere**. Loupe runs entirely in your browser — nothing ever leaves your machine.
 
 - **Zero network, zero install.** A strict [Content-Security-Policy](SECURITY.md#full-content-security-policy) blocks every outbound request. One HTML file, double-click to open, works on any OS.
-- **Forensics-grade depth in a triage tool.** [50+ formats](FEATURES.md#-supported-formats) with format-specific parsers, [recursive deobfuscation](FEATURES.md#-security-analysis), 500+ bundled YARA rules, and one-click STIX / MISP / clipboard export.
-- **A timeline tool too.** CSV, TSV, EVTX, log files, and browser-history SQLite open in the [📈 Timeline viewer](FEATURES.md#-timeline) — virtual grid for 150 K rows, scrubber + stacked-bar histogram, DSL query language, EVTX detections with MITRE ATT&CK pivots.
+- **Forensics-grade depth in a triage tool.** [50+ formats](FEATURES.md#-supported-formats) with format-specific parsers, recursive deobfuscation, 500+ bundled YARA rules, and one-click STIX / MISP / clipboard export.
+- **A timeline tool too.** CSV, TSV, EVTX, log files, and browser-history SQLite open in the [📈 Timeline viewer](FEATURES.md#-timeline) — virtual grid for 1 M rows, scrubber + stacked-bar histogram, DSL query language, EVTX detections with MITRE ATT&CK pivots.
 - **Verifiable supply chain.** Every release is [Sigstore-signed with SLSA v1.0 build provenance](SECURITY.md#verify-your-download), reproducible from source, and ships a CycloneDX SBOM.
 
 ---
@@ -53,33 +53,22 @@ SOC analysts, MDR responders, phishing teams, and DFIR practitioners need to ins
 
 ## 🎯 When to reach for Loupe
 
-- **Abuse-mailbox triage** — drop a `.eml` or `.msg`; headers, SPF/DKIM/DMARC verdicts, tracking pixels, and embedded URLs are all inspectable. Anchors are [rendered inert](FEATURES.md#-user-interface) so a hostile URL can't be navigated to by accident.
-- **ClickFix / `osascript` paste** — paste an obfuscated one-liner with `Ctrl+V`. Loupe peels every nested Base64 / hex / gzip / zlib / XOR layer and shows the [full decode lineage](FEATURES.md#-security-analysis), with C2 URLs, hashes, and paths exportable as MISP / STIX attributes.
-- **Host-triage timeline** — drop a `.evtx` from live response to auto-flag 4688 / 4624 / 1102 / 4104 with MITRE ATT&CK pills and a [Detections + Entities sidebar](FEATURES.md#-timeline). Browser `History.sqlite` opens into the same timeline.
+- **Abuse-mailbox triage** — drop a `.eml` or `.msg`; headers, SPF/DKIM/DMARC verdicts, tracking pixels, and embedded URLs are all inspectable, with anchors rendered inert so a hostile URL can't be navigated to by accident.
+- **ClickFix / `osascript` paste** — paste an obfuscated one-liner with `Ctrl+V`; Loupe peels every nested Base64 / hex / gzip / zlib / XOR layer and surfaces the IOCs.
+- **Host-triage timeline** — drop a `.evtx` to auto-flag 4688 / 4624 / 1102 / 4104 with MITRE ATT&CK pills. Browser `History.sqlite` opens into the same timeline.
 - **Airgap / SCIF analyst VM** — single HTML, zero network, usable where VirusTotal and Any.Run are off-limits.
-- **Detection-content authoring** — drag a candidate `.yar` onto Loupe to validate it against your sample corpus before promoting it to production.
 
 ---
 
 ## 🛡 Supported Formats
 
-Office, PDF, email, web, archives, disk images, every flavour of Windows installer (MSI / MSIX / ClickOnce), Linux ELF, macOS Mach-O / DMG / PKG / `.app`, certificates, OpenPGP, Java, browser extensions, npm packages, EVTX, SQLite, plus a hex / text catch-all for anything else. Magic-byte sniffing means an extensionless or renamed file still lands on the right renderer.
-
-**Full reference with per-format capabilities → [FEATURES.md § Supported Formats](FEATURES.md#-supported-formats).**
+Office, PDF, email, archives, native binaries (PE / ELF / Mach-O), Windows installers, macOS `.app` / `.dmg` / `.pkg`, certificates, OpenPGP, Java, browser extensions, npm packages, EVTX, SQLite, and 30+ more. Extensionless and renamed files are routed by magic-byte sniff. Full reference: **[FEATURES.md § Supported Formats](FEATURES.md#-supported-formats)**.
 
 ---
 
 ## 🎬 Try It Yourself
 
-Drop one of these into Loupe to see it in action — the [`examples/`](examples/) directory has many more.
-
-- [`examples/encoded-payloads/nested-double-b64-ip.txt`](examples/encoded-payloads/nested-double-b64-ip.txt) — double Base64 hiding a C2 IP
-- [`examples/email/phishing-example.eml`](examples/email/phishing-example.eml) — SPF/DKIM/DMARC failures + tracking pixel
-- [`examples/forensics/example-security.evtx`](examples/forensics/example-security.evtx) — Windows security log opens straight into the Timeline viewer (auto-flags 4688 / 4624 / 1102)
-- [`examples/pe/signed-example.dll`](examples/pe/signed-example.dll) — Authenticode-signed DLL with PE analysis + cert chain
-- [`examples/web/example-malicious.svg`](examples/web/example-malicious.svg) — script injection + `foreignObject` phishing form
-
-Full guided tour: **[FEATURES.md → Example Files](FEATURES.md#-example-files-guided-tour)**.
+The [`examples/`](examples/) directory has a sample file for every supported format — see [`examples/README.md`](examples/README.md) for a guided tour.
 
 ---
 
@@ -94,9 +83,9 @@ Six built-in themes, selectable from the **⚙ Settings** dialog — your choice
     <td align="center"><img src="screenshots/midnight_hero.png" alt="Loupe — Midnight OLED theme" width="260"><br><b>🌑 Midnight OLED</b></td>
   </tr>
   <tr>
-    <td align="center"><img src="screenshots/solarized_hero.png" alt="Loupe — Solarized theme" width="260"><br><b>🌅 Solarized</b></td>
-    <td align="center"><img src="screenshots/mocha_hero.png" alt="Loupe — Mocha theme" width="260"><br><b>🌙 Mocha</b></td>
-    <td align="center"><img src="screenshots/latte_hero.png" alt="Loupe — Latte theme" width="260"><br><b>☕ Latte</b></td>
+    <td align="center"><img src="screenshots/solarized_hero.png" alt="Loupe — Solarized theme" width="260"><br><b>🟡 Solarized</b></td>
+    <td align="center"><img src="screenshots/mocha_hero.png" alt="Loupe — Mocha theme" width="260"><br><b>🌺 Mocha</b></td>
+    <td align="center"><img src="screenshots/latte_hero.png" alt="Loupe — Latte theme" width="260"><br><b>🍵 Latte</b></td>
   </tr>
 </table>
 
