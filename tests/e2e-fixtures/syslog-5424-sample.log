@@ -1,0 +1,15 @@
+<34>1 2024-10-15T22:14:15.003Z mymachine.example.com su - ID47 - 'su root' failed for lonvick on /dev/pts/8
+<13>1 2024-10-15T22:14:16.123Z host01.example.com sshd 4567 - - Accepted publickey for admin from 10.0.0.42 port 51234 ssh2
+<13>1 2024-10-15T22:14:17.000Z host01.example.com sshd 4567 - - pam_unix(sshd:session): session opened for user admin by (uid=0)
+<14>1 2024-10-15T22:14:18.500Z host02.example.com kernel - - [exa@32473 cpu="2"] CPU2: Core temperature above threshold
+<11>1 2024-10-15T22:14:19.001Z host02.example.com cron 7890 - - (root) CMD (/usr/sbin/logrotate /etc/logrotate.conf)
+<165>1 2024-10-15T22:14:20.000003-07:00 192.0.2.13 myproc 8710 - [exampleSDID@32473 iut="3" eventSource="Application" eventID="1011"] Application event log entry: status=ok
+<38>1 2024-10-15T22:14:21.250Z fw01.example.com firewall - - [exa@1 src="10.0.0.42" dst="192.0.2.13" proto="tcp"] Allowed connection
+<11>1 2024-10-15T22:14:22.000Z host03.example.com nginx 1234 ID99 [origin@1 ip="192.0.2.99"] GET /admin HTTP/1.1 401 1024
+<13>1 2024-10-15T22:14:23.500Z host03.example.com nginx 1234 ID100 - GET /index.html HTTP/1.1 200 4096
+<14>1 2024-10-15T22:14:24.000Z host04.example.com app - - [a@1 user="alice"][b@1 action="login"] User logged in
+<11>1 2024-10-15T22:14:25.000Z host04.example.com app - - [a@1 user="alice" path="C:\\Users\\alice"] Profile loaded
+<165>1 2024-10-15T22:14:26.000Z mymachine.example.com evntslog - ID47 [exampleSDID@32473 iut="3" eventSource="Application" eventID="1011"] An application event log entry...
+<14>1 2024-10-15T22:14:27.000Z host05.example.com - - - - Bare host advertisement
+<14>1 2024-10-15T22:14:28.000Z - app - - - All-host-NIL example
+<11>1 2024-10-15T22:14:29.000Z host06.example.com sshd 4567 - - Failed password for invalid user backup from 10.0.0.42 port 41234 ssh2

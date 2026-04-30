@@ -165,6 +165,21 @@ extendApp({
       }
       if (head.length >= 2 && hits / head.length >= 0.6) return 'log';
     }
+    // Syslog RFC 5424 sniff — runs BEFORE 3164 because the 5424
+    // shape (`<PRI>VER ` with a digit version field) is a strict
+    // superset of 3164's `<PRI>` prefix and we want the more specific
+    // match to win. The discriminator is the digit-version+space
+    // immediately after `>`; 3164 has a 3-letter month token there
+    // instead, so the two regexes never both match the same line.
+    const _SYSLOG5424_LINE_RE = /^<\d{1,3}>\d{1,2}\s\S/;
+    {
+      const head = lines.slice(0, 5);
+      let hits = 0;
+      for (let i = 0; i < head.length; i++) {
+        if (_SYSLOG5424_LINE_RE.test(head[i])) hits++;
+      }
+      if (head.length >= 2 && hits / head.length >= 0.6) return 'syslog5424';
+    }
     // Syslog RFC 3164 sniff. The `<PRI>MMM DD HH:MM:SS host …` shape
     // is essentially a magic prefix — there is no other format in the
     // wild that combines `<\d{1,3}>` with a 3-letter month, day, and
@@ -344,7 +359,7 @@ extendApp({
       let workerKind = null;
       if (ext === 'evtx') workerKind = 'evtx';
       else if (ext === 'csv' || ext === 'tsv' || ext === 'log'
-            || ext === 'syslog3164') workerKind = 'csv';
+            || ext === 'syslog3164' || ext === 'syslog5424') workerKind = 'csv';
       else if (ext === 'sqlite' || ext === 'db') workerKind = 'sqlite';
 
       if (workerKind && window.WorkerManager
@@ -500,7 +515,7 @@ extendApp({
           // `timeline.worker.js::_parseCsv`). Structured-log loads
           // also pass `fileLastModified` so the parser can infer the
           // year for RFC 3164 timestamps deterministically.
-          const _structuredLog = (ext === 'syslog3164');
+          const _structuredLog = (ext === 'syslog3164' || ext === 'syslog5424');
           const opts = (workerKind === 'csv')
             ? { explicitDelim: ext === 'tsv' ? '\t'
                   : (ext === 'log' ? ' ' : null),
@@ -640,7 +655,7 @@ extendApp({
           const explicit = ext === 'tsv' ? '\t' : (ext === 'log' ? ' ' : null);
           view = await TimelineView.fromCsvAsync(
             file, buffer, explicit, ext === 'log' ? 'log' : null);
-        } else if (ext === 'syslog3164') {
+        } else if (ext === 'syslog3164' || ext === 'syslog5424') {
           // Structured-log fallback — mirrors the worker's
           // `_parseStructuredLog` for environments where workers
           // can't spawn (Firefox `file://`).

@@ -220,8 +220,9 @@ function _tlCanonicalLogColumns(width) {
 
 // ── Syslog (RFC 3164) helpers — worker-side ────────────────────────────────
 //
-// Mirrors `_tlDecodePri`, `_tlInferYear`, `_tlTokenizeSyslog3164` and the
-// `_TL_SYSLOG3164_COLS` constant in `src/app/timeline/timeline-helpers.js`.
+// Mirrors `_tlDecodePri`, `_tlInferYear`, `_tlTokenizeSyslog3164`,
+// `_tlTokenizeSyslog5424` and the `_TL_SYSLOG{3164,5424}_COLS` constants
+// in `src/app/timeline/timeline-helpers.js`.
 // Helpers must live here too because the main-bundle helpers file isn't
 // concatenated into the worker bundle. **Keep in lockstep with the
 // canonical implementation.** The unit tests in
@@ -324,3 +325,74 @@ function _tlTokenizeSyslog3164(line, fileLastModifiedMs) {
 }
 const _TL_SYSLOG3164_COLS = ['Timestamp', 'Severity', 'Facility', 'Host',
                              'Program', 'PID', 'Message'];
+
+// ── RFC 5424 mirror ──
+// Canonical implementation lives in
+// `src/app/timeline/timeline-helpers.js::_tlTokenizeSyslog5424`.
+// Cross-realm parity is enforced by `tests/unit/timeline-syslog-5424.test.js`.
+function _tlTokenizeSyslog5424(line, _fileLastModifiedMs) {
+  if (!line) return null;
+  if (line.charCodeAt(0) === 0xFEFF) line = line.slice(1);
+  const m = /^<(\d{1,3})>(\d{1,2})\s/.exec(line);
+  if (!m) return null;
+  const pri = +m[1];
+  if (pri < 0 || pri > 191) return null;
+  let i = m[0].length;
+  const nextToken = () => {
+    if (i >= line.length) return '';
+    const sp = line.indexOf(' ', i);
+    const tok = sp === -1 ? line.slice(i) : line.slice(i, sp);
+    i = sp === -1 ? line.length : sp + 1;
+    return tok === '-' ? '' : tok;
+  };
+  const timestamp = nextToken();
+  const host      = nextToken();
+  const app       = nextToken();
+  const procid    = nextToken();
+  const msgid     = nextToken();
+  let sd = '';
+  if (i < line.length) {
+    if (line.charCodeAt(i) === 0x2D) {
+      i += 1;
+      if (i < line.length && line.charCodeAt(i) === 0x20) i += 1;
+      sd = '';
+    } else if (line.charCodeAt(i) === 0x5B) {
+      const sdStart = i;
+      while (i < line.length && line.charCodeAt(i) === 0x5B) {
+        i += 1;
+        let inQuote = false;
+        while (i < line.length) {
+          const c = line.charCodeAt(i);
+          if (inQuote) {
+            if (c === 0x5C && i + 1 < line.length) { i += 2; continue; }
+            if (c === 0x22) inQuote = false;
+            i += 1;
+            continue;
+          }
+          if (c === 0x22) { inQuote = true; i += 1; continue; }
+          if (c === 0x5D) { i += 1; break; }
+          i += 1;
+        }
+      }
+      sd = line.slice(sdStart, i);
+      if (i < line.length && line.charCodeAt(i) === 0x20) i += 1;
+    }
+  }
+  let msg = line.slice(i);
+  if (msg.charCodeAt(0) === 0xFEFF) msg = msg.slice(1);
+  const decoded = _tlDecodePri(pri);
+  return [
+    timestamp,
+    decoded ? decoded.severityName : '',
+    decoded ? decoded.facilityName : '',
+    host,
+    app,
+    procid,
+    msgid,
+    sd,
+    msg,
+  ];
+}
+const _TL_SYSLOG5424_COLS = ['Timestamp', 'Severity', 'Facility', 'Host',
+                             'App', 'ProcID', 'MsgID', 'StructuredData',
+                             'Message'];

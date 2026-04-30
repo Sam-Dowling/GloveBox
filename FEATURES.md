@@ -85,7 +85,7 @@ A bird's-eye view of which cross-cutting features each format gives you.
 | **EVTX** | — | ◐ per-row | — | — (Timeline grid) |
 | **SQLite** | — | — | ✅ | — |
 | **CSV / TSV** | — | ◐ per-cell | — | — (Timeline grid) |
-| **Log files** (`.log` Apache CLF · syslog RFC 3164) | — | ◐ per-row | — | — (Timeline grid) |
+| **Log files** (`.log` Apache CLF · syslog RFC 3164 · syslog RFC 5424) | — | ◐ per-row | — | — (Timeline grid) |
 | **JSON** (`.json` `.ndjson` `.jsonl`) | — | — | ✅ | — |
 | **Archives** (`.zip` `.tar` `.gz` `.cab` `.iso`) | — | — | — | ✅ per-entry |
 | **Listing-only archives** (`.7z` `.rar`, encrypted DMG) | — | — | — | ◐ entries locked (no in-browser decoder) |
@@ -256,7 +256,7 @@ ZIP listings additionally surface per-entry risk signals classic archive viewers
 
 Every CSV / TSV / EVTX / `.log` file — and SQLite browser history databases (Chrome / Edge / Firefox) — including extensionless drops identified by magic bytes or text sniffing — opens directly in Timeline: scrubber, stacked-bar chart, virtual grid, and per-column top-value cards on one page. No mode toggle, no threshold — these formats always route to Timeline. Generic (non-browser-history) SQLite databases use the tabbed-grid viewer.
 
-`.log` files dispatch by content sniff: Apache / Nginx Common Log Format (the bracketed `[DD/Mon/YYYY:HH:MM:SS ±ZZZZ]` token) yields the canonical 9-column Combined / 7-column Common projection; Syslog RFC 3164 (`<PRI>MMM DD HH:MM:SS host program[pid]: message`) yields a 7-column projection (Timestamp · Severity · Facility · Host · Program · PID · Message) with the year inferred from the file's last-modified time using a 30-day future-roll heuristic.
+`.log` files dispatch by content sniff: Apache / Nginx Common Log Format (the bracketed `[DD/Mon/YYYY:HH:MM:SS ±ZZZZ]` token) yields the canonical 9-column Combined / 7-column Common projection; Syslog RFC 3164 (`<PRI>MMM DD HH:MM:SS host program[pid]: message`) yields a 7-column projection (Timestamp · Severity · Facility · Host · Program · PID · Message) with the year inferred from the file's last-modified time using a 30-day future-roll heuristic; Syslog RFC 5424 (`<PRI>VER TIMESTAMP HOSTNAME APP-NAME PROCID MSGID SD MSG`) yields a 9-column projection (Timestamp · Severity · Facility · Host · App · ProcID · MsgID · StructuredData · Message) with native ISO 8601 timestamps and full structured-data block preservation (escaped `\"`, `\\`, `\]` inside quoted PARAM-VALUEs are honoured; multiple back-to-back `[...]` blocks are concatenated into the single StructuredData cell).
 
 ### Workflow
 

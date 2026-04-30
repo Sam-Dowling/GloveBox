@@ -42,6 +42,11 @@ TimelineView._STRUCTURED_LOG_KINDS = {
     columns:  () => _TL_SYSLOG3164_COLS.slice(),
     label:    'Syslog (RFC 3164)',
   },
+  syslog5424: {
+    tokenize: (line, mtimeMs) => _tlTokenizeSyslog5424(line, mtimeMs),
+    columns:  () => _TL_SYSLOG5424_COLS.slice(),
+    label:    'Syslog (RFC 5424)',
+  },
 };
 
 Object.assign(TimelineView, {

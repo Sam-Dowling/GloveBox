@@ -441,6 +441,131 @@ function _tlTokenizeSyslog3164(line, fileLastModifiedMs) {
 const _TL_SYSLOG3164_COLS = ['Timestamp', 'Severity', 'Facility', 'Host',
                              'Program', 'PID', 'Message'];
 
+// Tokenise one RFC 5424 syslog line. Shape:
+//   <PRI>VER TIMESTAMP HOSTNAME APP-NAME PROCID MSGID SD MSG
+// where any field except PRI/VER may be `-` (NILVALUE). TIMESTAMP is
+// ISO 8601 with optional fractional seconds + tz offset, HOSTNAME etc
+// are non-whitespace tokens (or `-`), SD is `-` or a sequence of
+// `[ID k="v" k="v"]` blocks back-to-back (no separator between
+// blocks), and MSG is everything after SD — optionally prefixed with
+// a UTF-8 BOM (`\xEF\xBB\xBF`).
+//
+// The tokeniser is forgiving: it accepts NILVALUEs, missing trailing
+// fields (rare but seen in mis-implementations), and SD blocks
+// containing escaped `\"`, `\\`, `\]`. It always emits a 9-cell row
+// matching `_TL_SYSLOG5424_COLS`. Returns `null` for inputs that
+// don't begin with the `<PRI>VER` digit-prefixed shape — the caller
+// is expected to skip those (continuation lines, garbage, etc.).
+//
+// `fileLastModifiedMs` is plumbed in for symmetry with the 3164
+// tokeniser but is not used: 5424 timestamps already carry an explicit
+// year, so no inference is needed. We accept the param to keep the
+// `STRUCTURED_LOG_KINDS` registry signature uniform.
+function _tlTokenizeSyslog5424(line, _fileLastModifiedMs) {
+  if (!line) return null;
+  // Strip an optional leading UTF-8 BOM in case the line itself starts
+  // with one (rsyslog under certain configs prepends one to every line
+  // rather than just the MSG body).
+  if (line.charCodeAt(0) === 0xFEFF) line = line.slice(1);
+  // PRI + VERSION: `<NNN>V`. RFC 5424 currently mandates VERSION=1 but
+  // we accept any 1-2 digit version to avoid false negatives if the
+  // standard ever revs. The space after VERSION is mandatory.
+  const m = /^<(\d{1,3})>(\d{1,2})\s/.exec(line);
+  if (!m) return null;
+  const pri = +m[1];
+  if (pri < 0 || pri > 191) return null;
+  let i = m[0].length;
+
+  // Helper: read the next whitespace-delimited token starting at `i`.
+  // Returns { token, end } where `end` is the index of the trailing
+  // space (or line.length). Skips one trailing space. NILVALUE `-`
+  // becomes ''.
+  const nextToken = () => {
+    if (i >= line.length) return '';
+    const sp = line.indexOf(' ', i);
+    const tok = sp === -1 ? line.slice(i) : line.slice(i, sp);
+    i = sp === -1 ? line.length : sp + 1;
+    return tok === '-' ? '' : tok;
+  };
+
+  const timestamp = nextToken();
+  const host      = nextToken();
+  const app       = nextToken();
+  const procid    = nextToken();
+  const msgid     = nextToken();
+
+  // STRUCTURED-DATA: either NILVALUE `-` followed by space+MSG, or a
+  // sequence of `[...]` blocks back-to-back. Within a quoted value
+  // (`"..."`) the chars `\"`, `\\`, `\]` are escaped. We walk the
+  // string in a tiny state machine to find the end of SD, then
+  // everything after a single trailing space is MSG.
+  let sd = '';
+  if (i < line.length) {
+    if (line.charCodeAt(i) === 0x2D /* '-' */) {
+      // NILVALUE SD. Eat the dash + optional trailing space; rest is MSG.
+      i += 1;
+      if (i < line.length && line.charCodeAt(i) === 0x20) i += 1;
+      sd = '';
+    } else if (line.charCodeAt(i) === 0x5B /* '[' */) {
+      const sdStart = i;
+      // Walk back-to-back `[...]` blocks. Inside a block, track
+      // whether we're inside a quoted PARAM-VALUE so a `]` inside a
+      // quote doesn't terminate the block prematurely. Backslash is
+      // only a literal escape inside quoted values per RFC 5424
+      // § 6.3.3.
+      while (i < line.length && line.charCodeAt(i) === 0x5B) {
+        i += 1;          // consume '['
+        let inQuote = false;
+        while (i < line.length) {
+          const c = line.charCodeAt(i);
+          if (inQuote) {
+            if (c === 0x5C /* '\' */ && i + 1 < line.length) {
+              // Escaped char inside a quoted PARAM-VALUE.
+              i += 2;
+              continue;
+            }
+            if (c === 0x22 /* '"' */) inQuote = false;
+            i += 1;
+            continue;
+          }
+          if (c === 0x22 /* '"' */) { inQuote = true; i += 1; continue; }
+          if (c === 0x5D /* ']' */) { i += 1; break; }
+          i += 1;
+        }
+      }
+      sd = line.slice(sdStart, i);
+      // Eat the optional single space between SD and MSG.
+      if (i < line.length && line.charCodeAt(i) === 0x20) i += 1;
+    }
+    // Any other shape (truncated record, garbage in SD slot) leaves
+    // `sd = ''` and treats the rest as MSG.
+  }
+
+  // MSG. Strip a leading UTF-8 BOM if the producer included one.
+  let msg = line.slice(i);
+  if (msg.charCodeAt(0) === 0xFEFF) msg = msg.slice(1);
+
+  const decoded = _tlDecodePri(pri);
+  return [
+    timestamp,
+    decoded ? decoded.severityName : '',
+    decoded ? decoded.facilityName : '',
+    host,
+    app,
+    procid,
+    msgid,
+    sd,
+    msg,
+  ];
+}
+
+// Canonical column order for RFC 5424 syslog. `Timestamp` at index 0
+// (header-hint regex picks it up); `Severity` at index 1 (default
+// stack column).
+const _TL_SYSLOG5424_COLS = ['Timestamp', 'Severity', 'Facility', 'Host',
+                             'App', 'ProcID', 'MsgID', 'StructuredData',
+                             'Message'];
+
 // Canonical Apache CLF column names. The Combined Log Format (Apache
 // `LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-agent}i\""`)
 // emits 9 fields; the older Common Log Format (no referer / UA) emits 7.
