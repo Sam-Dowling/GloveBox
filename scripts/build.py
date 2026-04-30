@@ -677,6 +677,13 @@ APP_JS_FILES = [
     # Must load AFTER binary-anomalies.js and BEFORE the native renderers.
     'src/binary-triage.js',
     'src/vba-utils.js',
+    # xlsx-extras.js — XLSX-only scanners that probe attack surfaces not
+    # reachable through `_rels/*.rels`: xl/connections.xml (external data
+    # connections — OLEDB/ODBC/web/text, with refreshOnLoad gating) and
+    # xl/customXml/item*.xml (Power Query DataMashup payloads). Used by
+    # XlsxRenderer in addition to OoxmlRelScanner. Must load BEFORE
+    # xlsx-renderer.js (the renderer references the helper classes).
+    'src/xlsx-extras.js',
 
     'src/yara-engine.js',
     # worker-manager.js — central host-side spawner for src/workers/*.worker.js.

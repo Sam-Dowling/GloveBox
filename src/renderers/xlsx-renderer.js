@@ -284,9 +284,20 @@ class XlsxRenderer {
         try {
           const zip = await JSZip.loadAsync(buffer);
           const relRefs = await OoxmlRelScanner.scan(zip);
-          for (const r of relRefs) {
+          // xl/connections.xml — external data connections (OLEDB/ODBC/web/
+          // text). refreshOnLoad="1" turns these into "open-and-execute"
+          // primitives that bypass the macro warning entirely.
+          const connRefs = await XlsxConnectionsScanner.scan(zip);
+          // xl/customXml/item*.xml — Power Query DataMashup payloads.
+          // M-language script can fetch from the network on workbook
+          // refresh; severity floor is medium (presence) with per-URL
+          // detections layered on top.
+          const mashupRefs = await XlsxDataMashupScanner.scan(zip);
+          const allRefs = [...relRefs, ...connRefs, ...mashupRefs];
+          for (const r of allRefs) {
             f.externalRefs.push(r);
-            if (r.severity === 'high') escalateRisk(f, 'high');
+            if (r.severity === 'critical') escalateRisk(f, 'critical');
+            else if (r.severity === 'high') escalateRisk(f, 'high');
             else if (r.severity === 'medium' && f.risk === 'low') escalateRisk(f, 'medium');
           }
         } catch (e) { /* ignore */ }
