@@ -617,7 +617,6 @@ Object.assign(TimelineView.prototype, {
       <div class="tl-dialog-card tl-dialog-extract">
         <header class="tl-dialog-head">
           <strong>ƒx Extract values</strong>
-          <button class="tl-tb-btn tl-tb-btn-primary tl-dialog-head-cta" data-act="auto-extract-head" disabled title="Extract the ticked proposals (Enter)">⚡ Extract <span class="tl-dialog-head-cta-count">0 selected</span></button>
           <span class="tl-dialog-spacer"></span>
           ${this._extractedCols.length
         ? `<button class="tl-tb-btn tl-tb-btn-danger" data-act="clear-all" title="Remove all extracted columns">✕ Clear all extracted (${this._extractedCols.length})</button>`
@@ -660,7 +659,7 @@ Object.assign(TimelineView.prototype, {
             <footer class="tl-dialog-foot">
               <button class="tl-tb-btn" data-act="auto-rescan">Rescan</button>
               <span class="tl-dialog-spacer"></span>
-              <button class="tl-tb-btn tl-tb-btn-primary" data-act="auto-extract" disabled>Extract selected</button>
+              <button class="tl-tb-btn tl-tb-btn-primary" data-act="auto-extract" disabled>⚡ Extract selected</button>
             </footer>
           </section>
 
@@ -714,7 +713,7 @@ Object.assign(TimelineView.prototype, {
             <footer class="tl-dialog-foot">
               <button class="tl-tb-btn" data-act="regex-test">Test</button>
               <span class="tl-dialog-spacer"></span>
-              <button class="tl-tb-btn tl-tb-btn-primary" data-act="regex-extract">Extract</button>
+              <button class="tl-tb-btn tl-tb-btn-primary" data-act="regex-extract">⚡ Extract</button>
             </footer>
           </section>
         </div>
@@ -730,12 +729,6 @@ Object.assign(TimelineView.prototype, {
       auto: [dlg.querySelector('.tl-dialog-pane-auto')],
       manual: [dlg.querySelector('.tl-dialog-pane-manual')],
     };
-    // Header CTA — duplicates the Auto-tab footer button so the primary
-    // action is always reachable without scrolling the proposal list.
-    // Hidden on the Manual tab (which has its own ƒx Extract button at
-    // the bottom of a much shorter pane). Click forwards to the footer
-    // button so the apply pipeline lives in exactly one place.
-    const headCta = dlg.querySelector('.tl-dialog-head-cta');
     const _showTab = (which) => {
       tabs.forEach(x => x.classList.remove('tl-dialog-tab-active'));
       const btn = dlg.querySelector(`.tl-dialog-tab[data-tab="${which}"]`);
@@ -744,7 +737,6 @@ Object.assign(TimelineView.prototype, {
         const vis = (k === which);
         for (const el of els) { if (el) el.style.display = vis ? '' : 'none'; }
       }
-      if (headCta) headCta.style.display = (which === 'auto') ? '' : 'none';
     };
     tabs.forEach(t => t.addEventListener('click', () => _showTab(t.dataset.tab)));
     // Activate requested tab (default = auto)
@@ -907,12 +899,6 @@ Object.assign(TimelineView.prototype, {
       autoCount.textContent = `${selN} of ${visN} selected`;
       autoExtractBtn.disabled = selN === 0;
       autoExtractBtn.textContent = selN > 0 ? `Extract ${selN} selected` : 'Extract selected';
-      // Mirror state into the always-visible header CTA.
-      if (headCta) {
-        headCta.disabled = selN === 0;
-        const cnt = headCta.querySelector('.tl-dialog-head-cta-count');
-        if (cnt) cnt.textContent = selN > 0 ? `${selN} selected` : '0 selected';
-      }
     };
 
 
@@ -1036,14 +1022,6 @@ Object.assign(TimelineView.prototype, {
       }, 10);
     };
     dlg.querySelector('[data-act="auto-rescan"]').addEventListener('click', runAuto);
-
-    // Header CTA → forward to the footer Extract button. One click handler,
-    // one apply path. The forwarder is a no-op when the footer button is
-    // disabled (selection empty) since `.click()` on a disabled <button>
-    // does nothing.
-    if (headCta) {
-      headCta.addEventListener('click', () => { autoExtractBtn.click(); });
-    }
 
     autoExtractBtn.addEventListener('click', () => {
       const props = autoExtractBtn._proposals || [];

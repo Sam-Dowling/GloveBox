@@ -15933,28 +15933,6 @@ body.dark .grid-cell.tl-stack-text-35 {
   overflow: auto;
 }
 
-/* Header CTA — duplicate of the footer Extract button so analysts never
- * have to scroll to find the primary action. Sits next to the dialog
- * title; hidden on the Manual tab via JS. */
-.tl-dialog-head-cta {
-  margin-left: 12px;
-  padding: 4px 12px;
-  font-size: 12px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.tl-dialog-head-cta:disabled {
-  opacity: .45;
-  cursor: not-allowed;
-}
-
-.tl-dialog-head-cta-count {
-  opacity: .85;
-  font-weight: 500;
-  margin-left: 4px;
-}
-
 /* "What does this do?" disclosure — collapsed by default so the
  * scannable area is uncluttered. */
 .tl-auto-about {
