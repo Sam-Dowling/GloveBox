@@ -290,15 +290,22 @@ function extractInterestingStringsCore(text, opts) {
   }
 
   // ── Windows file paths ─────────────────────────────────────────────────
+  // ReDoS-hardened: per-segment length capped at NTFS-component max (255)
+  // and depth capped at 32 (well above any real path). The original
+  // unbounded `(?:[\w\-. ]+\\)+` could backtrack catastrophically on a
+  // long unterminated `C:\aaa…aaa` input. Bounds preserve every
+  // legitimate match shape — Windows MAX_PATH is 260 chars total.
   /* safeRegex: builtin */
-  for (const m of full.matchAll(/[A-Za-z]:\\(?:[\w\-. ]+\\)+[\w\-. ]{2,}/g)) {
+  for (const m of full.matchAll(/[A-Za-z]:\\(?:[\w\-. ]{1,255}\\){1,32}[\w\-. ]{2,255}/g)) {
     const path = _trimPathExtGarbage(m[0]);
     add(IOC.FILE_PATH, path, 'medium', null, { offset: m.index, length: path.length });
   }
 
   // ── UNC paths ──────────────────────────────────────────────────────────
+  // ReDoS-hardened: server name ≤255, segments ≤255, depth ≤32 (parity
+  // with the renderer-side _UNC_RE in constants.js).
   /* safeRegex: builtin */
-  for (const m of full.matchAll(/\\\\[\w.\-]{2,}(?:\\[\w.\-]{1,})+/g)) {
+  for (const m of full.matchAll(/\\\\[\w.\-]{2,255}(?:\\[\w.\-]{1,255}){1,32}/g)) {
     add(IOC.UNC_PATH, m[0], 'medium', null, { offset: m.index, length: m[0].length });
   }
 
@@ -335,8 +342,10 @@ function extractInterestingStringsCore(text, opts) {
     }
   }
 
+  // ReDoS-hardened: domain label ≤63 chars (RFC 1035), max 8 labels
+  // (real-world FQDNs rarely exceed 5), path body ≤2048 chars.
   /* safeRegex: builtin */
-  const defangedDomainRe = /\b[\w\-]+(?:\[\.\][\w\-]+)+(?:\/[^\s"'<>]*)?\b/g;
+  const defangedDomainRe = /\b[\w\-]{1,63}(?:\[\.\][\w\-]{1,63}){1,8}(?:\/[^\s"'<>]{0,2048})?\b/g;
   for (const m of full.matchAll(defangedDomainRe)) {
     const result = _refangString(m[0]);
     if (result) {

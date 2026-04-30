@@ -506,7 +506,11 @@ const IOC_CANONICAL_SEVERITY = Object.freeze({
 // pathological input can't blow up the IOC table.
 
 const _URL_RE   = /\b(?:https?|ftp|ftps):\/\/[A-Za-z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+/g;
-const _UNC_RE   = /\\\\[A-Za-z0-9._\-$]+(?:\\[A-Za-z0-9._\-$%]+){1,}/g;
+// ReDoS-hardened: server-name component ≤255 (NetBIOS/NTFS limit), share
+// + path components ≤255, total depth ≤32. The original unbounded
+// `(?:\\…+){1,}` could backtrack catastrophically on a long
+// unterminated `\\\\server\\…` input.
+const _UNC_RE   = /\\\\[A-Za-z0-9._\-$]{1,255}(?:\\[A-Za-z0-9._\-$%]{1,255}){1,32}/g;
 const _EMAIL_RE = /\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g;
 const _MAC_RE   = /\b(?:[0-9A-Fa-f]{2}[:\-]){5}[0-9A-Fa-f]{2}\b/g;
 const _GUID_RE  = /\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b/g;

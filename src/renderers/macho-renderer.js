@@ -2586,7 +2586,8 @@ class MachoRenderer {
       // Summary/Share view sees the cap.
       const allStrings = mo.strings.join('\n');
       const _urlRx = /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g;
-      const _uncRx = /\\\\[\w.\-]{2,}(?:\\[\w.\-]+)+/g;
+      // ReDoS-hardened: server name ≤255, segments ≤255, depth ≤32.
+      const _uncRx = /\\\\[\w.\-]{2,255}(?:\\[\w.\-]{1,255}){1,32}/g;
       const URL_CAP = 100, UNC_CAP = 40;
       // DER SEQUENCE tag (0x30 = ASCII '0') and following length/tag bytes
       // frequently fuse onto URLs extracted from binary string dumps.

@@ -73,9 +73,13 @@ Object.assign(EncodedContentDetector.prototype, {
       const parts = m[0].split('.').map(Number);
       if (parts.every(p => p <= 255) && !m[0].startsWith('0.') && parts.join('').length >= 5) add(IOC.IP, m[0], 'high');
     }
-    for (const m of text.matchAll(/[A-Za-z]:\\(?:[\w\-. ]+\\)+[\w\-. ]{2,}/g))
+    // ReDoS-hardened: bounded quantifiers on path component / depth so
+    // adversarial unterminated strings can't backtrack catastrophically.
+    // See src/ioc-extract.js for the bounds rationale (NTFS component
+    // 255, max depth 32).
+    for (const m of text.matchAll(/[A-Za-z]:\\(?:[\w\-. ]{1,255}\\){1,32}[\w\-. ]{2,255}/g))
       add(IOC.FILE_PATH, _trimPathExtGarbage(m[0]), 'medium');
-    for (const m of text.matchAll(/\\\\[\w.\-]{2,}(?:\\[\w.\-]{1,})+/g))
+    for (const m of text.matchAll(/\\\\[\w.\-]{2,255}(?:\\[\w.\-]{1,255}){1,32}/g))
       add(IOC.UNC_PATH, m[0], 'medium');
 
     return iocs;

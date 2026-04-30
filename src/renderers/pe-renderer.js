@@ -3893,7 +3893,8 @@ class PeRenderer {
       // click-to-focus locate the string in the rendered strings pane.
       const allStrings = [...pe.strings.ascii, ...pe.strings.unicode].join('\n');
       const _urlRx = /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g;
-      const _uncRx = /\\\\[\w.\-]{2,}(?:\\[\w.\-]+)+/g;
+      // ReDoS-hardened: server name ≤255, segments ≤255, depth ≤32.
+      const _uncRx = /\\\\[\w.\-]{2,255}(?:\\[\w.\-]{1,255}){1,32}/g;
       const URL_CAP = 50, UNC_CAP = 20;
       // DER SEQUENCE tag (0x30 = ASCII '0') and following length/tag bytes
       // frequently fuse onto URLs extracted from binary string dumps.

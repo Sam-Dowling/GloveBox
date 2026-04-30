@@ -367,7 +367,9 @@ class EvtxDetector {
       }
 
       // ── Scan for file paths not caught by key matching ──
-      for (const m of ev.eventData.matchAll(/[A-Za-z]:\\(?:[\w\-. ]+\\)+[\w\-. ]{2,}/g)) {
+      // ReDoS-hardened: bounded quantifiers on component (255) / depth
+      // (32). See src/ioc-extract.js for the bounds rationale.
+      for (const m of ev.eventData.matchAll(/[A-Za-z]:\\(?:[\w\-. ]{1,255}\\){1,32}[\w\-. ]{2,255}/g)) {
         const lower = m[0].toLowerCase();
         if (!boringPaths.has(lower) && !seen.has(lower)) {
           add(IOC.FILE_PATH, m[0], 'info');
@@ -375,7 +377,7 @@ class EvtxDetector {
       }
 
       // ── Scan for UNC paths ──
-      for (const m of ev.eventData.matchAll(/\\\\[\w.\-]{2,}(?:\\[\w.\-]{1,})+/g)) {
+      for (const m of ev.eventData.matchAll(/\\\\[\w.\-]{2,255}(?:\\[\w.\-]{1,255}){1,32}/g)) {
         add(IOC.UNC_PATH, m[0], 'medium');
       }
 
