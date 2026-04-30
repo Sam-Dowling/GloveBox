@@ -677,6 +677,12 @@ APP_JS_FILES = [
     # Must load AFTER binary-anomalies.js and BEFORE the native renderers.
     'src/binary-triage.js',
     'src/vba-utils.js',
+    # lolbas-map.js — Living-Off-The-Land Binaries → ATT&CK lookup. Static
+    # data + a small literal-substring scanner used by any renderer that
+    # surfaces a Windows command-line / executable reference. Pure, no
+    # dependencies, must load BEFORE any renderer that consults it (none
+    # do mandatorily today — adoption is opportunistic).
+    'src/lolbas-map.js',
     # xlsx-extras.js — XLSX-only scanners that probe attack surfaces not
     # reachable through `_rels/*.rels`: xl/connections.xml (external data
     # connections — OLEDB/ODBC/web/text, with refreshOnLoad gating) and
