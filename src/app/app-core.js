@@ -238,6 +238,7 @@ class App {
       if (e.key === 's' || e.key === 'S') this._toggleSidebar();
       else if (e.key === 'y' || e.key === 'Y') this._openYaraDialog();
       else if (e.key === 'n' || e.key === 'N') this._openSettingsDialog('nicelists');
+      else if (e.key === 't' || e.key === 'T') this._openSettingsDialog('themes');
       else if (e.key === ',') this._openSettingsDialog('settings');
       else if (e.key === '?' || e.key === 'h' || e.key === 'H') this._openSettingsDialog('help');
       else if (e.key === 'f' || e.key === 'F') {

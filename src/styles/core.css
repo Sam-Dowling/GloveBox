@@ -4470,11 +4470,12 @@ body.dark .settings-overlay {
   width: 720px;
   max-width: 100%;
   /* Fixed height keeps the dialog from jumping vertically when the user
-     switches between the Settings, Nicelists, and Help tabs (they have
-     very different content heights). `max-height: 86vh` still kicks in
-     on short viewports; `.settings-body` flexes + scrolls to fill the
-     gap. Bumped from 560×560 to 720×640 when the Nicelists tab landed
-     so the per-list cards + entry editor fit without feeling cramped. */
+     switches between the Settings, Themes, Nicelists, and Help tabs
+     (they have very different content heights). `max-height: 86vh`
+     still kicks in on short viewports; `.settings-body` flexes +
+     scrolls to fill the gap. Bumped from 560×560 to 720×640 when the
+     Nicelists tab landed so the per-list cards + entry editor fit
+     without feeling cramped. */
   height: 640px;
   max-height: 86vh;
   background: #f7f8fa;
@@ -4567,6 +4568,13 @@ body.dark .settings-tabs {
   color: inherit;
   font: inherit;
   font-size: 12px;
+  /* Pin a fixed line-height so labels with mixed glyph metrics
+     (emoji ⚙ 🎨 🛡 vs. ASCII ?) all produce identical line-box
+     heights and the four tab labels sit on the same baseline.
+     Without this, each button inherited its line-height from the
+     cascade and the tallest glyph in each label pushed the text up
+     or down by a pixel or two, making the strip look misaligned. */
+  line-height: 1;
   font-weight: 500;
   cursor: pointer;
   padding: 8px 14px;

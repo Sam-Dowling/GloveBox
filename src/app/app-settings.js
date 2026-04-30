@@ -1,8 +1,9 @@
 // ════════════════════════════════════════════════════════════════════════════
-// App — unified Settings / Nicelists / Help dialog
+// App — unified Settings / Themes / Nicelists / Help dialog
 //
-// Three-tabbed modal:
-//   ⚙ Settings   — theme picker + 3-phase Summarize target picker
+// Four-tabbed modal:
+//   ⚙ Settings   — 3-phase Summarize target picker + GeoIP / ASN database row
+//   ◐ Themes    — six-theme tile grid (delegates to App._setTheme in app-ui)
 //   🛡 Nicelists — built-in "Default Nicelist" toggle + user-managed custom
 //                   lists (create / upload CSV/JSON/TXT / edit / delete /
 //                   export). Matches the UX of the YARA-rule upload dialog.
@@ -88,11 +89,12 @@ extendApp({
   // ── Dialog open / close ────────────────────────────────────────────────
   //
   // `tab` selects which pane is active on open:
-  //   'settings' (default) — theme picker + Summarize-target picker
+  //   'settings' (default) — Summarize-target picker + GeoIP database row
+  //   'themes'             — six-theme tile grid
   //   'nicelists'          — built-in toggle + per-list cards
   //   'help'               — legacy help dialog content
   _openSettingsDialog(tab) {
-    const validTabs = ['settings', 'nicelists', 'help'];
+    const validTabs = ['settings', 'themes', 'nicelists', 'help'];
     const activeTab = validTabs.indexOf(tab) >= 0 ? tab : 'settings';
 
     const existing = document.querySelector('.settings-overlay');
@@ -113,6 +115,7 @@ extendApp({
         </div>
         <div class="settings-tabs" role="tablist">
           <button class="settings-tab" data-tab="settings"  role="tab" aria-selected="false">⚙ Settings</button>
+          <button class="settings-tab" data-tab="themes"    role="tab" aria-selected="false">◐ Themes</button>
           <button class="settings-tab" data-tab="nicelists" role="tab" aria-selected="false">🛡 Nicelists</button>
           <button class="settings-tab" data-tab="help"      role="tab" aria-selected="false">? Help</button>
         </div>
@@ -153,11 +156,15 @@ extendApp({
     body.innerHTML = '';
     if (tab === 'help') this._renderHelpTab(body);
     else if (tab === 'nicelists') this._renderNicelistsTab(body);
+    else if (tab === 'themes') this._renderThemesTab(body);
     else this._renderSettingsTab(body);
   },
 
-  // ── Settings tab ───────────────────────────────────────────────────────
-  _renderSettingsTab(body) {
+  // ── Themes tab ─────────────────────────────────────────────────────────
+  // Six-theme tile grid. Clicking a tile delegates to App._setTheme (defined
+  // in app-ui.js), which updates `loupe_theme`, swaps the body class, and
+  // re-runs the backdrop engine map (app-bg.js).
+  _renderThemesTab(body) {
     const themeRow = document.createElement('div');
     themeRow.className = 'settings-row';
     themeRow.innerHTML = `
@@ -204,8 +211,10 @@ extendApp({
       });
       grid.appendChild(tile);
     }
+  },
 
-
+  // ── Settings tab ───────────────────────────────────────────────────────
+  _renderSettingsTab(body) {
     const curId = this._getSummaryTarget();
     const sumRow = document.createElement('div');
     sumRow.className = 'settings-row';
@@ -865,6 +874,7 @@ extendApp({
         <tr><td><kbd class="help-kbd">S</kbd></td><td>Toggle security sidebar</td></tr>
         <tr><td><kbd class="help-kbd">Y</kbd></td><td>Open YARA rule editor</td></tr>
         <tr><td><kbd class="help-kbd">N</kbd></td><td>Open Nicelists</td></tr>
+        <tr><td><kbd class="help-kbd">T</kbd></td><td>Open Themes</td></tr>
         <tr><td><kbd class="help-kbd">,</kbd></td><td>Open Settings</td></tr>
         <tr><td><kbd class="help-kbd">?</kbd> / <kbd class="help-kbd">H</kbd></td><td>Open Help</td></tr>
         <tr><td><kbd class="help-kbd">F</kbd></td><td>Focus document search</td></tr>
