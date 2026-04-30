@@ -785,7 +785,14 @@ function _tlSuggestContext(text, caret) {
     return { kind: 'none', prefix: '', replaceStart: caret, replaceEnd: caret, tokenStart: caret };
   }
 
-  // Walk back/forward over the current bareword.
+  // Walk back/forward over the current bareword. The forward walk also
+  // breaks on DSL operator characters so a caret at the *start* of a
+  // `field:value` token doesn't get a token range that swallows the
+  // colon — otherwise the editor's `_applySuggest` would replace
+  // `field:` with the chosen field name and clobber the operator. The
+  // back-walk intentionally does NOT break on operator chars: when the
+  // caret sits *after* `field:`, the prefix-side operator detection
+  // (the loop further down) reclassifies the context as `value`.
   let start = caret;
   while (start > 0) {
     const ch = text.charAt(start - 1);
@@ -796,6 +803,7 @@ function _tlSuggestContext(text, caret) {
   while (end < text.length) {
     const ch = text.charAt(end);
     if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '(' || ch === ')' || ch === '"') break;
+    if (ch === ':' || ch === '=' || ch === '!' || ch === '~' || ch === '<' || ch === '>' || ch === ',') break;
     end++;
   }
   const prefix = text.slice(start, caret);

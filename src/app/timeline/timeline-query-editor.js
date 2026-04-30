@@ -219,10 +219,37 @@ class TimelineQueryEditor {
       this._closeSuggest();
     });
 
-    // Deliberately NO click handler — clicking between finished tokens
-    // should not spawn suggestions. If the user wants them, Ctrl/Cmd-Space
-    // is the manual trigger. Arrow keys still fire keydown → `_onKeyDown`
-    // which intercepts navigation when the popover is open.
+    // Deliberately NO click handler that *opens* suggestions — clicking
+    // between finished tokens should not spawn a popover. If the user
+    // wants them, Ctrl/Cmd-Space is the manual trigger. Arrow keys still
+    // fire keydown → `_onKeyDown` which intercepts navigation when the
+    // popover is open.
+    //
+    // BUT: if a popover is already open and the user moves the caret to
+    // a different token via mouse click or a non-typing key (Home / End /
+    // PageUp / PageDown / Arrow* without modifier), the popover's `ctx`
+    // is now stale — its `replaceStart`/`replaceEnd` still point at the
+    // ORIGINAL anchor token. Pressing Enter at that point would call
+    // `_applySuggest(true)` against the stale range and rewrite an
+    // unrelated part of the query. Concrete repro: type
+    // `user IN (a, b) AND ISP:"x"`, select+Backspace `user IN (a, b) AND `,
+    // click at end, press Enter — the editor used to swap `ISP:` for
+    // `any:` because the popover from the post-Backspace caret was
+    // anchored at tokenStart 0. The handlers below close the popover
+    // when the caret leaves its anchor token, mirroring how every other
+    // IDE behaves.
+    this.input.addEventListener('click', () => this._revalidateSuggestForCaret());
+    this.input.addEventListener('keyup', (e) => {
+      // Only act on caret-mover keys that DON'T already get handled in
+      // _onKeyDown (which `return`s before reaching keyup logic and
+      // covers popover-open arrow nav). Modifier-bearing arrows are
+      // word-jumps that also count.
+      const k = e.key;
+      if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown'
+        || k === 'Home' || k === 'End' || k === 'PageUp' || k === 'PageDown') {
+        this._revalidateSuggestForCaret();
+      }
+    });
 
     this.clearBtn.addEventListener('click', () => {
       if (this.input.value === '') return;
@@ -623,9 +650,25 @@ class TimelineQueryEditor {
     if (this._isSuggestOpen()) {
       if (e.key === 'ArrowDown') { e.preventDefault(); this._moveSuggest(1); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); this._moveSuggest(-1); return; }
-      if (e.key === 'Tab') { e.preventDefault(); this._applySuggest(false); return; }
-      if (e.key === 'Enter') { e.preventDefault(); this._applySuggest(true); return; }
-      if (e.key === 'Escape') {
+      // Tab / Enter accept the highlighted suggestion ONLY when the
+      // popover is actually visible. If state says open but the DOM
+      // element isn't visible (zero size / display:none / detached),
+      // close the stale state and fall through to the popover-closed
+      // Enter / native-Tab handlers below — what the user SEES wins
+      // over what the state machine remembers. Reproducible repro:
+      // build ` Severity:INFO` by deletion, place caret after the
+      // leading space, press Backspace then Enter; without this gate,
+      // the editor used to rewrite to `any::INFO` against an
+      // invisible popover.
+      if (e.key === 'Tab') {
+        if (this._isSuggestVisible()) { e.preventDefault(); this._applySuggest(false); return; }
+        this._closeSuggest();
+        // Fall through: native Tab leaves the textarea.
+      } else if (e.key === 'Enter') {
+        if (this._isSuggestVisible()) { e.preventDefault(); this._applySuggest(true); return; }
+        this._closeSuggest();
+        // Fall through to the popover-closed Enter branch below.
+      } else if (e.key === 'Escape') {
         e.preventDefault();
         // Pin dismissal to the current token so the popover stays shut
         // while the user keeps typing the same token. Any character that
@@ -634,10 +677,14 @@ class TimelineQueryEditor {
         this._dismissedTokenStart = ctx ? ctx.tokenStart : null;
         this._closeSuggest();
         return;
+      } else {
+        // Any other key falls through — the ensuing `input` event will
+        // update the item list in-place (no re-creation of the dropdown).
+        return;
       }
-      // Any other key falls through — the ensuing `input` event will
-      // update the item list in-place (no re-creation of the dropdown).
-      return;
+      // If we reach here, Tab/Enter triggered the visibility fall-through:
+      // the popover was just closed, drop into the popover-closed branches
+      // below so Enter still submits and Tab still does its native action.
     }
 
     // Popover closed — Enter / Escape are the committed meanings.
@@ -662,6 +709,48 @@ class TimelineQueryEditor {
 
   _isSuggestOpen() { return !!(this._sugg && this._sugg.items && this._sugg.items.length); }
 
+  // Stricter than `_isSuggestOpen`: the popover element must also be
+  // attached to the DOM and have a real layout box (non-zero size, not
+  // `display:none` / `visibility:hidden`). Used to gate Tab/Enter accept
+  // gestures so they only fire when the user can actually SEE the
+  // popover. Without this, state and DOM could drift apart (e.g. via a
+  // late scroll/layout reflow that visually removes the dropdown while
+  // `this._sugg` is still set), and Enter would silently rewrite the
+  // query against an invisible suggestion list.
+  _isSuggestVisible() {
+    if (!this._isSuggestOpen()) return false;
+    const el = this._sugg.el;
+    if (!el || !el.parentNode) return false;
+    const rect = el.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return false;
+    const view = el.ownerDocument && el.ownerDocument.defaultView;
+    if (view) {
+      const cs = view.getComputedStyle(el);
+      if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) return false;
+    }
+    return true;
+  }
+
+  // Called from `click` / non-typing `keyup` listeners. If a popover is
+  // open and the caret has moved to a different token (or out of any
+  // completable context), close it so a stale `_sugg.ctx` can't be
+  // applied by Enter/Tab. No-op when the caret is still inside the
+  // popover's anchor token — the user is still composing the same
+  // field/value and the popover legitimately stays open. Also clears
+  // any pinned Esc-dismissal once the caret leaves the dismissed token,
+  // matching the behaviour the `input` path already had via
+  // `_maybeClearDismissal`.
+  _revalidateSuggestForCaret() {
+    this._maybeClearDismissal();
+    if (!this._sugg) return;
+    const caret = this.input.selectionStart || 0;
+    const ctx = _tlSuggestContext(this.input.value || '', caret);
+    const willClose = (ctx.kind === 'none' || ctx.tokenStart !== this._sugg.anchorTokenStart);
+    if (willClose) {
+      this._closeSuggest();
+    }
+  }
+
   // Clear the Esc-dismissal flag iff the caret has left the pinned token.
   _maybeClearDismissal() {
     if (this._dismissedTokenStart == null) return;
@@ -685,7 +774,10 @@ class TimelineQueryEditor {
     const text = this.input.value || '';
     const ctx = _tlSuggestContext(text, caret);
 
-    if (ctx.kind === 'none') { this._closeSuggest(); return; }
+    if (ctx.kind === 'none') {
+      this._closeSuggest();
+      return;
+    }
 
     // Respect a live Esc dismissal pinned to the current token (unless
     // the manual trigger forced through).
@@ -697,14 +789,30 @@ class TimelineQueryEditor {
     }
 
     const items = this._itemsFor(ctx);
-    if (!items.length) { this._closeSuggest(); return; }
+    if (!items.length) {
+      this._closeSuggest();
+      return;
+    }
 
     if (this._isSuggestOpen()) {
+      // Crossing a token boundary (Backspace consuming a delimiter, or
+      // typing space/operator that starts a new token) means the prior
+      // popover anchor is stale. Close + reopen so `_sugg.anchorTokenStart`
+      // and `_sugg.ctx.tokenStart` stay in lock-step — keeps the
+      // accept-time replaceStart/replaceEnd authoritative for the token
+      // the user is currently editing.
+      if (this._sugg.anchorTokenStart !== ctx.tokenStart) {
+        this._closeSuggest();
+        if (allowOpen) this._openSuggest(items, ctx);
+        return;
+      }
       this._updateSuggestItems(items, ctx);
       this._repositionSuggest();
       return;
     }
-    if (!allowOpen) return;
+    if (!allowOpen) {
+      return;
+    }
     this._openSuggest(items, ctx);
   }
 
@@ -850,11 +958,10 @@ class TimelineQueryEditor {
     // renders them. The highlight layer uses `white-space: pre`, so we
     // can put raw text including spaces.
     const probe = document.createElement('span');
-    probe.textContent = text.length ? text : '\u200b'; // zero-width so rect is non-empty
-    // Park a zero-width anchor right after the text — its left edge is
-    // the caret column.
-    const anchor = document.createElement('span');
-    anchor.textContent = '\u200b';
+    // Empty/short string is fine — `probeWidth === 0` is meaningful
+    // (caret at column 0). We don't need a zero-width anchor anymore;
+    // the textarea's own padding-box origin is the column-0 X.
+    probe.textContent = text;
     // Park inside the code element, preserving its current children so
     // we can restore on teardown. We don't actually want the probe to
     // be visible — the user is looking at the tokenised highlight, not
@@ -868,8 +975,6 @@ class TimelineQueryEditor {
     const cs = getComputedStyle(this.input);
     probe.style.font = cs.font;
     probe.style.letterSpacing = cs.letterSpacing;
-    probe.appendChild(anchor);
-    const anchorRect = anchor.getBoundingClientRect();
     const probeWidth = probe.getBoundingClientRect().width;
     hlParent.removeChild(probe);
     // The caret's client X is the textarea's content-box left (inside
@@ -879,10 +984,20 @@ class TimelineQueryEditor {
     const padL = parseFloat(cs.paddingLeft) || 0;
     const x = inRect.left + padL + probeWidth - (this.input.scrollLeft || 0);
     const y = inRect.bottom;
-    // Fall back to anchorRect only if the parent layout produced no
-    // useful width (e.g. display:none).
-    if (!Number.isFinite(x) || probeWidth <= 0) {
-      return { x: anchorRect.left, y: anchorRect.bottom, inputRect: inRect };
+    // `probeWidth === 0` is the CORRECT measurement when the caret sits
+    // at column 0 with no text before it — NOT a failure mode. The
+    // previous guard misfired in that case and returned `anchorRect`,
+    // which is the rect of a zero-width <span> inside the off-screen
+    // probe (parked at left:-99999), placing the popover ~100,000px
+    // off-screen — visually invisible to the user but still passing
+    // the size/CSS visibility gate, so Enter would accept and the
+    // editor would prepend `any:` to the user's in-progress query.
+    // Fall back only when `x` is non-finite (display:none ancestor →
+    // all rects collapse to NaN), and use the textarea's own
+    // padding-box origin as the fallback. `anchorRect` is never
+    // reliable as a fallback because the probe is off-screen by design.
+    if (!Number.isFinite(x)) {
+      return { x: inRect.left + padL, y: inRect.bottom, inputRect: inRect };
     }
     return { x, y, inputRect: inRect };
   }
@@ -911,6 +1026,13 @@ class TimelineQueryEditor {
     if (top + h > vh - margin && inputRect.top - h - 2 > margin) {
       top = inputRect.top - h - 2;
     }
+    // Defensive symmetric clamp on `top` — mirrors the `left` clamp
+    // above. If `_caretScreenPos` ever returns an off-screen Y (regression
+    // safety: an earlier bug parked the popover at y≈-99999 because the
+    // caret-pos fallback returned the off-screen probe's anchor rect),
+    // the clamp keeps the popover visible. Cheap belt-and-braces; the
+    // proper fix lives in `_caretScreenPos` itself.
+    top = Math.max(margin, Math.min(vh - h - margin, top));
     el.style.left = left + 'px';
     el.style.top = top + 'px';
     el.style.visibility = '';
@@ -992,9 +1114,11 @@ class TimelineQueryEditor {
 
   _handleScroll(e) {
     if (!this._sugg) return;
+    const t = e && e.target;
+    const insidePopover = !!(t && this._sugg.el.contains(t));
     // Ignore scrolls that originate inside the popover itself (it's
     // internally scrollable).
-    if (e && e.target && this._sugg.el.contains(e.target)) return;
+    if (insidePopover) return;
     // Any ancestor scroll closes — the popover is position:fixed so it
     // would otherwise detach visually from the caret.
     this._closeSuggest();
