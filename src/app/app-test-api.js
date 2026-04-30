@@ -440,6 +440,14 @@ extendApp({
         || (Array.isArray(tlView._rows) && tlView._rows.length)
         || (Array.isArray(tlView.rows) && tlView.rows.length)
         || 0;
+      // `timelineColumns` surfaces the resolved column header so e2e
+      // tests can assert format-specific schemas (Syslog 3164's
+      // 7-col canonical list, EVTX's 7-col EVTX_COLUMN_ORDER, …).
+      // We pass through the live array reference deliberately — tests
+      // assert `.toEqual([...])` which compares by value, not identity.
+      const tlCols = (tlView && Array.isArray(tlView._columns))
+        ? tlView._columns.slice()
+        : (Array.isArray(tlView.columns) ? tlView.columns.slice() : []);
       return {
         filename: file ? (file.name || null) : null,
         dispatchId: null,
@@ -450,6 +458,7 @@ extendApp({
         rawTextLength: 0,
         timeline: true,
         timelineRowCount: rowCount,
+        timelineColumns: tlCols,
       };
     }
     return {

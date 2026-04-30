@@ -31,6 +31,19 @@
 // in-view Detections + Entities sections (see timeline-detections.js).
 // ════════════════════════════════════════════════════════════════════════════
 
+// Structured-log kind registry — mirrors `STRUCTURED_LOG_KINDS` in
+// `src/workers/timeline.worker.js`. The factory uses this to pick a
+// `(tokenize, columns, label)` triple for the sync `file://` fallback.
+// **Keep in lockstep with the worker copy.** Both copies exist so the
+// sync and async paths produce identical row matrices.
+TimelineView._STRUCTURED_LOG_KINDS = {
+  syslog3164: {
+    tokenize: (line, assumedYear) => _tlTokenizeSyslog3164(line, assumedYear),
+    columns:  () => _TL_SYSLOG3164_COLS.slice(),
+    label:    'Syslog (RFC 3164)',
+  },
+};
+
 Object.assign(TimelineView, {
 
   // Parse a CSV / TSV buffer resiliently. Janky inputs (unescaped JSON or XML
@@ -279,6 +292,116 @@ Object.assign(TimelineView, {
       file, columns, store,
       formatLabel: delim === '\t' ? 'TSV' : 'CSV',
       truncated, originalRowCount,
+    });
+  },
+
+  // ── Structured-log sync factory (Firefox file:// fallback) ────────────
+  //
+  // Mirrors the worker-side `_parseStructuredLog` in
+  // `src/workers/timeline.worker.js` for environments where workers
+  // can't spawn (Firefox `file://`). Same chunked-decode + per-line
+  // tokeniser pipeline; per-format `tokenizeLine` and `getColumns`
+  // come from the small registry below.
+  //
+  // `kindHint` is the same string the worker accepts ('syslog3164',
+  // and friends as we add them). Throws on unknown hints — the router
+  // is the single dispatch site, so a typo there should fail loudly
+  // rather than silently produce a 0-row view.
+  async fromStructuredLogAsync(file, buffer, kindHint) {
+    const cfg = TimelineView._STRUCTURED_LOG_KINDS[kindHint];
+    if (!cfg) {
+      throw new Error('fromStructuredLogAsync: unknown kindHint: ' + kindHint);
+    }
+    const bytes = new Uint8Array(buffer);
+    const DECODE_CHUNK = RENDER_LIMITS.DECODE_CHUNK_BYTES;
+    const decoder = new TextDecoder('utf-8', { fatal: false });
+    // Mtime ms threads through the tokeniser; see the worker copy
+    // (`timeline.worker.js::_parseStructuredLog`) and the canonical
+    // `_tlTokenizeSyslog3164` for the year-inference rule.
+    const nowMs = (file && file.lastModified) | 0;
+    const yieldTick = () => new Promise(resolve => {
+      if (typeof MessageChannel !== 'undefined') {
+        const ch = new MessageChannel();
+        ch.port1.onmessage = () => { ch.port1.close(); resolve(); };
+        ch.port2.postMessage(null);
+      } else {
+        setTimeout(resolve, 0);
+      }
+    });
+    let columns = [];
+    let colLen = 0;
+    let headerSeen = false;
+    const rows = [];
+    let truncated = false;
+    let bytesConsumed = 0;
+    let tail = '';
+    let firstChunk = true;
+    const padOrTrim = (cells) => {
+      if (!colLen) return cells;
+      if (cells.length < colLen) {
+        while (cells.length < colLen) cells.push('');
+      } else if (cells.length > colLen) {
+        cells.length = colLen;
+      }
+      return cells;
+    };
+    outerStruct:
+    for (let pos = 0; pos < bytes.length; pos += DECODE_CHUNK) {
+      const end = Math.min(pos + DECODE_CHUNK, bytes.length);
+      const stream = end < bytes.length;
+      let chunk = decoder.decode(bytes.subarray(pos, end), { stream });
+      if (firstChunk) {
+        if (chunk.charCodeAt(0) === 0xFEFF) chunk = chunk.slice(1);
+        firstChunk = false;
+      }
+      if (chunk.indexOf('\r') !== -1) chunk = chunk.replace(/\r\n?/g, '\n');
+      bytesConsumed = end;
+      const text = tail + chunk;
+      let lineStart = 0;
+      while (lineStart < text.length) {
+        const nl = text.indexOf('\n', lineStart);
+        if (nl < 0) { tail = text.slice(lineStart); break; }
+        const line = text.slice(lineStart, nl);
+        lineStart = nl + 1;
+        if (!line) continue;
+        const cells = cfg.tokenize(line, nowMs);
+        if (!cells) continue;
+        if (!headerSeen) {
+          columns = cfg.columns(cells.length);
+          colLen = columns.length;
+          headerSeen = true;
+        }
+        if (rows.length >= TIMELINE_MAX_ROWS) { truncated = true; break outerStruct; }
+        rows.push(padOrTrim(cells));
+      }
+      if (lineStart >= text.length) tail = '';
+      // Yield to keep the tab responsive on large files.
+      if (end < bytes.length) await yieldTick();
+    }
+    if (!truncated && tail) {
+      const cells = cfg.tokenize(tail, nowMs);
+      if (cells) {
+        if (!headerSeen) {
+          columns = cfg.columns(cells.length);
+          colLen = columns.length;
+          headerSeen = true;
+        }
+        if (rows.length < TIMELINE_MAX_ROWS) rows.push(padOrTrim(cells));
+      }
+    }
+    if (!headerSeen) { columns = []; colLen = 0; }
+    const originalRowCount = truncated
+      ? Math.round(rows.length * (bytes.length / Math.max(1, bytesConsumed)))
+      : rows.length;
+    const store = RowStore.fromStringMatrix(columns, rows);
+    rows.length = 0;
+    return new TimelineView({
+      file, columns, store,
+      formatLabel: cfg.label,
+      truncated,
+      originalRowCount,
+      defaultTimeColIdx: 0,
+      defaultStackColIdx: 1,
     });
   },
 

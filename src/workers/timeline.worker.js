@@ -278,6 +278,154 @@ function _makeRowStreamer(colCount) {
 // The `explicitDelim` argument lets the host force a delimiter (TSV
 // uses `\t`); when omitted we sniff using `CsvRenderer._delim` over the
 // first decoded chunk only — sufficient signal for any real CSV.
+// ── Structured-log parse (syslog 3164 / CEF / LEEF / logfmt) ───────────────
+//
+// One-line-per-record formats with a fixed per-format tokeniser. Each
+// `kindHint` selects a `(tokenizeLine, getColumns)` pair from the
+// `STRUCTURED_LOG_KINDS` registry below; the rest of the pipeline is
+// the chunked-decode, line-split, pad-or-trim, packed-chunk emit
+// loop CLF uses.
+//
+// Why a separate function rather than another `if (isLog)` branch
+// inside `_parseCsv`: structured-log formats DO NOT use the
+// `CsvRenderer` state machine at all (none of them are RFC-4180 cells
+// separated by a delimiter), so the entry path doesn't share any
+// CSV setup. Keeping them in their own function keeps the CSV path
+// readable as it grows.
+//
+// `getColumns(width)` is called once when the first valid line is
+// tokenised. Most formats have a fixed canonical column list and
+// ignore the width; LEEF passes the width through to support both
+// 1.0 and 2.0 layouts.
+async function _parseStructuredLog(buffer, kindHint, fileLastModified) {
+  _workerMark('structuredLogParseStart');
+  const kindCfg = STRUCTURED_LOG_KINDS[kindHint];
+  if (!kindCfg) throw new Error('unknown structured-log kindHint: ' + kindHint);
+  const tokenizeLine = kindCfg.tokenize;
+  const getColumns = kindCfg.columns;
+  const formatLabel = kindCfg.label;
+
+  const bytes = new Uint8Array(buffer);
+  const DECODE_CHUNK = RENDER_LIMITS.DECODE_CHUNK_BYTES;
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+
+  // Pass the raw mtime ms through to the per-line tokeniser. The
+  // tokeniser handles the "missing mtime → current UTC year" fallback
+  // internally, and uses the mtime as the upper-bound boundary for
+  // its 30-day future-roll heuristic.
+  const nowMs = fileLastModified | 0;
+
+  let columns = [];
+  let colLen = 0;
+  let headerSeen = false;
+  let rowCount = 0;
+  let truncated = false;
+  let bytesConsumed = 0;
+  let pendingRows = [];
+  let firstBatchPending = true;
+
+  const flushBatch = () => {
+    if (!pendingRows.length) return;
+    if (!colLen) { pendingRows = []; return; }
+    _postRowsChunk(pendingRows, colLen);
+    pendingRows = [];
+    firstBatchPending = false;
+  };
+  const currentBatchThreshold = () =>
+    firstBatchPending ? WORKER_FIRST_CHUNK_ROWS : WORKER_CHUNK_ROWS;
+  const padOrTrim = (cells) => {
+    if (!colLen) return cells;
+    if (cells.length < colLen) {
+      while (cells.length < colLen) cells.push('');
+    } else if (cells.length > colLen) {
+      cells.length = colLen;
+    }
+    return cells;
+  };
+
+  let tail = '';
+  let firstChunk = true;
+  outerLog:
+  for (let pos = 0; pos < bytes.length; pos += DECODE_CHUNK) {
+    const end = Math.min(pos + DECODE_CHUNK, bytes.length);
+    const stream = end < bytes.length;
+    let chunk = decoder.decode(bytes.subarray(pos, end), { stream });
+    if (firstChunk) {
+      if (chunk.charCodeAt(0) === 0xFEFF) chunk = chunk.slice(1);
+      firstChunk = false;
+    }
+    if (chunk.indexOf('\r') !== -1) chunk = chunk.replace(/\r\n?/g, '\n');
+    bytesConsumed = end;
+    const text = tail + chunk;
+    let lineStart = 0;
+    while (lineStart < text.length) {
+      const nl = text.indexOf('\n', lineStart);
+      if (nl < 0) { tail = text.slice(lineStart); break; }
+      const line = text.slice(lineStart, nl);
+      lineStart = nl + 1;
+      if (!line) continue;
+      const cells = tokenizeLine(line, nowMs);
+      if (!cells) continue;
+      if (!headerSeen) {
+        columns = getColumns(cells.length);
+        colLen = columns.length;
+        headerSeen = true;
+        _postColumns(columns);
+      }
+      if (rowCount >= TIMELINE_MAX_ROWS) { truncated = true; break outerLog; }
+      pendingRows.push(padOrTrim(cells));
+      rowCount++;
+      if (pendingRows.length >= currentBatchThreshold()) flushBatch();
+    }
+    if (lineStart >= text.length) tail = '';
+  }
+  if (!truncated && tail) {
+    const cells = tokenizeLine(tail, nowMs);
+    if (cells) {
+      if (!headerSeen) {
+        columns = getColumns(cells.length);
+        colLen = columns.length;
+        headerSeen = true;
+        _postColumns(columns);
+      }
+      if (rowCount < TIMELINE_MAX_ROWS) {
+        pendingRows.push(padOrTrim(cells));
+        rowCount++;
+      }
+    }
+  }
+  flushBatch();
+  if (!headerSeen) { columns = []; colLen = 0; }
+  const originalRowCount = truncated
+    ? Math.round(rowCount * (bytes.length / Math.max(1, bytesConsumed)))
+    : rowCount;
+  return {
+    columns,
+    rows: [],
+    formatLabel,
+    truncated,
+    originalRowCount,
+    // Both syslog formats default to Severity (col 1) for the histogram
+    // stack — see `_TL_STACK_EXACT` in timeline-helpers.js, which would
+    // pick it up automatically too, but stating it explicitly skips the
+    // 2000-row cardinality probe on the host side.
+    defaultTimeColIdx: 0,
+    defaultStackColIdx: 1,
+  };
+}
+
+// Per-kind registry of structured-log tokenisers. Each entry binds a
+// `kindHint` string to its `(tokenize, columns, label)` triple.
+// Tokenisers are defined in `timeline-worker-shim.js` (mirrored from
+// `timeline-helpers.js`); columns helpers + labels are inlined here.
+const STRUCTURED_LOG_KINDS = {
+  syslog3164: {
+    tokenize: (line, assumedYear) => _tlTokenizeSyslog3164(line, assumedYear),
+    columns:  () => _TL_SYSLOG3164_COLS.slice(),
+    label:    'Syslog (RFC 3164)',
+  },
+};
+
 async function _parseCsv(buffer, explicitDelim, kindHint) {
   _workerMark('csvParseStart');
   const bytes = new Uint8Array(buffer);
@@ -767,11 +915,22 @@ self.onmessage = async function (ev) {
 
     let out;
     if (kind === 'csv') {
-      if (typeof CsvRenderer === 'undefined') {
-        self.postMessage({ event: 'error', message: 'CsvRenderer missing from worker bundle' });
-        return;
+      // Structured-log kindHints (`syslog3164`, eventually
+      // `cef` / `leef` / `logfmt` / `zeek` / `jsonl-log`) bypass
+      // CsvRenderer entirely — they use per-format tokenisers and
+      // share the line-streaming pipeline in `_parseStructuredLog`.
+      // The `'log'` (CLF) kindHint stays in `_parseCsv` where it has
+      // historically lived; CLF tokenisation has been there since
+      // Phase 6 and the structured-log family was added later.
+      if (msg.kindHint && STRUCTURED_LOG_KINDS[msg.kindHint]) {
+        out = await _parseStructuredLog(buffer, msg.kindHint, msg.fileLastModified);
+      } else {
+        if (typeof CsvRenderer === 'undefined') {
+          self.postMessage({ event: 'error', message: 'CsvRenderer missing from worker bundle' });
+          return;
+        }
+        out = await _parseCsv(buffer, msg.explicitDelim, msg.kindHint);
       }
-      out = await _parseCsv(buffer, msg.explicitDelim, msg.kindHint);
     } else if (kind === 'evtx') {
       if (typeof EvtxRenderer === 'undefined') {
         self.postMessage({ event: 'error', message: 'EvtxRenderer missing from worker bundle' });

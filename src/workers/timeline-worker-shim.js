@@ -217,3 +217,110 @@ function _tlCanonicalLogColumns(width) {
   for (let i = 0; i < width; i++) cols.push(`col ${i + 1}`);
   return cols;
 }
+
+// ── Syslog (RFC 3164) helpers — worker-side ────────────────────────────────
+//
+// Mirrors `_tlDecodePri`, `_tlInferYear`, `_tlTokenizeSyslog3164` and the
+// `_TL_SYSLOG3164_COLS` constant in `src/app/timeline/timeline-helpers.js`.
+// Helpers must live here too because the main-bundle helpers file isn't
+// concatenated into the worker bundle. **Keep in lockstep with the
+// canonical implementation.** The unit tests in
+// `tests/unit/timeline-syslog-3164.test.js` exercise the main-bundle
+// copy; an additional cross-check ensures the two copies agree.
+
+const _TL_SYSLOG_SEVERITY = ['emergency', 'alert', 'critical', 'error',
+                             'warning', 'notice', 'informational', 'debug'];
+const _TL_SYSLOG_FACILITY = [
+  'kern', 'user', 'mail', 'daemon', 'auth', 'syslog', 'lpr', 'news',
+  'uucp', 'cron', 'authpriv', 'ftp', 'ntp', 'audit', 'alert', 'clock',
+  'local0', 'local1', 'local2', 'local3', 'local4', 'local5', 'local6', 'local7',
+];
+function _tlSyslogSeverityName(sev) {
+  return _TL_SYSLOG_SEVERITY[sev | 0] || '';
+}
+function _tlSyslogFacilityName(fac) {
+  return _TL_SYSLOG_FACILITY[fac | 0] || ('facility' + (fac | 0));
+}
+function _tlDecodePri(pri) {
+  if (pri === null || pri === undefined || pri === '') return null;
+  const n = +pri;
+  if (!Number.isInteger(n) || n < 0 || n > 191) return null;
+  const severity = n & 0x07;
+  const facility = (n >> 3) & 0x1F;
+  return {
+    facility,
+    severity,
+    severityName: _tlSyslogSeverityName(severity),
+    facilityName: _tlSyslogFacilityName(facility),
+  };
+}
+const _TL_MONTH_ABBR = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+function _tlInferYear(fileLastModified) {
+  if (Number.isFinite(fileLastModified) && fileLastModified > 0) {
+    return new Date(fileLastModified).getUTCFullYear();
+  }
+  return new Date().getUTCFullYear();
+}
+function _tlTokenizeSyslog3164(line, fileLastModifiedMs) {
+  if (!line) return null;
+  const m = /^<(\d{1,3})>/.exec(line);
+  if (!m) return null;
+  const pri = +m[1];
+  if (pri < 0 || pri > 191) return null;
+  let i = m[0].length;
+  while (i < line.length && line.charCodeAt(i) === 0x20) i++;
+  const ts = /^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+/.exec(line.slice(i));
+  let timestamp = '';
+  const nowMs = (Number.isFinite(fileLastModifiedMs) && fileLastModifiedMs > 0)
+    ? fileLastModifiedMs : Date.now();
+  const assumedYear = new Date(nowMs).getUTCFullYear();
+  if (ts) {
+    const mo = _TL_MONTH_ABBR[ts[1].toLowerCase()];
+    const d  = +ts[2];
+    const hh = +ts[3], mm = +ts[4], ss = +ts[5];
+    if (mo !== undefined && d >= 1 && d <= 31
+        && hh < 24 && mm < 60 && ss < 60) {
+      let yr = assumedYear | 0;
+      let candidateMs = Date.UTC(yr, mo, d, hh, mm, ss);
+      if (candidateMs > nowMs + 30 * 86400_000) {
+        yr -= 1;
+        candidateMs = Date.UTC(yr, mo, d, hh, mm, ss);
+      }
+      const pad = n => String(n).padStart(2, '0');
+      timestamp = `${yr}-${pad(mo + 1)}-${pad(d)} ${pad(hh)}:${pad(mm)}:${pad(ss)}`;
+    }
+    i += ts[0].length;
+  }
+  let host = '', program = '', pid = '', message = '';
+  const rest = line.slice(i);
+  const hostM = /^(\S+)\s+(.*)$/.exec(rest);
+  if (hostM) {
+    host = hostM[1];
+    const after = hostM[2];
+    const tagM = /^([A-Za-z0-9_./\-]{1,64})(?:\[(\d{1,10})\])?:\s*(.*)$/.exec(after);
+    if (tagM) {
+      program = tagM[1];
+      pid = tagM[2] || '';
+      message = tagM[3];
+    } else {
+      message = after;
+    }
+  } else {
+    message = rest;
+  }
+  const decoded = _tlDecodePri(pri);
+  return [
+    timestamp,
+    decoded ? decoded.severityName : '',
+    decoded ? decoded.facilityName : '',
+    host,
+    program,
+    pid,
+    message,
+  ];
+}
+const _TL_SYSLOG3164_COLS = ['Timestamp', 'Severity', 'Facility', 'Host',
+                             'Program', 'PID', 'Message'];

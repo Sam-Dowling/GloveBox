@@ -1,0 +1,15 @@
+<34>Oct 11 22:14:15 mymachine su[1234]: 'su root' failed for lonvick on /dev/pts/8
+<13>Oct 11 22:14:16 mymachine cron[2233]: (root) CMD (run-parts /etc/cron.hourly)
+<14>Oct 11 22:14:18 router1 link state changed to UP
+<38>Oct 11 22:14:20 fileserver sshd[5577]: Accepted publickey for root from 10.0.0.42 port 51234 ssh2
+<86>Oct 11 22:14:25 mymachine sudo: pam_unix(sudo:session): session opened for user root by alice(uid=1000)
+<13>Oct 11 22:14:30 mymachine cron[2234]: (alice) CMD (~/bin/backup.sh)
+<27>Oct 11 22:14:35 fileserver kernel: [12345.678] nf_conntrack: table full, dropping packet
+<38>Oct 11 22:14:40 fileserver sshd[5580]: Failed password for invalid user admin from 192.0.2.13 port 60010 ssh2
+<14>Oct 11 22:14:45 router1 dhcpd: DHCPACK on 10.0.0.42 to 00:11:22:33:44:55 via eth1
+<86>Oct 11 22:14:50 mymachine sudo: pam_unix(sudo:session): session closed for user root
+<11>Oct 11 22:15:01 fileserver kernel: Out of memory: Killed process 4242 (chrome) total-vm:8388608kB
+<14>Oct 11 22:15:05 router1 link state changed to DOWN
+<14>Oct 11 22:15:07 router1 link state changed to UP
+<38>Oct 11 22:15:12 fileserver sshd[5599]: Connection closed by 10.0.0.99 port 49214 [preauth]
+<13>Oct 11 22:15:30 mymachine cron[2240]: (root) CMD (test -x /usr/sbin/anacron && /usr/sbin/anacron)

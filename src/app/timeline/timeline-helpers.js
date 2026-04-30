@@ -254,6 +254,193 @@ function _tlTokenizeClfLine(line) {
   return out;                              // 9 cells — Combined
 }
 
+// ── Syslog (RFC 3164 + 5424) helpers ──────────────────────────────────────
+//
+// Both RFCs lead with a `<PRI>` token that encodes severity (low 3 bits)
+// and facility (upper bits) as a single integer 0..191. Every other
+// shape detail differs:
+//
+//   RFC 3164 (BSD syslog, the de-facto Cisco/network-appliance format):
+//     <PRI>MMM DD HH:MM:SS host program[pid]: message
+//   RFC 5424 (the modern replacement, well-defined ISO timestamp):
+//     <PRI>VERSION ISOTIMESTAMP HOSTNAME APP PROCID MSGID [SD-PARAMS] MSG
+//
+// The PRI integer is identical in both RFCs and shared via
+// `_tlDecodePri`. `_tlSyslogSeverityName` maps the 0..7 severity to its
+// canonical lowercase name (`emergency` … `debug`). `_tlSyslogFacilityName`
+// maps 0..23 to the named facilities Cisco/Linux use.
+//
+// RFC 3164 timestamps lack a year. `_tlInferYear(fileLastModified)`
+// returns the year to assume; if a parsed timestamp would be > 30 days
+// in the future relative to the inferred year, the parser silently
+// rolls back one year (the same heuristic rsyslog and journalctl use).
+
+const _TL_SYSLOG_SEVERITY = ['emergency', 'alert', 'critical', 'error',
+                             'warning', 'notice', 'informational', 'debug'];
+const _TL_SYSLOG_FACILITY = [
+  'kern', 'user', 'mail', 'daemon', 'auth', 'syslog', 'lpr', 'news',
+  'uucp', 'cron', 'authpriv', 'ftp', 'ntp', 'audit', 'alert', 'clock',
+  'local0', 'local1', 'local2', 'local3', 'local4', 'local5', 'local6', 'local7',
+];
+
+function _tlSyslogSeverityName(sev) {
+  return _TL_SYSLOG_SEVERITY[sev | 0] || '';
+}
+function _tlSyslogFacilityName(fac) {
+  return _TL_SYSLOG_FACILITY[fac | 0] || ('facility' + (fac | 0));
+}
+// Decode an RFC 3164/5424 priority integer. Returns
+// `{ facility, severity, severityName, facilityName }` or `null` for
+// out-of-range / non-integer inputs.
+function _tlDecodePri(pri) {
+  // Tolerate string PRIs (the line tokeniser hands us a captured
+  // regex group, which is a string), but reject `null` / `undefined` /
+  // `''` outright — the coercion `+null === 0` would otherwise return
+  // a "valid" kern.emerg result for a missing PRI which is
+  // misleading. Bare numbers and parseable digit strings pass.
+  if (pri === null || pri === undefined || pri === '') return null;
+  const n = +pri;
+  if (!Number.isInteger(n) || n < 0 || n > 191) return null;
+  const severity = n & 0x07;
+  const facility = (n >> 3) & 0x1F;
+  return {
+    facility,
+    severity,
+    severityName: _tlSyslogSeverityName(severity),
+    facilityName: _tlSyslogFacilityName(facility),
+  };
+}
+
+// Three-letter month abbreviation → 0-indexed month.
+const _TL_MONTH_ABBR = {
+  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
+};
+
+// Infer the year to assume for RFC 3164 timestamps (which lack a year).
+// Uses `file.lastModified` when available, otherwise the current year.
+// Deterministic per-file: identical bytes + identical lastModified
+// always produce identical output, satisfying the build determinism rule
+// for any code path the parser reaches. (The fallback to "current year"
+// only fires for File objects without lastModified — synthetic test
+// inputs — where determinism within a single run is sufficient.)
+function _tlInferYear(fileLastModified) {
+  if (Number.isFinite(fileLastModified) && fileLastModified > 0) {
+    return new Date(fileLastModified).getUTCFullYear();
+  }
+  return new Date().getUTCFullYear();
+}
+
+// Tokenise one RFC 3164 syslog line. Shape:
+//   <PRI>MMM DD HH:MM:SS host program[pid]: message
+// `host`, `program`, `pid` are all optional in practice (some senders
+// omit the program; some embed only `program:` without a PID; some
+// omit the trailing colon entirely). The tokeniser is intentionally
+// forgiving — it returns whatever it can extract and always emits a
+// 7-cell row matching `_TL_SYSLOG3164_COLS`.
+//
+// `assumedYear` is the year the timestamp should land in (see
+// `_tlInferYear`). Tokens with no parseable timestamp leave
+// the timestamp cell empty; downstream `_tlParseTimestamp` will then
+// just see '' and the row falls outside any time-bucket. The host /
+// program / pid cells fall through unchanged on parse failures so the
+// raw text is still searchable in the grid.
+//
+// Returns `null` for inputs that don't begin with `<PRI>` — the caller
+// is expected to skip those lines (continuation lines for multi-line
+// events, garbage interleaved into the file, etc.).
+function _tlTokenizeSyslog3164(line, fileLastModifiedMs) {
+  if (!line) return null;
+  const m = /^<(\d{1,3})>/.exec(line);
+  if (!m) return null;
+  const pri = +m[1];
+  if (pri < 0 || pri > 191) return null;
+  let i = m[0].length;
+  while (i < line.length && line.charCodeAt(i) === 0x20) i++;
+  const ts = /^([A-Z][a-z]{2})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+/.exec(line.slice(i));
+  let timestamp = '';
+  // Year-inference rule. RFC 3164 timestamps omit the year. We use the
+  // file's last-modified time ("now" relative to the file) as the
+  // upper bound: log entries should be at-or-before mtime. Try the
+  // file's mtime year first; if the resulting ms lands more than 30
+  // days past mtime it's almost certainly from the previous year.
+  // The 30-day buffer absorbs clock-skew + timezone offset (mtime is
+  // typically local-tz; the log line carries no timezone). When mtime
+  // is 0/missing we fall back to the current UTC year — non-
+  // deterministic across runs but the only sensible choice without
+  // an mtime to anchor to.
+  const nowMs = (Number.isFinite(fileLastModifiedMs) && fileLastModifiedMs > 0)
+    ? fileLastModifiedMs : Date.now();
+  const assumedYear = new Date(nowMs).getUTCFullYear();
+  if (ts) {
+    const mo = _TL_MONTH_ABBR[ts[1].toLowerCase()];
+    const d  = +ts[2];
+    const hh = +ts[3], mm = +ts[4], ss = +ts[5];
+    if (mo !== undefined && d >= 1 && d <= 31
+        && hh < 24 && mm < 60 && ss < 60) {
+      let yr = assumedYear | 0;
+      let candidateMs = Date.UTC(yr, mo, d, hh, mm, ss);
+      if (candidateMs > nowMs + 30 * 86400_000) {
+        yr -= 1;
+        candidateMs = Date.UTC(yr, mo, d, hh, mm, ss);
+      }
+      // Emit as ISO-ish "YYYY-MM-DD HH:MM:SS" (no Z) — matches the
+      // EVTX timestamp shape that `_tlParseTimestamp` already
+      // recognises via the ISO branch.
+      const pad = n => String(n).padStart(2, '0');
+      timestamp = `${yr}-${pad(mo + 1)}-${pad(d)} ${pad(hh)}:${pad(mm)}:${pad(ss)}`;
+    }
+    i += ts[0].length;
+  }
+  // After the timestamp, the rest is "HEADER MSG" where HEADER is
+  // optionally `host program[pid]:` (the colon ends HEADER). We split
+  // on the first colon — but carefully: a colon inside a host name is
+  // legal (IPv6) and a colon inside the message body is common.
+  // The RFC 3164 grammar says: host is a single token (no spaces)
+  // followed by a space, then TAG (a-zA-Z0-9 only) up to 32 chars,
+  // optionally followed by `[pid]`, then `:` then a single space, then
+  // CONTENT. We honour that grammar but tolerate missing pieces.
+  let host = '', program = '', pid = '', message = '';
+  const rest = line.slice(i);
+  // Find host (first whitespace-bounded token). Empty if rest doesn't
+  // start with a printable token — rare, but tolerate.
+  const hostM = /^(\S+)\s+(.*)$/.exec(rest);
+  if (hostM) {
+    host = hostM[1];
+    let after = hostM[2];
+    // TAG: up to 32 alnum + `_/-.` chars, optional `[pid]`, then `:` + space.
+    // We accept any program-like token before the first colon as long
+    // as it doesn't contain whitespace before the colon.
+    const tagM = /^([A-Za-z0-9_./\-]{1,64})(?:\[(\d{1,10})\])?:\s*(.*)$/.exec(after);
+    if (tagM) {
+      program = tagM[1];
+      pid = tagM[2] || '';
+      message = tagM[3];
+    } else {
+      message = after;
+    }
+  } else {
+    message = rest;
+  }
+  const decoded = _tlDecodePri(pri);
+  return [
+    timestamp,
+    decoded ? decoded.severityName : '',
+    decoded ? decoded.facilityName : '',
+    host,
+    program,
+    pid,
+    message,
+  ];
+}
+
+// Canonical column order for RFC 3164 syslog. `Timestamp` lives at
+// index 0 so `_tlAutoDetectTimestampCol`'s header-hint regex picks it
+// up; `Severity` at index 1 makes it the default stack column via
+// `_tlAutoDetectStackCol` (it's in the `_TL_STACK_EXACT` whitelist).
+const _TL_SYSLOG3164_COLS = ['Timestamp', 'Severity', 'Facility', 'Host',
+                             'Program', 'PID', 'Message'];
+
 // Canonical Apache CLF column names. The Combined Log Format (Apache
 // `LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-agent}i\""`)
 // emits 9 fields; the older Common Log Format (no referer / UA) emits 7.

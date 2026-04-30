@@ -528,22 +528,33 @@ window.WorkerManager = (function () {
    *  @param {string}      kind    'csv' | 'evtx' | 'sqlite'
    *  @param {object}      [opts]  kind-specific options:
    *                                 csv: { explicitDelim?: ','|';'|'\t'|'|'|' ',
-   *                                        kindHint?: 'log' | null }
+   *                                        kindHint?: 'log' | 'syslog3164' | null,
+   *                                        fileLastModified?: number }
    *
    *  `kindHint: 'log'` is passed by the Timeline router for `.log` drops
    *  (and extensionless drops the CLF sniffer matched). It activates
    *  Apache / Nginx Common Log Format handling in the worker's CSV path
    *  — the bracketed-date pair is re-merged, the first row is treated
-   *  as data, and canonical column names are applied. */
+   *  as data, and canonical column names are applied.
+   *
+   *  Other `kindHint` values are structured-log dispatch tags
+   *  (currently `'syslog3164'`; CEF/LEEF/logfmt/JSONL/Zeek are added
+   *  in subsequent commits). They route the buffer to a dedicated
+   *  per-format tokeniser inside the worker's CSV dispatcher and
+   *  bypass the RFC-4180 state machine entirely. `fileLastModified`
+   *  travels alongside so RFC 3164 timestamps (which lack a year)
+   *  parse deterministically against the file's mtime. */
   function runTimeline(buffer, kind, opts) {
     if (kind !== 'csv' && kind !== 'evtx' && kind !== 'sqlite') {
       return Promise.reject(new Error('runTimeline: unknown kind ' + kind));
     }
     const explicitDelim = (opts && opts.explicitDelim) || undefined;
     const kindHint = (opts && opts.kindHint) || undefined;
+    const fileLastModified = (opts && opts.fileLastModified) || undefined;
     const payload = { kind, buffer };
     if (explicitDelim) payload.explicitDelim = explicitDelim;
     if (kindHint)      payload.kindHint = kindHint;
+    if (fileLastModified) payload.fileLastModified = fileLastModified;
     // `opts.onBatch(msg)` — optional sink for `{event:'rows', batch:[...]}`
     // streaming events from the worker. The CSV path uses this to ship rows
     // back in 50_000-row batches instead of one giant structured-clone

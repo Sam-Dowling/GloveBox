@@ -117,8 +117,17 @@ extendApp({
     const trimmed = text.trimStart();
     if (!trimmed) return null;
     // Reject obvious non-tabular shapes: JSON, XML, shebangs, HTML fragments.
+    //
+    // Syslog RFC 3164 lines start with `<PRI>` — a 1-3 digit number in
+    // angle brackets. The HTML/XML reject below would catch them too
+    // (it triggers on a leading `<`), so we run a quick syslog probe
+    // first and let those lines through. Other `<…>` content is still
+    // rejected as before.
     const firstCh = trimmed.charAt(0);
-    if (firstCh === '{' || firstCh === '[' || firstCh === '<') return null;
+    const _looksLikeSyslogHead =
+      firstCh === '<' && /^<\d{1,3}>/.test(trimmed);
+    if (firstCh === '{' || firstCh === '[') return null;
+    if (firstCh === '<' && !_looksLikeSyslogHead) return null;
     if (trimmed.startsWith('#!') || trimmed.startsWith('<?')) return null;
     // C-family line comments (`//`) are a strong signal of source code
     // (JS, JXA, C, C#, Java, etc.) — not tabular data.  Without this
@@ -155,6 +164,22 @@ extendApp({
         if (_CLF_LINE_RE.test(head[i])) hits++;
       }
       if (head.length >= 2 && hits / head.length >= 0.6) return 'log';
+    }
+    // Syslog RFC 3164 sniff. The `<PRI>MMM DD HH:MM:SS host …` shape
+    // is essentially a magic prefix — there is no other format in the
+    // wild that combines `<\d{1,3}>` with a 3-letter month, day, and
+    // colon-separated time. Threshold matches the CLF sniff (≥60 % of
+    // first 5 non-empty lines). Returned as `'syslog3164'` so the
+    // router passes a dedicated `kindHint` through to the worker.
+    const _SYSLOG3164_LINE_RE =
+      /^<\d{1,3}>\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+/i;
+    {
+      const head = lines.slice(0, 5);
+      let hits = 0;
+      for (let i = 0; i < head.length; i++) {
+        if (_SYSLOG3164_LINE_RE.test(head[i])) hits++;
+      }
+      if (head.length >= 2 && hits / head.length >= 0.6) return 'syslog3164';
     }
     const candidates = [',', '\t', ';', '|'];
     let best = { delim: null, cols: 0, confidence: 0 };
@@ -274,11 +299,29 @@ extendApp({
       }
       // Resolve the effective extension — may come from the filename or,
       // for extensionless inputs, from the magic-byte / text sniff.
+      //
+      // `.log` is special-cased: real-world syslog files almost always
+      // carry a `.log` extension (e.g. `/var/log/messages`,
+      // `/var/log/auth.log`), so we run the content sniff over `.log`
+      // inputs as well and let it upgrade us to a more specific
+      // structured-log kind ('syslog3164', etc.) when the magic-prefix
+      // pattern matches. CLF stays the default for `.log` when no
+      // structured-log sniff fires.
       let ext = (file.name && file.name.indexOf('.') !== -1)
         ? file.name.split('.').pop().toLowerCase() : '';
       if (!TIMELINE_EXTS.has(ext)) {
         const sniffed = this._sniffTimelineContent(buffer);
         if (sniffed) ext = sniffed;
+      } else if (ext === 'log') {
+        const sniffed = this._sniffTimelineContent(buffer);
+        // Only upgrade — don't downgrade. If the sniff returned 'log'
+        // (CLF) or anything that's still in TIMELINE_EXTS, keep the
+        // filename ext. Structured-log sniffs return strings outside
+        // TIMELINE_EXTS ('syslog3164', etc.) so this filter promotes
+        // them while preserving the CLF default.
+        if (sniffed && !TIMELINE_EXTS.has(sniffed) && sniffed !== 'log') {
+          ext = sniffed;
+        }
       }
 
       this._fileMeta = {
@@ -300,7 +343,8 @@ extendApp({
       let view = null;
       let workerKind = null;
       if (ext === 'evtx') workerKind = 'evtx';
-      else if (ext === 'csv' || ext === 'tsv' || ext === 'log') workerKind = 'csv';
+      else if (ext === 'csv' || ext === 'tsv' || ext === 'log'
+            || ext === 'syslog3164') workerKind = 'csv';
       else if (ext === 'sqlite' || ext === 'db') workerKind = 'sqlite';
 
       if (workerKind && window.WorkerManager
@@ -448,9 +492,21 @@ extendApp({
           // post-parse, the first row is treated as data (CLF has no
           // header), and canonical column names are applied when the
           // row width matches 9 (Combined) or 7 (Common).
+          //
+          // `kindHint: 'syslog3164'` (and the other structured-log
+          // hints introduced alongside) bypass CsvRenderer entirely
+          // and feed the buffer to a dedicated per-format tokeniser
+          // (see the matching `if (kindHint === ...)` branch in
+          // `timeline.worker.js::_parseCsv`). Structured-log loads
+          // also pass `fileLastModified` so the parser can infer the
+          // year for RFC 3164 timestamps deterministically.
+          const _structuredLog = (ext === 'syslog3164');
           const opts = (workerKind === 'csv')
-            ? { explicitDelim: ext === 'tsv' ? '\t' : (ext === 'log' ? ' ' : null),
-                kindHint:    ext === 'log' ? 'log' : null,
+            ? { explicitDelim: ext === 'tsv' ? '\t'
+                  : (ext === 'log' ? ' ' : null),
+                kindHint:    ext === 'log' ? 'log'
+                  : (_structuredLog ? ext : null),
+                fileLastModified: file && file.lastModified || 0,
                 onBatch, timeoutMs: sizeTimeout }
             : { onBatch, timeoutMs: sizeTimeout };
           const msg = await window.WorkerManager.runTimeline(transfer, workerKind, opts);
@@ -584,6 +640,11 @@ extendApp({
           const explicit = ext === 'tsv' ? '\t' : (ext === 'log' ? ' ' : null);
           view = await TimelineView.fromCsvAsync(
             file, buffer, explicit, ext === 'log' ? 'log' : null);
+        } else if (ext === 'syslog3164') {
+          // Structured-log fallback — mirrors the worker's
+          // `_parseStructuredLog` for environments where workers
+          // can't spawn (Firefox `file://`).
+          view = await TimelineView.fromStructuredLogAsync(file, buffer, ext);
         } else if (ext === 'sqlite' || ext === 'db') {
           view = TimelineView.fromSqlite(file, buffer);
         } else {
@@ -754,15 +815,25 @@ extendApp({
       if (Number.isInteger(msg.defaultStackColIdx)) out.defaultStackColIdx = msg.defaultStackColIdx;
       return new TimelineView(out);
     }
-    // csv / tsv — no analyzer side-channel. Pass the RowStore straight
-    // through to `TimelineView`.
-    return new TimelineView({
+    // csv / tsv / structured-log — no analyzer side-channel. Pass the
+    // RowStore straight through to `TimelineView`.
+    //
+    // Structured-log payloads (`syslog3164`, etc.) come back through
+    // the `kind === 'csv'` worker channel but with their own
+    // `formatLabel` ('Syslog (RFC 3164)') and explicit
+    // `defaultTimeColIdx` / `defaultStackColIdx` values. Honour them
+    // when present so the histogram opens stacked-by Severity rather
+    // than re-running the heuristic 2000-row probe.
+    const csvOut = {
       file, columns,
       store: rowStore,
       formatLabel: msg.formatLabel || (kind === 'csv' ? 'CSV' : 'TSV'),
       truncated: !!msg.truncated,
       originalRowCount: msg.originalRowCount || rowStore.rowCount,
-    });
+    };
+    if (Number.isInteger(msg.defaultTimeColIdx)) csvOut.defaultTimeColIdx = msg.defaultTimeColIdx;
+    if (Number.isInteger(msg.defaultStackColIdx)) csvOut.defaultStackColIdx = msg.defaultStackColIdx;
+    return new TimelineView(csvOut);
   },
 
   _clearTimelineFile() {
