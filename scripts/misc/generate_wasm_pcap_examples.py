@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # ════════════════════════════════════════════════════════════════════════════
-# scripts/_gen_wasm_pcap_examples.py — One-shot generator for the WASM and
-# PCAP example fixtures committed under `examples/`.
+# scripts/misc/generate_wasm_pcap_examples.py — One-shot generator for the
+# WASM and PCAP example fixtures committed under `examples/`.
 #
 # Run once at fixture-creation time; the binary outputs are committed and
 # this script is retained only so future regens are reproducible.
 #
-#     python scripts/_gen_wasm_pcap_examples.py
+#     python scripts/misc/generate_wasm_pcap_examples.py
 #
 # Outputs:
 #   examples/web/example.wasm                    — minimal WASM module that
@@ -23,7 +23,7 @@ from __future__ import annotations
 import struct
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 
 
 # ─── WASM ───────────────────────────────────────────────────────────────────
