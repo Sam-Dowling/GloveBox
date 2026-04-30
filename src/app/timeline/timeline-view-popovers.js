@@ -797,7 +797,6 @@ Object.assign(TimelineView.prototype, {
     }
 
     // ── Auto tab wiring
-    const autoPane = dlg.querySelector('.tl-dialog-pane-auto');
     const autoBody = dlg.querySelector('.tl-auto-body');
     const autoExtractBtn = dlg.querySelector('[data-act="auto-extract"]');
     const autoCount = dlg.querySelector('.tl-auto-count');

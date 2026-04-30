@@ -243,7 +243,7 @@ class IsoRenderer {
       }
       if (pos + recLen > bytes.length) break;
 
-      const extAttrLen = bytes[pos + 1];
+      const _extAttrLen = bytes[pos + 1];
       const lba = this._read32Both(bytes, pos + 2);
       const size = this._read32Both(bytes, pos + 10);
       const flags = bytes[pos + 25];

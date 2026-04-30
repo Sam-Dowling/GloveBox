@@ -905,8 +905,10 @@ async function _parseEvtx(buffer) {
   for (let i = 0; i < list.length; i++) {
     const ev = list[i];
     if (!ev) { trimmedEvents[i] = ev; continue; }
-    // shallow clone, drop rawRecord
-    const { rawRecord, ...rest } = ev;
+    // shallow clone, drop rawRecord (idiomatic destructure-omit — the
+    // `_rawRecord` binding is the prefix-marker that explicitly signals
+    // "extract this key but don't reference it").
+    const { rawRecord: _rawRecord, ...rest } = ev;
     trimmedEvents[i] = rest;
   }
 

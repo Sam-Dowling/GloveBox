@@ -171,7 +171,7 @@ class RarRenderer {
     const MAX_BLOCKS = PARSER_LIMITS.MAX_ENTRIES * 2;
     for (let iter = 0; iter < MAX_BLOCKS; iter++) {
       if (off + 7 > bytes.length) break;
-      const headCrc = dv.getUint16(off, true);
+      const _headCrc = dv.getUint16(off, true);
       const headType = bytes[off + 2];
       const headFlags = dv.getUint16(off + 3, true);
       const headSize = dv.getUint16(off + 5, true);
@@ -353,8 +353,11 @@ class RarRenderer {
       if (headerSize === 0 || off + headerSize > bytes.length) break;
       v = readVuint(off); const headerType = v.value; off = v.pos;
       v = readVuint(off); const headerFlags = v.value; off = v.pos;
-      let extraAreaSize = 0, dataSize = 0;
-      if (headerFlags & 0x0001) { v = readVuint(off); extraAreaSize = v.value; off = v.pos; }
+      // RAR5 header flags 0x0001 / 0x0002 carry extra-area-size and
+      // data-size vuints that we read structurally to advance `off`
+      // but don't otherwise use here.
+      let dataSize = 0;
+      if (headerFlags & 0x0001) { v = readVuint(off); off = v.pos; }
       if (headerFlags & 0x0002) { v = readVuint(off); dataSize = v.value; off = v.pos; }
 
       if (headerType === 1) {

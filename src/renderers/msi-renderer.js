@@ -841,10 +841,9 @@ class MsiRenderer {
         if (len === 0 && refCount !== 0) {
           if (p + 4 > pool.byteLength) break;
           const loLen = dv.getUint16(p, true);
-          const hiRef = dv.getUint16(p + 2, true);
+          const _hiRef = dv.getUint16(p + 2, true); // real refCount for this long record — unused here
           p += 4;
           len = (refCount << 16) | loLen;
-          // (hiRef is the real refCount for this long record — unused here)
         }
         if (len === 0) {
           strings.push('');

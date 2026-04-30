@@ -413,7 +413,7 @@ class EvtxRenderer {
           ctx.pos++; // token
           // Dependency ID (2 bytes) - for template substitutions
           if (tokenByte & 0x40) { ctx.pos += 2; } // has dependency
-          const dataSize = dv.getUint32(ctx.pos, true); ctx.pos += 4;
+          const _dataSize = dv.getUint32(ctx.pos, true); ctx.pos += 4;
           const name = readName();
           // Skip attribute count (4 bytes)
           ctx.pos += 4;

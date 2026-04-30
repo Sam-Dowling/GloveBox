@@ -767,7 +767,6 @@ class App {
   _reportNonFatal(where, err, opts) {
     opts = opts || {};
     const msg = (err && err.message) ? err.message : String(err);
-    // eslint-disable-next-line no-console
     console.warn(`[loupe] ${where}: ${msg}`, err);
     // Tee every non-fatal into the dev-mode breadcrumb ribbon.
     // Always pushed (even when `opts.silent` skips the sidebar IOC row)

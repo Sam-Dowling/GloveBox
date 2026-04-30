@@ -139,7 +139,7 @@ class PptBinaryRenderer {
 
     while (pos + 8 <= buf.length) {
       const recVer = buf[pos] & 0x0F;
-      const recInst = ((buf[pos] >> 4) | (buf[pos + 1] << 4)) & 0xFFF;
+      const _recInst = ((buf[pos] >> 4) | (buf[pos + 1] << 4)) & 0xFFF;
       const recType = buf[pos + 2] | (buf[pos + 3] << 8);
       const recLen = buf[pos + 4] | (buf[pos + 5] << 8) | (buf[pos + 6] << 16) | ((buf[pos + 7] << 24) >>> 0);
 

@@ -643,7 +643,7 @@ class MachoRenderer {
                (cmd & 0x7FFFFFFF) === 0x0C || (cmd & 0x7FFFFFFF) === 0x18) {
         const nameOff = this._u32(b, cmdOff + 8);
         const name = this._str(b, cmdOff + nameOff, Math.min(cmdsize - nameOff, 256));
-        const timestamp = this._u32(b, cmdOff + 12);
+        const _timestamp = this._u32(b, cmdOff + 12);
         const curVer = this._u32(b, cmdOff + 16);
         const compatVer = this._u32(b, cmdOff + 20);
         const type = cmd === 0x18 || (cmd & 0x7FFFFFFF) === 0x18 ? 'weak'
@@ -933,7 +933,7 @@ class MachoRenderer {
     const magic = this._u32be(b, offset);
     if (magic !== 0xFADE0CC0) return { present: true, valid: false, detail: 'Unknown signature format' };
 
-    const length = this._u32be(b, offset + 4);
+    const _length = this._u32be(b, offset + 4);
     const count = this._u32be(b, offset + 8);
     const info = { present: true, valid: true, blobs: count, detail: `${count} signature blob(s)` };
 
@@ -941,7 +941,7 @@ class MachoRenderer {
     for (let i = 0; i < Math.min(count, 10); i++) {
       const boff = offset + 12 + i * 8;
       if (boff + 8 > b.length) break;
-      const btype = this._u32be(b, boff);
+      const _btype = this._u32be(b, boff);
       const boffset = this._u32be(b, boff + 4);
       const blobStart = offset + boffset;
       if (blobStart + 8 > b.length) continue;

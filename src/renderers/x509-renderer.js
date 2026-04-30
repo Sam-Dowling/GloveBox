@@ -320,8 +320,8 @@ class X509Renderer {
     if (!root.children || root.children.length < 3) throw new Error('Certificate structure incomplete');
 
     const tbsCert = root.children[0];       // TBSCertificate
-    const sigAlg  = root.children[1];       // Signature algorithm
-    const sigVal  = root.children[2];       // Signature value
+    const _sigAlg = root.children[1];       // Signature algorithm — kept for documentary alignment with X.509 SEQUENCE structure
+    const _sigVal = root.children[2];       // Signature value — kept for documentary alignment
 
     if (!tbsCert.children) throw new Error('TBSCertificate has no children');
 

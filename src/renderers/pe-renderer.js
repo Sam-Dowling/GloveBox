@@ -1083,7 +1083,7 @@ class PeRenderer {
       throwIfAborted();
       if (descOff + 32 > bytes.length) break;
 
-      const grAttrs    = this._u32(bytes, descOff);
+      const _grAttrs   = this._u32(bytes, descOff);
       const nameRva    = this._u32(bytes, descOff + 4);
       const intRva     = this._u32(bytes, descOff + 16);
 

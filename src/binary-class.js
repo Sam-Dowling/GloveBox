@@ -252,9 +252,6 @@ function weightFor(klass, severity, category) {
   const family = klass.family;
   const kind = klass.kind;
 
-  // Categories considered "ubiquitous noise" — these are the ones that
-  // get demoted hardest on signed/trusted binaries.
-  const NOISE = new Set(['anti-debug', 'timing', 'dynamic-loading', 'networking']);
   // Categories that stay near full weight regardless of signer.
   const BAD = new Set(['injection', 'cred-theft', 'ransomware', 'hooking', 'persistence']);
 

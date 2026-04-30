@@ -115,7 +115,6 @@ class CsvRenderer {
     const len = text.length;
     const QUOTE = 34;   // '"'
     const NL    = 10;   // '\n'
-    const delimCode = delim.charCodeAt(0);
 
     const rows       = [];
     const rowOffsets = [];

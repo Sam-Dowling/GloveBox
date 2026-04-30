@@ -445,7 +445,6 @@ extendApp({
       // the same pattern.
       try {
         let encodedFindings;
-        let usedWorker = false;
         // Aggressive mode is single-shot — clear it before the scan so
         // a later "regular" inner-file load (e.g. a renderer's
         // open-inner-file event) doesn't accidentally inherit the flag
@@ -466,7 +465,6 @@ extendApp({
             }
           );
           encodedFindings = out.findings || [];
-          usedWorker = true;
         } catch (workerErr) {
           // A newer file load has bumped the encoded-channel token and
           // aborted this scan. Re-throw so the outer catch can bail

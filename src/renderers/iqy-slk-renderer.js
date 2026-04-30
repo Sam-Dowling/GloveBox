@@ -231,7 +231,10 @@ class IqySlkRenderer {
     for (const line of text.split(/\r?\n/)) {
       if (!line.trim()) continue;
       const parts = line.split(';');
-      const type = parts[0];
+      // parts[0] is the SLK record type ('C', 'F', 'B', etc.) — only
+      // the per-cell directives in parts[1..] drive the value/coord
+      // extraction below, so the leading record-type token is read
+      // structurally and discarded.
 
       for (const p of parts.slice(1)) {
         if (p.startsWith('X')) curC = parseInt(p.slice(1)) || curC;

@@ -100,7 +100,6 @@ Object.assign(EncodedContentDetector.prototype, {
       // Need at least 4 strides (≥ 4 real chars decoded).
       if (runs < 4) return null;
       const endExclusive = j;  // last stride didn't include separator past end
-      const span = endExclusive - i;
       const key = `${i}:${endExclusive}:${stride}`;
       if (seenSpans.has(key)) return null;
       // Build the collapsed string by taking (stride - 1) chars from
