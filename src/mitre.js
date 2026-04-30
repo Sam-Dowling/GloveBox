@@ -94,6 +94,7 @@
     'T1112':     { name: 'Modify Registry',                       tactic: 'defense-evasion' },
     'T1140':     { name: 'Deobfuscate/Decode Files',              tactic: 'defense-evasion' },
     'T1218':     { name: 'System Binary Proxy Execution',         tactic: 'defense-evasion' },
+    'T1220':     { name: 'XSL Script Processing',                 tactic: 'defense-evasion' },
     'T1480':     { name: 'Execution Guardrails',                  tactic: 'defense-evasion' },
     'T1497':     { name: 'Virtualization/Sandbox Evasion',        tactic: 'defense-evasion' },
     'T1497.001': { name: 'System Checks',                         tactic: 'defense-evasion', parent: 'T1497' },

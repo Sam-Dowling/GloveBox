@@ -743,6 +743,22 @@ class RendererRegistry {
       description: 'Managed Object Format (.mof) — WMI Schema',
     },
     {
+      // XSLT stylesheet — abused for ATT&CK T1220 (SquiblyTwo signed
+      // binary proxy execution via wmic.exe /format:<url> or msxsl.exe).
+      // Two textSniff anchors: the canonical xsl:stylesheet root and
+      // the older xsl:transform alias. Both bind to the W3C XSL ns.
+      id: 'xslt',
+      className: 'XsltRenderer',
+      exts: ['xsl', 'xslt'],
+      textSniff: (ctx) => {
+        const h = ctx.head500;
+        if (/<xsl:(stylesheet|transform)\b/i.test(h)) return true;
+        if (/xmlns:xsl\s*=\s*["']http:\/\/www\.w3\.org\/1999\/XSL\/Transform/i.test(h)) return true;
+        return false;
+      },
+      description: 'XSLT Stylesheet (.xsl / .xslt)',
+    },
+    {
       id: 'wsf',
       className: 'WsfRenderer',
       exts: ['wsf', 'wsc', 'wsh'],

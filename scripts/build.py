@@ -775,6 +775,7 @@ APP_JS_FILES = [
     'src/renderers/scf-renderer.js',
     'src/renderers/library-ms-renderer.js',
     'src/renderers/mof-renderer.js',
+    'src/renderers/xslt-renderer.js',
     'src/renderers/wsf-renderer.js',
     'src/renderers/reg-renderer.js',
     'src/renderers/inf-renderer.js',

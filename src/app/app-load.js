@@ -1175,6 +1175,11 @@ extendApp({
       this.findings = r.analyzeForSecurity(buffer, file.name);
       return { docEl: r.render(buffer, file.name) };
     },
+    xslt(file, buffer) {
+      const r = new XsltRenderer();
+      this.findings = r.analyzeForSecurity(buffer, file.name);
+      return { docEl: r.render(buffer, file.name) };
+    },
     reg(file, buffer) {
       const r = new RegRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
