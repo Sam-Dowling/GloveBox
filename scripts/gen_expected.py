@@ -129,7 +129,14 @@ def main() -> int:
     # report was generated before the synthetic dumpResult landed) —
     # so we infer Timeline from the file extension set hard-coded in
     # `src/app/timeline/timeline-router.js` (the `TIMELINE_EXTS` set).
-    TIMELINE_EXTS = frozenset({'csv', 'tsv', 'evtx', 'sqlite', 'db'})
+    # Mirror `TIMELINE_EXTS` in `src/app/timeline/timeline-helpers.js`.
+    # Out-of-sync sets silently flip `.log` / `.jsonl` / `.cef` / `.leef`
+    # rows from `timeline:true` to `timeline:false` and break the
+    # snapshot matrix routing assertion.
+    TIMELINE_EXTS = frozenset({
+        'csv', 'tsv', 'evtx', 'sqlite', 'db',
+        'log', 'jsonl', 'ndjson', 'cef', 'leef',
+    })
 
     out_records: list[dict] = []
     for r in sorted(rows, key=lambda r: (r['category'], r['file'])):

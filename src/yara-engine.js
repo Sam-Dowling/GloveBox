@@ -54,6 +54,7 @@ class YaraEngine {
     is_elf:             ['elf'],
     is_macho:           ['macho'],
     is_native_binary:   ['pe', 'elf', 'macho'],
+    is_wasm:            ['wasm'],
 
     // ── Documents / Office ──────────────────────────────────────────────
     is_pdf:             ['pdf'],
@@ -122,6 +123,7 @@ class YaraEngine {
     is_sqlite:          ['sqlite'],
     is_evtx:            ['evtx'],
     is_image:           ['image'],
+    is_pcap:            ['pcap'],
 
     // ── Plaintext / catch-alls ──────────────────────────────────────────
     is_plaintext:       ['plaintext'],

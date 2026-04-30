@@ -29,6 +29,7 @@ Headline samples are listed below; each subdirectory contains more.
 
 - [`forensics/example-security.evtx`](forensics/example-security.evtx) — Windows Security log (auto-flags 4688 / 4624 / 1102) — opens straight in Timeline
 - [`forensics/chromehistory-example.sqlite`](forensics/chromehistory-example.sqlite) — Chrome browsing history → Timeline
+- [`forensics/example-capture.pcap`](forensics/example-capture.pcap) — libpcap capture with DNS / HTTP / TLS-SNI hostname extraction
 - [`pe/signed-example.dll`](pe/signed-example.dll) — Authenticode-signed DLL with PE analysis + cert chain
 - [`pe/tls-callback.exe`](pe/tls-callback.exe) — minimal PE32 with a TLS callback (T1546.009)
 - [`pe/rcdata-dropper.exe`](pe/rcdata-dropper.exe) — PE with a second PE embedded as a resource (T1027.009)
@@ -49,6 +50,7 @@ Headline samples are listed below; each subdirectory contains more.
 - [`crypto/example-with-key.pem`](crypto/example-with-key.pem) — certificate with embedded private key + weak 1024-bit RSA key
 - [`crypto/example.pgp`](crypto/example.pgp), [`example.asc`](crypto/example.asc) — binary + ASCII-armored OpenPGP packet streams
 - [`web/example-malicious.svg`](web/example-malicious.svg) — SVG with embedded scripts, `<foreignObject>` phishing form
+- [`web/example.wasm`](web/example.wasm) — WebAssembly module with network/eval-bridge and WASI process-spawn imports
 - [`java/example.jar`](java/example.jar) — Java archive with class files and constant pool analysis
 - [`images/polyglot-example.png`](images/polyglot-example.png) — PNG with a ZIP appended past the IEND marker
 

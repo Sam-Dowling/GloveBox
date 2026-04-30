@@ -4,6 +4,7 @@ rule PCAP_Cobalt_Strike_Malleable_C2 {
         severity    = "critical"
         category    = "c2"
         mitre       = "T1071.001"
+        applies_to  = "pcap"
     strings:
         $ua_jquery   = "User-Agent: Mozilla/5.0 (compatible; MSIE 10.0; Windows NT 6.2; Trident/6.0)" ascii
         $cs_jquery   = "/jquery-3.3.1.min.js" ascii
@@ -21,6 +22,7 @@ rule PCAP_Empire_HTTP_Listener {
         severity    = "critical"
         category    = "c2"
         mitre       = "T1071.001"
+        applies_to  = "pcap"
     strings:
         $u1 = "/admin/get.php" ascii
         $u2 = "/news.php" ascii
@@ -37,6 +39,7 @@ rule PCAP_Metasploit_Meterpreter_Default {
         severity    = "high"
         category    = "c2"
         mitre       = "T1071.001"
+        applies_to  = "pcap"
     strings:
         $msf1 = "/INITM" ascii
         $msf2 = "/INITJM" ascii
@@ -52,6 +55,7 @@ rule PCAP_Mythic_HTTP_Profile {
         severity    = "high"
         category    = "c2"
         mitre       = "T1071.001"
+        applies_to  = "pcap"
     strings:
         $u1 = "/api/v1.4/agent_message" ascii
         $u2 = "X-Mythic" ascii nocase
@@ -65,6 +69,7 @@ rule PCAP_Sliver_HTTP_Profile {
         severity    = "high"
         category    = "c2"
         mitre       = "T1071.001"
+        applies_to  = "pcap"
     strings:
         $u1 = "/admin/login.html?id=" ascii
         $u2 = "/api/v1/info" ascii
@@ -80,6 +85,7 @@ rule PCAP_DNS_Tunneling_Long_Subdomain {
         severity    = "high"
         category    = "tunnel"
         mitre       = "T1071.004"
+        applies_to  = "pcap"
     strings:
         $tun_marker = "dnscat" ascii nocase
         $iodine     = ".iodine." ascii nocase
@@ -94,6 +100,7 @@ rule PCAP_Plaintext_Credentials_HTTP {
         severity    = "high"
         category    = "credential"
         mitre       = "T1040"
+        applies_to  = "pcap"
     strings:
         $authz = "Authorization: Basic " ascii
         $form_pass1 = "&password=" ascii nocase
@@ -111,6 +118,7 @@ rule PCAP_TLS_JA3_SelfSigned_Indicator {
         severity    = "critical"
         category    = "c2"
         mitre       = "T1573.002"
+        applies_to  = "pcap"
     strings:
         $cn1 = "CN=Major Cobalt Strike" ascii
         $cn2 = "kaboom" ascii fullword
@@ -126,6 +134,7 @@ rule PCAP_Mirai_Telnet_Bruteforce {
         severity    = "high"
         category    = "exploit"
         mitre       = "T1110.001"
+        applies_to  = "pcap"
     strings:
         $login1 = "Login: root" ascii
         $login2 = "username: admin" ascii nocase
@@ -144,6 +153,7 @@ rule PCAP_PowerShell_Download_Cradle {
         severity    = "high"
         category    = "exec"
         mitre       = "T1059.001"
+        applies_to  = "pcap"
     strings:
         $iex = "IEX(New-Object Net.WebClient).DownloadString" ascii nocase
         $iex2 = "Invoke-Expression(New-Object Net.WebClient).DownloadString" ascii nocase
@@ -159,6 +169,7 @@ rule PCAP_SMB_Lateral_Movement {
         severity    = "medium"
         category    = "lateral"
         mitre       = "T1021.002"
+        applies_to  = "pcap"
     strings:
         $smb_signature = { FF 53 4D 42 }
         $smb2_signature = { FE 53 4D 42 }
@@ -175,6 +186,7 @@ rule PCAP_Suspicious_HTTP_UserAgent {
         severity    = "medium"
         category    = "c2"
         mitre       = "T1071.001"
+        applies_to  = "pcap"
     strings:
         $ua1 = "User-Agent: python-requests/" ascii
         $ua2 = "User-Agent: curl/" ascii

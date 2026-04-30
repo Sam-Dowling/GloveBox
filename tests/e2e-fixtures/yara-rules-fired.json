@@ -59,6 +59,10 @@
     "examples/encoded-payloads/example-safelinks.txt": [
       "Info_Unique_Token_In_URL"
     ],
+    "examples/encoded-payloads/js-string-array-obfuscation.js": [
+      "PowerShell_Download_Cradle",
+      "Standalone_Download_Network_Indicators"
+    ],
     "examples/encoded-payloads/mixed-obfuscations.txt": [
       "Encoded_Base64_Gzip",
       "General_Hex_Encoded_Shellcode",
@@ -222,6 +226,12 @@
       "HTA_Any_Presence",
       "Standalone_HTA_VBScript_Indicators"
     ],
+    "examples/web/example.wasm": [
+      "Info_Contains_WebAssembly",
+      "WASM_Eval_Bridge_Imports",
+      "WASM_Network_Bridge_Imports",
+      "WASM_WASI_Process_Spawn"
+    ],
     "examples/windows-installers/example.appinstaller": [
       "MSIX_AppInstaller_HTTP",
       "MSIX_AppInstaller_Silent_AutoUpdate"
@@ -249,7 +259,6 @@
       "CMD_Caret_Obfuscation",
       "CMD_Environment_Substring_Abuse",
       "CMD_Set_Variable_Obfuscation",
-      "Standalone_Download_Network_Indicators",
       "Standalone_LOLBin_Indicators"
     ],
     "examples/windows-scripts/example.cmd": [
@@ -296,15 +305,14 @@
       "PS_Format_Operator_Obfuscation",
       "PS_Replace_Chain_Obfuscation",
       "PS_String_Concatenation_Obfuscation",
-      "PowerShell_Download_Cradle",
       "PowerShell_Encoded_Command"
     ]
   },
   "summary": {
-    "anchorFixtures": 56,
-    "rulesFiredInCorpus": 187,
-    "rulesUnanchored": 331,
-    "totalRulesDefined": 518
+    "anchorFixtures": 58,
+    "rulesFiredInCorpus": 191,
+    "rulesUnanchored": 347,
+    "totalRulesDefined": 538
   },
   "unanchoredRules": [
     "AMSI_ETW_Bypass_Patterns",
@@ -384,7 +392,6 @@
     "Info_Cloudflare_Workers_URL",
     "Info_Contains_DLL_Export",
     "Info_Contains_DotNet_Assembly",
-    "Info_Contains_WebAssembly",
     "Info_DLL_Sideload_Indicators",
     "Info_DNS_Over_HTTPS_Reference",
     "Info_DNS_TXT_Lookup",
@@ -502,6 +509,18 @@
     "OneNote_Any_Embedded_File",
     "OneNote_Embedded_PE",
     "OneNote_Embedded_Script",
+    "PCAP_Cobalt_Strike_Malleable_C2",
+    "PCAP_DNS_Tunneling_Long_Subdomain",
+    "PCAP_Empire_HTTP_Listener",
+    "PCAP_Metasploit_Meterpreter_Default",
+    "PCAP_Mirai_Telnet_Bruteforce",
+    "PCAP_Mythic_HTTP_Profile",
+    "PCAP_Plaintext_Credentials_HTTP",
+    "PCAP_PowerShell_Download_Cradle",
+    "PCAP_SMB_Lateral_Movement",
+    "PCAP_Sliver_HTTP_Profile",
+    "PCAP_Suspicious_HTTP_UserAgent",
+    "PCAP_TLS_JA3_SelfSigned_Indicator",
     "PDF_AcroForm_With_JavaScript",
     "PDF_Embedded_File_Attachment",
     "PDF_Encrypted_Content",
@@ -614,6 +633,11 @@
     "VBS_Scheduled_Task",
     "VBScript_Chr_Concatenation",
     "VHD_Disk_Image",
+    "WASM_Anti_Debug_Strings",
+    "WASM_Cryptominer_Imports",
+    "WASM_Embedded_Shellcode_Hint",
+    "WASM_Keylogger_Stealer_Exports",
+    "WASM_Source_Map_Reference",
     "WMIC_Process_Create",
     "WebDAV_Reference",
     "ZIP_Contains_Hidden_MacApp",

@@ -30,19 +30,20 @@
 {"formatTag":"pgp","iocCountAtLeast":0,"iocTypeMustInclude":["Email"],"path":"examples/crypto/example.pgp","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"pgp","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/crypto/example.sig","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"x509","iocCountAtLeast":6,"iocTypeMustInclude":["Domain","Hostname","Pattern","URL"],"path":"examples/crypto/google-chain.pem","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":"elf","iocCountAtLeast":24,"iocTypeMustInclude":["Domain","Email","File Path","URL"],"path":"examples/elf/example","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":"elf","iocCountAtLeast":14,"iocTypeMustInclude":["Domain","File Path","URL"],"path":"examples/elf/example.so","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["SVG_Redirect_Phish"]}
-{"formatTag":"elf","iocCountAtLeast":24,"iocTypeMustInclude":["Domain","Email","File Path","URL"],"path":"examples/elf/overlay-zip-elf","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"pgp","iocCountAtLeast":4,"iocTypeMustInclude":["Pattern","URL"],"path":"examples/crypto/private-example.key","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":["SSH_Private_Key_Reference"]}
+{"formatTag":"elf","iocCountAtLeast":23,"iocTypeMustInclude":["Domain","Email","File Path","URL"],"path":"examples/elf/example","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"elf","iocCountAtLeast":13,"iocTypeMustInclude":["Domain","File Path","URL"],"path":"examples/elf/example.so","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["SVG_Redirect_Phish"]}
+{"formatTag":"elf","iocCountAtLeast":23,"iocTypeMustInclude":["Domain","Email","File Path","URL"],"path":"examples/elf/overlay-zip-elf","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"eml","iocCountAtLeast":5,"iocTypeMustInclude":["Email","Pattern"],"path":"examples/email/example.eml","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"msg","iocCountAtLeast":3,"iocTypeMustInclude":["URL"],"path":"examples/email/example.msg","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":["Embedded_ZIP_In_Non_Archive","MSI_Network_Indicators"]}
-{"formatTag":"eml","iocCountAtLeast":9,"iocTypeMustInclude":["Email","IP Address","Pattern","URL"],"path":"examples/email/phishing-example.eml","riskFloor":"high","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"eml","iocCountAtLeast":10,"iocTypeMustInclude":["Email","IP Address","Pattern","URL"],"path":"examples/email/phishing-example.eml","riskFloor":"high","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"plaintext","iocCountAtLeast":0,"iocTypeMustInclude":["URL"],"path":"examples/encoded-payloads/compressed-base64-powershell.txt","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"plaintext","iocCountAtLeast":3,"iocTypeMustInclude":["Email","URL"],"path":"examples/encoded-payloads/defanged-iocs.txt","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"plaintext","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/encoded-payloads/encoded-base64-pe.txt","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["Encoded_Base64_PE_Header"]}
 {"formatTag":"plaintext","iocCountAtLeast":1,"iocTypeMustInclude":["URL"],"path":"examples/encoded-payloads/encoded-hex-base64-powershell.txt","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["Stacked_Encoding_Indicators"]}
 {"formatTag":"plaintext","iocCountAtLeast":0,"iocTypeMustInclude":["URL"],"path":"examples/encoded-payloads/encoded-zlib-base64.txt","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"plaintext","iocCountAtLeast":9,"iocTypeMustInclude":["Email","URL"],"path":"examples/encoded-payloads/example-safelinks.txt","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":null,"iocCountAtLeast":1,"iocTypeMustInclude":["URL"],"path":"examples/encoded-payloads/js-string-array-obfuscation.js","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"plaintext","iocCountAtLeast":2,"iocTypeMustInclude":["URL"],"path":"examples/encoded-payloads/js-string-array-obfuscation.js","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":["PowerShell_Download_Cradle","Standalone_Download_Network_Indicators"]}
 {"formatTag":"plaintext","iocCountAtLeast":13,"iocTypeMustInclude":[],"path":"examples/encoded-payloads/mixed-obfuscations.txt","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":["Encoded_Base64_Gzip","General_Hex_Encoded_Shellcode","Hex_Shellcode_Pattern"]}
 {"formatTag":"plaintext","iocCountAtLeast":1,"iocTypeMustInclude":["File Path","URL"],"path":"examples/encoded-payloads/nested-b64-hex-url.txt","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["Obfuscated_Download_Cradle"]}
 {"formatTag":"vbs","iocCountAtLeast":0,"iocTypeMustInclude":["URL"],"path":"examples/encoded-payloads/nested-b64-zlib-url.vbs","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
@@ -52,6 +53,7 @@
 {"formatTag":"plaintext","iocCountAtLeast":1,"iocTypeMustInclude":["File Path"],"path":"examples/encoded-payloads/nested-triple-b64-url.txt","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["Obfuscated_Download_Cradle"]}
 {"formatTag":"LOG","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/apache-access-example.log","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"SQLite \u2013 Chrome History","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/chromehistory-example.sqlite","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
+{"formatTag":"pcap","iocCountAtLeast":4,"iocTypeMustInclude":["Domain","IP Address","Pattern"],"path":"examples/forensics/example-capture.pcap","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"EVTX","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/example-security.evtx","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"EVTX","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/example.evtx","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"sqlite","iocCountAtLeast":17,"iocTypeMustInclude":["IP Address","URL"],"path":"examples/forensics/example.sqlite","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
@@ -80,8 +82,9 @@
 {"formatTag":"pkg","iocCountAtLeast":1,"iocTypeMustInclude":["Pattern"],"path":"examples/macos-system/example.pkg","riskFloor":"any","timeline":false,"yaraRulesMustInclude":["PKG_Xar_Archive"]}
 {"formatTag":"plist","iocCountAtLeast":15,"iocTypeMustInclude":["Domain","File Path","Hostname","Pattern","URL"],"path":"examples/macos-system/example.plist","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":["plist_curl_wget_download","plist_dyld_insert_libraries","plist_environment_variable_manipulation"]}
 {"formatTag":"url","iocCountAtLeast":1,"iocTypeMustInclude":["URL"],"path":"examples/macos-system/example.webloc","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":"macho","iocCountAtLeast":4,"iocTypeMustInclude":["File Path","GUID","Pattern"],"path":"examples/macos-system/overlay-random.dylib","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"macho","iocCountAtLeast":5,"iocTypeMustInclude":["File Path","GUID","Pattern"],"path":"examples/macos-system/overlay-random.dylib","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"zip","iocCountAtLeast":3,"iocTypeMustInclude":["File Path","Pattern"],"path":"examples/npm/npm-example.tgz","riskFloor":"high","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"TSV","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/office/example-multiline.tsv","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"CSV","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/office/example.csv","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"doc","iocCountAtLeast":2,"iocTypeMustInclude":["URL"],"path":"examples/office/example.doc","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":["Embedded_ZIP_In_Non_Archive","MSI_Network_Indicators"]}
 {"formatTag":"docx","iocCountAtLeast":1,"iocTypeMustInclude":["URL"],"path":"examples/office/example.docm","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["Office_Macro_Project_Present","PPAM_PPTM_AddIn"]}
@@ -97,25 +100,26 @@
 {"formatTag":"iqyslk","iocCountAtLeast":1,"iocTypeMustInclude":["Pattern"],"path":"examples/office/example.slk","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["SLK_Symbolic_Link_File"]}
 {"formatTag":"TSV","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/office/example.tsv","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"xls","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/office/example.xls","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":"xlsx","iocCountAtLeast":1,"iocTypeMustInclude":[],"path":"examples/office/example.xlsm","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["Office_Macro_Project_Present","PPAM_PPTM_AddIn"]}
+{"formatTag":"xlsx","iocCountAtLeast":1,"iocTypeMustInclude":["Pattern"],"path":"examples/office/example.xlsm","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":["Office_Macro_Project_Present","PPAM_PPTM_AddIn"]}
 {"formatTag":"xlsx","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/office/example.xlsx","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"pdf","iocCountAtLeast":1,"iocTypeMustInclude":["URL"],"path":"examples/pdf/example.pdf","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"pdf","iocCountAtLeast":3,"iocTypeMustInclude":["Pattern","URL"],"path":"examples/pdf/javascript-example.pdf","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["PDF_AutoOpen_Action","PDF_JavaScript_Execution"]}
 {"formatTag":"pdf","iocCountAtLeast":2,"iocTypeMustInclude":["Domain","URL"],"path":"examples/pdf/qr-example.pdf","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":["PDF_Phishing_QR_Code_Indicators"]}
-{"formatTag":"pe","iocCountAtLeast":6,"iocTypeMustInclude":["Domain","File Path","URL"],"path":"examples/pe/example.dll","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":"pe","iocCountAtLeast":6,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/example.exe","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":"pe","iocCountAtLeast":8,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/example.xll","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":"pe","iocCountAtLeast":6,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/overlay-pe-in-pe.exe","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":"pe","iocCountAtLeast":16,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/overlay-post-authenticode.exe","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"pe","iocCountAtLeast":5,"iocTypeMustInclude":["Domain","File Path","URL"],"path":"examples/pe/example.dll","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"pe","iocCountAtLeast":5,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/example.exe","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"pe","iocCountAtLeast":6,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/example.xll","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"pe","iocCountAtLeast":5,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/overlay-pe-in-pe.exe","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"pe","iocCountAtLeast":15,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/overlay-post-authenticode.exe","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"pe","iocCountAtLeast":0,"iocTypeMustInclude":["Pattern"],"path":"examples/pe/rcdata-dropper.exe","riskFloor":"high","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":"pe","iocCountAtLeast":14,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/signed-example.dll","riskFloor":"high","timeline":false,"yaraRulesMustInclude":[]}
-{"formatTag":"pe","iocCountAtLeast":15,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/signed-example.exe","riskFloor":"high","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"pe","iocCountAtLeast":12,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/signed-example.dll","riskFloor":"high","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"pe","iocCountAtLeast":14,"iocTypeMustInclude":["Domain","File Path","IP Address","Pattern","URL"],"path":"examples/pe/signed-example.exe","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"pe","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/pe/tls-callback.exe","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"html","iocCountAtLeast":4,"iocTypeMustInclude":["URL"],"path":"examples/web/encoded-entities.html","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["HTML_Data_URI_Payload","HTML_Entity_Obfuscated_Script","JS_Obfuscated_Payload"]}
 {"formatTag":"svg","iocCountAtLeast":35,"iocTypeMustInclude":["Email","Pattern","URL"],"path":"examples/web/example-malicious.svg","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":["HTML_Credential_Phish_Form","HTML_Data_URI_Payload","HTML_Invisible_Iframe"]}
 {"formatTag":"hta","iocCountAtLeast":3,"iocTypeMustInclude":["Pattern"],"path":"examples/web/example.hta","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":["HTA_Any_Presence","Standalone_HTA_VBScript_Indicators","Standalone_HTML_Suspicious_Elements"]}
 {"formatTag":"html","iocCountAtLeast":0,"iocTypeMustInclude":["URL"],"path":"examples/web/example.html","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"svg","iocCountAtLeast":1,"iocTypeMustInclude":["URL"],"path":"examples/web/example.svg","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"wasm","iocCountAtLeast":3,"iocTypeMustInclude":["Hash","Pattern"],"path":"examples/web/example.wasm","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":["WASM_Eval_Bridge_Imports","WASM_Network_Bridge_Imports","WASM_WASI_Process_Spawn"]}
 {"formatTag":"msix","iocCountAtLeast":7,"iocTypeMustInclude":["IP Address","Pattern","URL"],"path":"examples/windows-installers/example.appinstaller","riskFloor":"critical","timeline":false,"yaraRulesMustInclude":["MSIX_AppInstaller_HTTP","MSIX_AppInstaller_Silent_AutoUpdate"]}
 {"formatTag":"clickonce","iocCountAtLeast":3,"iocTypeMustInclude":["IP Address","Pattern","URL"],"path":"examples/windows-installers/example.application","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}
 {"formatTag":"clickonce","iocCountAtLeast":3,"iocTypeMustInclude":["IP Address","Pattern","URL"],"path":"examples/windows-installers/example.manifest","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["ClickOnce_FullTrust_Requested"]}

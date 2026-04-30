@@ -16,6 +16,7 @@ rule WASM_Cryptominer_Imports {
         severity    = "critical"
         category    = "malware"
         mitre       = "T1496"
+        applies_to  = "wasm"
     strings:
         $cn1     = "cryptonight" ascii nocase
         $cn2     = "cryptonight_hash" ascii nocase
@@ -25,7 +26,7 @@ rule WASM_Cryptominer_Imports {
         $hashvert = "hashvert" ascii nocase
         $monero  = "xmrig" ascii nocase
     condition:
-        uint32(0) == 0x6d736100 and any of them
+        any of them
 }
 
 rule WASM_Network_Bridge_Imports {
@@ -34,6 +35,7 @@ rule WASM_Network_Bridge_Imports {
         severity    = "high"
         category    = "network"
         mitre       = "T1071.001"
+        applies_to  = "wasm"
     strings:
         $f1 = "__wbg_fetch" ascii
         $f2 = "__wbg_send_with" ascii
@@ -42,7 +44,7 @@ rule WASM_Network_Bridge_Imports {
         $f5 = "__wbg_xmlhttprequest" ascii nocase
         $f6 = "emscripten_fetch" ascii
     condition:
-        uint32(0) == 0x6d736100 and any of them
+        any of them
 }
 
 rule WASM_Eval_Bridge_Imports {
@@ -51,13 +53,14 @@ rule WASM_Eval_Bridge_Imports {
         severity    = "critical"
         category    = "exec"
         mitre       = "T1059.007"
+        applies_to  = "wasm"
     strings:
         $e1 = "emscripten_run_script" ascii
         $e2 = "__wbindgen_eval" ascii
         $e3 = "__wbg_eval" ascii nocase
         $e4 = "__wbg_function_new" ascii nocase
     condition:
-        uint32(0) == 0x6d736100 and any of them
+        any of them
 }
 
 rule WASM_WASI_Process_Spawn {
@@ -66,6 +69,7 @@ rule WASM_WASI_Process_Spawn {
         severity    = "high"
         category    = "exec"
         mitre       = "T1106"
+        applies_to  = "wasm"
     strings:
         $w1 = "proc_exec" ascii
         $w2 = "proc_raise" ascii
@@ -73,7 +77,7 @@ rule WASM_WASI_Process_Spawn {
         $w4 = "sock_connect" ascii
         $wasi = "wasi_snapshot_preview1" ascii
     condition:
-        uint32(0) == 0x6d736100 and $wasi and any of ($w1, $w2, $w3, $w4)
+        $wasi and any of ($w1, $w2, $w3, $w4)
 }
 
 rule WASM_Keylogger_Stealer_Exports {
@@ -82,6 +86,7 @@ rule WASM_Keylogger_Stealer_Exports {
         severity    = "critical"
         category    = "malware"
         mitre       = "T1056.001"
+        applies_to  = "wasm"
     strings:
         $k1 = "keylogger" ascii nocase
         $k2 = "key_capture" ascii nocase
@@ -89,7 +94,7 @@ rule WASM_Keylogger_Stealer_Exports {
         $k4 = "stealer_init" ascii nocase
         $k5 = "exfil_credentials" ascii nocase
     condition:
-        uint32(0) == 0x6d736100 and any of them
+        any of them
 }
 
 rule WASM_Anti_Debug_Strings {
@@ -98,13 +103,14 @@ rule WASM_Anti_Debug_Strings {
         severity    = "medium"
         category    = "anti-analysis"
         mitre       = "T1622"
+        applies_to  = "wasm"
     strings:
         $a1 = "debugger;" ascii
         $a2 = "DevTools" ascii
         $a3 = "is_debugger_attached" ascii nocase
         $a4 = "anti_debug" ascii nocase
     condition:
-        uint32(0) == 0x6d736100 and 2 of them
+        2 of them
 }
 
 rule WASM_Embedded_Shellcode_Hint {
@@ -113,11 +119,12 @@ rule WASM_Embedded_Shellcode_Hint {
         severity    = "high"
         category    = "shellcode"
         mitre       = "T1027"
+        applies_to  = "wasm"
     strings:
         $nop_sled = { 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 90 }
         $int3_sled = { CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC }
     condition:
-        uint32(0) == 0x6d736100 and (#nop_sled > 1 or #int3_sled > 1)
+        #nop_sled > 1 or #int3_sled > 1
 }
 
 rule WASM_Source_Map_Reference {
@@ -126,9 +133,10 @@ rule WASM_Source_Map_Reference {
         severity    = "info"
         category    = "metadata"
         mitre       = ""
+        applies_to  = "wasm"
     strings:
         $smu = "sourceMappingURL" ascii
         $http = "http" ascii
     condition:
-        uint32(0) == 0x6d736100 and $smu and $http
+        $smu and $http
 }

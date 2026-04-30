@@ -1186,11 +1186,24 @@ extendApp({
       // Mirror the eml/pdf/onenote pattern: await before render() so the
       // sidebar snapshot of `findings` is complete.
       this.findings = await r.analyzeForSecurity(buffer, file.name);
+      // The renderer sets `_rawText` to a section-summary digest for the
+      // viewer pane — auto-YARA would otherwise scan that digest, which
+      // doesn't carry the import / export / custom-section name strings
+      // anchored by `wasm-threats.yar`. Pin the YARA buffer back to the
+      // original raw bytes so the rules see the actual module bytes.
+      this.currentResult.yaraBuffer = buffer;
       return { docEl: r.render(buffer, file.name) };
     },
     pcap(file, buffer) {
       const r = new PcapRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
+      // Same rationale as `wasm()` above: the renderer's `_rawText`
+      // digest only carries the dedup'd hostname/SNI/Host lists, but the
+      // PCAP YARA rules anchor on raw HTTP request lines, raw TLS bytes,
+      // shellcode patterns and User-Agent strings inside the original
+      // capture. Pin yaraBuffer to the unmodified bytes so those rules
+      // can match.
+      this.currentResult.yaraBuffer = buffer;
       return { docEl: r.render(buffer, file.name) };
     },
     reg(file, buffer) {
