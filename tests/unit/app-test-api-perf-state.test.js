@@ -60,6 +60,17 @@ test('_testApiPerfState surfaces every key the perf harness polls on', () => {
     // Worker self-reported parse time (`msg.parseMs` from the
     // terminal `done` event). `null` until stamped.
     'parseMs',
+    // Worker-internal sub-phase markers (`msg.workerMarks` from the
+    // terminal `done` event). Empty object until a Timeline-routed
+    // load completes; additive optional field (older worker bundles
+    // omit it). Adding/renaming MUST update both this list and
+    // `WORKER_PERF_MARKER_ORDER` in `tests/perf/perf-helpers.ts`.
+    'workerMarks',
+    // Worker-internal counters (`msg.workerCounters`) — same
+    // semantics as `workerMarks`. The Markdown summary surfaces
+    // `fastPathRows` / `slowPathRows` / `chunksPosted` /
+    // `packAndPostMs`.
+    'workerCounters',
   ];
   // Slice to the function body so a mention of one of these keys
   // elsewhere in the file (e.g. a comment) doesn't satisfy the check.
@@ -191,4 +202,45 @@ test('window.__loupePerfWorkerParseMs global is exposed (test-API IIFE)', () => 
   // undefined.
   assert.match(SRC, /window\.__loupePerfWorkerParseMs\s*=\s*function\s*\(/,
     'expected `window.__loupePerfWorkerParseMs = function (…)` IIFE export');
+});
+
+test('window.__loupePerfWorkerMarks global is exposed (test-API IIFE)', () => {
+  // Worker terminal `done` event handler stamps this with the
+  // worker-internal marker bag (`msg.workerMarks`). Same release-build
+  // contract as `__loupePerfWorkerParseMs` — release builds omit the
+  // app-test-api file entirely, so the host-side caller in
+  // `timeline-router.js` reads the global, finds undefined, and
+  // short-circuits.
+  assert.match(SRC, /window\.__loupePerfWorkerMarks\s*=\s*function\s*\(/,
+    'expected `window.__loupePerfWorkerMarks = function (…)` IIFE export');
+  // The setter writes into `window.app._perfWorkerMarks` — pinning
+  // the slot name keeps `_testApiPerfState` and the reset path on
+  // the same key.
+  assert.match(SRC, /window\.app\._perfWorkerMarks\s*=/,
+    'expected setter to write `window.app._perfWorkerMarks`');
+});
+
+test('window.__loupePerfWorkerCounters global is exposed (test-API IIFE)', () => {
+  assert.match(SRC, /window\.__loupePerfWorkerCounters\s*=\s*function\s*\(/,
+    'expected `window.__loupePerfWorkerCounters = function (…)` IIFE export');
+  assert.match(SRC, /window\.app\._perfWorkerCounters\s*=/,
+    'expected setter to write `window.app._perfWorkerCounters`');
+});
+
+test('_perfWorkerMarks / _perfWorkerCounters slots reset on cross-load clear', () => {
+  // Same lifecycle semantics as `_perfWorkerParseMs` (pinned above):
+  // the reset path must null both slots so a subsequent load that
+  // uses an older worker bundle (no workerMarks emitted) doesn't
+  // surface the previous load's bag.
+  assert.match(SRC,
+    /_testApiResetCrossLoadState\s*\(\s*\)\s*\{[\s\S]*?this\._perfWorkerMarks\s*=\s*null/,
+    'expected `_testApiResetCrossLoadState` to null `_perfWorkerMarks`');
+  assert.match(SRC,
+    /_testApiResetCrossLoadState\s*\(\s*\)\s*\{[\s\S]*?this\._perfWorkerCounters\s*=\s*null/,
+    'expected `_testApiResetCrossLoadState` to null `_perfWorkerCounters`');
+  // And the perf-state projection reads them.
+  assert.match(SRC, /this\._perfWorkerMarks/,
+    'expected `_testApiPerfState` to read `_perfWorkerMarks`');
+  assert.match(SRC, /this\._perfWorkerCounters/,
+    'expected `_testApiPerfState` to read `_perfWorkerCounters`');
 });

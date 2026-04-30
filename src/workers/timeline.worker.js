@@ -116,6 +116,40 @@
 // scope.
 // ════════════════════════════════════════════════════════════════════════════
 
+// ── Worker-internal perf instrumentation (test-only, additive) ────────────
+//
+// Mirrors the host-side `__loupePerfMark` pattern but lives entirely
+// inside the worker — `window` is unavailable here, and the host's
+// stamps cannot reach into the worker's monotonic clock. The dispatcher
+// ships `_workerMarks` and `_workerCounters` on the terminal `done`
+// payload alongside the existing `parseMs` field so older bundles ignore
+// them (additive — no PerfReport schema bump). Release builds tolerate
+// the cost (one object init at parse start, ~half-a-dozen `performance.
+// now()` calls per parse, two integer increments per row); none are
+// gated on `__test_api__` because the parser path is single-purpose
+// (worker only) and we want the markers stamped even when a release-
+// build host swallows them silently.
+//
+// Marker semantics: FIRST observation wins (matches the host's
+// `workerColumnsEvent` / `workerFirstChunk` latches). Counters are
+// monotonic integers; both bags are reset to fresh objects at the top
+// of every dispatcher call so back-to-back parses never leak state.
+let _workerMarks = null;
+let _workerCounters = null;
+
+function _workerMark(name) {
+  if (!_workerMarks) return;                  // dispatcher not initialised
+  if (_workerMarks[name] !== undefined) return;
+  _workerMarks[name] =
+    (typeof performance !== 'undefined' && performance.now)
+      ? performance.now() : Date.now();
+}
+
+function _workerBumpCounter(name, by) {
+  if (!_workerCounters) return;
+  _workerCounters[name] = (_workerCounters[name] || 0) + (by | 0);
+}
+
 // Rows-per-chunk target for every streaming parse path. Matches the
 // `RowStoreBuilder` chunk-rows target so the host-side rebuild produces
 // chunk boundaries identical to what a sync `addRow`-driven build would
@@ -245,6 +279,7 @@ function _makeRowStreamer(colCount) {
 // uses `\t`); when omitted we sniff using `CsvRenderer._delim` over the
 // first decoded chunk only — sufficient signal for any real CSV.
 async function _parseCsv(buffer, explicitDelim, kindHint) {
+  _workerMark('csvParseStart');
   const bytes = new Uint8Array(buffer);
   const DECODE_CHUNK = RENDER_LIMITS.DECODE_CHUNK_BYTES;
 
@@ -297,7 +332,15 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
     // discarding the data — bail instead and surface the degenerate
     // input via the empty-columns path in the terminal `done` payload.
     if (!colLen) { pendingRows = []; return; }
+    const packStart = (typeof performance !== 'undefined' && performance.now)
+      ? performance.now() : 0;
     _postRowsChunk(pendingRows, colLen);
+    if (packStart) {
+      const packEnd = performance.now();
+      _workerBumpCounter('packAndPostMs', Math.round(packEnd - packStart));
+      _workerBumpCounter('chunksPosted', 1);
+    }
+    if (firstBatchPending) _workerMark('csvFirstChunkPosted');
     // Drop reference to the source `string[][]` so the per-cell strings
     // can be GC'd before the next chunk's pack pass starts.
     pendingRows = [];
@@ -447,11 +490,19 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
     };
   }
 
+  // Counters object passed through every `parseChunk` call so the
+  // parser can record fast-vs-slow path hits per emitted row. The
+  // shape is `{ fastPathRows: N, slowPathRows: N }`; parseChunk
+  // increments either field per row — diagnostic only, no behaviour.
+  const csvCounters = { fastPathRows: 0, slowPathRows: 0 };
+
+  let firstDecodeStamped = false;
   outer:
   for (let pos = 0; pos < bytes.length; pos += DECODE_CHUNK) {
     const end = Math.min(pos + DECODE_CHUNK, bytes.length);
     const stream = end < bytes.length;
     let chunk = decoder.decode(bytes.subarray(pos, end), { stream });
+    if (!firstDecodeStamped) { _workerMark('csvFirstDecodeEnd'); firstDecodeStamped = true; }
 
     if (firstChunk) {
       if (chunk.charCodeAt(0) === 0xFEFF) chunk = chunk.slice(1);
@@ -481,6 +532,7 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
         baseOffset: 0,
         maxRows:    0,
         flush:      false,
+        counters:   csvCounters,
       });
       if (ingestRows(result.rows)) break outer;
     } catch (_) {
@@ -490,6 +542,7 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
       // stream.
     }
   }
+  _workerMark('csvParseLoopEnd');
 
   // Final flush — any partial row (file without trailing newline, or
   // an unterminated quoted cell at EOF) gets emitted now.
@@ -499,12 +552,16 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
         baseOffset: 0,
         maxRows:    0,
         flush:      true,
+        counters:   csvCounters,
       });
       ingestRows(flushResult.rows);
     } catch (_) { /* ignore */ }
   }
   // Drain the last partial batch.
   flushBatch();
+  _workerMark('csvFlushEnd');
+  _workerBumpCounter('fastPathRows', csvCounters.fastPathRows);
+  _workerBumpCounter('slowPathRows', csvCounters.slowPathRows);
 
   // If the file had no header row at all, synthesise column names from
   // the widest emitted row. (We can't actually backfill the rows we
@@ -538,6 +595,7 @@ async function _parseCsv(buffer, explicitDelim, kindHint) {
 // payload carries metadata + the analyzer side-channel (`evtxEvents`)
 // only; its `rows: []` is empty by contract.
 async function _parseEvtx(buffer) {
+  _workerMark('evtxParseStart');
   const r = new EvtxRenderer();
   let events = [];
   try {
@@ -610,6 +668,7 @@ async function _parseEvtx(buffer) {
 // `done` payload carries metadata only; its `rows: []` is empty by
 // contract.
 function _parseSqlite(buffer) {
+  _workerMark('sqliteParseStart');
   const r = new SqliteRenderer();
   let db;
   try {
@@ -688,7 +747,18 @@ self.onmessage = async function (ev) {
   const buffer = msg.buffer;
   const kind = msg.kind || '';
 
+  // Reset the per-parse marker bag + counters at the top of every
+  // dispatcher call. Both objects are plain `Object.create(null)`s so a
+  // `for…in` over them yields only stamped keys (no prototype clutter
+  // bleeding into the JSON the host serialises). Held in module-scope
+  // locals so `_workerMark` / `_workerBumpCounter` (called from helper
+  // functions defined far above the dispatcher) can find them without
+  // a parameter-passing chain.
+  _workerMarks = Object.create(null);
+  _workerCounters = Object.create(null);
+
   const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  _workerMark('dispatchStart');
   try {
     if (!buffer) {
       self.postMessage({ event: 'error', message: 'no buffer transferred to worker' });
@@ -720,12 +790,27 @@ self.onmessage = async function (ev) {
     }
 
     const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    _workerMark('dispatchEnd');
     out.event = 'done';
     out.kind = kind;
     out.parseMs = Math.max(0, t1 - t0);
+    // Ship the worker-internal marker bag + counters alongside the
+    // existing `parseMs`. Both are additive optional fields — older
+    // host bundles that don't know about them ignore the keys
+    // silently. The objects are plain dictionaries (no Map / Set /
+    // class instances) so structured-clone across the postMessage
+    // boundary is cheap and round-trips exactly. Cloned once into
+    // plain objects so the receiver doesn't see the
+    // `Object.create(null)` prototype (which has historically tripped
+    // up JSON.stringify in some toolchains).
+    out.workerMarks = Object.assign({}, _workerMarks);
+    out.workerCounters = Object.assign({}, _workerCounters);
     self.postMessage(out);
   } catch (e) {
     const message = (e && e.message) ? e.message : String(e);
     self.postMessage({ event: 'error', message });
+  } finally {
+    _workerMarks = null;
+    _workerCounters = null;
   }
 };

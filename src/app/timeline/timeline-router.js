@@ -464,6 +464,21 @@ extendApp({
                 && window.__loupePerfWorkerParseMs) {
               window.__loupePerfWorkerParseMs(msg.parseMs);
             }
+            // Worker-internal marker bag + counters (additive — older
+            // worker bundles omit them, the host setter no-ops on
+            // missing/non-object). Surfaced via `perfState()` for the
+            // perf harness to attribute time inside the worker without
+            // a host-side `performance.now()` for every event.
+            if (msg && msg.workerMarks
+                && typeof msg.workerMarks === 'object'
+                && window.__loupePerfWorkerMarks) {
+              window.__loupePerfWorkerMarks(msg.workerMarks);
+            }
+            if (msg && msg.workerCounters
+                && typeof msg.workerCounters === 'object'
+                && window.__loupePerfWorkerCounters) {
+              window.__loupePerfWorkerCounters(msg.workerCounters);
+            }
           }
           // Clear the live "N rows…" subtitle the moment the worker
           // hands back the terminal `done` — the build / mount phase

@@ -101,6 +101,16 @@ class CsvRenderer {
     const maxRows    = opts.maxRows | 0;          // 0 = unbounded
     const baseOffset = opts.baseOffset | 0;
     const flush      = !!opts.flush;
+    // Optional counters bag — `{ fastPathRows, slowPathRows }`. When
+    // provided, parseChunk increments one of the two fields per
+    // emitted row so the worker (or any caller) can attribute time
+    // spent in the unquoted-fast-path vs the quoted-state-machine
+    // path. Diagnostic only; absent in the release/main-thread call
+    // sites and equally absent on hot loops where the per-row
+    // increment shouldn't be paid. The branch around the `if (counters)`
+    // check is predictable and adds a single instruction per row when
+    // active; zero overhead when `opts.counters` is undefined.
+    const counters   = opts.counters || null;
 
     const len = text.length;
     const QUOTE = 34;   // '"'
@@ -153,6 +163,7 @@ class CsvRenderer {
             const line = text.substring(i, lineEnd);
             rows.push(line.split(delim));
             rowOffsets.push({ start: baseOffset + i, end: baseOffset + lineEnd });
+            if (counters) counters.fastPathRows++;
             i = lineEnd + 1;
             continue;
           }
@@ -192,6 +203,7 @@ class CsvRenderer {
           start: rowStart < 0 ? baseOffset + i : rowStart,
           end:   baseOffset + i,
         });
+        if (counters) counters.slowPathRows++;
         cells = [];
         cur = '';
         rowStart = -1;
@@ -232,6 +244,7 @@ class CsvRenderer {
         start: rowStart < 0 ? baseOffset + len : rowStart,
         end:   baseOffset + len,
       });
+      if (counters) counters.slowPathRows++;
       if (inQuotes) endedInQuotes = true;
       cells = [];
       cur = '';

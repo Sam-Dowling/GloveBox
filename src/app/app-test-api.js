@@ -95,6 +95,14 @@ extendApp({
     // (the test-API is omitted from `docs/index.html` entirely).
     this._testApiClearPerfMarks();
     this._perfWorkerParseMs = null;
+    // Worker-internal marker bag + counters (additive). Reset
+    // alongside `_perfWorkerParseMs` so a back-to-back load does not
+    // surface the previous file's worker breakdown — same semantics
+    // as the host marker bag above. Stamped from `timeline-router.js`
+    // on the terminal `done` event, surfaced read-only via the
+    // perf-state projection method.
+    this._perfWorkerMarks = null;
+    this._perfWorkerCounters = null;
   },
 
   /** Construct a synthetic File around `bytesOrU8` and feed it through the
@@ -333,6 +341,16 @@ extendApp({
     // `marks` above.
     const parseMs = (typeof this._perfWorkerParseMs === 'number')
       ? this._perfWorkerParseMs : null;
+    // Worker-internal marker bag + counters (additive optional fields).
+    // Same lifecycle as `parseMs` — overwritten per load. Shallow-copy
+    // through `Object.assign({}, …)` so a perf-state consumer cannot
+    // mutate the live App slot. Empty-object default (rather than
+    // `null`) so harness predicates can read keys without a null-guard
+    // — mirrors the `marks` field above.
+    const wm = this._perfWorkerMarks;
+    const wc = this._perfWorkerCounters;
+    const workerMarks    = (wm && typeof wm === 'object') ? Object.assign({}, wm) : {};
+    const workerCounters = (wc && typeof wc === 'object') ? Object.assign({}, wc) : {};
     return {
       // ── App stage flags ────────────────────────────────────────
       hasCurrentResult: !!this.currentResult,
@@ -377,6 +395,20 @@ extendApp({
       // event (`msg.parseMs`). `null` until stamped — the harness
       // skips its sub-phase if absent, no error.
       parseMs,
+      // Worker-internal sub-phase markers — `{ csvParseStart, …,
+      // dispatchEnd }` keyed by name, each value a `performance.now()`
+      // timestamp from the worker's own monotonic clock (NOT the
+      // host's). The harness computes deltas inside the worker via
+      // `worker_subphaseDelta` (no cross-clock arithmetic). Empty
+      // object until the first Timeline-routed load completes;
+      // additive optional field so older harness bundles ignore it.
+      workerMarks,
+      // Worker-internal counters — `{ fastPathRows, slowPathRows,
+      // chunksPosted, packAndPostMs }` for the CSV path. Diagnostic
+      // only; the harness reports them in the Markdown summary so a
+      // PR can demonstrate that an optimisation actually shifted
+      // time out of the right bucket.
+      workerCounters,
     };
   },
 
@@ -487,6 +519,25 @@ extendApp({
     if (!window.app) return;
     if (typeof ms !== 'number' || !Number.isFinite(ms)) return;
     window.app._perfWorkerParseMs = ms;
+  };
+  // Worker-internal marker bag (additive). Receives the
+  // `msg.workerMarks` object from the terminal `done` event in
+  // `timeline-router.js`. The setter shallow-copies into a fresh
+  // dictionary so the App slot is detached from the postMessage
+  // payload (defensive: prevents a future "structured-clone returns
+  // a frozen prototype" foot-gun). No-op if the argument isn't a
+  // plain object — older worker bundles omit the field entirely.
+  window.__loupePerfWorkerMarks = function (snapshot) {
+    if (!window.app) return;
+    if (!snapshot || typeof snapshot !== 'object') return;
+    window.app._perfWorkerMarks = Object.assign({}, snapshot);
+  };
+  // Worker-internal counters (additive). Same contract as
+  // `__loupePerfWorkerMarks`.
+  window.__loupePerfWorkerCounters = function (snapshot) {
+    if (!window.app) return;
+    if (!snapshot || typeof snapshot !== 'object') return;
+    window.app._perfWorkerCounters = Object.assign({}, snapshot);
   };
 
   window.__loupeTest = {

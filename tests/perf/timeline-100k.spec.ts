@@ -279,8 +279,19 @@ test.describe('Timeline performance — generated CSV', () => {
         const parseMs = (finalState && typeof finalState.parseMs === 'number')
           ? finalState.parseMs
           : null;
+        // Worker-internal markers + counters (additive — older
+        // worker/host bundles emit empty objects). We copy through
+        // the spread so the run JSON is detached from the App slot
+        // (otherwise a back-to-back run could share the reference).
+        const workerMarks = (finalState && finalState.workerMarks)
+          ? { ...finalState.workerMarks }
+          : {};
+        const workerCounters = (finalState && finalState.workerCounters)
+          ? { ...finalState.workerCounters }
+          : {};
         // eslint-disable-next-line no-console
-        console.log(`[perf]  marks: ${Object.keys(marks).length}  parseMs=${parseMs ?? '—'}`);
+        console.log(
+          `[perf]  marks: ${Object.keys(marks).length}  parseMs=${parseMs ?? '—'}  workerMarks=${Object.keys(workerMarks).length}  fastPath=${workerCounters.fastPathRows ?? '—'}/slowPath=${workerCounters.slowPathRows ?? '—'}`);
 
         runs.push({
           index: runIdx,
@@ -292,6 +303,8 @@ test.describe('Timeline performance — generated CSV', () => {
           finalState,
           marks,
           parseMs,
+          workerMarks,
+          workerCounters,
         });
 
         await cdp.close();

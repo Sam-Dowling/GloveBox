@@ -228,6 +228,19 @@ export interface PerfStateProjection {
   // `done` event). `null` when no Timeline-routed file has been
   // loaded yet, OR when the worker omitted the field for any reason.
   parseMs: number | null;
+  // Worker-internal sub-phase markers. Keys come from
+  // `WORKER_PERF_MARKER_ORDER` below; values are `performance.now()`
+  // timestamps from the WORKER's own monotonic clock — never compare
+  // these to host-side `marks` directly, only via deltas
+  // (`workerSubphaseDelta`). Empty object when no Timeline-routed
+  // load has completed yet, or when the worker bundle predates the
+  // marker plumbing.
+  workerMarks?: Record<string, number>;
+  // Worker-internal counters (`fastPathRows`, `slowPathRows`,
+  // `chunksPosted`, `packAndPostMs`). Diagnostic only; surfaced in
+  // the Markdown summary so PRs can demonstrate the right bucket
+  // moved.
+  workerCounters?: Record<string, number>;
 }
 
 // ── Sub-phase marker names ─────────────────────────────────────────────────
@@ -265,6 +278,74 @@ export type PerfMarker = (typeof PERF_MARKER_ORDER)[number];
 // — the row is reported separately so the contribution of timestamp
 // parsing is observable distinctly from the rest of the ctor work
 // (sus-bitmap rebuild, dataset wrapping, DOM mount setup).
+// ── Worker-internal markers ────────────────────────────────────────────────
+// Stamped from `src/workers/timeline.worker.js` and shipped on the
+// terminal `done` event as `msg.workerMarks`. Values are
+// `performance.now()` timestamps from the WORKER realm clock, NOT the
+// host realm — never compute deltas across the two clocks. The harness
+// reports per-marker pair deltas via `workerSubphaseDelta` and surfaces
+// them as a separate "Worker sub-phase breakdown" section in the
+// Markdown summary. Adding a marker on the worker side MUST add the
+// name here too (a missing entry renders as `—` in the summary).
+export const WORKER_PERF_MARKER_ORDER = [
+  'dispatchStart',
+  'csvParseStart',
+  'csvFirstDecodeEnd',
+  'csvFirstChunkPosted',
+  'csvParseLoopEnd',
+  'csvFlushEnd',
+  'evtxParseStart',
+  'sqliteParseStart',
+  'dispatchEnd',
+] as const;
+
+export type WorkerPerfMarker = (typeof WORKER_PERF_MARKER_ORDER)[number];
+
+// Per-CSV-parse worker sub-phases. Each `[from, to]` is a delta computed
+// from the per-run `workerMarks` bag. Order matches the CSV cold-load
+// flow so the Markdown summary reads top-to-bottom.
+export const WORKER_PERF_SUBPHASES: Array<{
+  name: string;
+  from: WorkerPerfMarker;
+  to: WorkerPerfMarker;
+  note?: string;
+}> = [
+  { name: 'worker dispatch→csv start', from: 'dispatchStart', to: 'csvParseStart' },
+  { name: 'worker csv start→first decode end', from: 'csvParseStart', to: 'csvFirstDecodeEnd',
+    note: 'first TextDecoder.decode call returned' },
+  { name: 'worker first decode→first chunk posted', from: 'csvFirstDecodeEnd', to: 'csvFirstChunkPosted' },
+  { name: 'worker first chunk posted→parse loop end', from: 'csvFirstChunkPosted', to: 'csvParseLoopEnd',
+    note: 'main parseChunk loop body — usually the dominant slice' },
+  { name: 'worker parse loop end→flush end', from: 'csvParseLoopEnd', to: 'csvFlushEnd' },
+  { name: 'worker flush end→dispatch end', from: 'csvFlushEnd', to: 'dispatchEnd' },
+];
+
+// Worker-counter keys surfaced in the Markdown summary. Adding a key
+// on the worker side requires adding it here for the renderer to pick
+// it up.
+export const WORKER_PERF_COUNTERS = [
+  'fastPathRows',
+  'slowPathRows',
+  'chunksPosted',
+  'packAndPostMs',
+] as const;
+
+export type WorkerPerfCounter = (typeof WORKER_PERF_COUNTERS)[number];
+
+/** Compute `to - from` from a worker marks bag. Same NaN semantics as
+ *  `subphaseDelta`. */
+export function workerSubphaseDelta(
+  marks: Record<string, number> | undefined,
+  from: WorkerPerfMarker,
+  to: WorkerPerfMarker,
+): number {
+  if (!marks) return NaN;
+  const a = marks[from];
+  const b = marks[to];
+  if (typeof a !== 'number' || typeof b !== 'number') return NaN;
+  return b - a;
+}
+
 export const PERF_SUBPHASES: Array<{
   name: string;
   from: PerfMarker;
@@ -453,6 +534,12 @@ export interface RunReport {
   // Worker `parseMs` self-report. Same semantics as the field on
   // `PerfStateProjection` — `null` means "not stamped".
   parseMs: number | null;
+  // Worker-internal markers + counters from
+  // `PerfStateProjection.workerMarks` / `.workerCounters`. Optional
+  // additive fields — the schema stays at version 1 because consumers
+  // tolerate missing keys (older bundles emit no worker markers).
+  workerMarks?: Record<string, number>;
+  workerCounters?: Record<string, number>;
 }
 
 export interface PerfReport {
@@ -573,6 +660,74 @@ export function markdownSummary(report: PerfReport): string {
     if (noted.length) {
       for (const sp of noted) {
         lines.push(`> *${sp.name}*: ${sp.note}`);
+      }
+      lines.push('');
+    }
+
+    // ── Worker sub-phase breakdown ─────────────────────────────────
+    // Same shape as the host-side breakdown, but every delta is
+    // computed from the worker-realm `workerMarks` bag (NOT host
+    // marks). Skipped entirely when no run carries a worker bag —
+    // older worker bundles silently omit the field, the renderer
+    // handles that by emitting nothing rather than a wall of `—`s.
+    const anyWorkerMarks = report.runs.some(
+      r => r.workerMarks && Object.keys(r.workerMarks).length > 0);
+    if (anyWorkerMarks) {
+      lines.push('## Worker sub-phase breakdown (median across runs)');
+      lines.push('');
+      lines.push('| Sub-phase | median | min | max | n |');
+      lines.push('|---|---:|---:|---:|---:|');
+      for (const sp of WORKER_PERF_SUBPHASES) {
+        const samples: number[] = [];
+        for (const r of report.runs) {
+          const dt = workerSubphaseDelta(r.workerMarks, sp.from, sp.to);
+          if (Number.isFinite(dt)) samples.push(dt);
+        }
+        if (!samples.length) {
+          lines.push(`| ${sp.name} | — | — | — | 0 |`);
+          continue;
+        }
+        const s = summarise(samples);
+        lines.push(`| ${sp.name} | ${fmtOpt(s.median)} | ${fmtOpt(s.min)} | ${fmtOpt(s.max)} | ${s.n} |`);
+      }
+      lines.push('');
+      const wnoted = WORKER_PERF_SUBPHASES.filter(sp => sp.note);
+      if (wnoted.length) {
+        for (const sp of wnoted) {
+          lines.push(`> *${sp.name}*: ${sp.note}`);
+        }
+        lines.push('');
+      }
+    }
+
+    // ── Worker counters ────────────────────────────────────────────
+    // Diagnostic counters from the worker (fastPathRows, slowPathRows,
+    // chunksPosted, packAndPostMs). Reported as median-across-runs so
+    // a PR can demonstrate that an optimisation moved the right
+    // bucket — e.g. converting a quoted-row workload from slow-path to
+    // fast-path should show `slowPathRows` falling and `fastPathRows`
+    // rising in lock-step.
+    const anyWorkerCounters = report.runs.some(
+      r => r.workerCounters && Object.keys(r.workerCounters).length > 0);
+    if (anyWorkerCounters) {
+      const fmtCnt = (n: number) =>
+        Number.isFinite(n) ? Math.round(n).toLocaleString() : '—';
+      lines.push('## Worker counters (median across runs)');
+      lines.push('');
+      lines.push('| Counter | median | min | max | n |');
+      lines.push('|---|---:|---:|---:|---:|');
+      for (const k of WORKER_PERF_COUNTERS) {
+        const samples: number[] = [];
+        for (const r of report.runs) {
+          const v = r.workerCounters && r.workerCounters[k];
+          if (typeof v === 'number' && Number.isFinite(v)) samples.push(v);
+        }
+        if (!samples.length) {
+          lines.push(`| ${k} | — | — | — | 0 |`);
+          continue;
+        }
+        const s = summarise(samples);
+        lines.push(`| ${k} | ${fmtCnt(s.median)} | ${fmtCnt(s.min)} | ${fmtCnt(s.max)} | ${s.n} |`);
       }
       lines.push('');
     }
