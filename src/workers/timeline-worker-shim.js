@@ -221,9 +221,10 @@ function _tlCanonicalLogColumns(width) {
 // ── Syslog (RFC 3164) helpers — worker-side ────────────────────────────────
 //
 // Mirrors `_tlDecodePri`, `_tlInferYear`, `_tlTokenizeSyslog3164`,
-// `_tlTokenizeSyslog5424`, `_tlMakeZeekTokenizer`, the
-// `_TL_SYSLOG{3164,5424}_COLS` constants, and `_TL_ZEEK_STACK_BY_PATH`
-// in `src/app/timeline/timeline-helpers.js`.
+// `_tlTokenizeSyslog5424`, `_tlMakeJsonlTokenizer`,
+// `_tlMakeZeekTokenizer`, the `_TL_SYSLOG{3164,5424}_COLS` constants,
+// `_TL_JSONL_*` constants, and `_TL_ZEEK_STACK_BY_PATH` in
+// `src/app/timeline/timeline-helpers.js`.
 // Helpers must live here too because the main-bundle helpers file isn't
 // concatenated into the worker bundle. **Keep in lockstep with the
 // canonical implementation.** The unit tests in
@@ -397,6 +398,94 @@ function _tlTokenizeSyslog5424(line, _fileLastModifiedMs) {
 const _TL_SYSLOG5424_COLS = ['Timestamp', 'Severity', 'Facility', 'Host',
                              'App', 'ProcID', 'MsgID', 'StructuredData',
                              'Message'];
+
+// ── JSONL mirror ──
+// Canonical implementation lives in
+// `src/app/timeline/timeline-helpers.js::_tlMakeJsonlTokenizer`.
+// Cross-realm parity is enforced by `tests/unit/timeline-jsonl.test.js`.
+const _TL_JSONL_FLATTEN_MAX_DEPTH = 8;
+const _TL_JSONL_MAX_COLUMNS = 256;
+function _tlMakeJsonlTokenizer() {
+  let schema = null;
+  let schemaIndex = null;
+  const flatten = (val, path, out, depth) => {
+    if (val === null || val === undefined) {
+      if (path) out[path] = val === null ? 'null' : '';
+      return;
+    }
+    const t = typeof val;
+    if (t === 'string') { out[path] = val; return; }
+    if (t === 'number' || t === 'boolean' || t === 'bigint') {
+      out[path] = String(val); return;
+    }
+    if (Array.isArray(val) || depth >= _TL_JSONL_FLATTEN_MAX_DEPTH) {
+      try { out[path] = JSON.stringify(val); }
+      catch (_) { out[path] = String(val); }
+      return;
+    }
+    if (t !== 'object') { out[path] = String(val); return; }
+    const keys = Object.keys(val);
+    if (!keys.length && path) { out[path] = '{}'; return; }
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      flatten(val[k], path ? path + '.' + k : k, out, depth + 1);
+    }
+  };
+  const tokenize = (line, _mtime) => {
+    if (!line) return null;
+    let s = line;
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    s = s.trim();
+    if (!s || s.charCodeAt(0) !== 0x7B) return null;
+    let obj;
+    try { obj = JSON.parse(s); } catch (_) { return null; }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+    const flat = Object.create(null);
+    flatten(obj, '', flat, 0);
+    if (!schema) {
+      schema = Object.keys(flat).slice(0, _TL_JSONL_MAX_COLUMNS);
+      schemaIndex = Object.create(null);
+      for (let i = 0; i < schema.length; i++) schemaIndex[schema[i]] = i;
+    }
+    const cells = new Array(schema.length + 1).fill('');
+    let extras = null;
+    const keys = Object.keys(flat);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const idx = schemaIndex[k];
+      if (idx !== undefined) {
+        cells[idx] = flat[k];
+      } else {
+        if (!extras) extras = Object.create(null);
+        extras[k] = flat[k];
+      }
+    }
+    if (extras) {
+      try { cells[schema.length] = JSON.stringify(extras); }
+      catch (_) { cells[schema.length] = ''; }
+    }
+    return cells;
+  };
+  const getColumns = (_width) => {
+    const cols = schema ? schema.slice() : [];
+    cols.push('_extra');
+    return cols;
+  };
+  const _STACK_CANDIDATES = [
+    'level', 'severity', 'log.level', 'eventName', 'event_type',
+    'eventType', 'action', 'method', 'status', 'category',
+  ];
+  const getDefaultStackColIdx = () => {
+    if (!schema) return null;
+    for (let i = 0; i < _STACK_CANDIDATES.length; i++) {
+      const idx = schemaIndex[_STACK_CANDIDATES[i]];
+      if (idx !== undefined) return idx;
+    }
+    return null;
+  };
+  const getFormatLabel = () => 'JSONL';
+  return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
+}
 
 // ── Zeek TSV mirror ──
 // Canonical implementation lives in

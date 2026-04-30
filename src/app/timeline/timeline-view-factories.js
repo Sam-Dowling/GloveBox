@@ -51,6 +51,10 @@ TimelineView._STRUCTURED_LOG_KINDS = {
     makeTokenizer: () => _tlMakeZeekTokenizer(),
     label: 'Zeek',
   },
+  jsonl: {
+    makeTokenizer: () => _tlMakeJsonlTokenizer(),
+    label: 'JSONL',
+  },
 };
 
 Object.assign(TimelineView, {

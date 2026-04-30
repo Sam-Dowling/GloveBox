@@ -1,0 +1,11 @@
+{"ts":"2024-10-15T22:14:15.003Z","level":"info","msg":"server started","port":8080,"host":"web01.example.com"}
+{"ts":"2024-10-15T22:14:16.123Z","level":"info","msg":"client connected","port":8080,"host":"web01.example.com","client":{"ip":"10.0.0.42","port":51234}}
+{"ts":"2024-10-15T22:14:17.456Z","level":"warn","msg":"slow query","port":8080,"host":"web01.example.com","duration_ms":1234,"query":"SELECT * FROM users"}
+{"ts":"2024-10-15T22:14:18.789Z","level":"error","msg":"auth failed","port":8080,"host":"web01.example.com","client":{"ip":"10.0.0.42","port":51235},"reason":"invalid_password"}
+{"ts":"2024-10-15T22:14:19.012Z","level":"info","msg":"request processed","port":8080,"host":"web01.example.com","client":{"ip":"192.0.2.13","port":40001},"path":"/api/v1/data","status":200,"bytes":4096}
+{"ts":"2024-10-15T22:14:20.345Z","level":"info","msg":"request processed","port":8080,"host":"web01.example.com","client":{"ip":"192.0.2.99","port":40002},"path":"/api/v1/health","status":200,"bytes":42}
+{"ts":"2024-10-15T22:14:21.678Z","level":"warn","msg":"rate limit hit","port":8080,"host":"web01.example.com","client":{"ip":"10.0.0.42","port":51236},"limit":100}
+{"ts":"2024-10-15T22:14:22.901Z","level":"info","msg":"client disconnected","port":8080,"host":"web01.example.com","client":{"ip":"10.0.0.42","port":51234}}
+{"ts":"2024-10-15T22:14:23.234Z","level":"error","msg":"db connection lost","port":8080,"host":"web01.example.com","trace_id":"abc123","span_id":"def456"}
+{"ts":"2024-10-15T22:14:24.567Z","level":"info","msg":"db reconnected","port":8080,"host":"web01.example.com","retry_count":3}
+{"ts":"2024-10-15T22:14:25.890Z","level":"info","msg":"server shutting down","port":8080,"host":"web01.example.com"}

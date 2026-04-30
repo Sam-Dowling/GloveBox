@@ -96,7 +96,13 @@ const TIMELINE_MAX_ROWS = RENDER_LIMITS.MAX_TIMELINE_ROWS;
 // status / bytes / referer / user_agent) are applied when the row
 // width matches. Files without a `.log` extension can still be
 // detected via `_sniffTimelineContent` (see timeline-router.js).
-const TIMELINE_EXTS = new Set(['csv', 'tsv', 'evtx', 'sqlite', 'db', 'log']);
+//
+// `.jsonl` and `.ndjson` are the canonical JSONL extensions. They
+// route into the structured-log JSONL parser (kindHint: 'jsonl');
+// extensionless / mis-named JSONL files are caught by the JSONL
+// probe in `_sniffTimelineContent`.
+const TIMELINE_EXTS = new Set(['csv', 'tsv', 'evtx', 'sqlite', 'db', 'log',
+                               'jsonl', 'ndjson']);
 
 // ── CLF (Common / Combined Log Format) helpers ─────────────────────────────
 // Apache / Nginx access logs use a bracketed date token containing a
@@ -610,6 +616,156 @@ const _TL_ZEEK_STACK_BY_PATH = {
   files: 'mime_type',
   notice: 'note',
 };
+// ── JSONL tokeniser (stateful, schema from first record) ──────────
+// Newline-delimited JSON (`.jsonl`, `.ndjson`, `.json`-as-stream) is
+// pervasive in modern log pipelines: AWS CloudTrail (one JSON
+// object per line), Kubernetes container logs, fluentd / vector /
+// Loki sinks, application structured logging, etc. Each line parses
+// to a JSON object; the tokeniser flattens it to a dotted-path cell
+// matrix.
+//
+// Design choices:
+//   - Schema is fixed after the first record. New keys in later
+//     records are JSON-encoded into a single `_extra` column so the
+//     data isn't lost; missing keys leave their cell empty. This
+//     keeps the column count stable through the worker's
+//     `_postColumns` early-emit pathway.
+//   - Nesting is flattened by dotted path (`user.name`, `request.path`).
+//     Arrays are JSON-encoded in-place — flattening them by index
+//     would explode the column count for variable-length lists.
+//   - Primitive null / undefined / boolean values render as their
+//     literal string form ('null', 'true', '1234'); strings render
+//     verbatim.
+//
+// The tokeniser uses a stateful factory matching the Zeek shape so
+// the existing structured-log loop in the worker + sync fallback
+// can dispatch to it without further plumbing changes.
+//
+// Depth cap: nested-object flattening stops at depth 8 to bound
+// pathological inputs. Anything deeper is JSON-encoded as the
+// 8th-level cell value.
+const _TL_JSONL_FLATTEN_MAX_DEPTH = 8;
+const _TL_JSONL_MAX_COLUMNS = 256;
+function _tlMakeJsonlTokenizer() {
+  // `schema` is the dotted-path key list resolved from the first
+  // record. `_extra` is ALWAYS appended to the column list (even
+  // when no row needs it) so the worker's `_postColumns` early-emit
+  // can fix the column count up front — adding `_extra` mid-stream
+  // would violate the fixed-width row contract. Empty cells in
+  // `_extra` are the common case; rows with unknown keys spill
+  // their JSON-encoded extras into that slot.
+  let schema = null;          // string[] | null — set on first record
+  let schemaIndex = null;     // Map<string, number>
+
+  // Recursively walk an object, emitting `path -> stringValue` pairs
+  // into the `out` map. Arrays + non-plain objects are JSON-encoded
+  // verbatim.
+  const flatten = (val, path, out, depth) => {
+    if (val === null || val === undefined) {
+      if (path) out[path] = val === null ? 'null' : '';
+      return;
+    }
+    const t = typeof val;
+    if (t === 'string') { out[path] = val; return; }
+    if (t === 'number' || t === 'boolean' || t === 'bigint') {
+      out[path] = String(val); return;
+    }
+    if (Array.isArray(val) || depth >= _TL_JSONL_FLATTEN_MAX_DEPTH) {
+      try { out[path] = JSON.stringify(val); }
+      catch (_) { out[path] = String(val); }
+      return;
+    }
+    if (t !== 'object') { out[path] = String(val); return; }
+    // Plain-ish object — recurse with dotted path.
+    const keys = Object.keys(val);
+    if (!keys.length && path) {
+      out[path] = '{}';
+      return;
+    }
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      flatten(val[k], path ? path + '.' + k : k, out, depth + 1);
+    }
+  };
+
+  const tokenize = (line, _mtime) => {
+    if (!line) return null;
+    // Tolerate a leading BOM on the very first line and any
+    // surrounding whitespace.
+    let s = line;
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    s = s.trim();
+    if (!s || s.charCodeAt(0) !== 0x7B /* '{' */) return null;
+    let obj;
+    try { obj = JSON.parse(s); }
+    catch (_) { return null; }
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+    const flat = Object.create(null);
+    flatten(obj, '', flat, 0);
+    if (!schema) {
+      // First valid record. Keys observed here become the canonical
+      // schema. Cap to MAX_COLUMNS to avoid OOM on extreme records.
+      schema = Object.keys(flat).slice(0, _TL_JSONL_MAX_COLUMNS);
+      schemaIndex = Object.create(null);
+      for (let i = 0; i < schema.length; i++) schemaIndex[schema[i]] = i;
+    }
+    // Project this record onto the schema; collect any unknown keys
+    // into the `_extra` slot. `cells` is sized `schema.length + 1`
+    // (one slot for `_extra`, always present) so width matches the
+    // column list returned by `getColumns()`.
+    const cells = new Array(schema.length + 1).fill('');
+    let extras = null;
+    const keys = Object.keys(flat);
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const idx = schemaIndex[k];
+      if (idx !== undefined) {
+        cells[idx] = flat[k];
+      } else {
+        if (!extras) extras = Object.create(null);
+        extras[k] = flat[k];
+      }
+    }
+    if (extras) {
+      try { cells[schema.length] = JSON.stringify(extras); }
+      catch (_) { cells[schema.length] = ''; }
+    }
+    return cells;
+  };
+
+  // Called by the structured-log loop on the first valid data row.
+  // `schema` was populated inside `tokenize` (each JSON record
+  // carries its own keys), so `width` is ignored. `_extra` is always
+  // appended so the column count is fixed for the lifetime of the
+  // parse.
+  const getColumns = (_width) => {
+    const cols = schema ? schema.slice() : [];
+    cols.push('_extra');
+    return cols;
+  };
+
+  // Stack-by selection: prefer well-known categorical fields, in
+  // priority order. Each candidate that exists in the schema beats
+  // the auto-detect default (col 1). Returning `null` defers to the
+  // host-side cardinality probe.
+  const _STACK_CANDIDATES = [
+    'level', 'severity', 'log.level', 'eventName', 'event_type',
+    'eventType', 'action', 'method', 'status', 'category',
+  ];
+  const getDefaultStackColIdx = () => {
+    if (!schema) return null;
+    for (let i = 0; i < _STACK_CANDIDATES.length; i++) {
+      const idx = schemaIndex[_STACK_CANDIDATES[i]];
+      if (idx !== undefined) return idx;
+    }
+    return null;
+  };
+
+  const getFormatLabel = () => 'JSONL';
+
+  return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
+}
+
 function _tlMakeZeekTokenizer() {
   // Defaults match the Zeek convention; overridden on the fly if the
   // file's preamble carries a `#set_separator` / `#unset_field` /

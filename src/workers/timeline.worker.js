@@ -468,6 +468,13 @@ const STRUCTURED_LOG_KINDS = {
     makeTokenizer: () => _tlMakeZeekTokenizer(),
     label: 'Zeek',
   },
+  jsonl: {
+    // Stateful — schema is the dotted-path key list of the first
+    // valid record. Subsequent records pad / overflow into the
+    // synthetic `_extra` column.
+    makeTokenizer: () => _tlMakeJsonlTokenizer(),
+    label: 'JSONL',
+  },
 };
 
 async function _parseCsv(buffer, explicitDelim, kindHint) {

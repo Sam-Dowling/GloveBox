@@ -126,6 +126,37 @@ extendApp({
     const firstCh = trimmed.charAt(0);
     const _looksLikeSyslogHead =
       firstCh === '<' && /^<\d{1,3}>/.test(trimmed);
+    // JSONL probe — runs BEFORE the JSON reject so newline-delimited
+    // JSON streams (CloudTrail, container logs, fluentd / vector
+    // sinks, application structured logging, etc.) get a dedicated
+    // route rather than being rejected as "looks like JSON". A
+    // single-line `[ ... ]` array or top-level `{ ... }` object is
+    // still rejected as before — the discriminator is multiple
+    // newline-separated `{...}` records each parseable on their own.
+    //
+    // Strategy: take the first 5 non-empty lines (after BOM
+    // stripping) and try to `JSON.parse` each as an object. If
+    // ≥60% succeed (matching the existing sniff threshold for
+    // CLF / syslog), return 'jsonl'. We do NOT call `JSON.parse`
+    // on the whole trimmed buffer — that would succeed for a single
+    // multi-line JSON value (a non-JSONL file the analyser pipeline
+    // would handle better).
+    if (firstCh === '{') {
+      const head = text.split(/\r\n|\r|\n/)
+        .filter(l => l.length > 0).slice(0, 5);
+      if (head.length >= 2) {
+        let hits = 0;
+        for (let i = 0; i < head.length; i++) {
+          const t = head[i].trimStart();
+          if (t.charCodeAt(0) !== 0x7B) continue;
+          try {
+            const v = JSON.parse(t);
+            if (v && typeof v === 'object' && !Array.isArray(v)) hits++;
+          } catch (_) { /* not a complete object on this line */ }
+        }
+        if (hits / head.length >= 0.6) return 'jsonl';
+      }
+    }
     if (firstCh === '{' || firstCh === '[') return null;
     if (firstCh === '<' && !_looksLikeSyslogHead) return null;
     if (trimmed.startsWith('#!') || trimmed.startsWith('<?')) return null;
@@ -351,6 +382,12 @@ extendApp({
         if (sniffed && !TIMELINE_EXTS.has(sniffed) && sniffed !== 'log') {
           ext = sniffed;
         }
+      } else if (ext === 'jsonl' || ext === 'ndjson') {
+        // The `.jsonl` / `.ndjson` extensions both unambiguously mean
+        // newline-delimited JSON. Map them to the canonical `'jsonl'`
+        // kindHint without re-sniffing — the parser handles invalid
+        // lines gracefully (returns `null` and the line is skipped).
+        ext = 'jsonl';
       }
 
       this._fileMeta = {
@@ -374,7 +411,7 @@ extendApp({
       if (ext === 'evtx') workerKind = 'evtx';
       else if (ext === 'csv' || ext === 'tsv' || ext === 'log'
             || ext === 'syslog3164' || ext === 'syslog5424'
-            || ext === 'zeek') workerKind = 'csv';
+            || ext === 'zeek' || ext === 'jsonl') workerKind = 'csv';
       else if (ext === 'sqlite' || ext === 'db') workerKind = 'sqlite';
 
       if (workerKind && window.WorkerManager
@@ -531,7 +568,7 @@ extendApp({
           // also pass `fileLastModified` so the parser can infer the
           // year for RFC 3164 timestamps deterministically.
           const _structuredLog = (ext === 'syslog3164' || ext === 'syslog5424'
-                                  || ext === 'zeek');
+                                  || ext === 'zeek' || ext === 'jsonl');
           const opts = (workerKind === 'csv')
             ? { explicitDelim: ext === 'tsv' ? '\t'
                   : (ext === 'log' ? ' ' : null),
@@ -672,7 +709,7 @@ extendApp({
           view = await TimelineView.fromCsvAsync(
             file, buffer, explicit, ext === 'log' ? 'log' : null);
         } else if (ext === 'syslog3164' || ext === 'syslog5424'
-                || ext === 'zeek') {
+                || ext === 'zeek' || ext === 'jsonl') {
           // Structured-log fallback — mirrors the worker's
           // `_parseStructuredLog` for environments where workers
           // can't spawn (Firefox `file://`).
