@@ -71,8 +71,93 @@
       }
       textWrap.appendChild(badgeRow);
     }
+
+    // "Why this risk?" reasons panel — explains the gauge so analysts
+    // don't have to reverse-engineer where the score came from. Mirrors
+    // the panel rendered under the sidebar risk banner so both surfaces
+    // tell the same story.
+    const reasonsEl = renderReasonsPanel(verdict.reasons, verdict.rawScore, verdict.risk);
+    if (reasonsEl) textWrap.appendChild(reasonsEl);
+
     band.appendChild(textWrap);
     return band;
+  }
+
+  // Render the shared "Why this risk?" expandable panel. Returns null when
+  // there are no reasons to show (preserves the clean low-risk look).
+  // Used both here (verdict band) and from the sidebar — see
+  // `app-sidebar.js → _renderRiskReasons`.
+  function renderReasonsPanel(reasons, rawScore, gaugeRisk) {
+    if (!Array.isArray(reasons) || !reasons.length) return null;
+    const SEV_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+    const sorted = reasons.slice().sort((a, b) => {
+      const da = typeof a.delta === 'number' ? a.delta : 0;
+      const db = typeof b.delta === 'number' ? b.delta : 0;
+      if (db !== da) return db - da;
+      return (SEV_RANK[b.severity] || 0) - (SEV_RANK[a.severity] || 0);
+    });
+
+    const det = document.createElement('details');
+    det.className = 'bin-triage-why';
+
+    const sum = document.createElement('summary');
+    sum.className = 'bin-triage-why-summary';
+    const totalDelta = sorted.reduce((s, r) => s + (typeof r.delta === 'number' ? r.delta : 0), 0);
+    sum.textContent = `Why this risk? (${sorted.length} reason${sorted.length === 1 ? '' : 's'}, +${totalDelta.toFixed(1)} score)`;
+    det.appendChild(sum);
+
+    const tbl = document.createElement('table');
+    tbl.className = 'bin-triage-why-tbl';
+    const tbody = document.createElement('tbody');
+    for (const r of sorted) {
+      const tr = document.createElement('tr');
+      tr.className = 'bin-triage-why-row sev-' + (r.severity || 'info');
+
+      const sevTd = document.createElement('td');
+      sevTd.className = 'bin-triage-why-sev';
+      const dot = document.createElement('span');
+      dot.className = 'sev-dot sev-dot-' + (r.severity || 'info');
+      dot.setAttribute('aria-hidden', 'true');
+      sevTd.appendChild(dot);
+      tr.appendChild(sevTd);
+
+      const labelTd = document.createElement('td');
+      labelTd.className = 'bin-triage-why-label';
+      labelTd.textContent = r.label || '';
+      tr.appendChild(labelTd);
+
+      const deltaTd = document.createElement('td');
+      deltaTd.className = 'bin-triage-why-delta';
+      const d = typeof r.delta === 'number' ? r.delta : 0;
+      deltaTd.textContent = d > 0 ? '+' + d.toFixed(1) : d.toFixed(1);
+      tr.appendChild(deltaTd);
+
+      const catTd = document.createElement('td');
+      catTd.className = 'bin-triage-why-cat';
+      catTd.textContent = r.category || '';
+      tr.appendChild(catTd);
+
+      tbody.appendChild(tr);
+    }
+    tbl.appendChild(tbody);
+    det.appendChild(tbl);
+
+    // Footer: relate the additive score to the displayed gauge so the
+    // mapping is explicit (verdict band shows 0-100; renderer score is
+    // additive, the gauge multiplies by 6 then clamps and adds structural
+    // augments). Only show the gauge mapping when a numeric `gaugeRisk`
+    // was passed — the sidebar passes null because it shows a coarse tier
+    // rather than a 0-100 gauge.
+    if (typeof rawScore === 'number' && rawScore > 0) {
+      const ft = document.createElement('div');
+      ft.className = 'bin-triage-why-foot';
+      ft.textContent = (typeof gaugeRisk === 'number')
+        ? `Score ${rawScore.toFixed(1)} → gauge ${Math.round(gaugeRisk || 0)} / 100`
+        : `Total score: ${rawScore.toFixed(1)}`;
+      det.appendChild(ft);
+    }
+
+    return det;
   }
 
   function _renderRibbon(anomalies) {
@@ -214,5 +299,6 @@
   window.BinaryTriage = {
     render,
     shouldAutoOpen,
+    renderReasonsPanel,
   };
 })();

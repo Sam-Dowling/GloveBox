@@ -91,6 +91,22 @@ extendApp({
           if (caps.low) breakdown.push(caps.low + ' low');
           parts.push(`- **Capabilities:** ${caps.total}${breakdown.length ? ' (' + breakdown.join(', ') + ')' : ''}`);
         }
+        // Top reasons that drove the score — gives the ticket reader the
+        // same "why" view that the in-content reasons panel shows. Ranked
+        // by delta descending; capped at 5 to keep clipboard output tight.
+        if (Array.isArray(verdict.reasons) && verdict.reasons.length) {
+          const top = verdict.reasons.slice()
+            .sort((a, b) => (b.delta || 0) - (a.delta || 0))
+            .slice(0, 5);
+          if (top.length) {
+            parts.push('- **Top reasons:**');
+            for (const r of top) {
+              const d = typeof r.delta === 'number' ? r.delta : 0;
+              const sev = r.severity && r.severity !== 'info' ? ` [${r.severity}]` : '';
+              parts.push(`  - +${d.toFixed(1)}${sev} ${r.label || ''}`);
+            }
+          }
+        }
         if (typeof BinaryAnomalies !== 'undefined') {
           let anoms = null;
           try {

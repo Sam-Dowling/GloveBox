@@ -3567,6 +3567,7 @@ class PeRenderer {
 
       const issues = [];
       let riskScore = 0;
+      findings.riskReasons = [];
 
       // Strong-signal flags gate the renderer-side `critical` tier — see
       // `BinaryClass.tierForScore` and the parallel comment in
@@ -3575,6 +3576,26 @@ class PeRenderer {
       let _strongWxSection           = false;
       let _strongHighEntropyOverlay  = false;
       let _strongHighEntropyCodeSec  = false;
+
+      // Helper: mirror a `riskScore += delta` bump into a structured reason
+      // row on `findings.riskReasons` so the sidebar + verdict-band
+      // "Why this risk?" panels can show analysts how the score was reached.
+      // Also pushes the human label onto the `issues` array (replaces the
+      // old paired `issues.push(...)` + `riskScore += N` two-liner).
+      const _bumpRisk = (label, delta, severity, category) => {
+        if (typeof delta === 'number') riskScore += delta;
+        if (label) {
+          issues.push(label);
+          if (typeof pushRiskReason === 'function') {
+            pushRiskReason(findings, {
+              label, delta: typeof delta === 'number' ? delta : 0,
+              severity: severity || 'medium',
+              category: category || '',
+              source: 'pe',
+            });
+          }
+        }
+      };
 
       // ── File type context ──────────────────────────────────────────
       findings.metadata = {
@@ -3637,8 +3658,7 @@ class PeRenderer {
           note: `Managed .NET binary — CLR runtime ${pe.dotnet.runtimeVersionString || pe.dotnet.runtimeVersion}${flagBits.length ? ' (' + flagBits.join(', ') + ')' : ''}.`,
           _noDomainSibling: true,
         });
-        issues.push(`.NET managed assembly — CLR runtime ${pe.dotnet.runtimeVersionString || pe.dotnet.runtimeVersion} (T1059.005)`);
-        riskScore += 1;
+        _bumpRisk(`.NET managed assembly — CLR runtime ${pe.dotnet.runtimeVersionString || pe.dotnet.runtimeVersion} (T1059.005)`, 1, 'medium', 'dotnet');
         if (pe.dotnet.hasStrongName) {
           pushIOC(findings, {
             type: IOC.PATTERN,
@@ -3652,16 +3672,15 @@ class PeRenderer {
           // Mixed-mode assemblies (C++/CLI etc.) execute native code
           // alongside IL — doubles the attack surface because both paths
           // run inside the same process.
-          issues.push('.NET mixed-mode assembly — embeds native (non-IL) code paths alongside managed IL');
-          riskScore += 0.5;
+          _bumpRisk('.NET mixed-mode assembly — embeds native (non-IL) code paths alongside managed IL', 0.5, 'low', 'dotnet');
         }
       }
 
 
       // ── Security feature checks ────────────────────────────────────
-      if (!pe.security.aslr) { issues.push('ASLR disabled — vulnerable to memory exploitation'); riskScore += 1; }
-      if (!pe.security.dep) { issues.push('DEP/NX disabled — data pages can execute code'); riskScore += 1; }
-      if (!pe.security.cfg) { issues.push('CFG disabled — no control flow integrity'); riskScore += 0.5; }
+      if (!pe.security.aslr) _bumpRisk('ASLR disabled — vulnerable to memory exploitation', 1, 'medium', 'mitigations');
+      if (!pe.security.dep) _bumpRisk('DEP/NX disabled — data pages can execute code', 1, 'medium', 'mitigations');
+      if (!pe.security.cfg) _bumpRisk('CFG disabled — no control flow integrity', 0.5, 'low', 'mitigations');
 
       const hasCert = pe.dataDirectories[4] && pe.dataDirectories[4].rva !== 0 && pe.dataDirectories[4].size !== 0;
 
@@ -3694,8 +3713,8 @@ class PeRenderer {
           default:               return trustTier;
         }
       })();
-      if (trustTier === 'unsigned')      { issues.push('No Authenticode signature'); riskScore += 1; }
-      else if (trustTier === 'self-signed') { issues.push('Authenticode chain is self-signed (no real CA)'); riskScore += 1; }
+      if (trustTier === 'unsigned')      _bumpRisk('No Authenticode signature', 1, 'medium', 'signing');
+      else if (trustTier === 'self-signed') _bumpRisk('Authenticode chain is self-signed (no real CA)', 1, 'medium', 'signing');
 
       // ── Binary classification (size · trust · family · kind) ───────
       // Drives `_weight()` below — ubiquitous-API capability bumps are
@@ -3753,36 +3772,32 @@ class PeRenderer {
 
       // ── Timestamp anomalies ────────────────────────────────────────
       const ts = pe.coff.timestamp;
-      if (ts === 0) { issues.push('Compilation timestamp is epoch zero (likely zeroed)'); riskScore += 1; }
-      else if (ts === 0xFFFFFFFF) { issues.push('Compilation timestamp is invalid (0xFFFFFFFF)'); riskScore += 1; }
+      if (ts === 0) _bumpRisk('Compilation timestamp is epoch zero (likely zeroed)', 1, 'medium', 'timestamp');
+      else if (ts === 0xFFFFFFFF) _bumpRisk('Compilation timestamp is invalid (0xFFFFFFFF)', 1, 'medium', 'timestamp');
       else {
         const now = Date.now() / 1000;
-        if (ts > now + 86400) { issues.push('Compilation timestamp is in the future'); riskScore += 2; }
-        if (ts < 946684800) { issues.push('Compilation timestamp is before year 2000 (possibly forged)'); riskScore += 0.5; }
+        if (ts > now + 86400) _bumpRisk('Compilation timestamp is in the future', 2, 'high', 'timestamp');
+        if (ts < 946684800) _bumpRisk('Compilation timestamp is before year 2000 (possibly forged)', 0.5, 'low', 'timestamp');
       }
 
       // ── Section anomalies ──────────────────────────────────────────
       let packerDetected = false;
       for (const sec of pe.sections) {
         if (sec.isWritable && sec.isExecutable) {
-          issues.push(`Section "${sec.name}" is W+X (writable and executable) — code injection risk`);
-          riskScore += 2;
+          _bumpRisk(`Section "${sec.name}" is W+X (writable and executable) — code injection risk`, 2, 'high', 'section');
           _strongWxSection = true;
         }
         if (sec.entropy > 7.0) {
           if (sec.name === '.rsrc') {
-            issues.push(`Section "${sec.name}" has very high entropy (${sec.entropy.toFixed(3)}) — compressed resources`);
-            riskScore += 0.5;
+            _bumpRisk(`Section "${sec.name}" has very high entropy (${sec.entropy.toFixed(3)}) — compressed resources`, 0.5, 'low', 'section');
           } else {
-            issues.push(`Section "${sec.name}" has very high entropy (${sec.entropy.toFixed(3)}) — likely packed or encrypted`);
-            riskScore += 1.5;
+            _bumpRisk(`Section "${sec.name}" has very high entropy (${sec.entropy.toFixed(3)}) — likely packed or encrypted`, 1.5, 'medium', 'section');
             _strongHighEntropyCodeSec = true;
           }
         }
         if (sec.packerMatch) {
-          issues.push(`Section "${sec.name}" matches known packer: ${sec.packerMatch}`);
+          _bumpRisk(`Section "${sec.name}" matches known packer: ${sec.packerMatch}`, 2, 'high', 'packer');
           packerDetected = true;
-          riskScore += 2;
         }
       }
 
@@ -3793,8 +3808,7 @@ class PeRenderer {
       const hasHighEntropyNonResource = pe.sections.some(s => s.entropy > 6.5 && s.name !== '.rsrc');
       if (totalImportFuncs < 10 && hasHighEntropyNonResource) {
         if (!packerDetected) {
-          issues.push('Very few imports (' + totalImportFuncs + ') with high-entropy sections — likely packed');
-          riskScore += 2;
+          _bumpRisk('Very few imports (' + totalImportFuncs + ') with high-entropy sections — likely packed', 2, 'high', 'packer');
         }
       }
 
@@ -3830,17 +3844,15 @@ class PeRenderer {
         // Critical clusters (injection, cred-theft, ransomware crypto) keep
         // full weight regardless of signer — see binary-class.js. Low /
         // medium clusters (anti-debug, generic networking) demote.
-        if (hasInjection) { issues.push('Imports process injection APIs (VirtualAlloc/WriteProcessMemory/CreateRemoteThread)'); riskScore += 2 * _weight('high', 'injection'); }
-        if (hasCredTheft) { issues.push('Imports credential theft APIs'); riskScore += 2 * _weight('high', 'cred-theft'); }
+        if (hasInjection) _bumpRisk('Imports process injection APIs (VirtualAlloc/WriteProcessMemory/CreateRemoteThread)', 2 * _weight('high', 'injection'), 'high', 'injection');
+        if (hasCredTheft) _bumpRisk('Imports credential theft APIs', 2 * _weight('high', 'cred-theft'), 'high', 'cred-theft');
         if (hasAntiDebug && _surface('anti-debug')) {
-          issues.push('Imports anti-debugging / sandbox evasion APIs');
-          riskScore += 1 * _weight('low', 'anti-debug');
+          _bumpRisk('Imports anti-debugging / sandbox evasion APIs', 1 * _weight('low', 'anti-debug'), 'low', 'anti-debug');
         }
         if (hasNetworking && _surface('networking')) {
-          issues.push('Imports networking APIs (C2 / download capability)');
-          riskScore += 1 * _weight('medium', 'networking');
+          _bumpRisk('Imports networking APIs (C2 / download capability)', 1 * _weight('medium', 'networking'), 'medium', 'networking');
         }
-        if (hasCrypto) { issues.push('Imports cryptographic APIs (potential ransomware)'); riskScore += 1.5 * _weight('high', 'ransomware'); }
+        if (hasCrypto) _bumpRisk('Imports cryptographic APIs (potential ransomware)', 1.5 * _weight('high', 'ransomware'), 'high', 'ransomware');
       }
 
       // ── T3.9: Suspicious delay-loaded imports ─────────────────────
@@ -4012,9 +4024,8 @@ class PeRenderer {
         // XLL add-ins auto-execute xlAutoOpen when opened in Excel — treat as
         // macro-equivalent auto-exec surface. Unsigned XLLs are especially
         // risky (Excel will still load them from trusted locations).
-        issues.push('Excel XLL add-in — xlAutoOpen runs automatically when the file is opened in Excel (MITRE T1137.006)');
-        riskScore += 2;
-        if (!hasCert) riskScore += 1;
+        _bumpRisk('Excel XLL add-in — xlAutoOpen runs automatically when the file is opened in Excel (MITRE T1137.006)', 2, 'high', 'auto-exec');
+        if (!hasCert) _bumpRisk('Unsigned XLL add-in', 1, 'medium', 'signing');
       }
 
       if (pe.isAutoHotkey) {
@@ -4022,8 +4033,7 @@ class PeRenderer {
         if (pe.autoHotkeyScript != null) {
           findings.metadata['AHK Script Size'] = pe.autoHotkeyScript.length.toLocaleString() + ' bytes';
         }
-        issues.push('Compiled AutoHotkey script embedded as RT_RCDATA — source is visible in the viewer; AHK can send keystrokes, read the clipboard, and launch arbitrary processes');
-        riskScore += 1.5;
+        _bumpRisk('Compiled AutoHotkey script embedded as RT_RCDATA — source is visible in the viewer; AHK can send keystrokes, read the clipboard, and launch arbitrary processes', 1.5, 'medium', 'scripting');
       }
 
       if (pe.installerType) {
@@ -4083,8 +4093,7 @@ class PeRenderer {
             findings.metadata['Overlay Type'] = 'Authenticode signature (PKCS#7)';
           } else if (overlayHasPostSignTail) {
             findings.metadata['Overlay Type'] = 'Post-signature tail (bytes appended after Authenticode blob)';
-            issues.push(`Post-signature overlay — ${overlaySize.toLocaleString()} bytes appended *after* the Authenticode blob. Classic sign-then-staple tamper; the signature no longer covers these bytes.`);
-            riskScore += 4;
+            _bumpRisk(`Post-signature overlay — ${overlaySize.toLocaleString()} bytes appended *after* the Authenticode blob. Classic sign-then-staple tamper; the signature no longer covers these bytes.`, 4, 'critical', 'overlay');
             pushIOC(findings, {
               type: IOC.PATTERN,
               value: `Post-signature overlay tail [T1553.002]`,
@@ -4098,8 +4107,7 @@ class PeRenderer {
             const highEntropy = overlayEntropy > 7.2;
             const unrecognised = !overlayMagic;
             if (large && highEntropy && unrecognised) {
-              issues.push(`Large high-entropy overlay (${overlaySize.toLocaleString()} B, ${overlayPct.toFixed(1)}% of file, entropy ${overlayEntropy.toFixed(2)}) with no recognised container magic — likely packed / encrypted payload`);
-              riskScore += 2;
+              _bumpRisk(`Large high-entropy overlay (${overlaySize.toLocaleString()} B, ${overlayPct.toFixed(1)}% of file, entropy ${overlayEntropy.toFixed(2)}) with no recognised container magic — likely packed / encrypted payload`, 2, 'high', 'overlay');
               _strongHighEntropyOverlay = true;
               pushIOC(findings, {
                 type: IOC.PATTERN,
@@ -4189,8 +4197,7 @@ class PeRenderer {
         const epi = pe.entryPointInfo;
         if (epi && !epi.skipped) {
           if (epi.orphaned) {
-            issues.push('Orphan entry point — EP RVA does not fall inside any section (T1027)');
-            riskScore += 3;
+            _bumpRisk('Orphan entry point — EP RVA does not fall inside any section (T1027)', 3, 'high', 'entry-point');
             pushIOC(findings, {
               type: IOC.PATTERN,
               value: 'Orphan entry point [T1027]',
@@ -4199,8 +4206,7 @@ class PeRenderer {
               _noDomainSibling: true,
             });
           } else if (epi.inWX) {
-            issues.push(`Entry point in W+X section "${epi.section.name}" — self-modifying unpacker pattern (T1027.002)`);
-            riskScore += 2.5;
+            _bumpRisk(`Entry point in W+X section "${epi.section.name}" — self-modifying unpacker pattern (T1027.002)`, 2.5, 'high', 'entry-point');
             _strongWxSection = true;
             pushIOC(findings, {
               type: IOC.PATTERN,
@@ -4271,8 +4277,7 @@ class PeRenderer {
             // (i.e. severity > info), so we don't flag every binary with a
             // benign C++ TLS init slot.
             if (severity !== 'info') {
-              issues.push(headline + detail);
-              riskScore += score >= 4 ? 2.5 : 1.5;
+              _bumpRisk(headline + detail, score >= 4 ? 2.5 : 1.5, severity || 'medium', 'tls-callback');
               pushIOC(findings, {
                 type: IOC.PATTERN,
                 value: `TLS callbacks registered (${n}) [T1546.009]`,
@@ -4382,8 +4387,7 @@ class PeRenderer {
                       (c.evidence && c.evidence.length ? `Evidence: ${c.evidence.slice(0, 4).join(', ')}` : ''),
                 _noDomainSibling: true,
               });
-              issues.push(`${c.name} (${c.mitre}) [demoted]`);
-              riskScore += (sevWeight['medium'] || 0) * 0.5;
+              _bumpRisk(`${c.name} (${c.mitre}) [demoted]`, (sevWeight['medium'] || 0) * 0.5, 'medium', 'capability:' + cat);
               continue;
             }
             // Fall through to default handling below for unsigned / signed-untrusted.
@@ -4410,8 +4414,7 @@ class PeRenderer {
             note: c.description + (c.evidence && c.evidence.length ? ` — evidence: ${c.evidence.slice(0, 4).join(', ')}` : ''),
             _noDomainSibling: true,
           });
-          issues.push(`${c.name} (${c.mitre})`);
-          riskScore += (sevWeight[c.severity] || 0) * w;
+          _bumpRisk(`${c.name} (${c.mitre})`, (sevWeight[c.severity] || 0) * w, c.severity || 'medium', 'capability:' + cat);
           if (c.severity === 'critical' || c.severity === 'high') {
             _strongHighSevCapability = true;
           }
@@ -4448,8 +4451,7 @@ class PeRenderer {
               const where = L.typeIsNamed
                 ? `named type "${L.typeName}"`
                 : `RT_${L.typeName}`;
-              issues.push(`Embedded executable in ${where} (${magic.label}, ${L.size.toLocaleString()} B) — T1027.009 Embedded Payloads`);
-              riskScore += 2.5;
+              _bumpRisk(`Embedded executable in ${where} (${magic.label}, ${L.size.toLocaleString()} B) — T1027.009 Embedded Payloads`, 2.5, 'high', 'embedded-payload');
               pushIOC(findings, {
                 type: IOC.PATTERN,
                 value: `Embedded ${magic.label} payload [T1027.009]`,
@@ -4462,8 +4464,7 @@ class PeRenderer {
               // legitimate installers ship help archives in RCDATA) but
               // worth medium attention.
               embeddedCount++;
-              issues.push(`Embedded ${magic.label} archive in RT_${L.typeName} (${L.size.toLocaleString()} B) — T1027.009`);
-              riskScore += 1.5;
+              _bumpRisk(`Embedded ${magic.label} archive in RT_${L.typeName} (${L.size.toLocaleString()} B) — T1027.009`, 1.5, 'medium', 'embedded-payload');
               pushIOC(findings, {
                 type: IOC.PATTERN,
                 value: `Embedded ${magic.label} archive [T1027.009]`,
@@ -4481,8 +4482,7 @@ class PeRenderer {
                   ? BinaryOverlay.shannonEntropy(slice) : 0;
                 if (ent > 7.2) {
                   embeddedCount++;
-                  issues.push(`High-entropy blob in ${L.typeIsNamed ? `named type "${L.typeName}"` : `RT_${L.typeName}`} (${L.size.toLocaleString()} B, entropy ${ent.toFixed(2)}) — possible packed payload (T1027.002)`);
-                  riskScore += 1;
+                  _bumpRisk(`High-entropy blob in ${L.typeIsNamed ? `named type "${L.typeName}"` : `RT_${L.typeName}`} (${L.size.toLocaleString()} B, entropy ${ent.toFixed(2)}) — possible packed payload (T1027.002)`, 1, 'medium', 'overlay');
                   _strongHighEntropyOverlay = true;
                   pushIOC(findings, {
                     type: IOC.PATTERN,
@@ -4508,6 +4508,11 @@ class PeRenderer {
       // in `elf-renderer.js`. YARA-driven escalation in `app-yara.js`
       // runs afterwards and is independent.
       findings.autoExec = issues;
+      // Plumb the local `riskScore` through to the verdict-band gauge in
+      // `binary-verdict.js`, which reads `findings.riskScore`. Without this
+      // the band shows 0 ("No obvious threat") even when the sidebar tier
+      // is High because the band re-derives `risk` from a missing field.
+      findings.riskScore = riskScore;
       const _tier = (typeof BinaryClass !== 'undefined' && BinaryClass.tierForScore)
         ? BinaryClass.tierForScore(riskScore, {
             highSevCapability:      _strongHighSevCapability,

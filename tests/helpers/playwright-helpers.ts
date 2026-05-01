@@ -30,6 +30,20 @@ export const TEST_BUNDLE = path.join(REPO_ROOT, 'docs', 'index.test.html');
  *  serialises across the worker bridge. */
 export interface FindingsSnapshot {
   risk: string | null;
+  /** Numeric additive risk score (PE/ELF/Mach-O only; null for other
+   *  renderers). Used by the verdict-band gauge in `binary-verdict.js`. */
+  riskScore: number | null;
+  /** Structured audit trail of the per-signal `riskScore` bumps that drove
+   *  the tier — see `findings.riskReasons` (constants.js / per-renderer
+   *  `_bumpRisk`). Populated by PE/ELF/Mach-O renderers + any other caller
+   *  that uses `pushRiskReason` or the 3-arg `escalateRisk(_, _, reason)`. */
+  riskReasons: Array<{
+    label: string;
+    delta: number;
+    severity?: string;
+    category?: string;
+    source?: string;
+  }>;
   iocTypes: string[];
   iocs: Array<{ type: string; value: string; severity?: string; note?: string }>;
   iocCount: number;

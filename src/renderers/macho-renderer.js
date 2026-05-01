@@ -2259,6 +2259,7 @@ class MachoRenderer {
 
       const issues = [];
       let riskScore = 0;
+      findings.riskReasons = [];
 
       // Strong-signal flags gate the renderer-side `critical` tier — see
       // `BinaryClass.tierForScore` and the parallel comment in
@@ -2267,6 +2268,24 @@ class MachoRenderer {
       let _strongWxSection           = false;
       let _strongHighEntropyOverlay  = false;
       let _strongHighEntropyCodeSec  = false;
+
+      // Helper: pair a `riskScore += delta` bump with a structured reason
+      // row on `findings.riskReasons` for the sidebar / verdict-band
+      // "Why this risk?" panels. Mirrors the pe/elf renderers.
+      const _bumpRisk = (label, delta, severity, category) => {
+        if (typeof delta === 'number') riskScore += delta;
+        if (label) {
+          issues.push(label);
+          if (typeof pushRiskReason === 'function') {
+            pushRiskReason(findings, {
+              label, delta: typeof delta === 'number' ? delta : 0,
+              severity: severity || 'medium',
+              category: category || '',
+              source: 'macho',
+            });
+          }
+        }
+      };
 
       // ── File type context ──────────────────────────────────────────
       findings.metadata = {
@@ -2423,56 +2442,46 @@ class MachoRenderer {
 
       // ── Security feature checks ────────────────────────────────────
       if (!mo.security.pie && mo.filetype === 2) { // MH_EXECUTE
-        issues.push('Not PIE — fixed load address, limited ASLR effectiveness');
-        riskScore += 1;
+        _bumpRisk('Not PIE — fixed load address, limited ASLR effectiveness', 1, 'medium', 'mitigations');
       }
 
       if (!mo.security.stackCanary) {
-        issues.push('No stack canary — vulnerable to stack buffer overflows');
-        riskScore += 1;
+        _bumpRisk('No stack canary — vulnerable to stack buffer overflows', 1, 'medium', 'mitigations');
       }
 
       if (!mo.security.nxStack) {
-        issues.push('Stack execution allowed — shellcode can run from stack');
-        riskScore += 1.5;
+        _bumpRisk('Stack execution allowed — shellcode can run from stack', 1.5, 'high', 'mitigations');
       }
 
       if (!mo.security.nxHeap && mo.filetype === 2) {
-        issues.push('Heap execution not restricted — code can execute from heap');
-        riskScore += 0.5;
+        _bumpRisk('Heap execution not restricted — code can execute from heap', 0.5, 'low', 'mitigations');
       }
 
       if (!mo.security.signed) {
-        issues.push('No code signature — unsigned binary');
-        riskScore += 1;
+        _bumpRisk('No code signature — unsigned binary', 1, 'medium', 'signing');
       }
 
       if (!mo.security.hardenedRuntime && mo.filetype === 2) {
-        issues.push('Hardened runtime not enabled — allows debugging, DYLD injection, and unsigned library loading');
-        riskScore += 0.5;
+        _bumpRisk('Hardened runtime not enabled — allows debugging, DYLD injection, and unsigned library loading', 0.5, 'low', 'mitigations');
       }
 
       if (mo.security.encrypted) {
-        issues.push('Binary has encrypted segments — may be packed or protected');
-        riskScore += 2;
+        _bumpRisk('Binary has encrypted segments — may be packed or protected', 2, 'high', 'packer');
       }
 
       // ── RPATH analysis ─────────────────────────────────────────────
       for (const rp of mo.security.rpaths) {
         if (rp.includes('@loader_path') || rp.includes('@executable_path')) {
-          issues.push(`RPATH "${rp}" — relative path could enable dylib hijacking`);
-          riskScore += 0.5;
+          _bumpRisk(`RPATH "${rp}" — relative path could enable dylib hijacking`, 0.5, 'low', 'library-hijack');
         } else {
-          issues.push(`RPATH "${rp}" — custom library search path`);
-          riskScore += 0.3;
+          _bumpRisk(`RPATH "${rp}" — custom library search path`, 0.3, 'info', 'library-hijack');
         }
       }
 
       // ── Section anomalies ──────────────────────────────────────────
       for (const sec of mo.sections) {
         if (sec.entropy > 7.0 && sec.size > 1024) {
-          issues.push(`Section "${sec.sectname}" (${sec.segname}) has very high entropy (${sec.entropy.toFixed(3)}) — likely packed or encrypted`);
-          riskScore += 1.5;
+          _bumpRisk(`Section "${sec.sectname}" (${sec.segname}) has very high entropy (${sec.entropy.toFixed(3)}) — likely packed or encrypted`, 1.5, 'medium', 'section');
           _strongHighEntropyCodeSec = true;
         }
       }
@@ -2480,8 +2489,7 @@ class MachoRenderer {
       // ── Segment anomalies ──────────────────────────────────────────
       for (const seg of mo.segments) {
         if ((seg.initprot & 2) && (seg.initprot & 4)) { // W+X
-          issues.push(`Segment "${seg.segname}" has W+X permissions — unusual, potential code injection region`);
-          riskScore += 2;
+          _bumpRisk(`Segment "${seg.segname}" has W+X permissions — unusual, potential code injection region`, 2, 'high', 'segment');
           _strongWxSection = true;
         }
       }
@@ -2527,23 +2535,20 @@ class MachoRenderer {
         // signed-trusted media-SDKs / system utilities / compiler
         // toolchains stop being flagged for normal infrastructure usage.
         if (hasExec && _surface('execution')) {
-          issues.push('Imports command execution functions (execve/system/popen)');
-          riskScore += 1 * _weight('medium', 'execution');
+          _bumpRisk('Imports command execution functions (execve/system/popen)', 1 * _weight('medium', 'execution'), 'medium', 'execution');
         }
-        if (hasInjection) { issues.push('Imports process memory manipulation APIs (task_for_pid/mach_vm_write)'); riskScore += 2; }
+        if (hasInjection) _bumpRisk('Imports process memory manipulation APIs (task_for_pid/mach_vm_write)', 2, 'high', 'injection');
         if (hasNetwork && _surface('networking')) {
-          issues.push('Imports network socket APIs — potential C2/backdoor capability');
-          riskScore += 1 * _weight('low', 'networking');
+          _bumpRisk('Imports network socket APIs — potential C2/backdoor capability', 1 * _weight('low', 'networking'), 'medium', 'networking');
         }
-        if (hasPrivesc) { issues.push('Imports privilege escalation functions (AuthorizationExecuteWithPrivileges)'); riskScore += 2; }
+        if (hasPrivesc) _bumpRisk('Imports privilege escalation functions (AuthorizationExecuteWithPrivileges)', 2, 'high', 'persistence');
         if (hasAntiDebug && _surface('anti-debug')) {
-          issues.push('Imports anti-debugging function (ptrace/PT_DENY_ATTACH)');
-          riskScore += 1 * _weight('low', 'anti-debug');
+          _bumpRisk('Imports anti-debugging function (ptrace/PT_DENY_ATTACH)', 1 * _weight('low', 'anti-debug'), 'low', 'anti-debug');
         }
-        if (hasKeychain) { issues.push('Imports Keychain access APIs — potential credential theft (Atomic Stealer pattern)'); riskScore += 2.5; }
-        if (hasFileless) { issues.push('Imports fileless execution functions (NSCreateObjectFileImageFromMemory)'); riskScore += 2; }
-        if (hasSurveillance) { issues.push('Imports screen capture/keylogging APIs — surveillance capability'); riskScore += 2; }
-        if (hasPersistence) { issues.push('Imports login item/persistence APIs'); riskScore += 1.5; }
+        if (hasKeychain) _bumpRisk('Imports Keychain access APIs — potential credential theft (Atomic Stealer pattern)', 2.5, 'high', 'cred-theft');
+        if (hasFileless) _bumpRisk('Imports fileless execution functions (NSCreateObjectFileImageFromMemory)', 2, 'high', 'execution');
+        if (hasSurveillance) _bumpRisk('Imports screen capture/keylogging APIs — surveillance capability', 2, 'high', 'surveillance');
+        if (hasPersistence) _bumpRisk('Imports login item/persistence APIs', 1.5, 'medium', 'persistence');
 
         // Check for reverse shell pattern: socket + dup2 + exec
         const hasSocket = suspiciousImports.some(x => x.lookup === 'socket');
@@ -2551,8 +2556,7 @@ class MachoRenderer {
         const hasExecve = suspiciousImports.some(x =>
           x.lookup === 'execve' || x.lookup === 'execvp' || x.lookup === 'execl');
         if (hasSocket && hasDup2 && hasExecve) {
-          issues.push('Reverse shell pattern detected: socket + dup2 + exec combination');
-          riskScore += 3;
+          _bumpRisk('Reverse shell pattern detected: socket + dup2 + exec combination', 3, 'high', 'reverse-shell');
         }
       }
 
@@ -2560,20 +2564,16 @@ class MachoRenderer {
       if (mo.codeSignatureInfo && mo.codeSignatureInfo.entitlements) {
         const ent = mo.codeSignatureInfo.entitlements;
         if (ent.includes('com.apple.security.cs.disable-library-validation')) {
-          issues.push('Entitlement: disable-library-validation — allows loading unsigned dylibs');
-          riskScore += 1.5;
+          _bumpRisk('Entitlement: disable-library-validation — allows loading unsigned dylibs', 1.5, 'medium', 'entitlement');
         }
         if (ent.includes('com.apple.security.get-task-allow')) {
-          issues.push('Entitlement: get-task-allow — allows debugging (development build or malware evasion)');
-          riskScore += 0.5;
+          _bumpRisk('Entitlement: get-task-allow — allows debugging (development build or malware evasion)', 0.5, 'low', 'entitlement');
         }
         if (ent.includes('com.apple.security.cs.allow-unsigned-executable-memory')) {
-          issues.push('Entitlement: allow-unsigned-executable-memory — can create unsigned executable memory');
-          riskScore += 1;
+          _bumpRisk('Entitlement: allow-unsigned-executable-memory — can create unsigned executable memory', 1, 'medium', 'entitlement');
         }
         if (ent.includes('com.apple.security.cs.disable-executable-page-protection')) {
-          issues.push('Entitlement: disable-executable-page-protection — weakens memory protections');
-          riskScore += 1.5;
+          _bumpRisk('Entitlement: disable-executable-page-protection — weakens memory protections', 1.5, 'medium', 'entitlement');
         }
       }
 
@@ -2583,8 +2583,7 @@ class MachoRenderer {
         findings.metadata['Stripped'] = 'Yes (no local symbols)';
       } else if (mo.symbols.length === 0) {
         findings.metadata['Stripped'] = 'Yes (no symbol table)';
-        issues.push('Stripped binary — no symbols, harder to analyze');
-        riskScore += 0.5;
+        _bumpRisk('Stripped binary — no symbols, harder to analyze', 0.5, 'low', 'stripped');
       } else {
         findings.metadata['Stripped'] = 'No';
       }
@@ -2753,8 +2752,7 @@ class MachoRenderer {
               findings.metadata['Fat Tail Size'] = tailSize.toLocaleString() + ' bytes';
               findings.metadata['Fat Tail Entropy'] = tailEntropy.toFixed(3);
               if (tailMagic) findings.metadata['Fat Tail Magic'] = tailMagic.label;
-              issues.push(`Fat/Universal container has ${tailSize.toLocaleString()} B trailing bytes past the last slice — atypical for a normal Fat binary`);
-              riskScore += 1.5;
+              _bumpRisk(`Fat/Universal container has ${tailSize.toLocaleString()} B trailing bytes past the last slice — atypical for a normal Fat binary`, 1.5, 'medium', 'overlay');
               pushIOC(findings, {
                 type: IOC.PATTERN,
                 value: `Fat container trailing bytes [T1027]`,
@@ -2796,8 +2794,7 @@ class MachoRenderer {
             const highEntropy = overlayEntropy > 7.2;
             const unrecognised = !overlayMagic;
             if (large && highEntropy && unrecognised) {
-              issues.push(`Large high-entropy overlay (${overlaySize.toLocaleString()} B, ${overlayPct.toFixed(1)}% ${overlayContext}, entropy ${overlayEntropy.toFixed(2)}) with no recognised container magic — likely packed / encrypted payload`);
-              riskScore += 2;
+              _bumpRisk(`Large high-entropy overlay (${overlaySize.toLocaleString()} B, ${overlayPct.toFixed(1)}% ${overlayContext}, entropy ${overlayEntropy.toFixed(2)}) with no recognised container magic — likely packed / encrypted payload`, 2, 'high', 'overlay');
               _strongHighEntropyOverlay = true;
               pushIOC(findings, {
                 type: IOC.PATTERN,
@@ -2934,8 +2931,7 @@ class MachoRenderer {
                 note: cap.description || '',
                 _noDomainSibling: true,
               });
-              issues.push(`Capability — ${cap.name}` + (cap.mitre ? ` [${cap.mitre}]` : ''));
-              riskScore += (sevWeight[cap.severity] || 0) * w;
+              _bumpRisk(`Capability — ${cap.name}` + (cap.mitre ? ` [${cap.mitre}]` : ''), (sevWeight[cap.severity] || 0) * w, cap.severity || 'medium', 'capability');
               if (cap.severity === 'critical' || cap.severity === 'high') {
                 _strongHighSevCapability = true;
               }
@@ -2951,6 +2947,8 @@ class MachoRenderer {
       // in `elf-renderer.js`. YARA-driven escalation in `app-yara.js`
       // runs afterwards and is independent.
       findings.autoExec = issues;
+      // Plumb local `riskScore` to verdict-band gauge (`binary-verdict.js`).
+      findings.riskScore = riskScore;
       const _tier = (typeof BinaryClass !== 'undefined' && BinaryClass.tierForScore)
         ? BinaryClass.tierForScore(riskScore, {
             highSevCapability:      _strongHighSevCapability,

@@ -691,14 +691,62 @@ const _RISK_RANK = Object.freeze({ info: 0, low: 1, medium: 2, high: 3, critical
  * higher tier; safe to call repeatedly. The canonical helper for risk
  * escalation across every renderer.
  *
+ * The optional `reason` argument records a row on `findings.riskReasons` so
+ * the sidebar / verdict-band "Why this risk?" panels can surface why a given
+ * tier was reached. Reasons are append-only and never lowered; legacy two-arg
+ * callers still work (no row pushed). Renderers that accumulate a numeric
+ * `riskScore` should also assign it onto `findings.riskScore` before the
+ * final `escalateRisk` call so the verdict-band gauge agrees with the
+ * sidebar tier.
+ *
  * @param {object} findings  the `analyzeForSecurity()` findings object
  * @param {string} tier      'info' | 'low' | 'medium' | 'high' | 'critical'
+ * @param {string|object=} reason  optional human label OR a structured row
+ *   `{label, delta, severity, category, source}`. Strings are wrapped into
+ *   `{label, delta:0, severity:tier, category:'', source:''}`.
  */
-function escalateRisk(findings, tier) {
+function escalateRisk(findings, tier, reason) {
   if (!findings || !tier) return;
+  if (!Array.isArray(findings.riskReasons)) findings.riskReasons = [];
+  if (reason) {
+    if (typeof reason === 'string') {
+      findings.riskReasons.push({ label: reason, delta: 0, severity: tier, category: '', source: '' });
+    } else if (typeof reason === 'object') {
+      const row = {
+        label: reason.label || '',
+        delta: typeof reason.delta === 'number' ? reason.delta : 0,
+        severity: reason.severity || tier,
+        category: reason.category || '',
+        source: reason.source || '',
+      };
+      if (row.label) findings.riskReasons.push(row);
+    }
+  }
   const cur  = _RISK_RANK[findings.risk] || 0;
   const next = _RISK_RANK[tier] || 0;
   if (next > cur) findings.risk = tier;
+}
+
+/**
+ * Append a structured reason row onto `findings.riskReasons` without
+ * touching `findings.risk` (used by renderers that accumulate a numeric
+ * `riskScore` and only escalate the tier once at the end). Centralises the
+ * row shape so the sidebar + verdict-band reasons panels see consistent
+ * fields. Drops invalid rows silently.
+ *
+ * @param {object} findings
+ * @param {object} row  `{label, delta, severity, category, source}`
+ */
+function pushRiskReason(findings, row) {
+  if (!findings || !row || !row.label) return;
+  if (!Array.isArray(findings.riskReasons)) findings.riskReasons = [];
+  findings.riskReasons.push({
+    label: String(row.label),
+    delta: typeof row.delta === 'number' ? row.delta : 0,
+    severity: row.severity || 'info',
+    category: row.category || '',
+    source: row.source || '',
+  });
 }
 
 // ── Line-ending normaliser ────────────────────────────────────────────────────

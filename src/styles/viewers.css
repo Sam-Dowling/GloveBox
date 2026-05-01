@@ -11896,6 +11896,119 @@ body.dark .bin-triage-badge-info {
   color: #7fb8e6;
 }
 
+/* ── "Why this risk?" reasons panel ──────────────────────────────── */
+/* Used in two places: under the in-content verdict band and under the
+   sidebar risk banner (with the additional `.sb-risk-why` class). The
+   panel is collapsed by default — analysts who want the audit trail
+   click the summary to expand. */
+
+.bin-triage-why {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #444;
+}
+
+body.dark .bin-triage-why {
+  color: var(--muted, #aaa);
+}
+
+.bin-triage-why-summary {
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+  font-weight: 500;
+  list-style: revert;
+}
+
+.bin-triage-why-summary:hover {
+  color: #000;
+}
+
+body.dark .bin-triage-why-summary:hover {
+  color: var(--text, #e8e8ea);
+}
+
+.bin-triage-why-tbl {
+  margin-top: 6px;
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+.bin-triage-why-row {
+  border-top: 1px solid rgba(0, 0, 0, .06);
+}
+
+body.dark .bin-triage-why-row {
+  border-top-color: rgba(255, 255, 255, .08);
+}
+
+.bin-triage-why-row:first-child {
+  border-top: none;
+}
+
+.bin-triage-why-sev {
+  width: 16px;
+  padding: 4px 6px 4px 0;
+  vertical-align: middle;
+}
+
+.bin-triage-why-label {
+  padding: 4px 8px 4px 0;
+  vertical-align: top;
+  word-break: break-word;
+}
+
+.bin-triage-why-delta {
+  padding: 4px 8px;
+  vertical-align: top;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  white-space: nowrap;
+  color: #b5121b;
+}
+
+body.dark .bin-triage-why-delta {
+  color: #ff6b74;
+}
+
+.bin-triage-why-cat {
+  padding: 4px 0 4px 6px;
+  vertical-align: top;
+  font-size: 11px;
+  color: #888;
+  white-space: nowrap;
+}
+
+body.dark .bin-triage-why-cat {
+  color: #777;
+}
+
+.bin-triage-why-foot {
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(0, 0, 0, .06);
+  font-size: 11.5px;
+  color: #666;
+  font-variant-numeric: tabular-nums;
+}
+
+body.dark .bin-triage-why-foot {
+  border-top-color: rgba(255, 255, 255, .08);
+  color: #888;
+}
+
+/* Sidebar variant: same panel, slightly tighter spacing to fit the
+   narrow column. */
+.sb-risk-why {
+  margin: 6px 12px 8px 12px;
+}
+
+.sb-risk-why .bin-triage-why-summary {
+  font-size: 11.5px;
+}
+
 /* ── Anomaly ribbon ─────────────────────────────────────────────── */
 
 .bin-triage-ribbon {

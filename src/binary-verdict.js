@@ -327,6 +327,8 @@
       badges,
       signer: sig.signerLabel || '',
       capabilityCounts: caps,
+      reasons: Array.isArray(findings.riskReasons) ? findings.riskReasons : [],
+      rawScore: typeof findings.riskScore === 'number' ? findings.riskScore : 0,
     };
   }
 

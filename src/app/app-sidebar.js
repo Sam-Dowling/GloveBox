@@ -211,6 +211,33 @@ extendApp({
     riskDot.setAttribute('aria-hidden', 'true');
     sbRiskTitle.replaceChildren(riskDot, document.createTextNode(riskText));
 
+    // ── "Why this risk?" panel ──────────────────────────────────────────
+    // Show the structured `findings.riskReasons` list (populated by the
+    // PE/ELF/Mach-O renderers via their _bumpRisk helper) underneath the
+    // banner so analysts can see exactly which signals drove the tier.
+    // Reuses `BinaryTriage.renderReasonsPanel` so the in-content verdict
+    // band and the sidebar render identical reason rows. Removes any
+    // panel from a previous file so the DOM doesn't accumulate stale
+    // copies across re-renders.
+    if (rb && rb.parentNode) {
+      const existingWhy = rb.parentNode.querySelector(':scope > .sb-risk-why');
+      if (existingWhy) existingWhy.remove();
+      if (typeof BinaryTriage !== 'undefined' && BinaryTriage.renderReasonsPanel) {
+        const why = BinaryTriage.renderReasonsPanel(
+          f.riskReasons || [],
+          typeof f.riskScore === 'number' ? f.riskScore : 0,
+          // Sidebar doesn't display a 0-100 gauge — pass 0 so the footer
+          // omits the gauge mapping line (it's already the verdict band's
+          // job to show that relationship).
+          null
+        );
+        if (why) {
+          why.classList.add('sb-risk-why');
+          rb.parentNode.insertBefore(why, rb.nextSibling);
+        }
+      }
+    }
+
     // ── Populate single scrollable body ──────────────────────────────────
     const body = document.getElementById('sb-body');
     body.innerHTML = '';

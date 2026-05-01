@@ -1983,6 +1983,7 @@ class ElfRenderer {
 
       const issues = [];
       let riskScore = 0;
+      findings.riskReasons = [];
 
       // Strong-signal flags gate the renderer-side `critical` tier.
       // Additive low/medium API quorums (suspicious-symbol bumps, missing
@@ -1995,6 +1996,24 @@ class ElfRenderer {
       let _strongWxSection           = false;
       let _strongHighEntropyOverlay  = false;
       let _strongHighEntropyCodeSec  = false;
+
+      // Helper: pair a `riskScore += delta` bump with a structured reason
+      // row on `findings.riskReasons` for the sidebar / verdict-band
+      // "Why this risk?" panels. Mirrors the pe/macho renderers.
+      const _bumpRisk = (label, delta, severity, category) => {
+        if (typeof delta === 'number') riskScore += delta;
+        if (label) {
+          issues.push(label);
+          if (typeof pushRiskReason === 'function') {
+            pushRiskReason(findings, {
+              label, delta: typeof delta === 'number' ? delta : 0,
+              severity: severity || 'medium',
+              category: category || '',
+              source: 'elf',
+            });
+          }
+        }
+      };
 
       // ── File type context ──────────────────────────────────────────
       const bType = elf.isDyn && elf.interpreter ? 'PIE Executable' : elf.isDyn ? 'Shared Object' : elf.isExec ? 'Executable' : elf.isRel ? 'Relocatable' : elf.isCore ? 'Core Dump' : 'ELF';
@@ -2072,48 +2091,39 @@ class ElfRenderer {
 
       // ── Security feature checks ────────────────────────────────────
       if (elf.security.relro === 'None') {
-        issues.push('No RELRO — GOT is writable, vulnerable to GOT overwrite attacks');
-        riskScore += 1;
+        _bumpRisk('No RELRO — GOT is writable, vulnerable to GOT overwrite attacks', 1, 'medium', 'mitigations');
       } else if (elf.security.relro === 'Partial') {
-        issues.push('Partial RELRO — GOT still partially writable');
-        riskScore += 0.5;
+        _bumpRisk('Partial RELRO — GOT still partially writable', 0.5, 'low', 'mitigations');
       }
 
       if (!elf.security.stackCanary) {
-        issues.push('No stack canary — vulnerable to stack buffer overflows');
-        riskScore += 1;
+        _bumpRisk('No stack canary — vulnerable to stack buffer overflows', 1, 'medium', 'mitigations');
       }
 
       if (!elf.security.nx) {
-        issues.push('NX disabled — stack is executable, shellcode can run from stack');
-        riskScore += 1.5;
+        _bumpRisk('NX disabled — stack is executable, shellcode can run from stack', 1.5, 'high', 'mitigations');
       }
 
       if (elf.security.pie === false && elf.isExec) {
-        issues.push('Not PIE — fixed load address, limited ASLR effectiveness');
-        riskScore += 0.5;
+        _bumpRisk('Not PIE — fixed load address, limited ASLR effectiveness', 0.5, 'low', 'mitigations');
       }
 
       if (elf.security.rpath) {
-        issues.push(`RPATH set to "${elf.security.rpath}" — potential library hijacking vector`);
-        riskScore += 1;
+        _bumpRisk(`RPATH set to "${elf.security.rpath}" — potential library hijacking vector`, 1, 'medium', 'library-hijack');
       }
 
       if (elf.security.runpath) {
-        issues.push(`RUNPATH set to "${elf.security.runpath}" — potential library hijacking vector`);
-        riskScore += 0.5;
+        _bumpRisk(`RUNPATH set to "${elf.security.runpath}" — potential library hijacking vector`, 0.5, 'low', 'library-hijack');
       }
 
       // ── Section anomalies ──────────────────────────────────────────
       for (const sec of elf.sections) {
         if (sec.isWritable && sec.isExec) {
-          issues.push(`Section "${sec.name}" is W+X (writable and executable) — code injection risk`);
-          riskScore += 2;
+          _bumpRisk(`Section "${sec.name}" is W+X (writable and executable) — code injection risk`, 2, 'high', 'section');
           _strongWxSection = true;
         }
         if (sec.entropy > 7.0 && sec.size > 1024) {
-          issues.push(`Section "${sec.name}" has very high entropy (${sec.entropy.toFixed(3)}) — likely packed or encrypted`);
-          riskScore += 1.5;
+          _bumpRisk(`Section "${sec.name}" has very high entropy (${sec.entropy.toFixed(3)}) — likely packed or encrypted`, 1.5, 'medium', 'section');
           _strongHighEntropyCodeSec = true;
         }
       }
@@ -2121,8 +2131,7 @@ class ElfRenderer {
       // ── Segment anomalies ──────────────────────────────────────────
       for (const seg of elf.segments) {
         if (seg.type === 1 && seg.permW && seg.permX) { // LOAD segment W+X
-          issues.push(`LOAD segment at ${this._hex(seg.vaddr, 8)} is W+X — unusual, potential shellcode region`);
-          riskScore += 2;
+          _bumpRisk(`LOAD segment at ${this._hex(seg.vaddr, 8)} is W+X — unusual, potential shellcode region`, 2, 'high', 'segment');
           _strongWxSection = true;
         }
       }
@@ -2157,36 +2166,32 @@ class ElfRenderer {
         const hasAntiForensic = suspiciousImports.some(s =>
           /forensic|deletion|self.*delet/i.test(suspMap[s.name]));
 
-        if (hasExec) { issues.push('Imports command execution functions (execve/system/popen)'); riskScore += 1 * _weight('medium', 'execution'); }
-        if (hasInjection) { issues.push('Imports process memory manipulation APIs'); riskScore += 2 * _weight('high', 'injection'); }
+        if (hasExec) _bumpRisk('Imports command execution functions (execve/system/popen)', 1 * _weight('medium', 'execution'), 'medium', 'execution');
+        if (hasInjection) _bumpRisk('Imports process memory manipulation APIs', 2 * _weight('high', 'injection'), 'high', 'injection');
         if (hasNetwork && _surface('networking')) {
-          issues.push('Imports network socket APIs — potential C2/backdoor capability');
-          riskScore += 1 * _weight('medium', 'networking');
+          _bumpRisk('Imports network socket APIs — potential C2/backdoor capability', 1 * _weight('medium', 'networking'), 'medium', 'networking');
         }
-        if (hasPrivesc) { issues.push('Imports privilege escalation functions (setuid/setgid)'); riskScore += 1.5 * _weight('medium', 'persistence'); }
+        if (hasPrivesc) _bumpRisk('Imports privilege escalation functions (setuid/setgid)', 1.5 * _weight('medium', 'persistence'), 'medium', 'persistence');
         if (hasAntiDebug && _surface('anti-debug')) {
-          issues.push('Imports anti-debugging function (ptrace)');
-          riskScore += 1 * _weight('low', 'anti-debug');
+          _bumpRisk('Imports anti-debugging function (ptrace)', 1 * _weight('low', 'anti-debug'), 'low', 'anti-debug');
         }
-        if (hasRootkit) { issues.push('Imports kernel module loading functions — potential rootkit'); riskScore += 3; }
-        if (hasFileless) { issues.push('Imports fileless execution functions (memfd_create/fexecve)'); riskScore += 2 * _weight('high', 'execution'); }
-        if (hasAntiForensic) { issues.push('Imports file deletion functions — potential self-deletion'); riskScore += 0.5; }
+        if (hasRootkit) _bumpRisk('Imports kernel module loading functions — potential rootkit', 3, 'high', 'rootkit');
+        if (hasFileless) _bumpRisk('Imports fileless execution functions (memfd_create/fexecve)', 2 * _weight('high', 'execution'), 'high', 'execution');
+        if (hasAntiForensic) _bumpRisk('Imports file deletion functions — potential self-deletion', 0.5, 'low', 'anti-forensic');
 
         // Check for reverse shell pattern: socket + dup2 + execve
         const hasSocket = suspiciousImports.some(s => s.name === 'socket');
         const hasDup2 = suspiciousImports.some(s => s.name === 'dup2');
         const hasExecve = suspiciousImports.some(s => s.name === 'execve' || s.name === 'execvp' || s.name === 'execl');
         if (hasSocket && hasDup2 && hasExecve) {
-          issues.push('Reverse shell pattern detected: socket + dup2 + exec combination');
-          riskScore += 3;
+          _bumpRisk('Reverse shell pattern detected: socket + dup2 + exec combination', 3, 'high', 'reverse-shell');
         }
 
         // Check for RWX memory pattern: mmap + mprotect
         const hasMmap = suspiciousImports.some(s => s.name === 'mmap');
         const hasMprotect = suspiciousImports.some(s => s.name === 'mprotect');
         if (hasMmap && hasMprotect) {
-          issues.push('Runtime code generation pattern: mmap + mprotect — can create executable memory');
-          riskScore += 1;
+          _bumpRisk('Runtime code generation pattern: mmap + mprotect — can create executable memory', 1, 'medium', 'rwx-memory');
         }
       }
 
@@ -2200,8 +2205,7 @@ class ElfRenderer {
 
       // ── Static linking check ───────────────────────────────────────
       if (!elf.interpreter && elf.isExec) {
-        issues.push('Statically linked executable — unusual for modern binaries, may be obfuscated/packed');
-        riskScore += 1;
+        _bumpRisk('Statically linked executable — unusual for modern binaries, may be obfuscated/packed', 1, 'medium', 'static-link');
         findings.metadata['Linking'] = 'Static';
       } else if (elf.interpreter) {
         findings.metadata['Linking'] = 'Dynamic';
@@ -2379,8 +2383,7 @@ class ElfRenderer {
           const highEntropy = overlayEntropy > 7.2;
           const unrecognised = !overlayMagic;
           if (large && highEntropy && unrecognised) {
-            issues.push(`Large high-entropy overlay (${overlaySize.toLocaleString()} B, ${overlayPct.toFixed(1)}% of file, entropy ${overlayEntropy.toFixed(2)}) with no recognised container magic — likely packed / encrypted payload`);
-            riskScore += 2;
+            _bumpRisk(`Large high-entropy overlay (${overlaySize.toLocaleString()} B, ${overlayPct.toFixed(1)}% of file, entropy ${overlayEntropy.toFixed(2)}) with no recognised container magic — likely packed / encrypted payload`, 2, 'high', 'overlay');
             _strongHighEntropyOverlay = true;
             pushIOC(findings, {
               type: IOC.PATTERN,
@@ -2513,8 +2516,7 @@ class ElfRenderer {
             note: c.description + (c.evidence && c.evidence.length ? ` — evidence: ${c.evidence.slice(0, 4).join(', ')}` : ''),
             _noDomainSibling: true,
           });
-          issues.push(`${c.name} (${c.mitre})`);
-          riskScore += (sevWeight[c.severity] || 0) * w;
+          _bumpRisk(`${c.name} (${c.mitre})`, (sevWeight[c.severity] || 0) * w, c.severity || 'medium', 'capability');
           if (c.severity === 'critical' || c.severity === 'high') {
             _strongHighSevCapability = true;
           }
@@ -2531,6 +2533,8 @@ class ElfRenderer {
       // `app-yara.js` runs afterwards and is independent — a curated
       // high/critical-severity rule still escalates as expected.
       findings.autoExec = issues;
+      // Plumb local `riskScore` to verdict-band gauge (`binary-verdict.js`).
+      findings.riskScore = riskScore;
       const _tier = (typeof BinaryClass !== 'undefined' && BinaryClass.tierForScore)
         ? BinaryClass.tierForScore(riskScore, {
             highSevCapability:      _strongHighSevCapability,

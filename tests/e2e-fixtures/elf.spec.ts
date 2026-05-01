@@ -40,4 +40,27 @@ test.describe('ELF renderer', () => {
     const findings = await loadFixture(ctx.page, 'examples/elf/overlay-zip-elf');
     expect(isRiskAtLeast(findings.risk, 'high')).toBe(true);
   });
+
+  test('riskScore + riskReasons populated so verdict band agrees with sidebar', async () => {
+    // Regression for the dual-verdict bug: `BinaryVerdict.summarize` reads
+    // `findings.riskScore` to seed the gauge; before the fix the renderers
+    // kept that score in a local variable, so the gauge displayed 0 ("No
+    // obvious threat") even when the sidebar tier was correctly High. This
+    // test pins the plumbing: any High-risk ELF must surface a non-zero
+    // numeric `riskScore` AND a non-empty `riskReasons` audit trail so
+    // the "Why this risk?" panels have content to display.
+    const findings = await loadFixture(ctx.page, 'examples/elf/example');
+    expect(isRiskAtLeast(findings.risk, 'high')).toBe(true);
+    expect(typeof findings.riskScore).toBe('number');
+    expect(findings.riskScore).toBeGreaterThanOrEqual(5);
+    expect(Array.isArray(findings.riskReasons)).toBe(true);
+    expect(findings.riskReasons.length).toBeGreaterThan(0);
+    // Each row should have a label and numeric delta — the renderReasons
+    // panel sorts by delta descending and shows label + delta + category.
+    for (const r of findings.riskReasons) {
+      expect(typeof r.label).toBe('string');
+      expect(r.label.length).toBeGreaterThan(0);
+      expect(typeof r.delta).toBe('number');
+    }
+  });
 });

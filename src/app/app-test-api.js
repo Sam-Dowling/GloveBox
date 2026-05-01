@@ -237,6 +237,20 @@ extendApp({
       : [];
     return {
       risk: f.risk || null,
+      // Numeric `riskScore` and structured `riskReasons` populated by the
+      // PE / ELF / Mach-O renderers (and any other renderer that opts in
+      // via `pushRiskReason`). Surfaced for the e2e regression that
+      // verifies the verdict-band gauge agrees with the sidebar tier.
+      riskScore: typeof f.riskScore === 'number' ? f.riskScore : null,
+      riskReasons: Array.isArray(f.riskReasons)
+        ? f.riskReasons.map(r => ({
+            label: r && r.label,
+            delta: r && typeof r.delta === 'number' ? r.delta : 0,
+            severity: r && r.severity,
+            category: r && r.category,
+            source: r && r.source,
+          }))
+        : [],
       iocTypes,
       iocs: allIocs.map(e => ({
         type: e.type,
