@@ -528,6 +528,14 @@ class YaraEngine {
     const ctx = (opts && opts.context) ? opts.context : null;
     const formatTag = (ctx && typeof ctx.formatTag === 'string') ? ctx.formatTag : null;
 
+    // Per-scan state: one shared lowercase view of `text` is built lazily
+    // on first `nocase` text-string lookup and reused thereafter. With
+    // ~1300 `nocase` modifiers active across the bundled corpus (post the
+    // May 2026 parser-modifier-capture fix), recomputing `text.toLowerCase()`
+    // per `_findString` call costs ~400 ms on a 161 KB blob; sharing the
+    // result reduces that to <1 ms.
+    const scanState = { text, lowerText: null };
+
     const results = [];
     for (const rule of rules) {
       // Cooperative-cancel: abort the YARA scan early when a newer file
@@ -547,7 +555,7 @@ class YaraEngine {
       const stringMatches = {};
       // Evaluate each string definition
       for (const strDef of rule.strings) {
-        const matchList = YaraEngine._findString(text, bytes, strDef, errorSink, rule.name);
+        const matchList = YaraEngine._findString(text, bytes, strDef, errorSink, rule.name, scanState);
         stringMatches[strDef.id] = matchList;
 
       }
@@ -629,30 +637,45 @@ class YaraEngine {
       let sm;
       while ((sm = strRx.exec(stringsBlock)) !== null) {
         if (sm[2] !== undefined) {
-          // Text string
+          // Text string. Per YARA semantics, the default match alphabet
+          // is ASCII; explicit `wide` opts INTO wide-only matching;
+          // `ascii wide` matches both. We track `ascii` and `wide` as
+          // separate flags so `_findString` can run the correct
+          // combination of paths (see comments there).
           const modifiers = (sm[3] || '').trim().toLowerCase();
+          const wide = modifiers.includes('wide');
+          // `ascii` is implicit when `wide` isn't present, and must
+          // be set explicitly when `wide` IS present to keep ASCII
+          // matching active.
+          const ascii = modifiers.includes('ascii') || !wide;
           rule.strings.push({
             id: sm[1],
             type: 'text',
             pattern: sm[2].replace(/\\"/g, '"').replace(/\\\\/g, '\\'),
             display: `"${sm[2]}"`,
             nocase: modifiers.includes('nocase'),
-            wide: modifiers.includes('wide'),
+            wide,
+            ascii,
             fullword: modifiers.includes('fullword')
           });
         } else if (sm[4]) {
-          // Hex string
+          // Hex string. `wide` / `ascii` modifiers don't apply to hex
+          // patterns in YARA (they're already byte-level); we set
+          // `ascii: true` so downstream code that branches on the flag
+          // doesn't have to special-case hex.
           rule.strings.push({
             id: sm[1],
             type: 'hex',
             pattern: sm[4],
             display: sm[4],
-            nocase: false, wide: false, fullword: false
+            nocase: false, wide: false, ascii: true, fullword: false
           });
         } else if (sm[6] !== undefined) {
           // Regex string
           const flags = sm[7] || '';
           const modifiers = (sm[8] || '').trim().toLowerCase();
+          const wide = modifiers.includes('wide');
+          const ascii = modifiers.includes('ascii') || !wide;
           rule.strings.push({
             id: sm[1],
             type: 'regex',
@@ -660,7 +683,8 @@ class YaraEngine {
             flags: flags + (modifiers.includes('nocase') ? 'i' : ''),
             display: `/${sm[6]}/${flags}`,
             nocase: flags.includes('i') || modifiers.includes('nocase'),
-            wide: modifiers.includes('wide'),
+            wide,
+            ascii,
             fullword: false
           });
         }
@@ -694,11 +718,22 @@ class YaraEngine {
   // (`_compiledRx`) — `parseRules()` is called once per scan but the same
   // parsed-rule objects survive across the auto-scan, manual scan, and
   // filter passes, so the cache is a real win.
-  static _findString(text, bytes, strDef, errorSink, ruleName) {
+  static _findString(text, bytes, strDef, errorSink, ruleName, scanState) {
     const matches = [];
     const MAX = 1000; // cap matches per string
     const MAX_REGEX_ITERS = 10000;
     const TIME_BUDGET_MS = 250;
+
+    // Lazy lowercase memoiser. Built on first nocase text-string lookup
+    // and shared across all subsequent `_findString` calls in the same
+    // scan via `scanState`. Falls back to per-call computation when no
+    // `scanState` is supplied (preserves the legacy 5-arg call shape
+    // for any external caller).
+    const lowerText = () => {
+      if (!scanState) return text.toLowerCase();
+      if (scanState.lowerText === null) scanState.lowerText = text.toLowerCase();
+      return scanState.lowerText;
+    };
 
     const recordError = (reason, message) => {
       if (!errorSink) return;
@@ -713,8 +748,34 @@ class YaraEngine {
 
     if (strDef.type === 'text') {
       const pattern = strDef.pattern;
-      if (strDef.wide) {
-        // Wide strings: each char followed by 0x00
+      // YARA semantics: `wide` opts INTO wide-only matching, `ascii wide`
+      // matches both alphabets, default (no modifier) matches ASCII.
+      // `strDef.ascii` is set explicitly by the parser; we derive the
+      // same fallback here (`ascii` implicit when `wide` absent) so
+      // direct strDef construction in tests / future callers behaves
+      // consistently without having to remember to set both flags.
+      const wantAscii = strDef.ascii === true || (strDef.ascii === undefined && !strDef.wide);
+      if (wantAscii) {
+        // ASCII text search. `text` is the latin-1 view of `bytes`
+        // built once per scan in `scan()`.
+        const searchIn = strDef.nocase ? lowerText() : text;
+        const searchFor = strDef.nocase ? pattern.toLowerCase() : pattern;
+        const matchLen = pattern.length;
+        let pos = 0;
+        while (pos < searchIn.length && matches.length < MAX) {
+          const idx = searchIn.indexOf(searchFor, pos);
+          if (idx === -1) break;
+          if (strDef.fullword) {
+            const before = idx > 0 ? searchIn[idx - 1] : ' ';
+            const after = idx + matchLen < searchIn.length ? searchIn[idx + matchLen] : ' ';
+            if (/\w/.test(before) || /\w/.test(after)) { pos = idx + 1; continue; }
+          }
+          matches.push({ offset: idx, length: matchLen });
+          pos = idx + 1;
+        }
+      }
+      if (strDef.wide && matches.length < MAX) {
+        // Wide strings: each char followed by 0x00 (UTF-16LE).
         const widePat = [];
         for (let i = 0; i < pattern.length; i++) {
           widePat.push(pattern.charCodeAt(i));
@@ -733,23 +794,6 @@ class YaraEngine {
             if (b !== p) { match = false; break; }
           }
           if (match) matches.push({ offset: i, length: matchLen });
-        }
-      } else {
-        // ASCII text search
-        const searchIn = strDef.nocase ? text.toLowerCase() : text;
-        const searchFor = strDef.nocase ? pattern.toLowerCase() : pattern;
-        const matchLen = pattern.length;
-        let pos = 0;
-        while (pos < searchIn.length && matches.length < MAX) {
-          const idx = searchIn.indexOf(searchFor, pos);
-          if (idx === -1) break;
-          if (strDef.fullword) {
-            const before = idx > 0 ? searchIn[idx - 1] : ' ';
-            const after = idx + matchLen < searchIn.length ? searchIn[idx + matchLen] : ' ';
-            if (/\w/.test(before) || /\w/.test(after)) { pos = idx + 1; continue; }
-          }
-          matches.push({ offset: idx, length: matchLen });
-          pos = idx + 1;
         }
       }
     } else if (strDef.type === 'hex') {

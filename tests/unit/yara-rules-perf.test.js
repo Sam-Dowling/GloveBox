@@ -270,11 +270,13 @@ test('perf: full corpus, 161 KB base64 blob, formatTag=plaintext', { timeout: 30
   // user-reported symptom was ~60 s wall time on a 161 KB base64
   // blob (worker overhead + sequential-phase serialisation magnified
   // a ~300 ms in-process scan into the wall-clock figure). After
-  // Tier-1 rule rewrites and Phase-2b parser-modifier-capture fix
-  // this scan runs in ~900–1200 ms in Node (the parser fix activates
-  // dormant `nocase`/`wide`/`fullword` modifiers across the whole
-  // corpus, which is correct YARA behaviour and roughly doubles the
-  // scan cost on real-world inputs). 2 s budget gives ~2× headroom.
+  // Tier-1 rule rewrites, Phase-2b parser-modifier-capture fix, and
+  // Phase-2a (per-scan lowercase cache + `ascii wide` correctness),
+  // this scan runs in ~700–1000 ms in Node. The Phase-2b parser fix
+  // activated ~1300 dormant `nocase`/`wide`/`fullword` modifiers
+  // across the corpus (correct YARA behaviour, ~2× scan cost on
+  // real-world inputs); Phase 2a's lowercase memoiser then claws
+  // back ~25% of that. 2 s budget gives ~2× headroom on cold runs.
   assert.ok(ms < 2_000, `full corpus on base64 took ${ms.toFixed(0)} ms (budget 2000 ms)`);
 });
 

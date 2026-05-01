@@ -108,14 +108,64 @@ test('scan: text string wide matches UTF-16LE bytes (forced flag)', () => {
     $a = "AB"
   condition: $a
 }`);
+  // Force a wide-only state (wide=true, ascii=false). The parser
+  // produces this combination naturally for `"AB" wide`; we mutate
+  // here because the test pre-dates the parser carrying explicit
+  // `ascii` flags and we want to keep the assertion focused on the
+  // _findString branch behaviour rather than parser modifier capture
+  // (the latter is covered by yara-engine-parse.test.js).
   rules[0].strings[0].wide = true;
+  rules[0].strings[0].ascii = false;
   // 'AB' as UTF-16LE = A 00 B 00
   const buf = Buffer.from([0x90, 0x90, 0x41, 0x00, 0x42, 0x00, 0xFF]);
   assert.deepEqual(scanNames(buf, rules), ['R']);
-  // Plain ASCII does NOT match a wide-only pattern (this is the bug
-  // surface for `ascii wide`; with only `wide` set, ASCII is not matched
-  // and that IS the documented YARA semantics).
+  // Plain ASCII does NOT match a wide-only pattern — documented YARA
+  // semantics: bare `wide` is wide-only, ASCII matching only resumes
+  // when `ascii` is also specified (`ascii wide`).
   assert.deepEqual(scanNames(Buffer.from('AB'), rules), []);
+});
+
+test('scan: text string `ascii wide` matches BOTH alphabets', () => {
+  // Phase 2a invariant: explicit `ascii wide` runs both the ASCII and
+  // the wide branches of `_findString`. Pre-Phase-2a the engine
+  // executed wide-only whenever `wide` was set, silently dropping
+  // ASCII hits — and `ascii` was never parsed into a flag at all
+  // (the parser's modifier-capture bug was the upstream cause; see
+  // yara-engine-parse.test.js for that ratchet).
+  const rules = parse(`rule R {
+  strings:
+    $a = "AB" ascii wide
+  condition: $a
+}`);
+  assert.equal(rules[0].strings[0].ascii, true);
+  assert.equal(rules[0].strings[0].wide, true);
+  // ASCII-only buffer
+  assert.deepEqual(scanNames(Buffer.from('xxABxx'), rules), ['R']);
+  // Wide-only buffer (UTF-16LE 'AB')
+  const wideBuf = Buffer.from([0x90, 0x41, 0x00, 0x42, 0x00, 0x90]);
+  assert.deepEqual(scanNames(wideBuf, rules), ['R']);
+  // Buffer with neither encoding does not match
+  assert.deepEqual(scanNames(Buffer.from('xxxxxx'), rules), []);
+});
+
+test('scan: text string default (no modifier) is ASCII-only, ignores wide bytes', () => {
+  // Companion to the `ascii wide` test: default text strings should
+  // match ASCII and NOT inadvertently match wide-encoded bytes. This
+  // was previously safe by accident (the engine ran the ASCII branch
+  // when `wide` was unset), but is now an explicit invariant that
+  // depends on the parser setting `ascii: true` for unmodified
+  // strings.
+  const rules = parse(`rule R {
+  strings:
+    $a = "AB"
+  condition: $a
+}`);
+  assert.equal(rules[0].strings[0].ascii, true);
+  assert.equal(rules[0].strings[0].wide, false);
+  assert.deepEqual(scanNames(Buffer.from('xxABxx'), rules), ['R']);
+  // UTF-16LE bytes for "AB" alone do NOT match a default text string
+  const wideBuf = Buffer.from([0x41, 0x00, 0x42, 0x00]);
+  assert.deepEqual(scanNames(wideBuf, rules), []);
 });
 
 // ── Hex strings ───────────────────────────────────────────────────────────
