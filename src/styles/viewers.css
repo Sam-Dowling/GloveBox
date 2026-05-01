@@ -15208,8 +15208,7 @@ body.dark .grid-cell.tl-stack-text-35 {
 .timeline-view .tl-tb-btn,
 .tl-dialog .tl-tb-btn,
 .tl-popover .tl-tb-btn,
-.tl-rowmenu .tl-tb-btn,
-.tl-colmenu .tl-tb-btn {
+.tl-rowmenu .tl-tb-btn {
   appearance: none;
   border: 1px solid var(--hairline-strong);
   background: var(--panel-bg-raised);
@@ -15227,8 +15226,7 @@ body.dark .grid-cell.tl-stack-text-35 {
 .timeline-view .tl-tb-btn:hover,
 .tl-dialog .tl-tb-btn:hover,
 .tl-popover .tl-tb-btn:hover,
-.tl-rowmenu .tl-tb-btn:hover,
-.tl-colmenu .tl-tb-btn:hover {
+.tl-rowmenu .tl-tb-btn:hover {
   background: rgb(var(--accent-rgb) / .1);
   border-color: rgb(var(--accent-rgb) / .3);
   color: var(--accent);
@@ -15529,6 +15527,19 @@ body.dark .grid-cell.tl-stack-text-35 {
   color: var(--accent);
 }
 
+/* Danger variant — used for destructive actions like "✕ Remove extracted
+   column" inside the per-column actions menu. Tinted at rest so the
+   destructive intent is visible without hover; on hover the tint deepens
+   instead of switching to the accent colour. */
+.tl-popover-item-danger {
+  color: var(--risk-high);
+}
+
+.tl-popover-item-danger:hover {
+  background: rgb(var(--risk-high-rgb) / .14);
+  color: var(--risk-high);
+}
+
 .tl-popover-sep {
   height: 1px;
   background: var(--hairline);
@@ -15575,198 +15586,6 @@ body.dark .grid-cell.tl-stack-text-35 {
 .tl-rowmenu {
   /* Row context-menu inherits from .tl-popover; just mark it so future
      styling can diverge without having to replumb the DOM. */
-}
-
-/* ── Column menu (Excel-style checkbox filter + extract actions) ────── */
-.tl-colmenu {
-  position: fixed;
-  z-index: 12000;
-  width: 340px;
-  max-height: 80vh;
-  background: var(--panel-bg-raised);
-  border: 1px solid var(--hairline-strong);
-  border-radius: 8px;
-  box-shadow: 0 10px 32px rgba(0, 0, 0, .3);
-  display: flex;
-  flex-direction: column;
-  color: var(--text);
-  font-size: 12px;
-  overflow: hidden;
-}
-
-.tl-colmenu-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--panel-bg-section);
-  border-bottom: 1px solid var(--hairline);
-  font-weight: 700;
-  font-size: 12px;
-}
-
-.tl-colmenu-section {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--hairline);
-}
-
-.tl-colmenu-section:last-child {
-  border-bottom: 0;
-}
-
-.tl-colmenu-label {
-  display: block;
-  font-size: 10.5px;
-  font-weight: 600;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  margin-bottom: 3px;
-}
-
-.tl-colmenu-input,
-.tl-colmenu-input-sm {
-  width: 100%;
-  padding: 4px 8px;
-  font: inherit;
-  font-size: 11.5px;
-  border: 1px solid var(--input-border);
-  border-radius: 5px;
-  background: var(--input-bg);
-  color: var(--text);
-}
-
-.tl-colmenu-input:focus,
-.tl-colmenu-input-sm:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgb(var(--accent-rgb) / .15);
-}
-
-.tl-colmenu-input-sm {
-  padding: 3px 6px;
-  font-size: 11px;
-}
-
-.tl-colmenu-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.tl-colmenu-copy {
-  appearance: none;
-  border: 1px solid var(--hairline-strong);
-  background: var(--panel-bg-raised);
-  color: var(--text-muted);
-  font-size: 12px;
-  line-height: 1;
-  padding: 3px 7px;
-  border-radius: 4px;
-  cursor: pointer;
-  flex: 0 0 auto;
-  transition: background .12s ease, border-color .12s ease, color .12s ease;
-}
-
-.tl-colmenu-copy:hover {
-  background: rgb(var(--accent-rgb) / .14);
-  border-color: rgb(var(--accent-rgb) / .35);
-  color: var(--accent);
-}
-
-.tl-colmenu-values {
-  max-height: 220px;
-  overflow: auto;
-  border: 1px solid var(--hairline);
-  border-radius: 5px;
-  background: var(--panel-bg);
-  margin-top: 4px;
-}
-
-.tl-colmenu-value {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 6px;
-  font-size: 11px;
-  cursor: pointer;
-  position: relative;
-}
-
-.tl-colmenu-value:hover {
-  background: rgb(var(--accent-rgb) / .08);
-}
-
-.tl-colmenu-value input[type="checkbox"] {
-  flex: 0 0 auto;
-  margin: 0;
-}
-
-.tl-colmenu-value-label {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: 'Fira Code', 'Consolas', monospace;
-  position: relative;
-  z-index: 1;
-}
-
-.tl-colmenu-value-count {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-muted);
-  font-size: 10.5px;
-  position: relative;
-  z-index: 1;
-}
-
-.tl-colmenu-valbar {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  background: rgb(var(--accent-rgb) / .08);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.tl-colmenu-value:hover .tl-colmenu-valbar {
-  background: rgb(var(--accent-rgb) / .16);
-}
-
-/*
- * Top-List / column-menu "All" + "None" action buttons. This used to (by
- * mistake) share the `.tl-colmenu-valbar` class above, which is
- * position: absolute + pointer-events: none — that made the buttons pin to
- * the top-left of the popup and swallow clicks. A dedicated class keeps
- * the two concerns separated: valbar = per-row fill, valactions = button bar.
- */
-.tl-colmenu-valactions {
-  display: flex;
-  gap: 4px;
-  padding: 4px 0 2px;
-}
-
-
-.tl-colmenu-empty {
-  padding: 12px;
-  text-align: center;
-  font-style: italic;
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-.tl-colmenu-foot {
-  display: flex;
-  gap: 4px;
-  padding: 6px 10px;
-  border-top: 1px solid var(--hairline);
-  background: var(--panel-bg-section);
-  flex-wrap: wrap;
 }
 
 /* ── Dialog (modal-ish — click outside to close) ───────────────────── */

@@ -267,7 +267,29 @@ Object.assign(TimelineView.prototype, {
     }
     this._openPopover = null;
   },
-  // ── Column menu (Excel-style) ────────────────────────────────────────────
+  // ── Column actions menu ──────────────────────────────────────────────────
+  //
+  // Slim per-column dropdown anchored on the `⋮` button in each Top-Values
+  // card head. Hosts ONLY column-scoped actions that aren't already
+  // surfaced on the card itself. The card already supports:
+  //   • Contains / value filtering   → per-card search input + Enter key
+  //   • Top values copy              → 📋 button in the card header
+  //   • Pin / sort / Ctrl-multi-sel  → existing card affordances
+  // …so the historical Excel-style column menu (Contains input + Top-200
+  // checkboxes + Copy / Reset / Apply) was removed entirely as redundant.
+  //
+  // What remains here are the actions that operate on the WHOLE column,
+  // not on individual values:
+  //   • Use as Timestamp (when the column parses as time / numeric)
+  //   • Stack chart by this
+  //   • ƒx Extract values
+  //   • 🧮 Auto pivot on this column
+  //   • 🌍 Enrich IP (when the column is IPv4 + a provider is wired)
+  //   • ✕ Remove extracted column (extracted-only)
+  //
+  // Visual style: `.tl-popover-item` rows + `.tl-popover-sep` separators
+  // (mirroring the right-click row context menu) so we can drop every
+  // `.tl-colmenu-*` rule from `viewers.css`.
   _openColumnMenu(colIdx, anchor) {
     // Toggle: if the menu is already open for this exact column, close it.
     if (this._openPopover && this._openPopover.dataset.colIdx === String(colIdx)) {
@@ -277,39 +299,8 @@ Object.assign(TimelineView.prototype, {
     this._closePopover();
     const menu = document.createElement('div');
     menu.dataset.colIdx = colIdx;
-    menu.className = 'tl-popover tl-colmenu';
+    menu.className = 'tl-popover tl-rowmenu';
     const name = this.columns[colIdx] || `(col ${colIdx + 1})`;
-    // Pre-fill the Contains input + Values checkboxes from the current
-    // query AST rather than a separate chip list — the query bar is now
-    // the single source of truth. For `existingContains`, match the
-    // first top-level `contains` predicate on this column. For
-    // `existingEqs`, collect the union of (positive) `eq` predicate
-    // values AND the values inside any positive `IN (…)` clause on
-    // this column — the Apply handler below emits either an eq or an
-    // `IN` list depending on cardinality, so both round-trip cleanly.
-    const _astClauses = this._queryTopLevelClauses(this._queryCurrentAst());
-    const _containsClause = _astClauses.find(c => c.k === 'pred' && c.op === 'contains' && c.colIdx === colIdx);
-    const existingContains = _containsClause ? { val: _containsClause.val } : null;
-    // Positive membership: `col = v` or `col IN (…)` — these narrow to an
-    // explicit whitelist, so checkboxes are painted *unchecked* except for
-    // members of `eqSet`.
-    const existingEqs = [];
-    // Negative membership: `col != v` or `col NOT IN (…)` — these narrow by
-    // exclusion, so the menu starts *all-checked* with members of `neSet`
-    // unchecked. This is the round-trip of the "shorter list wins" Apply
-    // handler below.
-    const existingNes = [];
-    for (const c of _astClauses) {
-      if (c.k === 'pred' && c.op === 'eq' && c.colIdx === colIdx) existingEqs.push(String(c.val));
-      else if (c.k === 'pred' && c.op === 'ne' && c.colIdx === colIdx) existingNes.push(String(c.val));
-      else if (c.k === 'in' && !c.neg && c.colIdx === colIdx) {
-        for (const v of c.vals) existingEqs.push(String(v));
-      } else if (c.k === 'in' && c.neg && c.colIdx === colIdx) {
-        for (const v of c.vals) existingNes.push(String(v));
-      }
-    }
-    const eqSet = new Set(existingEqs);
-    const neSet = new Set(existingNes);
 
     // Only offer "Use as Timestamp" when the column's values actually parse
     // as timestamps (or bare numbers suitable for a numeric axis). Reuses the
@@ -349,255 +340,95 @@ Object.assign(TimelineView.prototype, {
       }
     }
 
-    menu.innerHTML = `
-      <div class="tl-colmenu-head">
-        <strong>${_tlEsc(name)}</strong>
-      </div>
-      <div class="tl-colmenu-section">
-        <label class="tl-colmenu-label">Contains</label>
-        <input type="text" class="tl-colmenu-input" data-f="contains" placeholder="substring…" spellcheck="false" value="${_tlEsc((existingContains && existingContains.val) || '')}">
-      </div>
-      <div class="tl-colmenu-section">
-        <div class="tl-colmenu-row">
-          <label class="tl-colmenu-label">Values (top 200)</label>
-          <input type="text" class="tl-colmenu-input tl-colmenu-input-sm" data-f="valsearch" placeholder="search values…" spellcheck="false">
-          <button class="tl-colmenu-copy" type="button" data-act="copyvals" title="Copy visible values to clipboard">📋</button>
-        </div>
-        <div class="tl-colmenu-values"></div>
-        <div class="tl-colmenu-valactions">
-          <button class="tl-tb-btn" data-act="selall">All</button>
-          <button class="tl-tb-btn" data-act="selnone">None</button>
-        </div>
-      </div>
-      <div class="tl-colmenu-section">
-        ${showTimeBtn ? '<button class="tl-tb-btn" data-act="timecol">Use as Timestamp</button>' : ''}
-        <button class="tl-tb-btn" data-act="stackcol">Stack chart by this</button>
-      </div>
-      ${this._isExtractedCol(colIdx) ? '<div class="tl-colmenu-section"><button class="tl-tb-btn tl-tb-btn-danger" data-act="removeExtract">✕ Remove extracted column</button></div>' : ''}
-      <div class="tl-colmenu-section">
-        <button class="tl-tb-btn" data-act="extract">ƒx Extract values</button>
-        <button class="tl-tb-btn" data-act="autopivot">🧮 Auto pivot on this column</button>
-        ${showGeoipBtn
-          ? '<button class="tl-tb-btn" data-act="geoip" title="Force enrichment for this column — emits geo and/or ASN columns from the configured providers">🌍 Enrich IP</button>'
-          : ''}
-      </div>
-      <div class="tl-colmenu-foot">
-        <button class="tl-tb-btn" data-act="reset">Reset filters</button>
-        <button class="tl-tb-btn tl-tb-btn-primary" data-act="apply">Apply</button>
-      </div>
-    `;
-
-    const valsWrap = menu.querySelector('.tl-colmenu-values');
-    // Populate distinct values using the "all-but-this-column" filter so
-    // the user can broaden a narrowed selection without hitting Reset
-    // first. Excel-parity — see `_indexIgnoringColumn` for semantics.
-    const items = this._distinctValuesFor(colIdx, this._indexIgnoringColumn(colIdx), 200);
-    // Three round-trip modes:
-    //   (a) positive-eq present → start with only `eqSet` checked;
-    //   (b) negative-ne present (and no eq) → start all-checked, `neSet` off;
-    //   (c) nothing on this column → start all-checked.
-    const initialAll = existingEqs.length === 0 && existingNes.length === 0;
-    const initialAllMinusNe = existingEqs.length === 0 && existingNes.length > 0;
-
-    // Live checkbox state — survives paint() re-renders when the user
-    // types in Search Values. Keyed by value string → boolean (checked).
-    // Seeded from the initial round-trip mode so the first paint is
-    // correct, then updated by individual checkbox toggles and All/None.
-    const liveState = new Map();
-    for (const [val] of items) {
-      const checked = initialAll ? true
-        : initialAllMinusNe ? !neSet.has(val)
-          : eqSet.has(val);
-      liveState.set(val, checked);
+    // Build the action list. Mirrors the right-click row context menu
+    // shape (`{ sep: true }` separators + plain `{ label, act }` items).
+    const items = [];
+    // Header label — read-only, shows which column the menu targets.
+    items.push({ labelOnly: true, label: name });
+    items.push({ sep: true });
+    if (showTimeBtn) {
+      items.push({
+        label: '🕒 Use as Timestamp',
+        act: () => {
+          this._timeCol = colIdx;
+          this._els.timeColSelect.value = String(colIdx);
+          this._parseAllTimestamps();
+          this._dataRange = this._computeDataRange();
+          this._window = null;
+          this._recomputeFilter();
+          this._scheduleRender(['chart', 'scrubber', 'grid', 'columns', 'chips']);
+        },
+      });
+    }
+    items.push({
+      label: '📊 Stack chart by this',
+      act: () => {
+        this._stackCol = colIdx;
+        this._buildStableStackColorMap();
+        this._els.stackColSelect.value = String(colIdx);
+        this._scheduleRender(['chart', 'grid', 'columns']);
+      },
+    });
+    items.push({ sep: true });
+    items.push({
+      label: 'ƒx Extract values',
+      act: () => this._openExtractionDialog(colIdx, 'manual'),
+    });
+    items.push({
+      label: '🧮 Auto pivot on this column',
+      act: () => this._autoPivotFromColumn(colIdx),
+    });
+    if (showGeoipBtn) {
+      items.push({
+        label: '🌍 Enrich IP',
+        title: 'Force enrichment for this column — emits geo and/or ASN columns from the configured providers',
+        act: () => {
+          if (typeof this._runGeoipEnrichment === 'function') {
+            this._runGeoipEnrichment({ forceCol: colIdx });
+          }
+        },
+      });
+    }
+    if (this._isExtractedCol(colIdx)) {
+      items.push({ sep: true });
+      items.push({
+        label: '✕ Remove extracted column',
+        danger: true,
+        act: () => this._removeExtractedCol(colIdx),
+      });
     }
 
-    const paint = (filterText) => {
-      valsWrap.innerHTML = '';
-      const lo = (filterText || '').toLowerCase();
-      for (const [val, count] of items) {
-        if (lo && !val.toLowerCase().includes(lo)) continue;
-        const line = document.createElement('label');
-        line.className = 'tl-colmenu-value';
-        const checked = liveState.get(val) !== false;
-        line.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} data-val="${_tlEsc(val)}"> <span class="tl-colmenu-value-label" title="${_tlEsc(val)}">${_tlEsc(val === '' ? '(empty)' : val)}</span> <span class="tl-colmenu-value-count">${count.toLocaleString()}</span>`;
-        valsWrap.appendChild(line);
-      }
-      if (!valsWrap.firstChild) {
-        const hint = document.createElement('div');
-        hint.className = 'tl-colmenu-empty';
-        hint.textContent = 'No matches.';
-        valsWrap.appendChild(hint);
-      }
-    };
-    paint('');
-
-    menu.querySelector('[data-f="valsearch"]').addEventListener('input', (e) => paint(e.target.value));
-
-    // Copy visible values — iterates the currently-rendered checkbox
-    // rows (post search filter) and copies their values as newline-
-    // separated text. Not every checkbox state is preserved across
-    // searches; we copy whatever is visible regardless of checked
-    // state since the analyst can see it.
-
-    menu.querySelector('[data-act="copyvals"]').addEventListener('click', (e) => {
-      e.stopPropagation();
-      const rows = valsWrap.querySelectorAll('.tl-colmenu-value input[type=checkbox]');
-      const vals = [];
-      rows.forEach(cb => { if (cb.dataset.val != null) vals.push(cb.dataset.val); });
-      if (!vals.length) return;
-      this._copyToClipboard(vals.join('\n'));
-      if (this._app && typeof this._app._toast === 'function') {
-        this._app._toast(`Copied ${vals.length.toLocaleString()} value${vals.length === 1 ? '' : 's'} from "${name}"`, 'info');
-      }
-    });
-
-    // Keep liveState in sync when the user toggles individual checkboxes.
-    // Delegated on the wrapper so dynamically-created checkboxes after
-    // paint() re-renders are covered without per-element listeners.
-    valsWrap.addEventListener('change', (e) => {
-      const cb = e.target;
-      if (cb.type === 'checkbox' && cb.dataset.val != null) {
-        liveState.set(cb.dataset.val, cb.checked);
-      }
-    });
-
-    // Enter in either text input → Apply and close (mirrors the pattern
-    // in _openAddSusPopover). Gives keyboard-driven analysts the
-    // expected submit-on-Enter UX without reaching for the button.
-    const applyBtn = menu.querySelector('[data-act="apply"]');
-    menu.querySelector('[data-f="contains"]').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); applyBtn.click(); }
-    });
-    menu.querySelector('[data-f="valsearch"]').addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') { e.preventDefault(); applyBtn.click(); }
-    });
-
-    // All / None affect only the currently visible (search-filtered)
-    // checkboxes — so the user can search for "bob", click None to
-    // deselect just the bob values, then search for something else and
-    // those deselections persist in liveState across paint() calls.
-    menu.querySelector('[data-act="selall"]').addEventListener('click', () => {
-      valsWrap.querySelectorAll('input[type=checkbox]').forEach(cb => {
-        cb.checked = true;
-        liveState.set(cb.dataset.val, true);
-      });
-    });
-    menu.querySelector('[data-act="selnone"]').addEventListener('click', () => {
-      valsWrap.querySelectorAll('input[type=checkbox]').forEach(cb => {
-        cb.checked = false;
-        liveState.set(cb.dataset.val, false);
-      });
-    });
-    // The `Use as Timestamp` button is now conditional (see `showTimeBtn`
-    // above — hidden when the column doesn't parse as timestamps / numbers,
-    // and on the already-selected timestamp column). Null-guard the wire
-    // up; without this, if the button isn't rendered the following
-    // `querySelector(...).addEventListener` throws mid-handler and kills
-    // every subsequent listener wire-up in this menu — including the
-    // value-search <input>, which is how the user most often discovers it.
-    const timeColBtn = menu.querySelector('[data-act="timecol"]');
-    if (timeColBtn) timeColBtn.addEventListener('click', () => {
-      this._timeCol = colIdx;
-      this._els.timeColSelect.value = String(colIdx);
-      this._parseAllTimestamps();
-      this._dataRange = this._computeDataRange();
-      this._window = null;
-      this._recomputeFilter();
-      this._scheduleRender(['chart', 'scrubber', 'grid', 'columns', 'chips']);
-      this._closePopover();
-    });
-    menu.querySelector('[data-act="stackcol"]').addEventListener('click', () => {
-      this._stackCol = colIdx;
-      this._buildStableStackColorMap();
-      this._els.stackColSelect.value = String(colIdx);
-      this._scheduleRender(['chart', 'grid', 'columns']);
-      this._closePopover();
-    });
-    menu.querySelector('[data-act="extract"]').addEventListener('click', () => {
-      this._closePopover();
-      this._openExtractionDialog(colIdx, 'manual');
-    });
-    menu.querySelector('[data-act="autopivot"]').addEventListener('click', () => {
-      this._closePopover();
-      this._autoPivotFromColumn(colIdx);
-    });
-    const removeExtractBtn = menu.querySelector('[data-act="removeExtract"]');
-    if (removeExtractBtn) removeExtractBtn.addEventListener('click', () => {
-      this._removeExtractedCol(colIdx);
-      this._closePopover();
-    });
-    // 🌍 Enrich IP — bypass the IPv4-detection threshold AND the skip
-    // heuristic for this specific column. Fires every wired provider
-    // (`this._app.geoip` and/or `this._app.geoipAsn`); the mixin's
-    // per-source-col + per-kind dedup means a click on an already-
-    // enriched column is a no-op.
-    const geoipBtn = menu.querySelector('[data-act="geoip"]');
-    if (geoipBtn) geoipBtn.addEventListener('click', () => {
-      this._closePopover();
-      if (typeof this._runGeoipEnrichment === 'function') {
-        this._runGeoipEnrichment({ forceCol: colIdx });
-      }
-    });
-    menu.querySelector('[data-act="reset"]').addEventListener('click', () => {
-      // Strip every top-level clause targeting this column from the
-      // query AST. Sus marks aren't query-bar clauses, so they're
-      // unaffected — matches the old `c.op !== 'sus'` carve-out.
-      this._queryReplaceAllForCol(colIdx);
-      this._closePopover();
-    });
-    menu.querySelector('[data-act="apply"]').addEventListener('click', () => {
-      // Contains
-      const containsText = menu.querySelector('[data-f="contains"]').value.trim();
-      this._addContainsChipsReplace(colIdx, containsText);
-      // Eq set — read from `liveState` (all items, not just the
-      // currently visible DOM) so values hidden by Search Values
-      // aren't silently dropped. Pick the shorter representation
-      // (`col IN (…)` vs `col NOT IN (…)`) so unchecking one value
-      // out of 200 doesn't emit a 199-value IN list. NOT IN is
-      // safe when the distinct set is complete, or when the user
-      // started from an all-pass / NOT IN baseline (unchecking
-      // means "exclude these" and hidden values should pass). NOT
-      // IN is blocked only when a positive IN whitelist was active
-      // — the user explicitly chose a subset and values beyond the
-      // cap were never included.
-      const entries = Array.from(liveState.entries());
-      const allChecked = entries.length > 0 && entries.every(([, v]) => v);
-      const noneChecked = entries.length > 0 && entries.every(([, v]) => !v);
-      if (allChecked) {
-        // "All selected" → no eq chip narrowing needed.
-        this._replaceEqChipsForCol(colIdx, []);
-      } else if (noneChecked) {
-        // "None" → rarely useful, but treat as excluding all — user probably
-        // means clear + contains only.
-        this._replaceEqChipsForCol(colIdx, []);
+    // Render. Same primitives as the right-click row context menu so the
+    // two surfaces look like cousins.
+    for (const it of items) {
+      if (it.sep) {
+        const sep = document.createElement('div');
+        sep.className = 'tl-popover-sep';
+        menu.appendChild(sep);
+      } else if (it.labelOnly) {
+        const lbl = document.createElement('div');
+        lbl.className = 'tl-popover-label';
+        lbl.textContent = it.label;
+        menu.appendChild(lbl);
       } else {
-        const checked = entries.filter(([, v]) => v).map(([k]) => k);
-        const unchecked = entries.filter(([, v]) => !v).map(([k]) => k);
-        // NOT IN is always safe when the full distinct set is known.
-        // When the set was truncated (cap exceeded), NOT IN is still
-        // correct if the user started from an all-pass or NOT IN
-        // baseline — unchecked items are exclusions and hidden values
-        // beyond the cap should continue to pass through, matching the
-        // prior "no filter" / "NOT IN" semantic.  Only when the
-        // baseline was a positive IN whitelist do we stick with IN,
-        // because the user explicitly selected a subset and values
-        // beyond the cap were never included.
-        const canNegate = !items.truncated || initialAll || initialAllMinusNe;
-        if (canNegate && unchecked.length < checked.length) {
-          this._queryReplaceNotInForCol(colIdx, unchecked);
-        } else {
-          this._replaceEqChipsForCol(colIdx, checked);
-        }
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tl-popover-item';
+        if (it.danger) b.classList.add('tl-popover-item-danger');
+        b.textContent = it.label;
+        if (it.title) b.title = it.title;
+        b.addEventListener('click', () => {
+          try { it.act(); } finally { this._closePopover(); }
+        });
+        menu.appendChild(b);
       }
-      this._closePopover();
-    });
+    }
 
-    // Anchor below the column head
+    // Anchor below the column head (the `⋮` button).
     const rect = anchor.getBoundingClientRect();
     this._positionFloating(menu, rect.left, rect.bottom + 2);
     document.body.appendChild(menu);
     this._openPopover = menu;
-    menu.querySelector('[data-f="contains"]').focus();
   },
 
   _closeDialog() {

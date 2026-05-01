@@ -450,9 +450,30 @@ Object.assign(TimelineView.prototype, {
 
   _togglePinCol(colName) {
     const idx = this._pinnedCols.indexOf(colName);
-    if (idx >= 0) this._pinnedCols.splice(idx, 1);
+    const isUnpin = idx >= 0;
+    if (isUnpin) this._pinnedCols.splice(idx, 1);
     else this._pinnedCols.push(colName);
     TimelineView._savePinnedColsFor(this._fileKey, this._pinnedCols);
+    // Pin/unpin span sync — pinning auto-widens the card up to span 3
+    // when the column's top values are long enough to warrant it,
+    // unpinning reverts that auto-set span back to 1. Manual user
+    // resizes (`src: 'manual'` in `_cardWidths`) are preserved either
+    // way. Helpers live in `timeline-view-render-grid.js`.
+    if (isUnpin) {
+      if (typeof this._revertPinnedSpan === 'function') {
+        this._revertPinnedSpan(colName);
+      }
+    } else {
+      // Resolve the colIdx from name. Fall back to scanning if
+      // _baseColumns/columns differ in length (extracted columns).
+      let colIdx = -1;
+      for (let i = 0; i < this.columns.length; i++) {
+        if ((this.columns[i] || `(col ${i + 1})`) === colName) { colIdx = i; break; }
+      }
+      if (colIdx >= 0 && typeof this._autoSpanForPinned === 'function') {
+        this._autoSpanForPinned(colIdx, colName);
+      }
+    }
     this._scheduleRender(['columns']);
   },
 

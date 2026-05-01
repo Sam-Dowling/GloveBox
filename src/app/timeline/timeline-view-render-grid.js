@@ -590,6 +590,37 @@ Object.assign(TimelineView.prototype, {
       }
     }
 
+    // ── Empty-column suppression ────────────────────────────────────────
+    // Cards for columns where every cell is the empty string add pure
+    // noise — they show only an `(empty)` row at 100 % and offer nothing
+    // actionable. Filter them out before pin-sorting so the pin path
+    // sees the post-filter set.
+    //
+    // Predicate: the column's stats reported a single distinct value
+    // and that value is the empty string. (`distinct === 0` would only
+    // happen with zero rows — not relevant for filtering.)
+    //
+    // Carve-outs:
+    //   • Stats not yet computed → keep the card. The `'columns'` task
+    //     coalesces a re-paint after the async stats land.
+    //   • Pinned columns → always shown, even if empty. Pinning is an
+    //     explicit user action and should not be silently overridden.
+    const _pinnedNamesSet = new Set();
+    const _nameOfCi = (ci) => cols[ci] || `(col ${ci + 1})`;
+    if (this._pinnedCols) for (const pn of this._pinnedCols) _pinnedNamesSet.add(pn);
+    const _isEmptyCol = (ci) => {
+      const s = stats && stats[ci];
+      if (!s || !s.values) return false;
+      if (s.values.length === 0) return true;
+      if (s.values.length === 1 && s.values[0][0] === '') return true;
+      return false;
+    };
+    const _filteredIndices = _indices.filter(ci =>
+      _pinnedNamesSet.has(_nameOfCi(ci)) || !_isEmptyCol(ci)
+    );
+    _indices.length = 0;
+    for (const ci of _filteredIndices) _indices.push(ci);
+
     // Pin sorting — move pinned columns to the front of _indices while
     // preserving relative order among pinned and unpinned groups.
     if (this._pinnedCols && this._pinnedCols.length) {
@@ -1103,11 +1134,116 @@ Object.assign(TimelineView.prototype, {
 
   // Persist a card's column-span override. Deletes the key when span
   // falls back to the default (1) so the persistence layer stays tidy.
-
-  _cardSizeSave(colName, span) {
+  //
+  // `src` is an optional discriminator that records WHO set the span:
+  //   • 'manual' — user dragged the resize handle. The pinned-auto-span
+  //     code (`_autoSpanForPinned`) MUST NOT overwrite manual entries on
+  //     subsequent pin toggles — the user already expressed an explicit
+  //     preference.
+  //   • 'pin'    — the auto-span path widened the card because the user
+  //     pinned it and the content was long enough. On unpin the entry
+  //     is reverted to span 1 so the card snaps back.
+  //   • undefined / legacy — backward-compatible behaviour: no source
+  //     flag stored. Treated like 'manual' for override-survival purposes
+  //     (legacy entries shouldn't be silently mutated by pin actions).
+  _cardSizeSave(colName, span, src) {
     if (span <= 1) delete this._cardWidths[colName];
-    else this._cardWidths[colName] = { span };
+    else this._cardWidths[colName] = src ? { span, src } : { span };
     TimelineView._saveCardWidthsFor(this._fileKey, this._cardWidths);
+  },
+
+  // Inspect the persistence shape and return the entry's `src` discriminator
+  // (one of 'manual' | 'pin' | undefined). Centralised so callers don't
+  // peek at `_cardWidths[]` shape directly.
+  _cardSpanSource(colName) {
+    const v = this._cardWidths[colName];
+    if (v && typeof v === 'object' && typeof v.src === 'string') return v.src;
+    return undefined;
+  },
+
+  // Pin-driven auto-span. Called from `_togglePinCol` when the user pins
+  // a column. Picks a span 1..3 based on the LONGEST visible top-value
+  // string, capped by the live track count returned from
+  // `_columnsGridGeometry`. Does NOT override an existing 'manual' entry —
+  // an explicit user resize wins. Stats may not be available yet when the
+  // user pins from the right-click menu before the columns section has
+  // rendered; in that case we fall back to a safe span of 2.
+  //
+  // The card is not yet in the DOM at the time of the toggle (the next
+  // `_scheduleRender(['columns'])` call paints it), so we resolve the
+  // host geometry by querying the columns container directly.
+  _autoSpanForPinned(colIdx, colName) {
+    // Respect prior manual overrides — never clobber an explicit user
+    // resize. (Legacy entries with no `src` field are also preserved
+    // for safety; users may have dragged on an older build.)
+    const existing = this._cardWidths[colName];
+    if (existing && typeof existing === 'object' && existing.src !== 'pin') {
+      return; // manual or legacy entry — leave it alone.
+    }
+
+    // Resolve grid geometry. Cap span at min(3, available tracks) so
+    // narrow viewports don't get a span-3 card that pushes everything
+    // else off-screen.
+    const host = (this._els && this._els.cols) || null;
+    const geom = host ? this._columnsGridGeometry(host) : null;
+    const maxSpan = Math.min(3, geom ? geom.cols : 3);
+    if (maxSpan < 2) return; // viewport too narrow — single-column grid.
+
+    // Inspect the column's top values to estimate content length. Stats
+    // may not be ready yet — fall back to span 2 (a reasonable middle
+    // ground that still signals "this card is interesting").
+    const stats = this._colStats;
+    const s = stats && stats[colIdx];
+    if (!s || !s.values || !s.values.length) {
+      this._cardSizeSave(colName, Math.min(2, maxSpan), 'pin');
+      return;
+    }
+    let maxLen = 0;
+    const sample = Math.min(s.values.length, 50);
+    for (let i = 0; i < sample; i++) {
+      const v = s.values[i][0];
+      const len = (v == null ? 0 : String(v).length);
+      if (len > maxLen) maxLen = len;
+    }
+    // Header label can also drive expansion (rare but real for long
+    // ETW field names).
+    const hdrLen = (colName || '').length;
+    if (hdrLen > maxLen) maxLen = hdrLen;
+
+    // Approximate chars-per-track. The card content area is narrower
+    // than the raw track width (per-row padding + count + bar swatch),
+    // so use ~7 px/char as the effective character width — slightly
+    // wider than the grid cell's monospace 8 px to account for the
+    // surrounding chrome.
+    const trackW = geom ? geom.trackW : (TIMELINE_CARD_SIZES[this._cardSize] || TIMELINE_CARD_SIZES.M);
+    const charsPerTrack = Math.max(1, Math.floor(trackW / 7));
+    let span = 1;
+    if (maxLen > charsPerTrack * 2) span = 3;
+    else if (maxLen > charsPerTrack) span = 2;
+    span = Math.max(1, Math.min(maxSpan, span));
+
+    if (span <= 1) {
+      // Content fits — clear any stale 'pin' entry so the card stays
+      // at default width while still appearing pinned (left accent).
+      if (existing && existing.src === 'pin') {
+        delete this._cardWidths[colName];
+        TimelineView._saveCardWidthsFor(this._fileKey, this._cardWidths);
+      }
+      return;
+    }
+    this._cardSizeSave(colName, span, 'pin');
+  },
+
+  // Unpin counterpart. If the persistence entry was set by the pin
+  // auto-span ('pin' source), revert to span 1. 'Manual' entries
+  // (explicit user drags) are preserved across unpin so the user's
+  // resize work survives.
+  _revertPinnedSpan(colName) {
+    const existing = this._cardWidths[colName];
+    if (existing && typeof existing === 'object' && existing.src === 'pin') {
+      delete this._cardWidths[colName];
+      TimelineView._saveCardWidthsFor(this._fileKey, this._cardWidths);
+    }
   },
 
   // Horizontal resize — `dir` is `'left'` or `'right'`. Both directions
@@ -1139,7 +1275,12 @@ Object.assign(TimelineView.prototype, {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       const span = parseInt(card.dataset.span || String(startSpan), 10);
-      this._cardSizeSave(colName, span);
+      // Stamp 'manual' so a future pin / unpin toggle leaves the user's
+      // drag intact. (Drag-down to span 1 deletes the entry entirely
+      // via `_cardSizeSave`'s `<= 1` branch — also fine, since absence
+      // is equivalent to "no opinion" and the next pin will auto-span
+      // freely.)
+      this._cardSizeSave(colName, span, 'manual');
     };
     window.addEventListener('pointermove', onMove);
     window.addEventListener('pointerup', onUp);

@@ -429,15 +429,16 @@ test('timeline-router.js re-triggers _runGeoipEnrichment after _app stamping', (
 
 test('column header menu offers single "Enrich IP" entry on IPv4 columns', () => {
   // Pin the menu entry exists, gates on EITHER provider being wired
-  // (`this._app.geoip || this._app.geoipAsn`), and uses
-  // `data-act="geoip"` for the click handler. A regression that loses
-  // any of these breaks the override path that lets analysts force
-  // enrichment on auto-detect-rejected columns.
-  assert.match(
-    POPOVERS,
-    /data-act="geoip"/,
-    'column menu must keep the data-act="geoip" attribute for the click handler',
-  );
+  // (`this._app.geoip || this._app.geoipAsn`), is labelled "Enrich IP",
+  // and its click handler calls `_runGeoipEnrichment({ forceCol: … })`.
+  // A regression that loses any of these breaks the override path that
+  // lets analysts force enrichment on auto-detect-rejected columns.
+  //
+  // Note: post-refactor (column menu slimmed to a button-list mirroring
+  // the right-click row context menu), the click is wired via an `act`
+  // callback in the `items[]` array rather than a `data-act` attribute,
+  // so we no longer pin the attribute — only the user-visible label and
+  // the call into `_runGeoipEnrichment`.
   assert.match(
     POPOVERS,
     /this\._app\.geoip\s*\|\|\s*this\._app\.geoipAsn/,
