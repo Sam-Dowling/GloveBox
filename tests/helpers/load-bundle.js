@@ -122,6 +122,13 @@ function makeSandbox(extra) {
     // wrapped URLs into searchParams.
     URL: typeof URL === 'function' ? URL : undefined,
     URLSearchParams: typeof URLSearchParams === 'function' ? URLSearchParams : undefined,
+    // `throwIfAborted` — Loupe's render-epoch / watchdog poll site, defined
+    // in `src/render-route.js`. The YARA engine (and a handful of other
+    // modules) call it once per outer-loop iteration. The production worker
+    // bundles ship a no-op stub (see `src/workers/yara.worker.js`); the unit
+    // harness mirrors that stub so tests don't have to ship the whole
+    // render-route just to drive a scan.
+    throwIfAborted: () => {},
   };
   // Most Loupe modules publish their public surface onto `window.<Name>`
   // (e.g. `window.MITRE`, `window.EvtxEventIds`, `window.safeStorage`,
@@ -265,6 +272,8 @@ const DEFAULT_EXPOSE = [
   'safeStorage',
   // src/tar-parser.js
   'TarParser',
+  // src/yara-engine.js
+  'YaraEngine',
 ];
 
 /**
