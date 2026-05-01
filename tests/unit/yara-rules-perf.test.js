@@ -136,16 +136,18 @@ function row(label, ms, budget) {
 
 // ── Per-file scan budgets ─────────────────────────────────────────────────
 //
-// Generous default. Slowest measurements (8 KB inputs, May 2026):
-//   • script-threats.yar on hex_8k       ≈   500 ms (JS_Bracket_Hex,
-//                                              JS_Comment_Injection)
-//   • script-threats.yar on x_8k         ≈   500 ms (same)
-//   • network-indicators.yar on hex_8k   ≈   100 ms (Punycode_IDN)
-// Most files finish in <50 ms. We set a 5 s per-file budget so the
-// test currently passes with ~10× headroom but a *worse* REDoS fails
-// loudly. Tier-1 rewrites will drop the slow files below 50 ms and the
-// budget will be tightened in the same commit.
-const PER_FILE_BUDGET_MS = 5_000;
+// Slowest per-file measurements after the May 2026 Tier-1 rule
+// rewrites (Punycode_IDN_Homograph, JS_Bracket_Hex_Property_Execution,
+// JS_Comment_Injection_Obfuscation):
+//   • macho-threats.yar on base64_161k   ≈ 165 ms
+//   • windows-threats.yar on base64_161k ≈ 135 ms
+//   • document-threats.yar on base64_161k ≈ 93 ms
+//   • script-threats.yar on base64_161k  ≈ 60 ms (was 151 ms)
+//   • script-threats.yar on hex_8k       ≈  4 ms (was 906 ms)
+//   • script-threats.yar on x_8k         ≈  4 ms (was 593 ms)
+// 1.5 s per-file budget gives ~9× headroom on the slowest entry,
+// catches a future REDoS regression even on the smallest 8 KB inputs.
+const PER_FILE_BUDGET_MS = 1_500;
 
 for (const formatTag of ['plaintext', 'decoded-payload']) {
   for (const inputName of ['base64_161k', 'hex_8k', 'x_8k']) {
@@ -182,33 +184,39 @@ for (const formatTag of ['plaintext', 'decoded-payload']) {
 // `inputs` is the list of alphabets the entry is sensitive to;
 // budgets are per-input.
 const SUSPECT_RULES = [
-  // Punycode `[a-zA-Z0-9.-]+xn--…` — `+` over a wide character class
-  // backtracks catastrophically on hex/base64 alphabets that don't
-  // contain the `xn--` anchor. Measured ≈100 ms at 8 KB hex.
+  // Punycode_IDN_Homograph: rewritten in Tier-1 to anchor on `\bxn--`.
+  // Pre-Tier-1: 22.5 s on 161 KB hex. Post-Tier-1: <15 ms across all
+  // tested alphabets. Pinned so a regression to `[…wide…]+xn--` form
+  // fails loudly.
   { file: 'network-indicators.yar',  name: 'Punycode_IDN_Homograph',
-    inputs: ['hex_8k', 'base64_161k'], budget: 2_000 },
-  // `\w+\s*\[\s*['"]\\x…` patterns. `\w+` greedy match over uniform
-  // `\w` input, then must find `[` — fails — backtracks one char at
-  // a time. O(n²). Measured ≈500 ms at 8 KB hex/x.
+    inputs: ['hex_8k', 'base64_161k'], budget: 250 },
+  // JS_Bracket_Hex_Property_Execution: rewritten in Tier-1 to use
+  // `\b[A-Za-z_$][\w$]{0,63}\[…` — bounded identifier with word-
+  // boundary anchor. Pre-Tier-1: 113 s on 161 KB 'x'. Post-Tier-1:
+  // <20 ms on 8 KB hex/x and <20 ms on 161 KB base64.
   { file: 'script-threats.yar',      name: 'JS_Bracket_Hex_Property_Execution',
-    inputs: ['hex_8k', 'x_8k'], budget: 2_000 },
-  // Same shape — `\w+\s*/\*…\*/\s*\.\s*…`.
+    inputs: ['hex_8k', 'x_8k', 'base64_161k'], budget: 250 },
+  // JS_Comment_Injection_Obfuscation: same Tier-1 rewrite pattern
+  // (bounded identifier, bounded comment body, `\b` anchor).
+  // Pre-Tier-1: 70 s on 161 KB 'x'. Post-Tier-1: <20 ms on all
+  // tested alphabets.
   { file: 'script-threats.yar',      name: 'JS_Comment_Injection_Obfuscation',
-    inputs: ['hex_8k', 'x_8k'], budget: 2_000 },
-  // PowerShell split/join reassembly — `.split…iex|.join…iex|split…Invoke`
-  // — bounded measured timing as of May 2026 but worth pinning so future
-  // greedy edits don't regress.
+    inputs: ['hex_8k', 'x_8k', 'base64_161k'], budget: 250 },
+  // PS_Split_Join_Reassembly — `\-split\s*['"][^'"]+['"].*iex` —
+  // shape-lint flags this as `greedy-dot-bridge` but the literal
+  // `-split` / `-join` prefix anchors input. Measured <5 ms; pin
+  // so a rewrite removing the literal anchor regresses loudly.
   { file: 'script-threats.yar',      name: 'PS_Split_Join_Reassembly',
-    inputs: ['base64_161k'], budget: 1_000 },
-  // Encoding-threats LOLBin / RTL-override — both flagged by the
-  // shape-lint as having broad `.*` contexts; pin in case a rewrite
-  // makes them slower on uniform input.
+    inputs: ['base64_161k'], budget: 250 },
+  // Encoding-threats catch-all rules — broad `.*` contexts but
+  // anchored on rare PowerShell tokens. Measured <10 ms; pin
+  // against future REDoS-introducing edits.
   { file: 'encoding-threats.yar',    name: 'Standalone_LOLBin_Indicators',
-    inputs: ['base64_161k'], budget: 1_000 },
+    inputs: ['base64_161k'], budget: 250 },
   { file: 'encoding-threats.yar',    name: 'Standalone_Script_Shell_Execution',
-    inputs: ['base64_161k'], budget: 1_000 },
+    inputs: ['base64_161k'], budget: 250 },
   { file: 'encoding-threats.yar',    name: 'Right_To_Left_Override',
-    inputs: ['base64_161k'], budget: 1_000 },
+    inputs: ['base64_161k'], budget: 250 },
 ];
 
 for (const entry of SUSPECT_RULES) {
@@ -257,7 +265,14 @@ test('perf: full corpus, 161 KB base64 blob, formatTag=plaintext', { timeout: 30
   }));
   // eslint-disable-next-line no-console
   console.log(`\n  full-corpus base64_161k plaintext        ${ms.toFixed(0).padStart(8)} ms`);
-  assert.ok(ms < 5_000, `full corpus took ${ms.toFixed(0)} ms (budget 5000 ms)`);
+  // Headline measurement that triggered the May 2026 audit. Loupe's
+  // user-reported symptom was ~60 s wall time on a 161 KB base64
+  // blob (worker overhead + sequential-phase serialisation magnified
+  // a ~300 ms in-process scan into the wall-clock figure). After
+  // Tier-1 rule rewrites this scan runs in 250–600 ms in Node with
+  // significant variance from JIT/GC. 2 s budget catches a >3×
+  // regression while tolerating cold-start jitter.
+  assert.ok(ms < 2_000, `full corpus on base64 took ${ms.toFixed(0)} ms (budget 2000 ms)`);
 });
 
 test('perf: full corpus, 161 KB base64 blob, formatTag=decoded-payload', { timeout: 30_000 }, () => {
@@ -266,7 +281,7 @@ test('perf: full corpus, 161 KB base64 blob, formatTag=decoded-payload', { timeo
   }));
   // eslint-disable-next-line no-console
   console.log(`\n  full-corpus base64_161k decoded-payload  ${ms.toFixed(0).padStart(8)} ms`);
-  assert.ok(ms < 5_000, `full corpus took ${ms.toFixed(0)} ms (budget 5000 ms)`);
+  assert.ok(ms < 2_000, `decoded-payload full corpus took ${ms.toFixed(0)} ms (budget 2000 ms)`);
 });
 
 test('perf: full corpus, 8 KB hex blob, formatTag=plaintext', { timeout: 30_000 }, () => {
@@ -275,9 +290,9 @@ test('perf: full corpus, 8 KB hex blob, formatTag=plaintext', { timeout: 30_000 
   }));
   // eslint-disable-next-line no-console
   console.log(`\n  full-corpus hex_8k      plaintext        ${ms.toFixed(0).padStart(8)} ms`);
-  // Hex is the worst-case alphabet (Punycode + JS_Bracket_Hex regexes).
-  // Measured ≈600 ms on 8 KB. 5 s budget gives CI headroom.
-  assert.ok(ms < 5_000, `full corpus on hex took ${ms.toFixed(0)} ms (budget 5000 ms)`);
+  // Pre-Tier-1: ≈600 ms (Punycode + JS_Bracket_Hex REDoS).
+  // Post-Tier-1: ≈30 ms. 500 ms budget catches a 15× regression.
+  assert.ok(ms < 500, `full corpus on hex took ${ms.toFixed(0)} ms (budget 500 ms)`);
 });
 
 test('perf: full corpus, 8 KB x blob, formatTag=plaintext', { timeout: 30_000 }, () => {
@@ -286,9 +301,9 @@ test('perf: full corpus, 8 KB x blob, formatTag=plaintext', { timeout: 30_000 },
   }));
   // eslint-disable-next-line no-console
   console.log(`\n  full-corpus x_8k        plaintext        ${ms.toFixed(0).padStart(8)} ms`);
-  // Uniform `\w` input is the worst case for `\w+`-anchored regexes
-  // in script-threats.yar. Measured ≈500 ms on 8 KB.
-  assert.ok(ms < 5_000, `full corpus on x took ${ms.toFixed(0)} ms (budget 5000 ms)`);
+  // Pre-Tier-1: ≈500 ms (`\w+` anchored regexes).
+  // Post-Tier-1: ≈30 ms. 500 ms budget catches a 15× regression.
+  assert.ok(ms < 500, `full corpus on x took ${ms.toFixed(0)} ms (budget 500 ms)`);
 });
 
 // ── Empty-buffer baseline ────────────────────────────────────────────────

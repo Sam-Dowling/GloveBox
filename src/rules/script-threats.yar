@@ -59,9 +59,9 @@ rule JS_Comment_Injection_Obfuscation
         mitre       = "T1027"
         applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
-        $comment_dot = /\w+\s*\/\*[^*]*\*\/\s*\.\s*\/\*[^*]*\*\/\s*\w+/ nocase
-        $comment_bracket = /\w+\s*\/\*[^*]*\*\/\s*\[\s*\/\*[^*]*\*\/\s*['"]/ nocase
-        $comment_call = /\w+\s*\/\*[^*]*\*\/\s*\(\s*\/\*[^*]*\*\/\s*['"]/ nocase
+        $comment_dot     = /\b[A-Za-z_$][\w$]{0,63}\s{0,8}\/\*[^*]{0,512}\*\/\s{0,8}\.\s{0,8}\/\*[^*]{0,512}\*\/\s{0,8}[A-Za-z_$][\w$]{0,63}/ nocase
+        $comment_bracket = /\b[A-Za-z_$][\w$]{0,63}\s{0,8}\/\*[^*]{0,512}\*\/\s{0,8}\[\s{0,8}\/\*[^*]{0,512}\*\/\s{0,8}['"]/ nocase
+        $comment_call    = /\b[A-Za-z_$][\w$]{0,63}\s{0,8}\/\*[^*]{0,512}\*\/\s{0,8}\(\s{0,8}\/\*[^*]{0,512}\*\/\s{0,8}['"]/ nocase
     condition:
         any of them
 }
@@ -1060,8 +1060,8 @@ rule JS_Bracket_Hex_Property_Execution
         mitre       = "T1027"
         applies_to  = "js, html, hta, plaintext, decoded-payload"
     strings:
-        $hex_bracket_1 = /\w+\s*\[\s*['"]\\x[0-9a-fA-F]{2}(\\x[0-9a-fA-F]{2})+['"]\s*\]/ nocase
-        $hex_bracket_2 = /\w+\s*\[\s*['"]\\u[0-9a-fA-F]{4}(\\u[0-9a-fA-F]{4})+['"]\s*\]/ nocase
+        $hex_bracket_1 = /\b[A-Za-z_$][\w$]{0,63}\[\s{0,8}['"](?:\\x[0-9a-fA-F]{2}){2,}['"]\s{0,8}\]/ nocase
+        $hex_bracket_2 = /\b[A-Za-z_$][\w$]{0,63}\[\s{0,8}['"](?:\\u[0-9a-fA-F]{4}){2,}['"]\s{0,8}\]/ nocase
         $window_hex = /window\s*\[\s*['"]\\[xu]/ nocase
         $document_hex = /document\s*\[\s*['"]\\[xu]/ nocase
         $this_hex = /this\s*\[\s*['"]\\[xu]/ nocase

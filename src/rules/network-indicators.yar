@@ -153,8 +153,8 @@ rule Punycode_IDN_Homograph
         mitre       = "T1036"
 
     strings:
-        $a = /https?:\/\/[a-zA-Z0-9\-\.]*xn--[a-z0-9\-]{2,}/
-        $b = /[a-zA-Z0-9\-\.]+xn--[a-z0-9\-]{2,}\.[a-z]{2,}/
+        $a = /https?:\/\/[a-zA-Z0-9\-\.]{0,253}xn--[a-z0-9\-]{2,63}/
+        $b = /\bxn--[a-z0-9\-]{2,63}\.[a-z]{2,24}\b/
 
     condition:
         any of them

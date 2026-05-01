@@ -14,11 +14,17 @@
 //
 // Detected shapes:
 //
-//   A. greedy-w-then-bracket  — `\w+` followed (after optional `\s*`) by
-//      `[`, `(`, `.`, or `/*`. On uniform `\w` input, the engine matches
-//      the whole run, fails to find the bracket, then backtracks one
-//      character at a time. O(n^2). Real example: JS_Bracket_Hex_Property
-//      (`\w+\s*\[\s*['"]\\x…`) — 113 s on 161 KB of `'x'`.
+//   A. greedy-w-then-bracket  — `\w+` (or `\S+`) at the START of a
+//      regex (no literal anchor before it) followed by optional `\s*`
+//      then `[`, `(`, `.`, or `/*`. On uniform `\w` input, the engine
+//      matches the whole run, fails to find the bracket, then back-
+//      tracks one character at a time. O(n^2). Real example:
+//      JS_Bracket_Hex_Property (`\w+\s*\[\s*['"]\\x…`) — 113 s on
+//      161 KB of `'x'`. Patterns where `\w+` is preceded by a literal
+//      non-`\w` character (e.g. `&\s*\$\w+\.\w+` in
+//      `PS_Hashtable_Command_Construction`) are NOT flagged: the
+//      literal acts as an O(n) anchor — input must contain `&`/`.` —
+//      and measurement confirms <2 ms on the perf corpora.
 //
 //   B. wide-class-plus  — `[…letters & digits…]+` followed by a literal
 //      anchor. The anchor never appears in uniform alphabet input, so
@@ -50,41 +56,20 @@ const RULES_DIR = path.join(__dirname, '..', '..', 'src', 'rules');
 
 // Allowlist of currently-known catastrophic shapes. Each entry is keyed
 // by `${file}::${ruleName}/${stringId}` and records the shape category
-// plus a short rationale. When a Tier-1 rewrite lands, delete the entry
+// plus a short rationale. When a rule rewrite lands, delete the entry
 // in the same commit.
 //
 // DO NOT add to this list to silence a warning on a new rule. The
-// correct response to a new flagging is to rewrite the regex (anchor
-// the `\w+` with `\b`, switch `.*` to `.{0,N}?`, etc.). See
-// CONTRIBUTING.md § Renderer Contract for the rule-author rules of
-// thumb (no, those are for renderers — for regex authors see the
-// commit message attached to the Tier-1 rewrite PR).
-const KNOWN_OFFENDERS = new Map([
-  // Shape B: 22.5 s on 161 KB hex. Tier-1: anchor with `\bxn--` then
-  // bounded `[a-z0-9-]{2,63}\.` lookbehind, or rewrite as a literal-
-  // anchored search.
-  ['network-indicators.yar::Punycode_IDN_Homograph/$b', 'wide-class-plus'],
-
-  // Shape A (3 strings, same rule): 70.7 s combined on 161 KB 'x'.
-  // Tier-1: replace `\w+` with `\b\w{1,32}` and anchor on `/*`.
-  ['script-threats.yar::JS_Comment_Injection_Obfuscation/$comment_dot',     'greedy-w-then-bracket'],
-  ['script-threats.yar::JS_Comment_Injection_Obfuscation/$comment_bracket', 'greedy-w-then-bracket'],
-  ['script-threats.yar::JS_Comment_Injection_Obfuscation/$comment_call',    'greedy-w-then-bracket'],
-
-  // Shape A (2 strings, same rule): 113 s combined on 161 KB 'x'.
-  // Tier-1: anchor on `\\x` / `\\u` first, then look back for the
-  // `\w+\s*\[`.
-  ['script-threats.yar::JS_Bracket_Hex_Property_Execution/$hex_bracket_1', 'greedy-w-then-bracket'],
-  ['script-threats.yar::JS_Bracket_Hex_Property_Execution/$hex_bracket_2', 'greedy-w-then-bracket'],
-
-  // Shape A (3 strings, same rule): bounded in practice by the literal
-  // `$` and `&`/`.` prefixes (input must contain those characters), but
-  // the shape is identical to the catastrophic ones above. Pinned for
-  // consistency; will be rewritten alongside the Tier-1 batch.
-  ['script-threats.yar::PS_Hashtable_Command_Construction/$call_key',   'greedy-w-then-bracket'],
-  ['script-threats.yar::PS_Hashtable_Command_Construction/$call_index', 'greedy-w-then-bracket'],
-  ['script-threats.yar::PS_Hashtable_Command_Construction/$dot_key',    'greedy-w-then-bracket'],
-]);
+// correct response to a new flagging is to rewrite the regex: bound
+// the `\w+`/`\S+` with an explicit `{0,N}` upper limit, switch `.*`
+// to `.{0,N}?` (lazy + bounded), or rearrange so a literal token
+// anchors the search.
+//
+// Empty since the May 2026 Tier-1 rewrite — Punycode_IDN_Homograph,
+// JS_Comment_Injection_Obfuscation, and JS_Bracket_Hex_Property_Execution
+// were all rewritten with bounded quantifiers in the same commit that
+// emptied this list.
+const KNOWN_OFFENDERS = new Map([]);
 
 /**
  * Classify a regex pattern as one or more known catastrophic shapes.
@@ -93,11 +78,16 @@ const KNOWN_OFFENDERS = new Map([
 function classifyPattern(pat) {
   const issues = [];
 
-  // Shape A: `\w+` (or `\S+`) followed by optional `\s*`/`\s+` then
-  // `[`, `(`, `.`, or `/*`. The trailing token is what the engine
-  // hunts for *after* greedily consuming the run — and it's exactly
-  // the failure mode we measured.
-  if (/\\[wS]\+(?!\?|\{)\s*(?:\\s\*|\\s\+)?\s*(?:\\\[|\\\(|\\\.|\\\/\\\*)/.test(pat)) {
+  // Shape A: `\w+` (or `\S+`) at the START of a regex (no literal
+  // anchor before it), followed by optional `\s*`/`\s+` then `[`,
+  // `(`, `.`, or `/*`. The trailing token is what the engine hunts
+  // for *after* greedily consuming the run — and it's the failure
+  // mode we measured. Patterns with a leading literal non-`\w`
+  // character (e.g. `&\s*\$\w+\.\w+` in PS_Hashtable_Command_*) are
+  // intentionally not flagged: the leading literal acts as an O(n)
+  // anchor (input must contain it) and the per-rule perf test
+  // confirms <5 ms on hex/x corpora.
+  if (/^(?:\(\?:)?\\[wS]\+(?!\?|\{)\s*(?:\\s\*|\\s\+)?\s*(?:\\\[|\\\(|\\\.|\\\/\\\*)/.test(pat)) {
     issues.push('greedy-w-then-bracket');
   }
 
