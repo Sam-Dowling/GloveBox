@@ -132,6 +132,35 @@ class EncodedContentDetector {
     return null;
   }
 
+  // ── Helper: recursively prepend a chain prefix to a finding subtree ──
+  //
+  // `_processCandidate` builds an `innerFindings` array via a child
+  // detector and needs to stamp its own `[candidate.type]` (the parent's
+  // pre-classifier chain) onto every descendant's `chain` so the deepest
+  // finding's `chain` reflects the FULL ancestor lineage from root to
+  // leaf.
+  //
+  // The prior implementation only mutated direct children (a flat for-of
+  // over `innerFindings`), so a chain of N nested peels surfaced as a
+  // 3-element string `[parent, self, classifier]` at every grandchild —
+  // visually capping the deobfuscation card at "2 layers" no matter how
+  // deep the unwrap. The bug was hidden until the recursion-unblock fix
+  // landed because pre-fix recursion stalled at depth 2 anyway.
+  //
+  // Recursive walk is safe because `innerFindings` is a tree (each
+  // finding object is owned by exactly one parent's array; the detector
+  // never aliases a finding into multiple parents).
+  _prependChainRecursive(f, parentChain) {
+    if (!f) return;
+    f.chain = [...parentChain, ...(f.chain || [])];
+    f.depth = (f.depth || 0) + 1;
+    if (Array.isArray(f.innerFindings)) {
+      for (const ch of f.innerFindings) {
+        this._prependChainRecursive(ch, parentChain);
+      }
+    }
+  }
+
   // ── Helper: propagate severity & IOCs from inner findings ────────────────
   static _propagateInnerFindings(severity, iocs, innerFindings) {
     if (!innerFindings || innerFindings.length === 0) return severity;
@@ -660,10 +689,9 @@ class EncodedContentDetector {
                 _finderBudget: this._finderBudget,
               });
               decompInner = await innerDet.scan(decompText, decompData, { fileType: '' });
-              for (const f of decompInner) {
-                f.chain = [...decompChain, ...f.chain];
-                f.depth = (f.depth || 0) + 1;
-              }
+              // Recursive prepend so every descendant's chain reflects the
+              // decompression layer, not just direct children.
+              for (const f of decompInner) this._prependChainRecursive(f, decompChain);
             }
           }
 
@@ -821,10 +849,9 @@ class EncodedContentDetector {
                   _finderBudget: this._finderBudget,
                 });
                 xorInner = await innerDet.scan(xorText, xorBytes, { fileType: '' });
-                for (const f of xorInner) {
-                  f.chain = [...xorChain, ...f.chain];
-                  f.depth = (f.depth || 0) + 1;
-                }
+                // Recursive prepend so every descendant's chain reflects the
+                // XOR layer, not just direct children.
+                for (const f of xorInner) this._prependChainRecursive(f, xorChain);
               }
             }
 
@@ -877,11 +904,12 @@ class EncodedContentDetector {
           _finderBudget: this._finderBudget,
         });
         innerFindings = await innerDetector.scan(decodedText, decoded, { fileType: '' });
-        // Add parent chain to inner findings
-        for (const f of innerFindings) {
-          f.chain = [...chain, ...f.chain];
-          f.depth = (f.depth || 0) + 1;
-        }
+        // Recursively prepend the parent's chain onto the entire descendant
+        // subtree so a layer N+2 finding's chain reflects all of layer N,
+        // N+1, N+2 — not just N+1+self. Without the recursion, every
+        // grandchild capped at a 3-element chain `[parent, self, classifier]`
+        // and the sidebar's "N layers" badge under-counted the true depth.
+        for (const f of innerFindings) this._prependChainRecursive(f, chain);
       }
     }
 
