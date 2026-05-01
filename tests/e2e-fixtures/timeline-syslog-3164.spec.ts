@@ -60,10 +60,12 @@ test.describe('Timeline — Syslog RFC 3164', () => {
     // a regression that swaps the file into the CLF (`'LOG'`) or
     // generic CSV (`'CSV'`) path would surface here.
     expect((result as { formatTag?: string }).formatTag).toBe('Syslog (RFC 3164)');
-    // `timelineColumns` mirrors the canonical 7-column header. A
-    // schema regression (column rename, reorder, missing PID)
-    // surfaces immediately via `.toEqual([...])`.
-    expect((result as { timelineColumns?: string[] }).timelineColumns)
+    // `timelineBaseColumns` mirrors the canonical 7-column header
+    // (the IMMUTABLE post-parse schema, before the auto-extract
+    // pump's "(host)" columns can land). A schema regression (column
+    // rename, reorder, missing PID) surfaces immediately via
+    // `.toEqual([...])`.
+    expect((result as { timelineBaseColumns?: string[] }).timelineBaseColumns)
       .toEqual(EXPECTED_COLUMNS);
   });
 

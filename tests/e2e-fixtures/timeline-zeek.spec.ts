@@ -42,7 +42,10 @@ const SCHEMA_COLUMNS = [
 // After the Timeline route mounts, the GeoIP enricher detects the
 // IPv4 source columns `id.orig_h` / `id.resp_h` and appends a
 // `<src>.geo` enrichment column for each. The post-enrichment list
-// is what `timelineColumns` returns.
+// is what the LIVE `timelineColumns` (`tlView.columns` getter)
+// eventually returns once the +0 ms post-`_app`-wire and +100 ms
+// in-ctor `setTimeout`s fire and `_runGeoipEnrichment` pushes onto
+// `_extractedCols`.
 const EXPECTED_COLUMNS_AFTER_GEOIP = SCHEMA_COLUMNS.concat([
   'id.orig_h.geo', 'id.resp_h.geo',
 ]);
@@ -67,14 +70,22 @@ test.describe('Timeline — Zeek TSV', () => {
     // Dynamic label from `#path conn`. A regression that lost the
     // path-aware label would show `'Zeek'` instead.
     expect((result as { formatTag?: string }).formatTag).toBe('Zeek (conn)');
-    // Schema parsed from the file's own `#fields` line, plus the two
-    // GeoIP `.geo` enrichment columns the Timeline pipeline appends
-    // for the IPv4 source columns (`id.orig_h`, `id.resp_h`). A
-    // regression that fell back to synthetic `col 1 …` names (the
-    // no-`#fields`-seen fallback) would surface as a length mismatch
-    // here; a regression that lost GeoIP enrichment would too.
-    expect((result as { timelineColumns?: string[] }).timelineColumns)
-      .toEqual(EXPECTED_COLUMNS_AFTER_GEOIP);
+    // Schema parsed from the file's own `#fields` line. Reading the
+    // IMMUTABLE `timelineBaseColumns` (vs the live `timelineColumns`
+    // getter, which mutates as auto-extract / GeoIP enrichment land)
+    // makes the schema assertion race-free. A regression that fell
+    // back to synthetic `col 1 …` names (the no-`#fields`-seen
+    // fallback) surfaces here as a length mismatch.
+    expect((result as { timelineBaseColumns?: string[] }).timelineBaseColumns)
+      .toEqual(SCHEMA_COLUMNS);
+    // GeoIP enrichment is async (post-mount `setTimeout(0)` after
+    // `_app` is wired). Poll the live `timelineColumns` until the
+    // two `.geo` columns land — a regression that lost GeoIP
+    // enrichment would time out here.
+    await expect.poll(async () => {
+      const r = await dumpResult(ctx.page);
+      return (r as { timelineColumns?: string[] }).timelineColumns;
+    }, { timeout: 5_000 }).toEqual(EXPECTED_COLUMNS_AFTER_GEOIP);
   });
 
   test('Timeline grid paints rows with NILVALUEs blanked', async () => {

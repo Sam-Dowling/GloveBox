@@ -181,6 +181,13 @@ export interface ResultSnapshot {
   // routes; `true` when the Timeline fast-path mounted the view.
   timeline?: boolean;
   timelineRowCount?: number;
+  // `timelineColumns` is the LIVE `tlView.columns` getter (base +
+  // extracted), which grows asynchronously after mount as the
+  // auto-extract pump (+60 ms idle ticks) and GeoIP enrichment
+  // (+0 / +100 ms timers) push columns. Use `timelineBaseColumns`
+  // for race-free assertions on the parser's immutable base schema.
+  timelineColumns?: string[];
+  timelineBaseColumns?: string[];
 }
 export async function dumpResult(page: Page): Promise<ResultSnapshot | null> {
   return page.evaluate(() => {

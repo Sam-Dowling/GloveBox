@@ -58,7 +58,12 @@ test.describe('Timeline — AWS CloudTrail (JSONL form)', () => {
 
   test('schema is the canonical CloudTrail column list', async () => {
     const result = await dumpResult(ctx.page);
-    const cols = (result as { timelineColumns?: string[] }).timelineColumns!;
+    // `timelineBaseColumns` is the IMMUTABLE post-parse schema. The
+    // live `timelineColumns` getter mutates async after mount as the
+    // auto-extract pump (+60 ms) appends extracted "(host)" cols, so
+    // `cols[cols.length - 1]` would race against `_extra` vs
+    // `eventSource (host)` here. See `_testApiDumpResult`.
+    const cols = (result as { timelineBaseColumns?: string[] }).timelineBaseColumns!;
     expect(cols).toBeDefined();
     // Spot-check canonical columns. They must appear in canonical
     // order, regardless of the order they happen to occur in the
@@ -117,7 +122,8 @@ test.describe('Timeline — AWS CloudTrail (wrapped JSON form)', () => {
 
   test('canonical schema is identical to the JSONL form', async () => {
     const result = await dumpResult(ctx.page);
-    const cols = (result as { timelineColumns?: string[] }).timelineColumns!;
+    // See sibling test for why we read `timelineBaseColumns`.
+    const cols = (result as { timelineBaseColumns?: string[] }).timelineBaseColumns!;
     expect(cols).toBeDefined();
     expect(cols[0]).toBe('eventTime');
     expect(cols[1]).toBe('eventName');

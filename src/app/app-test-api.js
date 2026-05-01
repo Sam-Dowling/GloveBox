@@ -448,6 +448,21 @@ extendApp({
       const tlCols = (tlView && Array.isArray(tlView._columns))
         ? tlView._columns.slice()
         : (Array.isArray(tlView.columns) ? tlView.columns.slice() : []);
+      // `timelineBaseColumns` surfaces the IMMUTABLE base schema (i.e.
+      // the parser's column output before any `_extractedCols` are
+      // appended by the auto-extract idle pump or GeoIP enrichment).
+      // Tests that assert "the schema's trailing column is `_extra`"
+      // or pin specific column indexes need this stable view —
+      // `timelineColumns` (the live `tlView.columns` getter) grows
+      // asynchronously after mount as `_autoExtractBestEffort` (+60 ms
+      // post-mount idle ticks) and `_runGeoipEnrichment` (+100 ms +
+      // post-`_app`-wire +0 ms) push extracted/enriched columns. The
+      // base list is set once during parser construction and never
+      // mutated afterwards, so a test that reads it via `dumpResult`
+      // is race-free regardless of where the auto-extract pump is.
+      const tlBaseCols = (tlView && Array.isArray(tlView._baseColumns))
+        ? tlView._baseColumns.slice()
+        : tlCols.slice();
       return {
         filename: file ? (file.name || null) : null,
         dispatchId: null,
@@ -459,6 +474,7 @@ extendApp({
         timeline: true,
         timelineRowCount: rowCount,
         timelineColumns: tlCols,
+        timelineBaseColumns: tlBaseCols,
       };
     }
     return {

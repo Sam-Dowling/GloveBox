@@ -48,7 +48,15 @@ test.describe('Timeline — CEF', () => {
     expect(result!.timelineRowCount).toBe(EXPECTED_ROWS);
     expect((result as { formatTag?: string }).formatTag).toBe('CEF');
 
-    const cols = (result as { timelineColumns?: string[] }).timelineColumns!;
+    // Read the IMMUTABLE base schema. `timelineColumns` (the live
+    // `tlView.columns` getter) is base + `_extractedCols`, and the
+    // auto-extract idle pump (+60 ms post-mount) appends extracted
+    // columns asynchronously after `loadFixture` resolves — by the
+    // time the next assertion runs, `cols[cols.length - 1]` may be
+    // an auto-extracted "ProductVersion (host)" column rather than
+    // the trailing `_extra`. `timelineBaseColumns` is set once during
+    // parser construction and never mutated.
+    const cols = (result as { timelineBaseColumns?: string[] }).timelineBaseColumns!;
     expect(cols).toBeDefined();
     // 7 canonical header columns in canonical order.
     expect(cols[0]).toBe('Version');
