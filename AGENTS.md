@@ -28,12 +28,16 @@ static host; there is no backend, no module loader, no network at runtime.
   `docs/index.test.html`, `dist/`, `loupe.html*`, `playwright-report/`,
   `test-results/`, `.opencode/`, `.agents/` — every one of these is
   gitignored and produced by CI/release/test runs.
-- **Keep this file alive.** If you change behaviour, gates, or build steps
-  that contradict anything written here, update `AGENTS.md` in the same PR.
-  If you discover a new gotcha, regression, or footgun (especially one that
-  burned more than ~30 minutes of debugging), add a one-line entry under
-  [Recurring pain-points](#recurring-pain-points--gotchas-with-commit-refs)
-  with the fix's short-SHA. **Future agents will thank you.**
+- **Keep this file alive, but lean.** Update `AGENTS.md` when you change
+  behaviour, gates, or build steps that contradict it. New gotchas go
+  under [Recurring pain-points](#recurring-pain-points--gotchas-with-commit-refs)
+  as **a single line** with the fix's short-SHA — nothing more. Detail
+  belongs in the commit message; that's what `git show <sha>` is for.
+- **Do NOT write your life history into this file.** Every agent loads
+  it on startup; bloat degrades agent performance and reviewer focus.
+  Before adding more than one line: ask whether the next agent actually
+  needs it, or whether it's better as a code comment, a commit message,
+  or a `CONTRIBUTING.md` section. If in doubt, leave it out.
 
 ---
 
@@ -144,7 +148,6 @@ python scripts/run_tests_e2e.py --debug tests/e2e-fixtures/csv.spec.ts     # PWD
 # Performance harness (opt-in; never in CI)
 LOUPE_PERF=1 python scripts/run_perf.py                  # 100k rows × 3 runs
 LOUPE_PERF=1 python scripts/run_perf.py --rows 10000 --runs 1   # smoke
-python make.py perf                                       # equivalent
 # Output: dist/perf-report.json + dist/perf-report.md
 
 # Regenerate snapshot matrix after a deliberate baseline shift
@@ -534,6 +537,16 @@ in the same PR.**
 - `5516ee3` — resource-only DLL packing-risk FP.
 - `22a03d0` / `0b99a4c` — verdict reasons audit trail; drop dead reasons
   panel after dual-verdict contradiction.
+- `<pending>` — pin `currentResult.yaraBuffer = buffer` in `pe()` /
+  `elf()` / `macho()` routes (mirror `wasm()` / `pcap()`); without it
+  YARA scans the renderer's `_rawText` extracted-strings list and
+  every `uint16(0)==0x5A4D` magic gate fails, silently inerting ~70
+  threat rules.
+- `<pending>` — tighten 4 PE rules + gate `Confusable_Codepoint_Density`
+  with `applies_to = !is_native_binary` so the yaraBuffer pin doesn't
+  surface noise. `signed-example.{exe,dll}` are TPs not FPs (genuine
+  UPX-pack / anti-debug+service-install+HTTP imports).
+
 
 ### Timeline route (highest churn area)
 - `2487fe4` — parallelised e2e + Timeline state-leak fix; cross-load
@@ -670,71 +683,31 @@ in the same PR.**
 
 ---
 
-## Common agent mistakes (extracted from history)
+## Common agent mistakes
 
-Each line is a real regression that has happened before. Audit your
-diff against this list before opening a PR.
+Each line is a real regression. Audit your diff before opening a PR.
+(Items already covered by [The 12 hard invariants](#the-12-hard-invariants)
+are not repeated here.)
 
-- **Writing `findings.risk = '<tier>'` directly** → rejected by build
-  gate; use `escalateRisk(findings, tier)`.
-- **Hand-rolling `interestingStrings.push({ type: 'url', ... })`** →
-  silently breaks sidebar filter, STIX, MISP, nicelist. Use
-  `pushIOC(findings, { type: IOC.URL, ... })`.
-- **Bumping `_renderEpoch` in `_orphanInFlight`** → blank page on every
-  fallback (`06cbb04`).
-- **Forgetting `await Promise.all(...)`** before returning from an
-  `async analyzeForSecurity()` that uses `QrDecoder.decodeBlob()` → the
-  sidebar snapshots empty findings.
-- **Using `datetime.now()` / `os.walk` / random IDs / unsorted set
-  iteration** in `scripts/build.py` → breaks reproducible build (must
-  be byte-identical for the same commit).
-- **Adding a `// comment` inside a `.yar` file** → linter rejects;
-  explanations belong in `meta:`.
-- **Adding a `meta:` key not in the whitelist or out of order** →
-  linter rejects; canonical order is
-  `description, severity, category, mitre, applies_to`.
-- **Calling `URL.createObjectURL` directly** → use `FileDownload.*` or
-  add a helper in `src/file-download.js`.
-- **Spawning `new Worker(blob:)` outside `WorkerManager`** → build gate
-  rejects.
-- **Leaving silent `catch{}` in `app-load.js` / `app-yara.js`** →
-  build gate rejects; use `App._reportNonFatal(where, err)`.
-- **Polling `signal.aborted` per-byte** instead of amortised
-  (`if ((i & 0xFF) === 0) throwIfAborted(...)`) → tanks parse perf with
-  no benefit.
-- **Reordering `JS_FILES` / `CSS_FILES` / `YARA_FILES` /
-  `_DETECTOR_FILES`** without reading `scripts/build.py` comments →
-  silent override drift (later files override earlier mixins).
-- **Committing `docs/index.html`** → CI rebuilds and overwrites; the
-  staged file becomes a constant merge-conflict source.
-- **Editing `docs/index.html` directly** → changes lost on next CI
-  build; edit `src/` and rebuild.
-- **Adding a new dispatch id without an
-  `MAX_FILE_BYTES_BY_DISPATCH[id]` entry** → falls back silently to
-  `_DEFAULT` (128 MiB). See `8aebf3b`.
-- **Forgetting to register a renderer in `renderer-registry.js`** →
-  handler never wires.
-- **Forgetting to mirror `Detection`s into `externalRefs` as
-  `IOC.PATTERN`** → invisible to risk calc, Summary, STIX, MISP.
-- **Forgetting `lfNormalize(...)` on `container._rawText`** →
-  click-to-focus offsets misalign past the first CR (build gate
-  enforces).
+- **Forgetting `await Promise.all(...)`** in an `async analyzeForSecurity()`
+  that uses `QrDecoder.decodeBlob()` → sidebar snapshots empty findings.
+- **`datetime.now()` / `os.walk` / random IDs / unsorted set iteration**
+  in `scripts/build.py` → breaks reproducible build.
+- **Reordering `JS_FILES` / `CSS_FILES` / `YARA_FILES` / `_DETECTOR_FILES`**
+  without reading `scripts/build.py` comments → silent override drift.
+- **Adding a new dispatch id without `MAX_FILE_BYTES_BY_DISPATCH[id]`** →
+  silent fall-through to 128 MiB default (`8aebf3b`).
+- **Forgetting to mirror `Detection`s into `externalRefs` as `IOC.PATTERN`**
+  → invisible to risk calc, Summary, STIX, MISP.
 - **Forgetting `_noDomainSibling: true`** on a URL push that already
-  emitted a manual domain → duplicate `IOC.DOMAIN` rows in sidebar.
-- **Pre-stamping `findings.risk = 'high'`** based on file format alone
-  → rejected by build gate; risk is evidence-based.
-- **Adding a new `localStorage` key without the `loupe_` prefix or
-  Persistence-Keys table row** → silent drift; orphan keys aren't
-  covered by `loupe_*` cleanup.
-- **Treating Timeline auto-extracted columns as persistent** → they
-  are ephemeral and re-derived on every open. Only Regex-tab extracts
-  persist (`a76eaae`, `8b2ee07`).
-- **Tests that mutate App state outside the file-load pipeline** → the
-  shared bundle page reuses across tests; cross-load reset only
-  clears the documented set (`_testApiResetCrossLoadState` in
-  `app-test-api.js`).
-- **Bumping a vendor file without rotating its SHA-256 in
-  `VENDORED.md` in the same commit** → CI `verify-vendored` fails.
+  emitted a manual domain → duplicate `IOC.DOMAIN` in sidebar.
+- **Treating Timeline auto-extracted columns as persistent** — they are
+  ephemeral; only Regex-tab extracts persist (`a76eaae`, `8b2ee07`).
+- **Tests that mutate App state outside the file-load pipeline** —
+  shared-bundle page reuses across tests; cross-load reset only clears
+  the documented set (`_testApiResetCrossLoadState` in `app-test-api.js`).
+- **Bumping a vendor file without rotating its SHA-256 in `VENDORED.md`
+  in the same commit** → CI `verify-vendored` fails.
 
 ---
 
@@ -769,13 +742,3 @@ git log --oneline --grep=<area> ← scoped history
   Helpers & Checklist, Persistence Keys table, Adding things recipes.
 - `SECURITY.md` — threat model, full CSP, parser-limit table,
   reproducible-build recipe.
-- `tests/README.md` — test-API surface, Playwright provisioning,
-  fixture-walk pass design.
-- `FEATURES.md` — per-format capability matrix.
-- `.github/workflows/ci.yml` — the executable definition of "what green
-  means".
-- `scripts/build.py` — header docstring + `JS_FILES` /
-  `_DETECTOR_FILES` blocks (load-order rationale).
-- `src/constants.js` — `PARSER_LIMITS` / `RENDER_LIMITS` rationale,
-  `pushIOC` / `escalateRisk` / `safeRegex` / `lfNormalize` /
-  `throwIfAborted` definitions.
