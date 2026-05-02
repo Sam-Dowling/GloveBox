@@ -75,6 +75,13 @@ class ArchiveTree {
     'jpg', 'png', 'gif', 'txt', 'rtf',
   ]);
 
+  // Auto-expand threshold for `render({ expandAll: 'auto' })`. Trees
+  // with `entries.length <= AUTO_EXPAND_MAX_ENTRIES` open fully expanded
+  // on first paint; larger trees stay collapsed so a 10k-entry archive
+  // doesn't flash a wall of rows. Tuned for the median archive drop;
+  // analysts can still hit `⤵ Expand all` on the toolbar.
+  static AUTO_EXPAND_MAX_ENTRIES = 256;
+
   // ══════════════════════════════════════════════════════════════════════
   // Public entry point
   // ══════════════════════════════════════════════════════════════════════
@@ -88,6 +95,17 @@ class ArchiveTree {
   //   showDate        — bool                    (Flat view: Date column)
   //   initialView     — 'tree' | 'flat'         (default 'tree')
   //   emptyText       — string                  (default "Archive is empty.")
+  //   expandAll       — true | false | 'auto'   (default false / collapsed)
+  //                     true   — expand every folder on first paint.
+  //                     'auto' — expand iff `entries.length` is at or below
+  //                              `ArchiveTree.AUTO_EXPAND_MAX_ENTRIES`
+  //                              (default 256). Used by archive renderers
+  //                              so small ZIP/TAR/MSIX/etc. drops open
+  //                              fully expanded while huge archives stay
+  //                              collapsed to bound first-paint cost.
+  //                     false  — leave the tree collapsed (the historical
+  //                              default; the toolbar `⤵ Expand all`
+  //                              button still works).
   //
   // Returns: HTMLElement — append it to the renderer's wrap and we're done.
   //
@@ -100,6 +118,11 @@ class ArchiveTree {
     const showDate = !!(opts && opts.showDate);
     const initialView = (opts && opts.initialView === 'flat') ? 'flat' : 'tree';
     const emptyText = (opts && opts.emptyText) || 'Archive is empty.';
+    const expandAllOpt = opts ? opts.expandAll : false;
+    const shouldExpandAll =
+      expandAllOpt === true ||
+      (expandAllOpt === 'auto' &&
+       entries.length <= ArchiveTree.AUTO_EXPAND_MAX_ENTRIES);
 
     const root = document.createElement('div');
     root.className = 'arch-view';
@@ -152,6 +175,17 @@ class ArchiveTree {
     ArchiveTree._wireOpen(root, entries, onOpen);
     ArchiveTree._wireSearch(root);
     ArchiveTree._wireKeyboard(root);
+
+    // Optional: open every folder on first paint. Same code path the
+    // toolbar `⤵ Expand all` button uses, so semantics, ARIA state, and
+    // keyboard nav are identical to a manual expand. Folders that don't
+    // exist yet (e.g. inside the still-collapsed `[hidden]` children)
+    // are reachable here because `_buildTreeHTML` materialises every
+    // `<li class="arch-tree-folder">` up front.
+    if (shouldExpandAll) {
+      root.querySelectorAll('.arch-tree-folder').forEach(
+        li => ArchiveTree._toggleFolder(li, true));
+    }
 
     return root;
   }

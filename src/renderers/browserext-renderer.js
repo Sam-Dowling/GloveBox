@@ -909,6 +909,7 @@ class BrowserExtRenderer {
           console.warn('Failed to extract from browser extension:', entry.path, err && err.message);
         }
       },
+      expandAll: 'auto',
     });
     sec.appendChild(tree);
     return sec;

@@ -43,7 +43,7 @@ SOC analysts, MDR responders, phishing teams, and DFIR practitioners need to ins
 
 1. **Download** — grab `loupe.html` from the release link above, or clone the repo, run `python make.py`, and open `docs/index.html`.
 2. **Open** — double-click in any modern browser (Chrome, Firefox, Edge, Safari). No server.
-3. **Drop a file** — drag onto the drop zone, click **📁 Open File**, or paste with **Ctrl+V**.
+3. **Drop a file** — drag a single file or a whole folder onto the drop zone, click **📁 Open File**, or paste with **Ctrl+V**. Multi-file drops and `webkitdirectory` picker selections are bundled into a single tree view; click any leaf to drill in.
 4. *(optional)* **Verify** — every release is Sigstore-signed and reproducible. See [SECURITY.md § Verify Your Download](SECURITY.md#verify-your-download).
 5. **Inspect** — press **S** for the security sidebar, **Y** for the YARA dialog, **?** for all shortcuts.
 

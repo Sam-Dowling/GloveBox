@@ -216,6 +216,7 @@ class NpmRenderer {
         entries: archEntries,
         onOpen: (entry) => this._extractTarEntry(bytes, entry._tarRef || entry, parsed, wrap),
         showDate: true,
+        expandAll: 'auto',
       });
       section.appendChild(tree);
       wrap.appendChild(section);

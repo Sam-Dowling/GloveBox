@@ -60,6 +60,23 @@ class RendererRegistry {
   // ──────────────────────────────────────────────────────────────────────────
   static ENTRIES = [
 
+    // ── Synthetic folder root ─────────────────────────────────────────
+    //
+    // Folder drops + multi-file loose drops + multi-select picker are
+    // synthesised as a `FolderFile` (`src/folder-file.js`) carrying a
+    // `_loupeFolderEntries` flat list and zero on-disk bytes. Detection
+    // keys on the marker rather than on the bytes — there is no magic
+    // signature for "this is a folder we made up". MUST run first so
+    // every later predicate (which assumes a real on-disk byte stream)
+    // is bypassed.
+    {
+      id: 'folder',
+      className: 'FolderRenderer',
+      exts: [],
+      magic: (ctx) => !!(ctx && ctx.file && ctx.file._loupeFolderEntries),
+      description: 'Synthetic Folder Root (drag-dropped directory)',
+    },
+
     // ── OLE sub-formats (must precede the generic OLE entry, which does not
     //    actually exist — all OLE paths are specific).
     {

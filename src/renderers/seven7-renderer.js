@@ -181,6 +181,7 @@ class SevenZRenderer {
         execExts: SevenZRenderer.EXEC_EXTS,
         decoyExts: SevenZRenderer.DECOY_EXTS,
         showDate: true,
+        expandAll: 'auto',
       });
       wrap.appendChild(tree);
     }

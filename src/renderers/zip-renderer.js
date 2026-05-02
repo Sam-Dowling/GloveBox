@@ -324,6 +324,7 @@ class ZipRenderer {
       execExts: ZipRenderer.EXEC_EXTS,
       decoyExts: ZipRenderer.DECOY_EXTS,
       showDate: true,
+      expandAll: 'auto',
     });
     wrap.appendChild(tree);
 
@@ -447,6 +448,7 @@ class ZipRenderer {
       decoyExts: ZipRenderer.DECOY_EXTS,
       showCompressed: true,
       showDate: true,
+      expandAll: 'auto',
     });
     wrap.appendChild(tree);
     return wrap;
@@ -605,6 +607,7 @@ class ZipRenderer {
       execExts: ZipRenderer.EXEC_EXTS,
       decoyExts: ZipRenderer.DECOY_EXTS,
       showCompressed: true,
+      expandAll: 'auto',
     });
     wrap.appendChild(tree);
   }

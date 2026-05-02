@@ -135,6 +135,7 @@ class PkgRenderer {
           if (fileEntry) this._extractAndOpen(bytes, pkg, fileEntry, wrap);
         },
         showCompressed: true,
+        expandAll: 'auto',
       });
       wrap.appendChild(tree);
     }

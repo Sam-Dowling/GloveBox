@@ -112,6 +112,7 @@ class RarRenderer {
       decoyExts: RarRenderer.DECOY_EXTS,
       showCompressed: true,
       showDate: true,
+      expandAll: 'auto',
     });
     wrap.appendChild(tree);
 

@@ -11255,6 +11255,61 @@ body.dark .arch-empty {
   color: var(--text-muted);
 }
 
+/* ──────────────────────────────────────────────────────────────────────── */
+/*  Folder view — synthetic root for drag-dropped directories, multi-file   */
+/*  loose drops, and `webkitdirectory` picker (src/renderers/folder-        */
+/*  renderer.js). Layout layers a small header (icon + title + summary +    */
+/*  truncation note) on top of the standard `.arch-view` body produced by   */
+/*  ArchiveTree.render — so toolbar / tree / flat / search styles all fall  */
+/*  through to the existing archive rules above.                            */
+/* ──────────────────────────────────────────────────────────────────────── */
+
+.folder-view {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0;
+}
+
+.folder-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid #e4e4e4;
+  background: #fafafa;
+}
+
+body.dark .folder-header {
+  background: var(--panel-bg-raised);
+  border-color: var(--panel-border);
+}
+
+.folder-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: inherit;
+}
+
+.folder-summary {
+  font-size: 12px;
+  color: #666;
+  font-variant-numeric: tabular-nums;
+}
+
+body.dark .folder-summary {
+  color: var(--text-muted);
+}
+
+.folder-note {
+  flex-basis: 100%;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--risk-warning, #b45309);
+}
+
 /* ── npm package renderer ─────────────────────────────────────────────
    The npm renderer reuses the ClickOnce card / section / risk chrome
    (see `.clickonce-*` above); this block layers npm-specific accents on

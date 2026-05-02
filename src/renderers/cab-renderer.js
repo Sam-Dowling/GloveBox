@@ -132,6 +132,7 @@ class CabRenderer {
       execExts: CabRenderer.EXEC_EXTS,
       decoyExts: CabRenderer.DECOY_EXTS,
       showDate: true,
+      expandAll: 'auto',
     });
     wrap.appendChild(tree);
 

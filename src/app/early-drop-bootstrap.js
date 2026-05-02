@@ -84,13 +84,38 @@
     // Without preventDefault the browser navigates away to the file URL.
     e.preventDefault();
     e.stopPropagation();
-    const files = e.dataTransfer && e.dataTransfer.files;
+    const dt = e.dataTransfer;
+    const files = dt && dt.files;
     if (files && files.length) {
       // Snapshot into a plain array — the live FileList is invalidated
       // the moment the handler returns, so by the time the App
       // constructor reaches `_setupDrop()`'s drain step the FileList
       // would be empty.
       window.__loupePendingDrop = Array.from(files);
+    }
+    // Also snapshot the `webkitGetAsEntry()` results so the App can
+    // walk dropped directories. `DataTransferItemList` is invalidated
+    // the moment this handler returns, but the `FileSystemEntry`
+    // objects returned here remain valid for async traversal — they
+    // hold their own reference to the underlying FileSystem handle.
+    // Bootstrap-level capture is critical: when a folder is dropped
+    // before `App` boots, only the items list reflects the directory
+    // (the parallel `files` list contains junk-shaped DirectoryEntry
+    // proxies on most browsers). Cleared by `_handleFiles` after the
+    // App processes it.
+    if (dt && dt.items && dt.items.length) {
+      const entries = [];
+      for (const item of dt.items) {
+        if (!item || item.kind !== 'file') continue;
+        // `webkitGetAsEntry` is the standard cross-browser name today
+        // (the un-prefixed `getAsEntry` exists in some specs but isn't
+        // shipping anywhere as of writing). Returns null if the item
+        // isn't a filesystem entry (e.g. drag from another tab).
+        const ent = (typeof item.webkitGetAsEntry === 'function')
+          ? item.webkitGetAsEntry() : null;
+        if (ent) entries.push(ent);
+      }
+      if (entries.length) window.__loupePendingDropEntries = entries;
     }
   };
 

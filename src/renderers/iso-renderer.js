@@ -93,6 +93,7 @@ class IsoRenderer {
         },
         execExts: IsoRenderer.EXEC_EXTS,
         showDate: true,
+        expandAll: 'auto',
       });
       wrap.appendChild(tree);
     }

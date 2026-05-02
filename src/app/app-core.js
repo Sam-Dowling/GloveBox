@@ -327,8 +327,28 @@ class App {
       e.stopPropagation();
       hideOverlay();
       dz.classList.remove('drag-over');
-      if (e.dataTransfer?.files?.length) {
-        this._handleFiles(e.dataTransfer.files);
+      // Two ingress shapes:
+      //   • `dataTransfer.items` — required for directory drops
+      //     (`webkitGetAsEntry()` only lives on items, not files).
+      //   • `dataTransfer.files` — flat fallback for browsers / drags
+      //     that don't expose items (rare today; OS clipboard files
+      //     pasted via drag are one historical source).
+      const dt = e.dataTransfer;
+      const items = (dt && dt.items) ? Array.from(dt.items) : [];
+      const fsEntries = items
+        .filter(it => it && it.kind === 'file' && typeof it.webkitGetAsEntry === 'function')
+        .map(it => it.webkitGetAsEntry())
+        .filter(Boolean);
+      if (fsEntries.length) {
+        // `_handleFiles` is the single-owner ingress; it picks the right
+        // path (single-file vs synthetic folder) based on what's
+        // available. We pass the entries on a side channel so it can
+        // walk directories without us repeating the logic.
+        this._handleFiles(dt.files, { fsEntries });
+        return;
+      }
+      if (dt && dt.files && dt.files.length) {
+        this._handleFiles(dt.files);
       }
     });
 
@@ -365,13 +385,15 @@ class App {
     // ── Drop-zone click / file-input ────────────────────────────────────
     dz.addEventListener('click', () => fi.click());
     fi.addEventListener('change', e => {
-      const f = e.target.files[0];
-      if (f) {
-        // Clear nav stack for fresh file loads (not drill-down into archives).
-        // Routes through the single-owner reset so the breadcrumb trail
-        // is repainted in lockstep — see `_resetNavStack` (H6).
-        this._resetNavStack();
-        this._loadFile(f);
+      const files = e.target.files;
+      if (files && files.length) {
+        // `webkitdirectory` is opt-in — when the picker is configured
+        // for it, the browser walks the directory tree itself and the
+        // FileList contains every leaf with a `webkitRelativePath`. We
+        // route through `_handleFiles` either way; it picks the right
+        // path (single file vs synthetic folder) based on whether the
+        // FileList carries multiple entries / relative paths.
+        this._handleFiles(files);
       }
       fi.value = '';
     });
@@ -389,13 +411,20 @@ class App {
     // future loads.
     try {
       const earlyDrop = window.__loupePendingDrop;
+      const earlyDropEntries = window.__loupePendingDropEntries;
       const earlyPaste = window.__loupePendingPaste;
       if (typeof window.__loupeEarlyDropTeardown === 'function') {
         window.__loupeEarlyDropTeardown();
       }
       window.__loupePendingDrop = null;
+      window.__loupePendingDropEntries = null;
       window.__loupePendingPaste = null;
-      if (Array.isArray(earlyDrop) && earlyDrop.length) {
+      if (Array.isArray(earlyDropEntries) && earlyDropEntries.length) {
+        // Folder / multi-item drop captured before App boot. Route
+        // through `_handleFiles` with the entries on the side channel
+        // so directory walking happens via `webkitGetAsEntry`.
+        this._handleFiles(earlyDrop, { fsEntries: earlyDropEntries });
+      } else if (Array.isArray(earlyDrop) && earlyDrop.length) {
         // Use _handleFiles so the nav-stack clear lives in one place.
         this._handleFiles(earlyDrop);
       } else if (Array.isArray(earlyPaste) && earlyPaste.length) {
@@ -795,11 +824,235 @@ class App {
     }
   }
 
-  _handleFiles(files) {
-    if (!files || !files.length) return;
-    // Clear nav stack for fresh file loads (not drill-down into archives)
+  // Single-owner ingress for fresh file loads (drag-drop, file picker,
+  // paste-files, early-drop drain). Decides whether to route as a single
+  // file or as a synthetic folder root.
+  //
+  //   • One file, no FileSystemEntry hints, no `webkitRelativePath`
+  //     → existing single-file path (`_loadFile`).
+  //   • Any FileSystemEntry that's a directory  →  walk it via
+  //     `FolderFile.fromEntries()`, dispatch the synthesised root
+  //     through `_loadFile` so it lands on `FolderRenderer`.
+  //   • Multiple loose files (no directory) → group them under a
+  //     synthetic "Dropped files" root so the analyst gets a single
+  //     drill-down surface instead of silently losing files 1..N. This
+  //     fixes the long-standing `files[0]` truncation that swallowed
+  //     extra ingress without diagnostic.
+  //   • FileList carrying `webkitRelativePath` from a `webkitdirectory`
+  //     picker → group by the first path segment; if every leaf shares
+  //     the same root, use it as the folder name.
+  //
+  // `opts.fsEntries`  — Array<FileSystemEntry> from `webkitGetAsEntry()`,
+  //                     supplied by the drop handler when items are present.
+  // `opts.skipNavReset` — internal hook used by drill-down callers; not
+  //                     wired today (drill-down goes through
+  //                     `_pushNavState` + `_loadFile` directly).
+  _handleFiles(files, opts) {
+    const o = opts || {};
+    const fileList = files
+      ? (Array.isArray(files) ? files : Array.from(files))
+      : [];
+    const fsEntries = Array.isArray(o.fsEntries) ? o.fsEntries : [];
+
+    // Path 1 — directory present in fsEntries → folder root.
+    const hasDir = fsEntries.some(e => e && e.isDirectory);
+    if (hasDir) {
+      this._ingestFolderFromEntries(fsEntries);
+      return;
+    }
+
+    // Path 2 — webkitdirectory picker (FileList carries
+    // `webkitRelativePath`). The picker silently flattens the tree so
+    // every leaf has a path like "Folder/sub/file.txt".
+    const hasRelPaths = fileList.some(f =>
+      f && typeof f.webkitRelativePath === 'string' && f.webkitRelativePath);
+    if (hasRelPaths) {
+      this._ingestFolderFromRelativePaths(fileList);
+      return;
+    }
+
+    // Path 3 — multi-file loose drop / multi-select picker. Bundle into
+    // a synthetic "Dropped files" root so we never silently drop file 2..N.
+    if (fileList.length > 1) {
+      this._ingestLooseMultiFile(fileList);
+      return;
+    }
+
+    // Path 4 — single file, regular flow.
+    if (!fileList.length) return;
     this._resetNavStack();
-    this._loadFile(files[0]);
+    this._loadFile(fileList[0]);
+  }
+
+  // ── Folder ingress: webkitGetAsEntry path ──────────────────────────
+  // Walks each FileSystemEntry asynchronously up to MAX_FOLDER_ENTRIES
+  // and dispatches the synthesised root. Uses the first directory entry
+  // as the root name when there's exactly one top-level dir; otherwise
+  // labels the synthetic root "Dropped items". The walker never blocks
+  // the UI longer than the strictly-async readEntries / file-getter
+  // round-trips.
+  async _ingestFolderFromEntries(fsEntries) {
+    const dirEntries = fsEntries.filter(e => e && e.isDirectory);
+    const fileEntries = fsEntries.filter(e => e && e.isFile);
+    let rootName;
+    if (dirEntries.length === 1 && fileEntries.length === 0) {
+      rootName = dirEntries[0].name;
+    } else {
+      rootName = 'Dropped items';
+    }
+    if (!(await this._confirmLargeFolderIngest(fsEntries.length))) return;
+
+    this._setLoading(true);
+    try {
+      // Single-dir drop: that dir IS the synthetic root. Mark it
+      // `asRoot` so `FolderFile.fromEntries` walks its children with an
+      // empty path prefix instead of nesting them under a redundant
+      // `<name>/<name>/…` subtree (the renderer's header already
+      // displays `📁 <name>`). Mixed top-levels (multiple dirs and/or
+      // loose files) sit one tier under the synthetic "Dropped items"
+      // root with their bare names.
+      const sources = (dirEntries.length === 1 && fileEntries.length === 0)
+        ? [{ entry: dirEntries[0], asRoot: true }]
+        : fsEntries.map(entry => ({ entry, path: entry.name }));
+      const { folder, truncated } =
+        await FolderFile.fromEntries(rootName, sources);
+      if (truncated) {
+        this._toast(
+          `Folder ingest truncated at ${
+            (PARSER_LIMITS.MAX_FOLDER_ENTRIES || 4096).toLocaleString()
+          } entries — open a smaller subtree for full coverage.`,
+          'info');
+      }
+      this._resetNavStack();
+      // Stash the truncation flag so FolderRenderer.analyzeForSecurity
+      // can surface the IOC.INFO row from inside its analyser hook (the
+      // load pipeline doesn't pass per-file analysis options through).
+      folder._loupeFolderTruncated = truncated;
+      await this._loadFile(folder);
+    } catch (e) {
+      console.error(e);
+      this._toast(`Failed to ingest folder: ${e.message}`, 'error');
+    } finally {
+      this._setLoading(false);
+    }
+  }
+
+  // ── Folder ingress: webkitdirectory FileList path ──────────────────
+  // The picker flattens the directory tree but preserves
+  // `webkitRelativePath` on every File. We use the first segment of
+  // each path as the root name (a webkitdirectory picker always sees
+  // exactly one top-level folder). If multiple distinct roots appear
+  // (the analyst manually multi-selected at the OS level), label
+  // synthetic root "Dropped items" — the per-leaf paths still tell the
+  // analyst which folder each came from.
+  async _ingestFolderFromRelativePaths(fileList) {
+    if (!fileList.length) return;
+    const roots = new Set();
+    for (const file of fileList) {
+      const rel = (file.webkitRelativePath || '').replace(/^\/+/, '');
+      const seg = rel.split('/')[0] || file.name;
+      roots.add(seg);
+    }
+    const singleRoot = roots.size === 1;
+    const rootName = singleRoot ? [...roots][0] : 'Dropped items';
+    // When every leaf shares the same root segment, that segment IS the
+    // synthetic root and must be stripped from each leaf's path —
+    // otherwise the tree shows `<root>/<root>/…` nested under the
+    // renderer's `📁 <root>` header.
+    const stripPrefix = singleRoot ? rootName + '/' : null;
+    const sources = [];
+    for (const file of fileList) {
+      let rel = (file.webkitRelativePath || '').replace(/^\/+/, '');
+      if (stripPrefix && rel.startsWith(stripPrefix)) {
+        rel = rel.slice(stripPrefix.length);
+      }
+      sources.push({ file, path: rel || file.name });
+    }
+    if (!(await this._confirmLargeFolderIngest(fileList.length))) return;
+    this._setLoading(true);
+    try {
+      const { folder, truncated } =
+        await FolderFile.fromEntries(rootName, sources);
+      if (truncated) {
+        this._toast(
+          `Folder ingest truncated at ${
+            (PARSER_LIMITS.MAX_FOLDER_ENTRIES || 4096).toLocaleString()
+          } entries — pick a smaller subtree for full coverage.`,
+          'info');
+      }
+      this._resetNavStack();
+      folder._loupeFolderTruncated = truncated;
+      await this._loadFile(folder);
+    } catch (e) {
+      console.error(e);
+      this._toast(`Failed to ingest folder: ${e.message}`, 'error');
+    } finally {
+      this._setLoading(false);
+    }
+  }
+
+  // ── Folder ingress: loose multi-file drop / multi-select picker ────
+  // Multiple loose files with no directory information. Bundle them
+  // under a single synthetic root so the analyst gets a tree-view of
+  // every file dropped instead of silently losing files 2..N (the
+  // historical behaviour, which mis-served any "drag five samples in
+  // at once" workflow). The label is deliberately neutral — the
+  // analyst knows what they dropped.
+  async _ingestLooseMultiFile(fileList) {
+    if (!(await this._confirmLargeFolderIngest(fileList.length))) return;
+    this._setLoading(true);
+    try {
+      // Each loose file sits at the top level of the synthetic root —
+      // bare basenames, no `Dropped files/` prefix (the renderer header
+      // carries that label).
+      const sources = fileList.map(file => ({
+        file,
+        path: file.name,
+      }));
+      const { folder, truncated } =
+        await FolderFile.fromEntries('Dropped files', sources);
+      if (truncated) {
+        this._toast(
+          `Loose-file drop truncated at ${
+            (PARSER_LIMITS.MAX_FOLDER_ENTRIES || 4096).toLocaleString()
+          } files.`, 'info');
+      }
+      this._resetNavStack();
+      folder._loupeFolderTruncated = truncated;
+      await this._loadFile(folder);
+    } catch (e) {
+      console.error(e);
+      this._toast(`Failed to ingest dropped files: ${e.message}`, 'error');
+    } finally {
+      this._setLoading(false);
+    }
+  }
+
+  // ── Confirm prompt for very large folder ingest ─────────────────────
+  // Block the user with a native confirm() above ENTRIES_CONFIRM_AT
+  // entries (256). Below the cap, just go. Above MAX_FOLDER_ENTRIES,
+  // the walker will truncate; the toast at ingest end mentions it.
+  // Promise-shaped so the call sites can `await` regardless of whether
+  // a prompt was actually shown.
+  _confirmLargeFolderIngest(itemHint) {
+    const ENTRIES_CONFIRM_AT = 256;
+    const guess = Number.isFinite(itemHint) ? itemHint : 0;
+    if (guess <= ENTRIES_CONFIRM_AT) return Promise.resolve(true);
+    const msg =
+      `You're about to ingest a folder containing roughly ${guess.toLocaleString()} ` +
+      `top-level items (deeper subtrees are walked recursively up to ${
+        (PARSER_LIMITS.MAX_FOLDER_ENTRIES || 4096).toLocaleString()
+      } total entries).\n\n` +
+      `This stays entirely offline — Loupe never uploads anything — but ` +
+      `large drops can use significant memory.\n\nProceed?`;
+    try {
+      return Promise.resolve(window.confirm(msg));
+    } catch (_) {
+      // Headless / sandboxed environments without confirm() — fall
+      // through to ingest. Tests bypass this prompt entirely by
+      // injecting a pre-built `FolderFile` through the test API.
+      return Promise.resolve(true);
+    }
   }
 
   // ── Single-owner nav-stack reset (H6) ───────────────────────────────

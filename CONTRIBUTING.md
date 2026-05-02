@@ -564,6 +564,65 @@ it here — it goes stale immediately. Listing-only archive drill-down
 (`7z` / `rar` / `dmg`) is by design: Loupe ships no LZMA / LZSS / PPMd /
 APFS decoder.
 
+### Synthetic file roots (`FolderFile`)
+
+`src/folder-file.js` is the only sanctioned exception to "every load is
+a real on-disk byte stream". A `FolderFile` quacks like a `File`
+(`{ name, size, type, lastModified, arrayBuffer(), text() }`) but its
+buffer is zero bytes — the payload is the `_loupeFolderEntries` flat
+list of leaf metadata + back-refs to real `File` objects.
+
+When to add another synthetic root:
+
+  * The user-visible thing being analysed is **structurally a
+    container** (folder, multi-file drop, hypothetical
+    multi-paste-into-one-view), and
+  * Per-leaf analysis already works through the `open-inner-file`
+    drill-down protocol (`_wireInnerFileListener`).
+
+Rules every synthetic root must follow:
+
+  1. Carry a marker field the registry's magic predicate keys on
+     (e.g. `_loupeFolderEntries`). Predicate sits at the **top** of
+     `RendererRegistry.ENTRIES` so it short-circuits before any byte-
+     based detection.
+  2. Add a `MAX_FILE_BYTES_BY_DISPATCH[id] = Number.POSITIVE_INFINITY`
+     row in `src/constants.js`. The byte cap is meaningless when the
+     bytes are virtual; the cap that matters is the per-shape entry
+     count (e.g. `PARSER_LIMITS.MAX_FOLDER_ENTRIES`).
+  3. Set `isFolderRoot`-style flag in `app-load.js` to skip the
+     IOC mass-extract, encoded-content scan, and auto-YARA. Those
+     three operate on the rendered text and produce nothing but
+     noise on a synthesised root.
+  4. The synthetic-root renderer's `analyzeForSecurity` runs **only
+     metadata** heuristics (filenames, entry counts, truncation
+     status). Per-byte heuristics happen organically when the
+     analyst clicks a leaf.
+  5. The renderer dispatch handler MUST call
+     `this._wireInnerFileListener(docEl, file.name)` so leaves
+     bubble through `open-inner-file` into `App.openInnerFile`.
+  6. `_restoreNavFrame` resets `_archiveBudget` when the restored
+     frame is a synthetic root (`currentResult.dispatchId === '<id>'`).
+     Synthetic roots model independent siblings, not nested archive
+     descendants — without a reset on Back, opening five samples in
+     sequence would bleed budget across them.
+  7. **Paths in the entry list are root-relative.** The synthetic root
+     IS the dropped container — the renderer header carries its name.
+     Entries MUST NOT include the root name as a leading segment, or
+     the tree paints a redundant subfolder under the header (e.g.
+     `📁 forensics → forensics → file.txt`). Strip leading-root
+     segments at the ingress site (see `_ingestFolderFromRelativePaths`
+     in `app-core.js`) or use the `{ entry, asRoot: true }` shape
+     `FolderFile.fromEntries` accepts for "this directory IS the root,
+     walk its children with empty prefix".
+  8. **Auto-expand on first paint.** Synthetic roots pass
+     `ArchiveTree.render({ expandAll: true })` so the analyst sees the
+     entire structure immediately. Real archive renderers use
+     `expandAll: 'auto'` instead, which expands iff
+     `entries.length <= ArchiveTree.AUTO_EXPAND_MAX_ENTRIES` (256) —
+     bounds first-paint cost on huge ZIPs while keeping the small-
+     archive UX consistent with folder ingest.
+
 ---
 
 ## Footguns & Tripwires

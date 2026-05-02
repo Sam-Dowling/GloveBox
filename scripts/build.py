@@ -796,10 +796,32 @@ APP_JS_FILES = [
     # renderer (archive-tree.js + cab/rar/seven7/zip/jar/msix/browserext/
     # npm/iso/dmg/pkg).
     'src/archive-budget.js',
+    # FolderFile — synthetic top-level "file" object for drag-dropped
+    # directories, multi-file loose drops, and `webkitdirectory` picker
+    # ingestion (see `App._handleFiles` in `src/app/app-core.js`). Holds
+    # a flat `_loupeFolderEntries` list of leaf metadata + back-refs to
+    # real `File` objects; carries a zero-byte `arrayBuffer()`. The
+    # `FolderFile.fromEntries(rootName, sources)` static walker reads
+    # `webkitGetAsEntry()` directories asynchronously up to
+    # `PARSER_LIMITS.MAX_FOLDER_ENTRIES`. Used by `FolderRenderer`
+    # (registered at the top of `RendererRegistry.ENTRIES`) and routed
+    # through the standard drill-down path on click. Must load AFTER
+    # constants.js (reads PARSER_LIMITS) and BEFORE app-core.js (the
+    # ingress site that constructs FolderFile instances).
+    'src/folder-file.js',
     # archive-tree.js — shared collapsible / searchable / sortable archive
     # browser. Must load BEFORE every renderer that uses `ArchiveTree`
     # (zip, jar, msix, browserext) so the class exists at construction time.
     'src/renderers/archive-tree.js',
+    # FolderRenderer — synthetic root for drag-dropped directories +
+    # multi-file loose drops + `webkitdirectory` picker (see
+    # `src/folder-file.js`). Uses `ArchiveTree` for the body, so it MUST
+    # load AFTER `archive-tree.js`. The renderer is registered at the
+    # TOP of `RendererRegistry.ENTRIES` (magic predicate keyed on
+    # `_loupeFolderEntries`), so order vs other renderers within this
+    # block is not load-bearing — but it MUST be present BEFORE
+    # `renderer-registry.js` runs `_bootstrap`, like every other entry.
+    'src/renderers/folder-renderer.js',
     'src/renderers/zip-renderer.js',
     # Archive sub-formats that share the ArchiveTree browser but own their
     # own container parsers. Must load AFTER archive-tree.js (like zip) and

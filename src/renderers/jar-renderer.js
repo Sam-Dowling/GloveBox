@@ -758,6 +758,7 @@ class JarRenderer {
           wrap.dispatchEvent(new CustomEvent('open-inner-file', { bubbles: true, detail: innerFile }));
         } catch {}
       },
+      expandAll: 'auto',
     });
     treeSection.appendChild(archTree);
     wrap.appendChild(treeSection);

@@ -670,6 +670,7 @@ class MsixRenderer {
           console.warn('Failed to extract from MSIX:', entry.path, err && err.message);
         }
       },
+      expandAll: 'auto',
     });
     sec.appendChild(tree);
     return sec;

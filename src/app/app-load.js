@@ -353,13 +353,26 @@ extendApp({
       // `_clearFile` nulls this on file close.
       this._currentAnalyzer = analyzer || null;
 
+      // ── Synthetic folder-root bypass ────────────────────────────────
+      // A `FolderFile` (`src/folder-file.js`) has zero on-disk bytes and
+      // a body that is just an `ArchiveTree` listing of leaf metadata.
+      // Running IOC mass-extract / encoded-content detection / YARA
+      // against that text produces nothing but noise (URLs in filenames
+      // are not threat signal at the root level) and burns ~1 worker
+      // round-trip per drop. Skip the heavy passes — the renderer-side
+      // `FolderRenderer.analyzeForSecurity` has already pushed filename
+      // heuristics into `externalRefs`, and per-leaf analysis runs
+      // organically when the analyst clicks into a tree entry
+      // (`open-inner-file` → `_loadFile` recursion).
+      const isFolderRoot = !!(file && file._loupeFolderEntries);
+
       // Extract interesting strings from rendered text + VBA source.
       // `result.rawText` is `lfNormalize(docEl._rawText || docEl.textContent)`
       // — the centralised LF-normalisation introduced by D1, replacing
       // the previous direct `docEl._rawText || docEl.textContent` read
       // (which could leak CRLF past the first CR for renderers that
       // didn't attach `_rawText`).
-      const analysisText = result.rawText;
+      const analysisText = isFolderRoot ? '' : result.rawText;
       const rendererIOCs = this.findings.interestingStrings || [];
       // ── IOC mass-extract: sync vs worker dispatch (Batch A) ─────
       // Files <= IOC_WORKER_THRESHOLD_BYTES (256 KB), and any file when
@@ -443,7 +456,16 @@ extendApp({
       // here since before C3. The fallback is the same code path the
       // earlier Track-C lands used — see C1 (yara) / C2 (timeline) for
       // the same pattern.
-      try {
+      // Folder roots (`FolderFile`) skip the entire encoded pass — the
+      // analysisText is the ArchiveTree's filename listing and produces
+      // no real signal; per-leaf scans run on drill-down. Initialise the
+      // field to an empty array so `_updateRiskFromEncodedContent` and
+      // sidebar render see a clean slate (other code paths assume the
+      // field is always present after `_loadFile`).
+      if (isFolderRoot) {
+        this.findings.encodedContent = [];
+      } else {
+       try {
         let encodedFindings;
         // Aggressive mode is single-shot — clear it before the scan so
         // a later "regular" inner-file load (e.g. a renderer's
@@ -583,6 +605,7 @@ extendApp({
           this._reportNonFatal('encoded-content', encErr);
           this.findings.encodedContent = [];
         }
+       }
       }
 
       // Bump overall risk if encoded content findings have high severity
@@ -637,7 +660,12 @@ extendApp({
       }
 
       // Auto-run YARA scan against loaded file
-      this._autoYaraScan();
+      // Folder roots have a zero-byte yaraBuffer (`FolderFile.arrayBuffer`
+      // returns an empty `ArrayBuffer`) — every rule that gates on a
+      // magic-byte check (PE / ELF / Mach-O / OLE / archive headers)
+      // would no-op anyway, and the spawn cost is wasted. Per-leaf
+      // scans happen on drill-down.
+      if (!isFolderRoot) this._autoYaraScan();
 
       // Breadcrumb was already rendered up front; re-render now so the
       // current layer shows its final page count / size suffix.
@@ -932,6 +960,35 @@ extendApp({
   // last-resort fallback that `_loadFile` selects when the registry can't
   // find any match.
   _rendererDispatch: {
+    // ── Synthetic folder root (drag-drop directory / multi-file drop) ──
+    //
+    // The `file` arg here is a `FolderFile` (`src/folder-file.js`)
+    // carrying a flat `_loupeFolderEntries` list of leaf metadata; the
+    // `buffer` is a zero-byte `ArrayBuffer` (every other dispatch
+    // assumes a real on-disk byte stream — folder is the one
+    // exception). The renderer is fully static; analysis runs on the
+    // file metadata, not on the buffer. Per-leaf analysis happens
+    // organically when the analyst clicks an entry: the bubbled
+    // `open-inner-file` CustomEvent re-enters `_loadFile` with the
+    // real `File` object stashed on `entry._file`. Aggregate budget
+    // (`_archiveBudget`) is reset on Back so siblings don't share a
+    // single 256 MiB pool — see `_restoreNavFrame` below.
+    folder(file, buffer) {
+      this.findings = FolderRenderer.analyzeForSecurity(file, {
+        truncated: !!file._loupeFolderTruncated,
+      });
+      const docEl = FolderRenderer.render(file, buffer, this);
+      // Wire the standard `open-inner-file` drill-down protocol —
+      // identical to every archive container renderer (zip / iso /
+      // pkg / msi / msg / mbox …). The CustomEvent is dispatched by
+      // `FolderRenderer`'s ArchiveTree `onOpen` callback with the
+      // real `File` from `entry._file` as the detail; this listener
+      // funnels into `App.openInnerFile` which pushes a nav frame and
+      // re-enters `_loadFile`.
+      this._wireInnerFileListener(docEl, file.name);
+      return { docEl };
+    },
+
     // ── DOCX pipeline (parser + analyzer + content renderer) ────────────
     async docx(file, buffer) {
       const parsed = await new DocxParser().parse(buffer);
@@ -1679,6 +1736,29 @@ extendApp({
     // `currentResult` / `findings`.
     this._setRenderResult(state.currentResult || null);
     this._yaraResults = state.yaraResults;
+
+    // Folder-root sibling budget reset.
+    //
+    // `_archiveBudget` is the aggregate decompression cap (50k entries /
+    // 256 MiB) shared across a single drill-down chain so that
+    // ZIP-of-JAR-of-MSIX-of-7z can't expand unboundedly. For folder
+    // ingest the same budget is used, but each top-level sibling is a
+    // genuinely independent file — without resetting on Back, opening
+    // five large samples in sequence would bleed budget from sibling
+    // 1 into sibling 2..5 and trip the abort check on the second large
+    // open. `_resetNavStack` already calls `_archiveBudget.reset()`
+    // when the entire stack is cleared (fresh file load); here we
+    // mirror that behaviour for the per-sibling case. We can detect a
+    // folder-root frame by the dispatch id stamped onto
+    // `currentResult` (`render-route.js` records it on every dispatch
+    // and `_setRenderResult` swaps it in along with the rest of the
+    // restored result).
+    if (state.currentResult
+        && state.currentResult.dispatchId === 'folder'
+        && this._archiveBudget
+        && typeof this._archiveBudget.reset === 'function') {
+      this._archiveBudget.reset();
+    }
 
     const pc = document.getElementById('page-container');
     while (pc.firstChild) pc.removeChild(pc.firstChild);

@@ -55,6 +55,19 @@ const PARSER_LIMITS = Object.freeze({
   MAX_AGGREGATE_ENTRIES:           50_000,
   MAX_AGGREGATE_DECOMPRESSED_BYTES: 256 * 1024 * 1024,
 
+  // ── Folder-ingest cap ────────────────────────────────────
+  // Loose-multi-file drops and `webkitGetAsEntry()`-walked directory
+  // drops are synthesised as a `FolderFile` (see `src/folder-file.js`)
+  // and dispatched to `FolderRenderer`. The walker stops after this
+  // many entries (files + directories combined) and the renderer
+  // surfaces a single visible `IOC.INFO` row explaining the truncation.
+  // Distinct from `MAX_AGGREGATE_ENTRIES` (the recursive archive
+  // budget): folder ingest counts ON-DISK directory walking, archive
+  // ingest counts decompression-time enumeration. Both apply when an
+  // analyst drops a folder full of archives — the folder cap fires at
+  // walk time, the aggregate cap fires once per archive opened.
+  MAX_FOLDER_ENTRIES:              4_096,
+
 
   TIMEOUT_MS:           60_000,              // Buffer-read cap (`file.arrayBuffer()`)
                                              // — also the default for any
@@ -227,6 +240,11 @@ const PARSER_LIMITS = Object.freeze({
     image:     128 * 1024 * 1024,
     // Plaintext is the fallback target — never gated.
     plaintext:        Number.POSITIVE_INFINITY,
+    // Folder roots are synthetic — `_loupeFolderEntries` carries the
+    // payload, and the underlying `arrayBuffer()` is zero bytes. There
+    // is nothing to gate on file size, so the cap is +∞. The folder
+    // walker bounds the entry count separately via MAX_FOLDER_ENTRIES.
+    folder:           Number.POSITIVE_INFINITY,
     // Catch-all for any future dispatch id without an explicit row.
     _DEFAULT:  128 * 1024 * 1024,
   }),
