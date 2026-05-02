@@ -180,13 +180,23 @@ window.WorkerManager = (function () {
     const ch = _channels[spec.channel];
     if (!ch) return Promise.reject(new Error('runWorkerJob: unknown channel ' + spec.channel));
 
-    const myToken = ++ch.token;
-    // Supersede any in-flight job from a previous call on this channel.
-    // Releasing the prior `currentJob` first clears its pending
-    // `setTimeout`, rejects its promise with `Error('superseded')`, and
-    // drops the closure's reference to the captured payload — without
-    // this the buffer would stay live (and the spurious 5-min watchdog
-    // timer would still be queued) until the prior timer fired naturally.
+    // Supersede any in-flight job from a previous call on this channel
+    // BEFORE capturing our token. Releasing the prior `currentJob`
+    // clears its pending `setTimeout`, rejects its promise with
+    // `Error('superseded')`, and drops the closure's reference to the
+    // captured payload — without this the buffer would stay live (and
+    // the spurious 5-min watchdog timer would still be queued) until
+    // the prior timer fired naturally.
+    //
+    // Critically, `prior.abort()` bumps `ch.token` itself (so any
+    // racing onmessage / onerror from the prior worker is treated as
+    // stale on arrival). Capturing OUR `myToken` afterwards ensures it
+    // reflects the post-abort counter — otherwise our own onmessage
+    // would see `myToken !== ch.token` and be silently dropped, leaving
+    // the new promise to hang indefinitely. Production code masks this
+    // by always calling `cancelYara()` (which empties `currentJob`)
+    // before `runYara()`; the bug surfaces on any back-to-back
+    // `_runWorkerJob` call without an intervening cancel.
     if (ch.currentJob) {
       const prior = ch.currentJob;
       ch.currentJob = null;
@@ -196,6 +206,7 @@ window.WorkerManager = (function () {
       try { ch.active.terminate(); } catch (_) {}
       ch.active = null;
     }
+    const myToken = ++ch.token;
 
     let w;
     try {
