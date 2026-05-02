@@ -1,0 +1,42 @@
+[
+  {
+    "id": 1,
+    "name": "alpha",
+    "url": "https://malicious-example.test/payload.exe",
+    "ip": "203.0.113.42",
+    "tags": ["dropper", "persistence"]
+  },
+  {
+    "id": 2,
+    "name": "beta",
+    "url": "http://evil-c2.test/beacon",
+    "ip": "198.51.100.7",
+    "tags": ["c2"]
+  },
+  {
+    "id": 3,
+    "name": "gamma",
+    "url": "https://exfil-host.test/upload",
+    "ip": "192.0.2.55",
+    "tags": ["exfil"]
+  },
+  {
+    "id": 4,
+    "name": "delta",
+    "data_uri": "data:application/octet-stream;base64,TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAA4fug4AtAnNIbgBTM0hVGhpcyBwcm9ncmFtIGNhbm5vdCBiZSBydW4gaW4gRE9TIG1vZGUuDQ0KJAAAAAAAAAA=",
+    "tags": ["smuggled-binary"]
+  },
+  {
+    "id": 5,
+    "name": "epsilon",
+    "jwt": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIn0.dQw4w9WgXcQABCDEFGhijklmnopqrstuvwx",
+    "tags": ["leaked-token"]
+  },
+  {
+    "id": 6,
+    "name": "zeta",
+    "url": "https://example.test/legit",
+    "ip": "1.1.1.1",
+    "tags": []
+  }
+]
