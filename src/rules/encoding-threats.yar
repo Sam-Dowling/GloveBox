@@ -597,11 +597,11 @@ rule Space_Delimited_Hex_Payload
 rule Confusable_Codepoint_Density
 {
     meta:
-        description = "High density of Cyrillic / Greek / fullwidth-Latin lookalike codepoints — Trojan Source / homoglyph identifier obfuscation beyond punycode/RTLO"
+        description = "High density of Cyrillic / Greek / fullwidth-Latin lookalike codepoints — Trojan Source / homoglyph identifier obfuscation beyond punycode/RTLO. Skipped on native binaries where random byte coincidences trivially trip distinct-presence checks."
         severity    = "medium"
         category    = "obfuscation"
         mitre       = "T1027"
-        applies_to  = "any, decoded-payload"
+        applies_to  = "any, !is_native_binary, decoded-payload"
 
     strings:
         $cyr_a    = { D0 B0 }

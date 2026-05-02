@@ -1,16 +1,14 @@
 rule PE_UPX_Packed {
     meta:
-        description = "UPX packed executable"
+        description = "UPX packed executable: UPX0 + UPX1 section names indicate genuine UPX layout (lone UPX! string occurs randomly in any large binary)"
         severity = "medium"
         category = "packer"
         mitre       = "T1027.002"
     strings:
         $upx0 = "UPX0" ascii
         $upx1 = "UPX1" ascii
-        $upx2 = "UPX!" ascii
-        $upx3 = "UPX2" ascii
     condition:
-        uint16(0) == 0x5A4D and ($upx0 or $upx1 or $upx2 or $upx3)
+        uint16(0) == 0x5A4D and $upx0 and $upx1
 }
 
 rule PE_Themida_Packed {
@@ -132,7 +130,7 @@ rule PE_Process_Hollowing {
 
 rule PE_Anti_Debug_Techniques {
     meta:
-        description = "PE uses multiple anti-debugging techniques"
+        description = "PE uses anti-debug API quorum that includes at least one strong signal (CheckRemoteDebuggerPresent or NtQueryInformationProcess) plus another debug-detection probe — IsDebuggerPresent + OutputDebugStringA alone are normal Win32 noise"
         severity = "medium"
         category = "evasion"
         mitre       = "T1497.001"
@@ -142,7 +140,7 @@ rule PE_Anti_Debug_Techniques {
         $dbg3 = "NtQueryInformationProcess" ascii
         $dbg4 = "OutputDebugStringA" ascii
     condition:
-        uint16(0) == 0x5A4D and 2 of them
+        uint16(0) == 0x5A4D and ($dbg2 or $dbg3) and 2 of them
 }
 
 rule PE_Credential_Theft_APIs {
@@ -183,7 +181,7 @@ rule PE_Ransomware_APIs {
 
 rule PE_Download_Capability {
     meta:
-        description = "PE has download/C2 capability via URLDownloadToFile or WinHTTP"
+        description = "PE has download/C2 capability via URLDownloadToFile (always-suspicious) or 2+ HTTP transport APIs in the same image — bare InternetOpenUrl alone is too common in legitimate signed binaries"
         severity = "high"
         category = "suspicious_api"
         mitre       = "T1105"
@@ -197,7 +195,7 @@ rule PE_Download_Capability {
         $inet2 = "InternetOpenUrlW" ascii
         $winhttp = "WinHttpSendRequest" ascii
     condition:
-        uint16(0) == 0x5A4D and any of them
+        uint16(0) == 0x5A4D and (any of ($dl*) or 2 of ($http1, $http2, $inet1, $inet2, $winhttp))
 }
 
 rule PE_Dynamic_API_Resolution {
@@ -219,7 +217,7 @@ rule PE_Dynamic_API_Resolution {
 
 rule PE_Service_Persistence {
     meta:
-        description = "PE creates Windows services (persistence mechanism)"
+        description = "PE creates Windows services with matched A or W variants of CreateService + OpenSCManager — most legitimate service-control code uses only one ANSI/Wide flavour, persistence droppers tend to ship full"
         severity = "high"
         category = "suspicious_api"
         mitre       = "T1543.003"
@@ -229,7 +227,7 @@ rule PE_Service_Persistence {
         $osc1 = "OpenSCManagerA" ascii
         $osc2 = "OpenSCManagerW" ascii
     condition:
-        uint16(0) == 0x5A4D and ($cs1 or $cs2) and ($osc1 or $osc2)
+        uint16(0) == 0x5A4D and (($cs1 and $osc1) or ($cs2 and $osc2))
 }
 
 rule PE_Registry_Persistence {

@@ -1291,6 +1291,15 @@ extendApp({
       const r = new PeRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
       this.currentResult.binary = { format: 'pe', parsed: r._parsed || null };
+      // Pin yaraBuffer to the raw PE bytes. The renderer's `_rawText`
+      // is the extracted-strings list, which begins with whichever
+      // string sorts first — never with the `MZ` magic. Every rule in
+      // `pe-threats.yar` conditions on `uint16(0) == 0x5A4D`, so
+      // without this pin the entire PE rule pack is silently inert
+      // (the auto-yara path at `app-load.js:635` would otherwise
+      // UTF-8-encode `_rawText` into the YARA buffer and lose the
+      // magic gate). Same rationale as `wasm()` / `pcap()` below.
+      this.currentResult.yaraBuffer = buffer;
       const docEl = r.render(buffer, file.name);
       // Overlay card may emit `open-inner-file` when the user clicks the
       // "Analyse overlay" button — wire the listener so the synthetic File
@@ -1302,6 +1311,11 @@ extendApp({
       const r = new ElfRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
       this.currentResult.binary = { format: 'elf', parsed: r._parsed || null };
+      // Pin yaraBuffer to raw ELF bytes — every rule in
+      // `elf-threats.yar` gates on `uint32(0) == 0x464C457F`, which
+      // the extracted-strings `_rawText` cannot satisfy. See the
+      // `pe()` route comment for the full rationale.
+      this.currentResult.yaraBuffer = buffer;
       const docEl = r.render(buffer, file.name);
       // Overlay card drill-down — see pe() above.
       this._wireInnerFileListener(docEl, file.name);
@@ -1311,6 +1325,12 @@ extendApp({
       const r = new MachoRenderer();
       this.findings = r.analyzeForSecurity(buffer, file.name);
       this.currentResult.binary = { format: 'macho', parsed: r._parsed || null };
+      // Pin yaraBuffer to raw Mach-O bytes — every rule in
+      // `macho-threats.yar` gates on the magic-byte set
+      // { CF FA ED FE | CE FA ED FE | CA FE BA BE }, which the
+      // extracted-strings `_rawText` cannot satisfy. See the `pe()`
+      // route comment for the full rationale.
+      this.currentResult.yaraBuffer = buffer;
       const docEl = r.render(buffer, file.name);
       // Overlay / Fat-container-tail drill-down — see pe() above.
       this._wireInnerFileListener(docEl, file.name);
