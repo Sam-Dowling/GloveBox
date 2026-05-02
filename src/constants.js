@@ -201,6 +201,10 @@ const PARSER_LIMITS = Object.freeze({
     // Tabular / textual.
     csv:       512 * 1024 * 1024,
     json:      256 * 1024 * 1024,
+    // Network captures — Timeline route. Per-packet rows stream into a
+    // RowStore via the timeline worker; the parse-time cap is bounded
+    // by PcapRenderer.MAX_PACKETS rather than file size.
+    pcap:      512 * 1024 * 1024,
     // Markup / lightweight viewers.
     html:       64 * 1024 * 1024,
     svg:        64 * 1024 * 1024,

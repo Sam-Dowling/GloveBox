@@ -1,5 +1,5 @@
 // ════════════════════════════════════════════════════════════════════════════
-// forensics.spec.ts — Smoke for Timeline-routed fixtures (EVTX,
+// forensics.spec.ts — Smoke for Timeline-routed fixtures (EVTX, PCAP,
 // SQLite, CSV, TSV).
 //
 // These formats route to the `Timeline` view rather than the
@@ -8,6 +8,14 @@
 // (risk=null, iocCount=0, ...). To assert that the file actually
 // loaded we read `dumpResult()` and check `bufferLength` plus the
 // dispatched filename.
+//
+// EVTX and PCAP are *hybrid* Timeline routes — the parser runs in the
+// timeline worker, but the analyser (`EvtxDetector.analyzeForSecurity`
+// / `PcapRenderer._analyzePcapInfo`) runs on the main thread because
+// it touches `pushIOC` / `IOC.*` / `escalateRisk` globals that aren't
+// in the worker bundle. Either way the analyser's findings go to a
+// side-channel (`_evtxFindings` / `_pcapFindings`) consumed by the ⚡
+// Summarize button, NOT to `app.findings`.
 // ════════════════════════════════════════════════════════════════════════════
 
 import { test, expect } from '@playwright/test';
@@ -22,7 +30,9 @@ test.describe('forensics / Timeline-routed renderers', () => {
 
   // ── Helper: load + assert the Timeline route was taken (`timeline:
   //   true` in the synthetic dumpResult shape) and the file actually
-  //   parsed (`timelineRowCount > 0` or `bufferLength > 0`).
+  //   parsed (`timelineRowCount > 0` or `bufferLength > 0`). Returns
+  //   the dumpResult so callers can pin format-specific fields
+  //   (e.g. `formatTag === 'PCAP'` for the hybrid PCAP route).
   async function assertTimelineLoaded(relPath: string) {
     const findings = await loadFixture(ctx.page, relPath);
     // findings should be a well-formed empty projection — Timeline
@@ -40,6 +50,7 @@ test.describe('forensics / Timeline-routed renderers', () => {
       (result!.timelineRowCount || 0) > 0
       || (result!.bufferLength || 0) > 0,
     ).toBe(true);
+    return result!;
   }
 
   test('EVTX security log loads via Timeline', async () => {
@@ -48,6 +59,28 @@ test.describe('forensics / Timeline-routed renderers', () => {
 
   test('EVTX system log loads via Timeline', async () => {
     await assertTimelineLoaded('examples/forensics/example.evtx');
+  });
+
+  test('PCAP libpcap capture loads via Timeline (hybrid route)', async () => {
+    // PCAP joins EVTX as the second hybrid Timeline route: the parser
+    // runs in the timeline worker (`_parsePcap` → `PcapRenderer._parse`
+    // → packet rows streamed via `_makeRowStreamer`), but the analyser
+    // (`PcapRenderer._analyzePcapInfo`) runs on the main thread because
+    // it pushes IOCs through `pushIOC` / `IOC.*` / `escalateRisk` —
+    // globals that don't exist in the worker bundle. The analyser's
+    // findings land on the TimelineView's `_pcapFindings` side-channel
+    // (driving the ⚡ Summarize button), NOT on `app.findings`. The
+    // standard `assertTimelineLoaded` checks (timeline:true, no IOCs in
+    // findings, rows landed) confirm both halves of the contract are
+    // wired correctly. The Timeline `formatLabel` is the stable tag
+    // `'PCAP'` so the snapshot-matrix `formatTag` assertion at
+    // expected.jsonl:56 is variant-stable across libpcap/PCAPNG.
+    const result = await assertTimelineLoaded('examples/forensics/example-capture.pcap');
+    expect(result.formatTag).toBe('PCAP');
+    // Sanity: the worker streamed packet rows. The fixture has ~10s of
+    // captured traffic; pin to a strictly positive count to catch
+    // silent zero-row escapes back to the legacy card view.
+    expect((result.timelineRowCount || 0)).toBeGreaterThan(0);
   });
 
   test('Chrome history SQLite loads via Timeline', async () => {

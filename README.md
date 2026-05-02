@@ -32,7 +32,7 @@ SOC analysts, MDR responders, phishing teams, and DFIR practitioners need to ins
 
 - **Zero network, zero install.** A strict [Content-Security-Policy](SECURITY.md#full-content-security-policy) blocks every outbound request. One HTML file, double-click to open, works on any OS.
 - **Forensics-grade depth in a triage tool.** [50+ formats](FEATURES.md#-supported-formats) with format-specific parsers, recursive deobfuscation, 500+ bundled YARA rules, and one-click STIX / MISP / clipboard export.
-- **A timeline tool too.** CSV, TSV, EVTX, log files, and browser-history SQLite open in the [📈 Timeline viewer](FEATURES.md#-timeline) — virtual grid for 1 M rows, scrubber + stacked-bar histogram, DSL query language, EVTX detections with MITRE ATT&CK pivots.
+- **A timeline tool too.** CSV, TSV, EVTX, log files, packet captures, and browser-history SQLite open in the [📈 Timeline viewer](FEATURES.md#-timeline) — virtual grid for 1 M rows, scrubber + stacked-bar histogram, DSL query language, EVTX detections with MITRE ATT&CK pivots.
 - **Verifiable supply chain.** Every release is [Sigstore-signed with SLSA v1.0 build provenance](SECURITY.md#verify-your-download), reproducible from source, and ships a CycloneDX SBOM.
 
 ---
@@ -82,6 +82,7 @@ Extensionless and renamed files are auto-routed by magic-byte sniff. Per-format 
 | **Java** | `.jar` `.war` `.ear` `.class` |
 | **Scripts** | `.wsf` `.wsc` `.wsh` `.vbs` `.ps1` `.bat` `.cmd` `.js` |
 | **Logs** | `.log` `.cef` `.leef` `.evtx` |
+| **Network** | `.pcap` `.pcapng` `.cap` |
 | **Data** | `.csv` `.tsv` `.json` `.ndjson` `.jsonl` `.sqlite` `.db` |
 | **Images** | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` |
 
@@ -113,7 +114,7 @@ The [`examples/`](examples/) directory has a sample file for every supported for
 <p align="center">
   <a href="FEATURES.md#-timeline"><img src="screenshots/timeline.png" alt="Timeline view of a CSV with stacked-bar histogram" width="800"></a><br>
   <b>📈 Timeline</b><br>
-  <sub>Million-row virtual grid for CSV / TSV / EVTX / log files / browser SQLite, with stacked-bar histogram and a query DSL.</sub>
+  <sub>Million-row virtual grid for CSV / TSV / EVTX / PCAP / log files / browser SQLite, with stacked-bar histogram and a query DSL.</sub>
 </p>
 
 ---

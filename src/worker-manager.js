@@ -556,7 +556,7 @@ window.WorkerManager = (function () {
    *  travels alongside so RFC 3164 timestamps (which lack a year)
    *  parse deterministically against the file's mtime. */
   function runTimeline(buffer, kind, opts) {
-    if (kind !== 'csv' && kind !== 'evtx' && kind !== 'sqlite') {
+    if (kind !== 'csv' && kind !== 'evtx' && kind !== 'sqlite' && kind !== 'pcap') {
       return Promise.reject(new Error('runTimeline: unknown kind ' + kind));
     }
     const explicitDelim = (opts && opts.explicitDelim) || undefined;

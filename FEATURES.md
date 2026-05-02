@@ -49,7 +49,7 @@ Extensionless and renamed files are auto-routed via magic-byte sniff, extension 
 | **OpenPGP** | `.pgp` `.gpg` `.asc` `.sig` — ASCII-armored & binary packet streams; `.key` auto-disambiguated against X.509 |
 | **Java** | `.jar` `.war` `.ear` · `.class` |
 | **WebAssembly** | `.wasm` — sections / imports / exports / memory parsed; suspicious WASI and JS-bridge imports plus cryptominer / keylogger exports flagged; `modulehash` (SHA-256 over normalised import vector) for cluster pivoting. |
-| **Packet captures** | `.pcap` `.pcapng` `.cap` — global header / link-layer / capture window / top talkers; DNS query names, HTTP `Host:` headers, and TLS SNIs extracted as DOMAIN / IP IOCs; plaintext HTTP traffic and Authorization Basic headers flagged (T1040). |
+| **Packet captures** | `.pcap` `.pcapng` `.cap` — Timeline view (Wireshark-style 9-column grid: `No. / Time / Source / Src Port / Destination / Dst Port / Protocol / Length / Info`) up to 1 M packets |
 | **Scripts** | `.wsf` `.wsc` `.wsh` (parsed) · `.vbs` `.ps1` `.bat` `.cmd` `.js` |
 | **Logs** | `.evtx` (Windows Event Log — binary EVTX parser) · `.log` (Apache CLF default + syslog / Zeek / JSONL / CEF / LEEF / logfmt / Apache error sniff) · `.cef` `.leef` |
 | **Data** | `.csv` `.tsv` · `.json` `.ndjson` `.jsonl` (array-shaped → tabular grid) · `.sqlite` `.db` (Chrome / Firefox / Edge history auto-detect) |
@@ -215,7 +215,7 @@ ZIP listings additionally surface per-entry risk signals classic archive viewers
 
 ## 📈 Timeline
 
-Every `.csv` / `.tsv` / `.evtx` / `.log` / `.jsonl` / `.ndjson` / `.cef` / `.leef` file — and SQLite browser history databases (Chrome / Edge / Firefox) — opens directly in Timeline: scrubber, stacked-bar chart, virtual grid, and per-column top-value cards on one page. Extensionless drops are routed by magic-byte / text sniff. Generic (non-browser-history) SQLite databases use the tabbed-grid viewer.
+Every `.csv` / `.tsv` / `.evtx` / `.log` / `.jsonl` / `.ndjson` / `.cef` / `.leef` / `.pcap` / `.pcapng` / `.cap` file — and SQLite browser history databases (Chrome / Edge / Firefox) — opens directly in Timeline: scrubber, stacked-bar chart, virtual grid, and per-column top-value cards on one page. Extensionless drops are routed by magic-byte / text sniff. Generic (non-browser-history) SQLite databases use the tabbed-grid viewer.
 
 `.log` files are dispatched by content sniff. Each format yields a stable column projection so filtering, sorting, and the histogram stack column behave consistently across vendor variants.
 
@@ -244,7 +244,7 @@ Every `.csv` / `.tsv` / `.evtx` / `.log` / `.jsonl` / `.ndjson` / `.cef` / `.lee
 | **Detections (EVTX)** | Sortable detection table with severity badge, rule description, Event ID (hover for the plain-English summary), channel / category, ATT&CK technique pills (linked to attack.mitre.org), and hit count. Severity summary strip aggregates totals — click any tier pill to filter the table to that severity, click again to clear. "Group by ATT&CK tactic" reorganises rows under tactic headers. Right-click any detection for filter / mark-sus / docs actions. |
 | **Entities (EVTX)** | Extracted hosts, users, filenames, processes, hashes, IPs, URLs, UNC paths, registry keys, domains, emails, and command-lines — grouped by IOC type with per-card search / sort-cycle / pin / drag-to-reorder controls mirroring the Top-values cards. Click any entity to pivot. |
 | **ATT&CK annotation** | Top-values "Event ID" cards, the EVTX detail drawer, the Detections table, and (where applicable) Entities all surface human-readable Event-ID summaries plus MITRE ATT&CK technique pills from the bundled offline EID → technique map — no network lookups. |
-| **⚡ Summarize (EVTX)** | EVTX-only toolbar button that copies a Markdown summary tuned for AI / LLM consumption — file header, risk roll-up, detections with timestamps + ATT&CK, notable Event-ID activity, entities (hosts / users / processes / hashes / IPs / domains), relationships (process trees, failed → success logon transitions, beacon cadence), time clusters, and a cross-reference appendix. The whole-file view is always included; the analyst's currently active query / time window / 🚩 sus marks are surfaced as a separate sub-section. Honours the global ⚡ Summarize target setting. |
+| **⚡ Summarize (EVTX / PCAP)** | Hybrid-Timeline toolbar button that copies a Markdown summary tuned for AI / LLM consumption. |
 
 ### Mechanics
 

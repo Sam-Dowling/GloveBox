@@ -661,6 +661,7 @@ extendApp({
             || ext === 'leef' || ext === 'logfmt'
             || ext === 'w3c' || ext === 'apache-error') workerKind = 'csv';
       else if (ext === 'sqlite' || ext === 'db') workerKind = 'sqlite';
+      else if (ext === 'pcap' || ext === 'pcapng' || ext === 'cap') workerKind = 'pcap';
 
       if (workerKind && window.WorkerManager
           && typeof window.WorkerManager.runTimeline === 'function'
@@ -970,6 +971,8 @@ extendApp({
           view = await TimelineView.fromStructuredLogAsync(file, buffer, ext);
         } else if (ext === 'sqlite' || ext === 'db') {
           view = TimelineView.fromSqlite(file, buffer);
+        } else if (ext === 'pcap' || ext === 'pcapng' || ext === 'cap') {
+          view = TimelineView.fromPcap(file, buffer);
         } else {
           throw new Error('Unsupported Timeline format: .' + ext);
         }
@@ -1137,6 +1140,37 @@ extendApp({
       if (Number.isInteger(msg.defaultTimeColIdx)) out.defaultTimeColIdx = msg.defaultTimeColIdx;
       if (Number.isInteger(msg.defaultStackColIdx)) out.defaultStackColIdx = msg.defaultStackColIdx;
       return new TimelineView(out);
+    }
+    if (kind === 'pcap') {
+      // Hybrid path mirroring EVTX: the worker shipped pre-parsed
+      // `pcapInfo` (the `_emptyResult`-shaped object minus `pkts`,
+      // those rode the `rows-chunk` stream into `rowStore`). The
+      // analyser runs HERE on the main thread because it calls
+      // `pushIOC` / `IOC.*` / `escalateRisk` — globals defined only
+      // in the main bundle. The synthetic `pcapFindings` is parked on
+      // the side-channel TimelineView opt; ⚡ Summarize pulls from
+      // there via `_copyAnalysisPcap`. The sidebar stays empty for
+      // pcap (matches the EVTX hybrid contract — analyser bypass).
+      const pcapInfo = msg.pcapInfo || null;
+      let pcapFindings = null;
+      if (pcapInfo) {
+        try {
+          pcapFindings = PcapRenderer._analyzePcapInfo(pcapInfo, file && file.name);
+        } catch (e) {
+          console.warn('[timeline] PCAP analyzePcapInfo failed (worker path):', e);
+        }
+      }
+      return new TimelineView({
+        file, columns,
+        store: rowStore,
+        formatLabel: msg.formatLabel || 'PCAP',
+        truncated: !!msg.truncated,
+        originalRowCount: msg.originalRowCount || rowStore.rowCount,
+        defaultTimeColIdx: Number.isInteger(msg.defaultTimeColIdx) ? msg.defaultTimeColIdx : 1,
+        defaultStackColIdx: Number.isInteger(msg.defaultStackColIdx) ? msg.defaultStackColIdx : 6,
+        pcapInfo,
+        pcapFindings,
+      });
     }
     // csv / tsv / structured-log — no analyzer side-channel. Pass the
     // RowStore straight through to `TimelineView`.

@@ -165,14 +165,18 @@
     // Runs strictly read-only against this view's pre-built EVTX side
     // channels.
     _summarizeAndCopy() {
-      // EVTX-only gate: the summary builder reads Sigma-style
-      // findings + per-row event objects, neither of which exist
-      // for CSV/SQLite timelines. Probe the dataset's evtxEvents
-      // slot rather than the legacy `this._evtxEvents` reference.
+      // Two hybrid timeline kinds carry an analyser side-channel:
+      //   • EVTX  → `_evtxFindings` + per-row `_evtxEvents`
+      //   • PCAP  → `_pcapFindings` + `_pcapInfo`
+      // Probe the dataset's evtxEvents slot rather than the legacy
+      // `this._evtxEvents` reference (the dataset is the canonical
+      // owner post-B1b/B1c).
       const evEvents = this._dataset ? this._dataset.evtxEvents : null;
-      if (!this._evtxFindings || !Array.isArray(evEvents)) {
+      const isEvtx = !!(this._evtxFindings && Array.isArray(evEvents));
+      const isPcap = !!(this._pcapFindings && this._pcapInfo);
+      if (!isEvtx && !isPcap) {
         if (this._app && typeof this._app._toast === 'function') {
-          this._app._toast('Summarize is only available for EVTX timelines', 'error');
+          this._app._toast('Summarize is only available for EVTX and PCAP timelines', 'error');
         }
         return;
       }
@@ -180,7 +184,9 @@
         ? this._app._getSummaryCharBudget() : 64 * 1024;
       let report = '';
       try {
-        report = this._buildTimelineSummary(budget);
+        report = isPcap
+          ? this._buildPcapSummary(budget)
+          : this._buildTimelineSummary(budget);
       } catch (e) {
         if (this._app && typeof this._app._toast === 'function') {
           this._app._toast('Summarize failed: ' + (e && e.message ? e.message : e), 'error');
@@ -203,7 +209,74 @@
       }
     },
 
-    // ── Builder ─────────────────────────────────────────────────────
+    // ── PCAP summary builder ────────────────────────────────────────
+    // Reuses `App.prototype._copyAnalysisPcap` so the markdown shape is
+    // bit-for-bit identical between the analyser-mode "Copy analysis"
+    // path and the Timeline-mode ⚡ Summarize button. The helper reads
+    // only `f.pcapInfo`, which we synthesise from `_pcapInfo` (the
+    // parsed result minus `pkts`); top-talker / DNS / HTTP / SNI lists
+    // were already populated by `PcapRenderer._analyzePcapInfo` and
+    // travel inside `pcapInfo` itself.
+    //
+    // Falls back to an inline minimal builder if the host App
+    // prototype is missing the helper (test harness, very old build) —
+    // surfaces just the capture window + packet count so the user
+    // gets *something* useful instead of an empty clipboard.
+    _buildPcapSummary(budget) {
+      const app = this._app;
+      const file = this._file;
+      const parts = [];
+      // Header — mirrors `_copyAnalysisHeader` shape so downstream
+      // ingestion (LLM prompt / ticket paste) sees the file name +
+      // size on the first line.
+      const name = (file && file.name) || 'capture';
+      const sizeBytes = (file && typeof file.size === 'number') ? file.size : 0;
+      parts.push(`# ${_tp(name)}`);
+      if (sizeBytes) parts.push(`*Size:* ${sizeBytes} bytes`);
+
+      const synthetic = { pcapInfo: this._pcapInfo };
+      if (app && typeof app._copyAnalysisPcap === 'function') {
+        // `_copyAnalysisPcap` reads row caps from `app._sCaps` —
+        // normally set just-in-time by the analyser-mode "Copy
+        // analysis" pipeline (see app-ui.js:253-542). Stand in with a
+        // SCALE=1 caps shim around the call (matches the legacy
+        // default for the analyser-mode pipeline) and restore the
+        // host's prior `_sCaps` after. The helper's internal
+        // truncations (200 DNS / 200 hosts / 200 SNIs / 40 talkers)
+        // already keep the output sane; the final budget slice below
+        // is the hard backstop.
+        const _prevCaps = app._sCaps;
+        const rowCap  = (n) => Math.max(5,   Math.ceil(n * 1));
+        const charCap = (n) => Math.max(120, Math.ceil(n * 1));
+        app._sCaps = { SCALE: 1, rowCap, charCap };
+        try {
+          app._copyAnalysisPcap(synthetic, parts, _tp);
+        } catch (e) {
+          // If the helper trips, fall through to the minimal builder.
+          // Don't throw — a partial summary is more useful than none.
+          parts.push(`\n*[copy-analysis helper failed: ${_tp(e && e.message || String(e))}]*`);
+        } finally {
+          app._sCaps = _prevCaps;
+        }
+      } else {
+        const p = this._pcapInfo;
+        parts.push('\n## Network Capture Details');
+        if (p.formatLabel) parts.push(`- **Format:** ${_tp(p.formatLabel)}`);
+        if (p.packetCount != null) parts.push(`- **Packets:** ${p.packetCount}`);
+        if (p.firstTs != null && p.lastTs != null) {
+          parts.push(`- **Capture window:** ${p.firstTs} → ${p.lastTs}`);
+        }
+      }
+      const out = parts.join('\n') + '\n';
+      // Hard truncation if a malicious / pathological capture
+      // overflows the budget. Unlike EVTX (which has a SCALE ladder),
+      // the PCAP builder is single-shot so we just slice + ellipsis.
+      const BUDGET = isFinite(budget) ? budget : Number.MAX_SAFE_INTEGER;
+      if (out.length <= BUDGET) return out;
+      return out.slice(0, Math.max(0, BUDGET - 32)) + '\n\n*[truncated to fit summary budget]*\n';
+    },
+
+    // ── EVTX builder ────────────────────────────────────────────────
     // Mirrors app-ui.js's build-full → measure → shrink-ladder pattern.
     // Sections are produced by `_tlsBuildSectionsAtScale(SCALE)`.
     _buildTimelineSummary(budget) {

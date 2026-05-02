@@ -611,4 +611,80 @@ Object.assign(TimelineView, {
     });
   },
 
+  // ── PCAP / PCAPNG capture ───────────────────────────────────────────────
+  //
+  // Sync main-thread fallback used when the worker path is unavailable
+  // (Firefox at `file://` denies `new Worker(blob:)` and `WorkerManager`
+  // falls through to this factory). Mirrors the worker path in
+  // `timeline.worker.js::_parsePcap` step-for-step:
+  //
+  //   • magic sniff via `PcapRenderer._parse` (handles libpcap LE/BE/ms/ns
+  //     + PCAPNG dispatch internally; returns the same `_emptyResult`-
+  //     shaped object on bad / truncated magic)
+  //   • truncate `pkts` to `TIMELINE_MAX_ROWS` if needed
+  //   • stream rows via the shared `_streamPacketRows(pkts, addRow)` helper
+  //     into a `RowStoreBuilder`
+  //   • run `_analyzePcapInfo` on the SAME thread (sidebar IOCs in the
+  //     hybrid model live on a side-channel `_pcapFindings` so the
+  //     Timeline view can drive ⚡ Summarize without polluting
+  //     `app.findings`)
+  //
+  // A zero-row return triggers the legacy escape-hatch fallback in
+  // `_loadFileInTimeline` (re-route to `PcapRenderer.render` card view).
+  fromPcap(file, buffer) {
+    const bytes = new Uint8Array(buffer);
+    const parsed = PcapRenderer._parse(bytes);
+
+    // Run the main-thread analyser on the parsed result so the synthetic
+    // findings populate `_copyAnalysisPcap`'s expected shape. This is
+    // the ONLY path on which `pushIOC` / `IOC.*` / `escalateRisk` run
+    // for pcap — the worker path stages `pcapInfo` for an equivalent
+    // call inside `_buildTimelineViewFromWorker`.
+    let pcapFindings = null;
+    try {
+      pcapFindings = PcapRenderer._analyzePcapInfo(parsed, file && file.name);
+    } catch (e) {
+      console.warn('[timeline] PCAP analyzePcapInfo failed:', e);
+    }
+
+    const columns = [...PcapRenderer.TIMELINE_COLUMNS];
+    const allPkts = parsed.pkts || [];
+    let truncated = parsed.truncated || false;
+    let pkts = allPkts;
+    if (allPkts.length > TIMELINE_MAX_ROWS) {
+      pkts = allPkts.slice(0, TIMELINE_MAX_ROWS);
+      truncated = true;
+    }
+
+    // Stream rows directly into a `RowStoreBuilder` — same shape as
+    // `fromEvtx` / `fromSqlite`. The builder allocates packed
+    // typed-array chunks every `_ROWSTORE_CHUNK_ROWS_TARGET` rows so
+    // the per-row `string[]` cells GC before the next batch.
+    const builder = new RowStoreBuilder(columns);
+    PcapRenderer._streamPacketRows(pkts, (row) => builder.addRow(row), null);
+
+    // `pcapInfo` for the in-view detections panel + ⚡ Summarize. We
+    // strip `pkts` because the per-packet records are now live inside
+    // the RowStore — keeping them around as an array would double the
+    // memory footprint of a 1 M-packet capture.
+    const pcapInfo = { ...parsed };
+    delete pcapInfo.pkts;
+
+    return new TimelineView({
+      file, columns, store: builder.finalize(),
+      // Stable tag — variant info ("libpcap", "PCAPNG 1.0 (LE)") lives
+      // on `pcapInfo.formatLabel` for the ⚡ Summarize markdown header.
+      // Matches EVTX's stable `"EVTX"` formatLabel so the snapshot
+      // matrix's `formatTag` assertion is stable across libpcap /
+      // PCAPNG / nanosecond-pcap variants.
+      formatLabel: 'PCAP',
+      truncated,
+      originalRowCount: allPkts.length,
+      defaultTimeColIdx: PcapRenderer.TIMELINE_TIME_COL_IDX,
+      defaultStackColIdx: PcapRenderer.TIMELINE_STACK_COL_IDX,
+      pcapInfo,
+      pcapFindings,
+    });
+  },
+
 });

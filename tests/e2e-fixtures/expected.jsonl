@@ -53,7 +53,7 @@
 {"formatTag":"plaintext","iocCountAtLeast":1,"iocTypeMustInclude":["File Path"],"path":"examples/encoded-payloads/nested-triple-b64-url.txt","riskFloor":"high","timeline":false,"yaraRulesMustInclude":["Obfuscated_Download_Cradle"]}
 {"formatTag":"LOG","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/apache-access-example.log","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"SQLite \u2013 Chrome History","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/chromehistory-example.sqlite","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
-{"formatTag":"pcap","iocCountAtLeast":4,"iocTypeMustInclude":["Domain","IP Address","Pattern"],"path":"examples/forensics/example-capture.pcap","riskFloor":"medium","timeline":false,"yaraRulesMustInclude":[]}
+{"formatTag":"PCAP","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/example-capture.pcap","riskFloor":"any","timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"EVTX","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/example-security.evtx","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"EVTX","iocCountAtLeast":0,"iocTypeMustInclude":[],"path":"examples/forensics/example.evtx","riskFloor":null,"timeline":true,"yaraRulesMustInclude":[]}
 {"formatTag":"sqlite","iocCountAtLeast":17,"iocTypeMustInclude":["IP Address","URL"],"path":"examples/forensics/example.sqlite","riskFloor":"any","timeline":false,"yaraRulesMustInclude":[]}

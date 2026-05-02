@@ -95,6 +95,18 @@ class TimelineView {
     this._evtxFindings = opts.evtxFindings && typeof opts.evtxFindings === 'object'
       ? opts.evtxFindings : null;
 
+    // PCAP hybrid side-channel — analogous to `_evtxFindings` /
+    // `_evtxEvents`. `_pcapInfo` is the parsed-result object minus
+    // `pkts` (those rode `rows-chunk` into `this.store`); `_pcapFindings`
+    // is the synthetic findings object produced by
+    // `PcapRenderer._analyzePcapInfo` so `_copyAnalysisPcap` (in
+    // `app-copy-analysis.js`) can format the ⚡ Summarize markdown
+    // without re-parsing the file. Both `null` for non-pcap timelines.
+    this._pcapInfo = opts.pcapInfo && typeof opts.pcapInfo === 'object'
+      ? opts.pcapInfo : null;
+    this._pcapFindings = opts.pcapFindings && typeof opts.pcapFindings === 'object'
+      ? opts.pcapFindings : null;
+
     // Extracted / regex virtual columns — each entry:
 
     //   { name, kind: 'json'|'regex'|'auto', sourceCol, path?, pattern?, flags?,
@@ -437,6 +449,8 @@ class TimelineView {
     this.file = null;
     this._evtxEvents = null;
     this._evtxFindings = null;
+    this._pcapInfo = null;
+    this._pcapFindings = null;
     this._app = null;
   }
 
@@ -564,7 +578,7 @@ class TimelineView {
         <select class="tl-field-select" data-field="bucket"></select>
       </label>
       <span class="tl-spacer"></span>
-      <button class="tl-tb-btn tl-summarize-btn" type="button" data-act="summarize" hidden title="Copy AI-ready Markdown summary of this EVTX timeline (events, detections, entities, relationships, ATT&amp;CK, beacon cadence) to clipboard. Honours the global ⚡ Summarize target setting.">⚡ Summarize</button>
+      <button class="tl-tb-btn tl-summarize-btn" type="button" data-act="summarize" hidden title="Copy AI-ready Markdown summary of this timeline (EVTX: events, detections, entities, relationships, ATT&amp;CK, beacon cadence; PCAP: top talkers, DNS / HTTP / TLS hosts, capture window) to clipboard. Honours the global ⚡ Summarize target setting.">⚡ Summarize</button>
       <button class="tl-tb-btn" type="button" data-act="extract" title="Extract values (URLs, hostnames, Key=Value fields, regex) into new columns">ƒx Extract values</button>
       <button class="tl-reset-btn" type="button" title="Reset view: clear query, range window, column hides, 🚩 Suspicious marks, stack column, pivot, extracted columns, AND every saved Timeline preference (grid/chart heights, bucket, section collapse, card widths, query history, drawer width, grid column widths)">↺ Reset</button>
 
@@ -947,11 +961,14 @@ class TimelineView {
     els.resetBtn.addEventListener('click', () => this._reset());
     els.extractBtn.addEventListener('click', () => this._openExtractionDialog(null));
 
-    // Summarize button — EVTX-only. Hidden in _buildDOM via the `hidden`
-    // attribute; we only un-hide and wire the click when this view actually
-    // has EVTX findings attached. CSV/TSV/SQLite timelines never see it.
+    // Summarize button — EVTX or PCAP only. Hidden in _buildDOM via the
+    // `hidden` attribute; we un-hide it whenever the view has the
+    // corresponding analyser side-channel attached. CSV / TSV / SQLite
+    // timelines never see it. The dispatcher in `_summarizeAndCopy`
+    // routes to `_copyAnalysisEvtx` / `_copyAnalysisPcap` based on which
+    // side-channel is populated.
     if (els.summarizeBtn) {
-      if (this._evtxFindings) {
+      if (this._evtxFindings || this._pcapFindings) {
         els.summarizeBtn.hidden = false;
         els.summarizeBtn.addEventListener('click', () => this._summarizeAndCopy());
       }

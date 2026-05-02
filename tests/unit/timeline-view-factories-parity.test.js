@@ -98,6 +98,21 @@ test('timeline-view-factories.js defines fromSqlite with browser-history project
   assert.match(MIXIN, /db\.browserType\s*===\s*'firefox'/);
 });
 
+test('timeline-view-factories.js defines fromPcap with analyzePcapInfo threading', () => {
+  assert.match(MIXIN, /\bfromPcap\s*\(\s*file\s*,\s*buffer\s*\)/);
+  // Body anchor: the PCAP factory threads `pcapFindings` through to the
+  // constructor — that's what feeds `_copyAnalysisPcap` / ⚡ Summarize.
+  // Mirror of `evtxFindings: securityFindings` for the EVTX hybrid.
+  assert.match(MIXIN, /PcapRenderer\._analyzePcapInfo\(/);
+  assert.match(MIXIN, /pcapFindings\b/);
+  assert.match(MIXIN, /pcapInfo\b/);
+  // The streamed-rows helper is the bridge between the per-packet
+  // accumulator and the RowStoreBuilder; pin it so a future refactor
+  // doesn't silently switch to a string[][] matrix and double peak
+  // memory on a 1 M packet capture.
+  assert.match(MIXIN, /PcapRenderer\._streamPacketRows\(/);
+});
+
 // ── Build order ────────────────────────────────────────────────────────────
 
 test('scripts/build.py registers timeline-view-factories.js after timeline-view.js', () => {
@@ -113,7 +128,7 @@ test('scripts/build.py registers timeline-view-factories.js after timeline-view.
 
 // ── Sanity — callers' surface is unchanged ─────────────────────────────────
 
-test('callers still reference TimelineView.fromCsvAsync / fromEvtx / fromSqlite', () => {
+test('callers still reference TimelineView.fromCsvAsync / fromEvtx / fromSqlite / fromPcap', () => {
   // The router is the canonical caller. If B2a accidentally renamed a
   // method, the router would now call something undefined.
   const router = fs.readFileSync(
@@ -123,4 +138,5 @@ test('callers still reference TimelineView.fromCsvAsync / fromEvtx / fromSqlite'
   assert.match(router, /TimelineView\.fromCsvAsync\b/);
   assert.match(router, /TimelineView\.fromEvtx\b/);
   assert.match(router, /TimelineView\.fromSqlite\b/);
+  assert.match(router, /TimelineView\.fromPcap\b/);
 });

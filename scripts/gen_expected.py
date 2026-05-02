@@ -136,6 +136,7 @@ def main() -> int:
     TIMELINE_EXTS = frozenset({
         'csv', 'tsv', 'evtx', 'sqlite', 'db',
         'log', 'jsonl', 'ndjson', 'cef', 'leef',
+        'pcap', 'pcapng', 'cap',
     })
 
     out_records: list[dict] = []

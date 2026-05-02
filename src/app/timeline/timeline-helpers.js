@@ -102,7 +102,8 @@ const TIMELINE_MAX_ROWS = RENDER_LIMITS.MAX_TIMELINE_ROWS;
 // extensionless / mis-named JSONL files are caught by the JSONL
 // probe in `_sniffTimelineContent`.
 const TIMELINE_EXTS = new Set(['csv', 'tsv', 'evtx', 'sqlite', 'db', 'log',
-                               'jsonl', 'ndjson', 'cef', 'leef']);
+                               'jsonl', 'ndjson', 'cef', 'leef',
+                               'pcap', 'pcapng', 'cap']);
 
 // ── CLF (Common / Combined Log Format) helpers ─────────────────────────────
 // Apache / Nginx access logs use a bracketed date token containing a

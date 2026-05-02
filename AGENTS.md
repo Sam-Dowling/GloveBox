@@ -233,10 +233,15 @@ Pinned-Dependencies check); Dependabot rotates them weekly.
 - **Drill-down:** bubbling `open-inner-file` `CustomEvent` →
   `App.openInnerFile` (push nav frame, re-enter `_loadFile`). Unified in
   `22d1df1`.
-- **Timeline route is bypass.** CSV / TSV / EVTX / SQLite / structured logs
+- **Timeline route is bypass.** CSV / TSV / EVTX / PCAP / SQLite / structured logs
   go through `src/app/timeline/` and push **no** IOCs, mutate **no**
-  `app.findings`, run **no** `EncodedContentDetector`. EVTX is the sole
-  hybrid via `EvtxDetector.analyzeForSecurity`.
+  `app.findings`, run **no** `EncodedContentDetector`. EVTX and PCAP are
+  the two hybrids — the parser runs in the timeline worker, but the
+  analyser (`EvtxDetector.analyzeForSecurity` / `PcapRenderer._analyzePcapInfo`)
+  runs on the main thread because it touches `pushIOC` / `IOC.*` /
+  `escalateRisk` globals absent from the worker bundle. Their findings
+  land on the TimelineView's `_evtxFindings` / `_pcapFindings` side-channels
+  and drive the ⚡ Summarize button.
 - **Mutation model:** renderers mutate `app.findings` and `app.currentResult`
   **in place**, fenced by render-epoch.
 

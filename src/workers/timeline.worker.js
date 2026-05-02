@@ -924,6 +924,73 @@ async function _parseEvtx(buffer) {
   };
 }
 
+// ── PCAP / PCAPNG capture (mirrors TimelineView.fromPcap) ──────────────────
+//
+// Hybrid path: the analyser (`PcapRenderer._analyzePcapInfo`) DOES NOT
+// run here — it lives on the main thread because it calls `pushIOC` /
+// `IOC.*` / `escalateRisk` (globals defined only in the main bundle).
+// We ship the parsed result minus `pkts` as `pcapInfo` and the host's
+// `_buildTimelineViewFromWorker` invokes the analyser before
+// constructing the TimelineView. Mirrors EVTX's hybrid contract.
+function _parsePcap(buffer) {
+  _workerMark('pcapParseStart');
+  const bytes = new Uint8Array(buffer);
+
+  // `PcapRenderer._parse` handles magic-byte sniff + libpcap LE/BE/ms/ns
+  // + PCAPNG dispatch in one call, returning the same `_emptyResult`-
+  // shaped object on bad/truncated magic. The host treats a zero-row
+  // result as a failed parse and triggers the legacy escape-hatch
+  // (re-route to `PcapRenderer.render` card view).
+  const parsed = PcapRenderer._parse(bytes);
+
+  const columns = [...PcapRenderer.TIMELINE_COLUMNS];
+  const colCount = columns.length;
+  // W4: announce columns ahead of the first rows-chunk so the host
+  // can construct RowStoreBuilder while we're still iterating packets.
+  // PCAP has a fixed schema so we can post immediately.
+  _postColumns(columns);
+
+  const allPkts = parsed.pkts || [];
+  let truncated = parsed.truncated || false;
+  let pkts = allPkts;
+  if (allPkts.length > TIMELINE_MAX_ROWS) {
+    pkts = allPkts.slice(0, TIMELINE_MAX_ROWS);
+    truncated = true;
+  }
+
+  // Stream rows in batches via the shared `_makeRowStreamer` helper —
+  // identical packing cadence to EVTX / SQLite so the host's
+  // `RowStoreBuilder.addChunk` validation succeeds without special
+  // casing. `_streamPacketRows` polls a no-op `throwIfAborted` shim
+  // every 256 packets (the worker has no real AbortSignal — the host
+  // pre-empts via WorkerManager.terminate on watchdog timeout).
+  const stream = _makeRowStreamer(colCount);
+  PcapRenderer._streamPacketRows(pkts, (row) => stream.push(row), null);
+  stream.flush();
+
+  // Strip the per-packet records before transferring — once their rows
+  // are packed and posted as `rows-chunk`, the host's
+  // `_buildTimelineViewFromWorker` only needs the parse metadata to
+  // construct `pcapInfo` for the main-thread `_analyzePcapInfo` call.
+  // Sending 1 M `pkt` objects through structured-clone would dominate
+  // the postMessage budget for no benefit.
+  const pcapInfo = { ...parsed };
+  delete pcapInfo.pkts;
+
+  return {
+    columns,
+    rows: [],                              // streamed via {event:'rows-chunk'}
+    pcapInfo,
+    // Stable tag — see fromPcap factory for rationale. Variant info
+    // ("libpcap", "PCAPNG 1.0 (LE)") rides on `pcapInfo.formatLabel`.
+    formatLabel: 'PCAP',
+    truncated,
+    originalRowCount: allPkts.length,
+    defaultTimeColIdx: PcapRenderer.TIMELINE_TIME_COL_IDX,
+    defaultStackColIdx: PcapRenderer.TIMELINE_STACK_COL_IDX,
+  };
+}
+
 // ── SQLite browser-history parse (mirrors TimelineView.fromSqlite) ─────────
 //
 // Phase 6: row data is now streamed via `rows-chunk` in batches of
@@ -1058,6 +1125,12 @@ self.onmessage = async function (ev) {
         return;
       }
       out = _parseSqlite(buffer);
+    } else if (kind === 'pcap') {
+      if (typeof PcapRenderer === 'undefined') {
+        self.postMessage({ event: 'error', message: 'PcapRenderer missing from worker bundle' });
+        return;
+      }
+      out = _parsePcap(buffer);
     } else {
       self.postMessage({ event: 'error', message: 'unknown timeline kind: ' + kind });
       return;

@@ -1206,15 +1206,21 @@ yara_worker_js = (
 # APP_JS_FILES (main bundle) so the host receives the chunks the worker
 # packs and assembles them into a `RowStore` of its own.
 # The renderers then concatenate in the same order the main bundle uses
-# (csv → sqlite → evtx). The timeline.worker.js trailer carries the parse
-# functions and the `self.onmessage` dispatcher. EvtxDetector is deliberately
-# NOT included — analysis runs on the main thread.
+# (csv → sqlite → evtx → pcap). The timeline.worker.js trailer carries the
+# parse functions and the `self.onmessage` dispatcher. EvtxDetector and
+# `PcapRenderer._analyzePcapInfo` are deliberately NOT invoked from the
+# worker — analysis runs on the main thread (the analyser path uses
+# `pushIOC` / `IOC.*` / `escalateRisk` globals that only the main bundle
+# defines). The worker only calls `PcapRenderer._parsePcap` /
+# `_parsePcapng` (pure parsers) plus `_streamPacketRows` / `_pktToRow`
+# (pure formatters).
 _timeline_worker_bundle_src = (
     read('src/workers/timeline-worker-shim.js') + '\n'
     + read('src/row-store.js') + '\n'
     + read('src/renderers/csv-renderer.js') + '\n'
     + read('src/renderers/sqlite-renderer.js') + '\n'
     + read('src/renderers/evtx-renderer.js') + '\n'
+    + read('src/renderers/pcap-renderer.js') + '\n'
     + read('src/workers/timeline.worker.js')
 )
 

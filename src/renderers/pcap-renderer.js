@@ -67,11 +67,24 @@ class PcapRenderer {
 
   // ── Hard caps ──────────────────────────────────────────────────────────
   // Per-file packet parse cap. Beyond this we stop walking and emit a
-  // truncation info IOC. 50_000 packets ≈ 60-90 MB of typical Ethernet
-  // capture; covers the vast majority of triage captures and bounds
-  // the wall-time at well under 200 ms in the browser even on cold
-  // JIT. A hostile billion-packet file is bounded at 50k iterations.
-  static MAX_PACKETS = 50000;
+  // truncation info IOC. 1_000_000 packets is the upper bound of the
+  // streaming Timeline grid (rows are packed into RowStore chunks via
+  // packRowChunk); main-thread fallback parses still tolerate this
+  // because per-packet work is constant-time and ~12 bytes of fixed
+  // overhead per pkt record. A hostile billion-packet file is bounded
+  // at 1M iterations.
+  static MAX_PACKETS = 1_000_000;
+
+  // ── Timeline grid columns (Wireshark + ports) ──────────────────────────
+  // Threaded through TimelineView.fromPcap factory + timeline worker.
+  // Index 1 is the time column (defaultTimeColIdx); index 6 is the
+  // protocol column used for histogram stacking by default.
+  static TIMELINE_COLUMNS = Object.freeze([
+    'No.', 'Time', 'Source', 'Src Port',
+    'Destination', 'Dst Port', 'Protocol', 'Length', 'Info',
+  ]);
+  static TIMELINE_TIME_COL_IDX = 1;
+  static TIMELINE_STACK_COL_IDX = 6;
 
   // PCAPNG-only iteration cap. The PCAPNG walk visits every block
   // (SHB / IDB / EPB / SPB / NRB / ISB / DSB / custom), but we only
@@ -142,6 +155,18 @@ class PcapRenderer {
   analyzeForSecurity(buffer, fileName) {
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const parsed = PcapRenderer._parse(bytes);
+    return PcapRenderer._analyzePcapInfo(parsed, fileName);
+  }
+
+  // ── Parsed-info → findings (shared with the Timeline route) ────────────
+  // Split out from `analyzeForSecurity` so the timeline-router hybrid
+  // path (TimelineView.fromPcap / _buildTimelineViewFromWorker) can
+  // synthesise findings from the worker-pre-parsed `pcapInfo` without
+  // re-parsing the buffer. Mirrors the EVTX hybrid pattern in
+  // `EvtxDetector.analyzeForSecurity(buffer, name, prebuiltEvents)`.
+  // Pure function: reads `info`, returns a fresh findings object;
+  // never mutates `info`.
+  static _analyzePcapInfo(parsed, fileName) {
     const f = {
       risk: 'low',
       externalRefs: [],
@@ -316,8 +341,16 @@ class PcapRenderer {
       linktypeName: null,
       packetCount: 0,
       truncated: false,
+      // Whole-second window for the existing summary block (legacy
+      // shape — `_copyAnalysisPcap` reads firstTs/lastTs).
       firstTs: null,
       lastTs: null,
+      // Full-microsecond resolution for the Timeline grid's Time
+      // column. tsMicros is set per-packet on `pkts`; firstTsMicros /
+      // lastTsMicros mirror the whole-second window with sub-second
+      // detail for the capture-window header.
+      firstTsMicros: null,
+      lastTsMicros: null,
       ipCounts: new Map(),
       dnsNames: [],
       dnsTruncated: false,
@@ -326,6 +359,15 @@ class PcapRenderer {
       tlsSnis: [],
       telnetSeen: false,
       ftpSeen: false,
+      // Per-packet rows for the Timeline grid. Each entry:
+      //   { no, tsMicros, src, dst, sport, dport, proto, length, info }
+      // sport/dport are 0 when transport doesn't carry ports (ICMP /
+      // non-IP / parse-incomplete frames). proto is the highest-layer
+      // label resolved during dispatch ('DNS' / 'HTTP' / 'TLS' /
+      // 'Telnet' / 'FTP' / 'TCP' / 'UDP' / 'ICMP' / 'ICMPv6' /
+      // 'IPv4' / 'IPv6' / 'ARP' / 'ETH' / '?'). info is a short
+      // human-readable summary used as the grid's Info cell.
+      pkts: [],
     };
   }
 
@@ -355,6 +397,11 @@ class PcapRenderer {
     const dnsSet = new Set();
     const httpHostSet = new Set();
     const tlsSniSet = new Set();
+    // Sub-second multiplier for libpcap's per-packet sub-second field.
+    // ns-pcap variants store nanoseconds; scale to microseconds (the
+    // precision used by the Timeline grid + RFC 3339 millisecond
+    // formatter) by dividing by 1000.
+    const subDivisor = magic.nano ? 1000 : 1;
     let p = 24;
     let n = 0;
     while (p + 16 <= bytes.length) {
@@ -363,9 +410,10 @@ class PcapRenderer {
         break;
       }
       const tsSec = dv.getUint32(p, le);
-      // tsUsec field — we don't render sub-second precision
+      const tsSubRaw = dv.getUint32(p + 4, le);
+      const tsMicros = tsSec * 1_000_000 + Math.floor(tsSubRaw / subDivisor);
       const inclLen = dv.getUint32(p + 8, le);
-      // origLen field — not needed for analysis
+      const origLen = dv.getUint32(p + 12, le);
       if (inclLen > PcapRenderer.MAX_PACKET_BYTES) {
         result.error = `Packet ${n}: incl_len ${inclLen} > MAX_PACKET_BYTES (corrupt or wrong endianness)`;
         break;
@@ -374,14 +422,20 @@ class PcapRenderer {
         result.error = `Packet ${n}: truncated at offset ${p}`;
         break;
       }
-      if (n === 0) result.firstTs = tsSec;
+      if (n === 0) {
+        result.firstTs = tsSec;
+        result.firstTsMicros = tsMicros;
+      }
       result.lastTs = tsSec;
+      result.lastTsMicros = tsMicros;
 
+      const pkt = PcapRenderer._newPkt(n, tsMicros, origLen || inclLen);
       if (appParseable && inclLen > 0) {
         PcapRenderer._dispatchPacket(
-          bytes, p + 16, inclLen, linktype, result, dnsSet, httpHostSet, tlsSniSet
+          bytes, p + 16, inclLen, linktype, result, dnsSet, httpHostSet, tlsSniSet, pkt
         );
       }
+      result.pkts.push(pkt);
       p += 16 + inclLen;
       n += 1;
     }
@@ -483,20 +537,30 @@ class PcapRenderer {
           const tsHigh = dv.getUint32(p + 12, le);
           const tsLow  = dv.getUint32(p + 16, le);
           const capLen = dv.getUint32(p + 20, le);
-          // approximate seconds-since-epoch: PCAPNG ts is 64-bit μs.
-          // For triage we only need the order-of-magnitude.
-          const tsSec = Math.floor((tsHigh * 4294967296 + tsLow) / 1_000_000);
-          if (result.firstTs === null) result.firstTs = tsSec;
+          const origLen = dv.getUint32(p + 24, le);
+          // PCAPNG ts is 64-bit µs (default if_tsresol). We surface
+          // both whole-second (legacy `firstTs`/`lastTs` for the
+          // copy-analysis builder) and the µs-precise timestamp the
+          // Timeline grid uses for sort + bucket math.
+          const tsMicros = tsHigh * 4_294_967_296 + tsLow;
+          const tsSec = Math.floor(tsMicros / 1_000_000);
+          if (result.firstTs === null) {
+            result.firstTs = tsSec;
+            result.firstTsMicros = tsMicros;
+          }
           result.lastTs = tsSec;
+          result.lastTsMicros = tsMicros;
           const dataStart = p + 28;
           if (capLen > 0 && dataStart + capLen <= p + blockLen
               && capLen <= PcapRenderer.MAX_PACKET_BYTES) {
             const lt = result.linktype;
+            const pkt = PcapRenderer._newPkt(n, tsMicros, origLen || capLen);
             if (lt !== null && PcapRenderer.APP_PARSEABLE_LINKTYPES.has(lt)) {
               PcapRenderer._dispatchPacket(
-                bytes, dataStart, capLen, lt, result, dnsSet, httpHostSet, tlsSniSet
+                bytes, dataStart, capLen, lt, result, dnsSet, httpHostSet, tlsSniSet, pkt
               );
             }
+            result.pkts.push(pkt);
             n += 1;
           }
         }
@@ -510,11 +574,17 @@ class PcapRenderer {
           const dataLen = Math.min(origLen, blockLen - 16);
           if (dataLen > 0 && dataLen <= PcapRenderer.MAX_PACKET_BYTES) {
             const lt = result.linktype;
+            // SPB carries no per-packet timestamp; reuse the most
+            // recent EPB timestamp (or 0 if none seen yet) so the
+            // grid Time column degrades gracefully rather than NaN.
+            const tsMicros = result.lastTsMicros || 0;
+            const pkt = PcapRenderer._newPkt(n, tsMicros, origLen || dataLen);
             if (lt !== null && PcapRenderer.APP_PARSEABLE_LINKTYPES.has(lt)) {
               PcapRenderer._dispatchPacket(
-                bytes, dataStart, dataLen, lt, result, dnsSet, httpHostSet, tlsSniSet
+                bytes, dataStart, dataLen, lt, result, dnsSet, httpHostSet, tlsSniSet, pkt
               );
             }
+            result.pkts.push(pkt);
             n += 1;
           }
         }
@@ -531,47 +601,82 @@ class PcapRenderer {
   }
 
   // ── Per-packet dispatch (link-layer → IPv4/IPv6 → app-layer) ─────────
-  static _dispatchPacket(bytes, off, len, linktype, result, dnsSet, httpHostSet, tlsSniSet) {
+  // `pkt` is the per-packet record accumulator built by `_newPkt`. The
+  // dispatch chain mutates `pkt.proto` / `pkt.src` / `pkt.dst` /
+  // `pkt.sport` / `pkt.dport` / `pkt.info` in place as the highest-
+  // available layer is decoded. Same buffer-bounds discipline as the
+  // pre-pkt path; nothing here pushes IOCs (analysis lives in
+  // `_analyzePcapInfo`).
+
+  // Allocate a per-packet record. Caller-set fields (`no`, `tsMicros`,
+  // `length`) are populated up front; everything else gets a stable
+  // default so `_pktToRow` can read every slot without `undefined`
+  // checks (those would balloon the row-build loop on a 1 M packet
+  // capture). `proto = '?'` is the fallback when no link-layer / IP /
+  // app-layer dispatch resolves anything more specific.
+  static _newPkt(no, tsMicros, length) {
+    return {
+      no,
+      tsMicros: tsMicros || 0,
+      length: length | 0,
+      src: '',
+      dst: '',
+      sport: 0,
+      dport: 0,
+      proto: '?',
+      info: '',
+    };
+  }
+  static _dispatchPacket(bytes, off, len, linktype, result, dnsSet, httpHostSet, tlsSniSet, pkt) {
     let ipOff = -1;
     if (linktype === 1) {
       // ETHERNET — 14-byte MAC header. Optional 802.1Q VLAN tag at
       // offset 12-13 = 0x8100 inserts 4 bytes.
-      if (len < 14) return;
+      if (len < 14) { if (pkt) pkt.proto = 'ETH'; return; }
       let etherType = (bytes[off + 12] << 8) | bytes[off + 13];
       let ipStart = off + 14;
       if (etherType === 0x8100 && len >= 18) {
         etherType = (bytes[off + 16] << 8) | bytes[off + 17];
         ipStart = off + 18;
       }
-      if (etherType === 0x0800 || etherType === 0x86dd) ipOff = ipStart;
-      // else ARP / 802.2 / etc. — skip.
+      if (etherType === 0x0800 || etherType === 0x86dd) {
+        ipOff = ipStart;
+      } else if (etherType === 0x0806) {
+        if (pkt) { pkt.proto = 'ARP'; pkt.info = 'ARP'; }
+        return;
+      } else {
+        if (pkt) pkt.proto = 'ETH';
+        return;
+      }
     } else if (linktype === 113) {
       // LINUX_SLL v1 — 16-byte cooked header.
-      if (len < 16) return;
+      if (len < 16) { if (pkt) pkt.proto = 'SLL'; return; }
       const proto = (bytes[off + 14] << 8) | bytes[off + 15];
       if (proto === 0x0800 || proto === 0x86dd) ipOff = off + 16;
+      else { if (pkt) pkt.proto = 'SLL'; return; }
     } else if (linktype === 276) {
       // LINUX_SLL2 — 20-byte cooked header. Protocol at offset 0.
-      if (len < 20) return;
+      if (len < 20) { if (pkt) pkt.proto = 'SLL2'; return; }
       const proto = (bytes[off] << 8) | bytes[off + 1];
       if (proto === 0x0800 || proto === 0x86dd) ipOff = off + 20;
+      else { if (pkt) pkt.proto = 'SLL2'; return; }
     } else if (linktype === 101 || linktype === 228 || linktype === 229) {
       // RAW (IP) — first byte's high nibble is the IP version, no link
       // header. 228/229 force the family.
       ipOff = off;
     }
-    if (ipOff < 0) return;
+    if (ipOff < 0) { if (pkt && pkt.proto === '?') pkt.proto = 'LL'; return; }
     const end = off + len;
-    PcapRenderer._dispatchIP(bytes, ipOff, end, result, dnsSet, httpHostSet, tlsSniSet);
+    PcapRenderer._dispatchIP(bytes, ipOff, end, result, dnsSet, httpHostSet, tlsSniSet, pkt);
   }
 
-  static _dispatchIP(bytes, ipOff, end, result, dnsSet, httpHostSet, tlsSniSet) {
+  static _dispatchIP(bytes, ipOff, end, result, dnsSet, httpHostSet, tlsSniSet, pkt) {
     if (ipOff + 1 > end) return;
     const version = (bytes[ipOff] >> 4) & 0xf;
     if (version === 4) {
-      if (ipOff + 20 > end) return;
+      if (ipOff + 20 > end) { if (pkt) pkt.proto = 'IPv4'; return; }
       const ihl = (bytes[ipOff] & 0xf) * 4;
-      if (ihl < 20 || ipOff + ihl > end) return;
+      if (ihl < 20 || ipOff + ihl > end) { if (pkt) pkt.proto = 'IPv4'; return; }
       const proto = bytes[ipOff + 9];
       const totalLen = (bytes[ipOff + 2] << 8) | bytes[ipOff + 3];
       const ipEnd = Math.min(end, ipOff + Math.max(totalLen, ihl));
@@ -579,9 +684,10 @@ class PcapRenderer {
       const dst = PcapRenderer._ip4(bytes, ipOff + 16);
       PcapRenderer._countIp(result.ipCounts, src);
       PcapRenderer._countIp(result.ipCounts, dst);
-      PcapRenderer._dispatchTransport(bytes, ipOff + ihl, ipEnd, proto, result, dnsSet, httpHostSet, tlsSniSet);
+      if (pkt) { pkt.src = src; pkt.dst = dst; pkt.proto = 'IPv4'; }
+      PcapRenderer._dispatchTransport(bytes, ipOff + ihl, ipEnd, proto, result, dnsSet, httpHostSet, tlsSniSet, pkt);
     } else if (version === 6) {
-      if (ipOff + 40 > end) return;
+      if (ipOff + 40 > end) { if (pkt) pkt.proto = 'IPv6'; return; }
       const proto = bytes[ipOff + 6]; // next-header (skip extension hdrs)
       const payloadLen = (bytes[ipOff + 4] << 8) | bytes[ipOff + 5];
       const ipEnd = Math.min(end, ipOff + 40 + payloadLen);
@@ -589,38 +695,51 @@ class PcapRenderer {
       const dst = PcapRenderer._ip6(bytes, ipOff + 24);
       PcapRenderer._countIp(result.ipCounts, src);
       PcapRenderer._countIp(result.ipCounts, dst);
-      PcapRenderer._dispatchTransport(bytes, ipOff + 40, ipEnd, proto, result, dnsSet, httpHostSet, tlsSniSet);
+      if (pkt) { pkt.src = src; pkt.dst = dst; pkt.proto = 'IPv6'; }
+      PcapRenderer._dispatchTransport(bytes, ipOff + 40, ipEnd, proto, result, dnsSet, httpHostSet, tlsSniSet, pkt);
     }
   }
 
-  static _dispatchTransport(bytes, off, end, proto, result, dnsSet, httpHostSet, tlsSniSet) {
+  static _dispatchTransport(bytes, off, end, proto, result, dnsSet, httpHostSet, tlsSniSet, pkt) {
     if (proto === 17) {
       // UDP: src(2) dst(2) len(2) cksum(2) payload…
-      if (off + 8 > end) return;
+      if (off + 8 > end) { if (pkt) pkt.proto = 'UDP'; return; }
       const sport = (bytes[off] << 8) | bytes[off + 1];
       const dport = (bytes[off + 2] << 8) | bytes[off + 3];
       const payloadOff = off + 8;
+      if (pkt) {
+        pkt.proto = 'UDP'; pkt.sport = sport; pkt.dport = dport;
+      }
       if (sport === 53 || dport === 53) {
-        PcapRenderer._extractDnsNames(bytes, payloadOff, end, dnsSet);
+        PcapRenderer._extractDnsNames(bytes, payloadOff, end, dnsSet, pkt);
       }
     } else if (proto === 6) {
       // TCP: src(2) dst(2) seq(4) ack(4) data_offset_flags(2) win(2) cksum(2) urg(2) options…
-      if (off + 20 > end) return;
+      if (off + 20 > end) { if (pkt) pkt.proto = 'TCP'; return; }
       const sport = (bytes[off] << 8) | bytes[off + 1];
       const dport = (bytes[off + 2] << 8) | bytes[off + 3];
       const dataOffset = ((bytes[off + 12] >> 4) & 0xf) * 4;
+      if (pkt) {
+        pkt.proto = 'TCP'; pkt.sport = sport; pkt.dport = dport;
+      }
       if (dataOffset < 20) return;
       const payloadOff = off + dataOffset;
       if (payloadOff >= end) return;
       if (sport === 80 || dport === 80) {
-        PcapRenderer._extractHttp(bytes, payloadOff, end, result, httpHostSet);
+        PcapRenderer._extractHttp(bytes, payloadOff, end, result, httpHostSet, pkt);
       } else if (sport === 443 || dport === 443) {
-        PcapRenderer._extractTlsSni(bytes, payloadOff, end, tlsSniSet);
+        PcapRenderer._extractTlsSni(bytes, payloadOff, end, tlsSniSet, pkt);
       } else if (sport === 23 || dport === 23) {
         result.telnetSeen = true;
+        if (pkt) { pkt.proto = 'Telnet'; }
       } else if (sport === 21 || dport === 21) {
         result.ftpSeen = true;
+        if (pkt) { pkt.proto = 'FTP'; }
       }
+    } else if (proto === 1) {
+      if (pkt) { pkt.proto = 'ICMP'; }
+    } else if (proto === 58) {
+      if (pkt) { pkt.proto = 'ICMPv6'; }
     }
   }
 
@@ -631,21 +750,29 @@ class PcapRenderer {
   // length-octet whose top two bits are 0b11 (compression pointer) since
   // we don't follow pointers in question sections (they're spec-illegal
   // there anyway).
-  static _extractDnsNames(bytes, off, end, dnsSet) {
+  static _extractDnsNames(bytes, off, end, dnsSet, pkt) {
     if (off + 12 > end) return;
     // Header: id(2) flags(2) qd(2) an(2) ns(2) ar(2)
+    const flags = (bytes[off + 2] << 8) | bytes[off + 3];
     const qdcount = (bytes[off + 4] << 8) | bytes[off + 5];
     if (qdcount === 0 || qdcount > 8) return; // 8 queries in one packet is already pathological
     let p = off + 12;
+    let firstName = null;
     for (let q = 0; q < qdcount && p < end; q++) {
       const label = PcapRenderer._readDnsName(bytes, p, end);
       if (!label) return;
       if (label.value && dnsSet.size < PcapRenderer.MAX_DNS_QUERIES) {
         dnsSet.add(label.value);
       }
+      if (firstName === null && label.value) firstName = label.value;
       p = label.next;
       // skip QTYPE(2) + QCLASS(2)
       p += 4;
+    }
+    if (pkt) {
+      pkt.proto = 'DNS';
+      const isResponse = (flags & 0x8000) !== 0;
+      pkt.info = (isResponse ? 'Response' : 'Query') + (firstName ? ' ' + firstName : '');
     }
   }
 
@@ -682,7 +809,7 @@ class PcapRenderer {
   // will be caught; anything across a segment boundary is dropped. This
   // is the standard triage trade-off (Wireshark's HTTP dissector does
   // the reassembly properly; we don't).
-  static _extractHttp(bytes, off, end, result, httpHostSet) {
+  static _extractHttp(bytes, off, end, result, httpHostSet, pkt) {
     const window = Math.min(end - off, 1536);
     if (window <= 0) return;
     const slice = bytes.subarray(off, off + window);
@@ -696,6 +823,13 @@ class PcapRenderer {
       return;
     }
     const lines = text.split(/\r?\n/);
+    let host = '';
+    let requestLine = '';
+    if (lines.length > 0) {
+      // Truncate request line to a reasonable length so the grid Info
+      // column doesn't balloon on hostile input.
+      requestLine = lines[0].slice(0, 200);
+    }
     for (const line of lines) {
       if (line.length === 0) break; // end of headers
       const colon = line.indexOf(':');
@@ -704,14 +838,22 @@ class PcapRenderer {
       const value = line.slice(colon + 1).trim();
       if (name === 'host') {
         // Strip any port suffix: "example.com:8080" → "example.com".
-        const host = value.split(':')[0].toLowerCase();
-        if (PcapRenderer._looksLikeHostName(host)
-            && httpHostSet.size < PcapRenderer.MAX_HTTP_HOSTS) {
-          httpHostSet.add(host);
+        const h = value.split(':')[0].toLowerCase();
+        if (PcapRenderer._looksLikeHostName(h)) {
+          host = h;
+          if (httpHostSet.size < PcapRenderer.MAX_HTTP_HOSTS) {
+            httpHostSet.add(h);
+          }
         }
       } else if (name === 'authorization' && value.toLowerCase().startsWith('basic ')) {
         result.httpBasicAuthCount += 1;
       }
+    }
+    if (pkt) {
+      pkt.proto = 'HTTP';
+      pkt.info = host
+        ? `${requestLine} (Host: ${host})`
+        : requestLine;
     }
   }
 
@@ -743,43 +885,50 @@ class PcapRenderer {
   //   each extension: type(2) data_len(2) data
   //   SNI extension type = 0x0000:
   //     server_name_list_len(2) name_type(1)=0 name_len(2) name(name_len)
-  static _extractTlsSni(bytes, off, end, tlsSniSet) {
+  static _extractTlsSni(bytes, off, end, tlsSniSet, pkt) {
     if (off + 5 > end) return;
-    if (bytes[off] !== 22) return; // not a handshake record
+    if (bytes[off] !== 22) {
+      // Not a handshake record (could be application data on an
+      // already-established TLS session — still TLS, just nothing for
+      // us to extract).
+      if (pkt) pkt.proto = 'TLS';
+      return;
+    }
     const recLen = (bytes[off + 3] << 8) | bytes[off + 4];
     const recEnd = Math.min(end, off + 5 + recLen);
     let p = off + 5;
-    if (p + 4 > recEnd) return;
-    if (bytes[p] !== 1) return; // not client_hello
+    if (p + 4 > recEnd) { if (pkt) pkt.proto = 'TLS'; return; }
+    if (bytes[p] !== 1) { if (pkt) pkt.proto = 'TLS'; return; } // not client_hello
     const hsLen = (bytes[p + 1] << 16) | (bytes[p + 2] << 8) | bytes[p + 3];
     const hsEnd = Math.min(recEnd, p + 4 + hsLen);
     p += 4;
-    if (p + 2 + 32 + 1 > hsEnd) return;
+    if (p + 2 + 32 + 1 > hsEnd) { if (pkt) pkt.proto = 'TLS'; return; }
     p += 2 + 32; // client_version + random
     const sidLen = bytes[p]; p += 1 + sidLen;
-    if (p + 2 > hsEnd) return;
+    if (p + 2 > hsEnd) { if (pkt) pkt.proto = 'TLS'; return; }
     const csLen = (bytes[p] << 8) | bytes[p + 1]; p += 2 + csLen;
-    if (p + 1 > hsEnd) return;
+    if (p + 1 > hsEnd) { if (pkt) pkt.proto = 'TLS'; return; }
     const compLen = bytes[p]; p += 1 + compLen;
-    if (p + 2 > hsEnd) return;
+    if (p + 2 > hsEnd) { if (pkt) pkt.proto = 'TLS'; return; }
     const extLen = (bytes[p] << 8) | bytes[p + 1]; p += 2;
     const extEnd = Math.min(hsEnd, p + extLen);
+    let extractedSni = null;
     while (p + 4 <= extEnd) {
       const extType = (bytes[p] << 8) | bytes[p + 1];
       const extDataLen = (bytes[p + 2] << 8) | bytes[p + 3];
       const extDataEnd = p + 4 + extDataLen;
-      if (extDataEnd > extEnd) return;
+      if (extDataEnd > extEnd) break;
       if (extType === 0x0000) {
         // SNI extension. Walk the server_name_list.
         let q = p + 4;
-        if (q + 2 > extDataEnd) return;
+        if (q + 2 > extDataEnd) break;
         const listLen = (bytes[q] << 8) | bytes[q + 1];
         const listEnd = Math.min(extDataEnd, q + 2 + listLen);
         q += 2;
         while (q + 3 <= listEnd) {
           const nameType = bytes[q];
           const nameLen = (bytes[q + 1] << 8) | bytes[q + 2];
-          if (q + 3 + nameLen > listEnd) return;
+          if (q + 3 + nameLen > listEnd) break;
           if (nameType === 0 && nameLen > 0 && nameLen <= 255) {
             const slice = bytes.subarray(q + 3, q + 3 + nameLen);
             // SNI must be lowercase ASCII per RFC 6066. Validate to
@@ -790,18 +939,91 @@ class PcapRenderer {
             }
             if (ok) {
               const host = String.fromCharCode.apply(null, Array.from(slice)).toLowerCase();
-              if (PcapRenderer._looksLikeHostName(host)
-                  && tlsSniSet.size < PcapRenderer.MAX_TLS_SNIS) {
-                tlsSniSet.add(host);
+              if (PcapRenderer._looksLikeHostName(host)) {
+                if (extractedSni === null) extractedSni = host;
+                if (tlsSniSet.size < PcapRenderer.MAX_TLS_SNIS) {
+                  tlsSniSet.add(host);
+                }
               }
             }
           }
           q += 3 + nameLen;
         }
-        return;
+        break;
       }
       p = extDataEnd;
     }
+    if (pkt) {
+      pkt.proto = 'TLS';
+      pkt.info = extractedSni
+        ? `Client Hello (SNI=${extractedSni})`
+        : 'Client Hello';
+    }
+  }
+
+  // ── Per-packet → RowStore-shaped row ─────────────────────────────────
+  // Used by both `TimelineView.fromPcap` (sync main-thread fallback)
+  // and the timeline.worker.js pcap branch (which packs the resulting
+  // string[] rows via packRowChunk). Returns a 9-element string[] in
+  // the column order declared by `PcapRenderer.TIMELINE_COLUMNS`.
+  // Time formatting: ISO-8601 UTC with millisecond precision when the
+  // packet has a non-zero timestamp; empty string otherwise. We keep
+  // this stable so `Date.parse(...)` succeeds inside GridViewer's
+  // time-column auto-sniff and the histogram's bucket math.
+  static _pktToRow(pkt) {
+    return [
+      String(pkt.no),
+      PcapRenderer._formatPktTime(pkt.tsMicros),
+      pkt.src || '',
+      pkt.sport ? String(pkt.sport) : '',
+      pkt.dst || '',
+      pkt.dport ? String(pkt.dport) : '',
+      pkt.proto || '',
+      String(pkt.length | 0),
+      pkt.info || '',
+    ];
+  }
+
+  // Stream pkts as Timeline rows into a duck-typed single-row sink. The
+  // sink is a function `(string[]) => void` so this helper can drive both
+  // paths without importing either:
+  //   • Worker bundle: `row => stream.push(row)` where `stream` is the
+  //     `_makeRowStreamer` packed-chunk streamer in timeline.worker.js.
+  //   • Sync main-thread fallback (`TimelineView.fromPcap`):
+  //     `row => builder.addRow(row)` against a `RowStoreBuilder`.
+  // Polls the AbortSignal every 256 packets per the renderer-contract
+  // amortised-cancel rule (AGENTS.md §12). MAX_PACKETS is 1 000 000 so
+  // a per-packet poll would dominate runtime.
+  static _streamPacketRows(pkts, addRow, signal) {
+    if (!pkts || !pkts.length || typeof addRow !== 'function') return;
+    for (let i = 0; i < pkts.length; i++) {
+      if ((i & 0xFF) === 0 && signal) throwIfAborted(signal);
+      addRow(PcapRenderer._pktToRow(pkts[i]));
+    }
+  }
+
+  static _formatPktTime(tsMicros) {
+    if (!tsMicros) return '';
+    // ms-precision Date — sub-millisecond goes into the fractional
+    // text directly rather than via Date so we don't lose 3 µs of
+    // precision to floating-point ms math.
+    const ms = Math.floor(tsMicros / 1000);
+    const subMs = tsMicros - ms * 1000;     // remaining microseconds (0..999)
+    let iso;
+    try {
+      iso = new Date(ms).toISOString();
+    } catch (_) {
+      return '';
+    }
+    if (subMs === 0) return iso;
+    // Splice the µs digits onto the existing ms component:
+    // "2024-01-02T03:04:05.123Z" → "2024-01-02T03:04:05.123456Z"
+    const dot = iso.lastIndexOf('.');
+    if (dot < 0) return iso;
+    const z = iso.indexOf('Z', dot);
+    if (z < 0) return iso;
+    const usPart = String(subMs).padStart(3, '0');
+    return iso.slice(0, z) + usPart + iso.slice(z);
   }
 
   // ── IP-string formatters ──────────────────────────────────────────────
@@ -992,5 +1214,17 @@ class PcapRenderer {
   }
 }
 
-// Expose globally for renderer-registry.js bootstrap.
-window.PcapRenderer = PcapRenderer;
+// Expose globally for renderer-registry.js bootstrap. Guarded with
+// `typeof window` because this file is also concatenated into the
+// timeline.worker.js bundle (DedicatedWorkerGlobalScope has `self` /
+// `globalThis` but no `window`); the unguarded assignment threw a
+// ReferenceError there, halting bundle parsing before the
+// `self.onmessage` dispatcher could register and freezing every
+// Timeline-routed file load until the watchdog timeout. Other
+// renderers (EvtxRenderer, SqliteRenderer, …) rely on the script-
+// scope `class` declaration alone for cross-file access, so the
+// `window.*` rebind is technically redundant in the main bundle —
+// kept for symmetry with the original commit's intent.
+if (typeof window !== 'undefined') {
+  window.PcapRenderer = PcapRenderer;
+}
