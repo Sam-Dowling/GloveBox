@@ -111,6 +111,43 @@ test('timeline-view-factories.js defines fromPcap with analyzePcapInfo threading
   // doesn't silently switch to a string[][] matrix and double peak
   // memory on a 1 M packet capture.
   assert.match(MIXIN, /PcapRenderer\._streamPacketRows\(/);
+  // Schema-driven IP-column hint — both the sync `fromPcap` factory
+  // and the worker bridge in `timeline-router.js` must thread
+  // `PcapRenderer.TIMELINE_IP_COL_INDICES` into the TimelineView
+  // ctor's `ipColumns` field. Without it, GeoIP / ASN auto-enrichment
+  // falls back to the heuristic 80%-IPv4 sample scan, which mixed-
+  // v4/v6 captures fail (only one of Source / Destination ends up
+  // enriched, or neither). See `timeline-view-geoip.js` consumer.
+  assert.match(MIXIN, /ipColumns:\s*PcapRenderer\.TIMELINE_IP_COL_INDICES\.slice\(\)/);
+});
+
+test('PcapRenderer publishes TIMELINE_IP_COL_INDICES = [2, 4] (Source, Destination)', () => {
+  const pcapSrc = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'renderers', 'pcap-renderer.js'),
+    'utf8',
+  );
+  // Pin the EXACT shape so a future schema reorder (e.g. swapping
+  // Src Port and Source columns) is forced to update both the
+  // constant and the column header table in lockstep — otherwise
+  // GeoIP would enrich the wrong columns.
+  assert.match(
+    pcapSrc,
+    /static\s+TIMELINE_IP_COL_INDICES\s*=\s*Object\.freeze\(\[\s*2\s*,\s*4\s*\]\)/,
+  );
+});
+
+test('timeline-router.js worker bridge threads ipColumns into pcap TimelineView', () => {
+  const router = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'src', 'app', 'timeline', 'timeline-router.js'),
+    'utf8',
+  );
+  // The worker path constructs TimelineView from the postMessage
+  // payload — it doesn't go through `fromPcap`, so the ipColumns
+  // hint has to be re-stamped here. Pin both the constant
+  // reference and the slice() call (defensive copy — the ctor's
+  // .slice() guards too, but matching styles makes the intent
+  // obvious at the call site).
+  assert.match(router, /ipColumns:\s*PcapRenderer\.TIMELINE_IP_COL_INDICES\.slice\(\)/);
 });
 
 // ── Build order ────────────────────────────────────────────────────────────

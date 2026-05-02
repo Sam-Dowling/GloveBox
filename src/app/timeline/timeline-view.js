@@ -124,6 +124,18 @@ class TimelineView {
     this._stackCol = Number.isInteger(opts.defaultStackColIdx)
       ? opts.defaultStackColIdx
       : _tlAutoDetectStackCol(this._baseColumns, this.store, this._timeCol);
+    // Schema-known IP-column indices in the base-column plane.
+    // Populated by Timeline factories whose source format publishes
+    // authoritative IP-column locations (currently PCAP via
+    // `PcapRenderer.TIMELINE_IP_COL_INDICES`). Consumed by
+    // `_detectIpColumns()` in `timeline-view-geoip.js` as a
+    // deterministic override of the heuristic 80%-IPv4 sample scan —
+    // necessary because mixed IPv4/IPv6 PCAPs can drop both endpoint
+    // columns below the heuristic gate. Out-of-range indices are
+    // filtered defensively at consume time.
+    this._ipColumns = Array.isArray(opts.ipColumns)
+      ? opts.ipColumns.filter(i => Number.isInteger(i) && i >= 0).slice()
+      : [];
     this._stackColorMap = null;
     this._buildStableStackColorMap();
     this._bucketId = TimelineView._loadBucketPref();

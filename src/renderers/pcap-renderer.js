@@ -85,6 +85,16 @@ class PcapRenderer {
   ]);
   static TIMELINE_TIME_COL_IDX = 1;
   static TIMELINE_STACK_COL_IDX = 6;
+  // Schema-known IPv4/IPv6 endpoint columns (Source, Destination). The
+  // GeoIP / ASN auto-enrichment in `timeline-view-geoip.js` consumes
+  // this via the TimelineView ctor's `ipColumns` field as a
+  // deterministic override of the heuristic 80%-IPv4 sample scan in
+  // `_detectIpColumns()`. Necessary because mixed IPv4/IPv6 captures
+  // can drop both endpoint columns below the heuristic gate; we KNOW
+  // these are IP columns regardless of cell-shape distribution. See
+  // `TimelineView._ipColumns` and `_detectIpColumns` for the consumer
+  // side of the contract.
+  static TIMELINE_IP_COL_INDICES = Object.freeze([2, 4]);
 
   // PCAPNG-only iteration cap. The PCAPNG walk visits every block
   // (SHB / IDB / EPB / SPB / NRB / ISB / DSB / custom), but we only

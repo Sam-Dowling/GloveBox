@@ -682,6 +682,12 @@ Object.assign(TimelineView, {
       originalRowCount: allPkts.length,
       defaultTimeColIdx: PcapRenderer.TIMELINE_TIME_COL_IDX,
       defaultStackColIdx: PcapRenderer.TIMELINE_STACK_COL_IDX,
+      // Schema-known IP-column indices (Source, Destination). The
+      // GeoIP / ASN auto-enrichment uses these as a deterministic
+      // override of the 80%-IPv4 heuristic — necessary because mixed
+      // v4/v6 captures can drop both endpoint columns below the
+      // heuristic gate. See `PcapRenderer.TIMELINE_IP_COL_INDICES`.
+      ipColumns: PcapRenderer.TIMELINE_IP_COL_INDICES.slice(),
       pcapInfo,
       pcapFindings,
     });

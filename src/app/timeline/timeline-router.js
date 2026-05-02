@@ -1168,6 +1168,12 @@ extendApp({
         originalRowCount: msg.originalRowCount || rowStore.rowCount,
         defaultTimeColIdx: Number.isInteger(msg.defaultTimeColIdx) ? msg.defaultTimeColIdx : 1,
         defaultStackColIdx: Number.isInteger(msg.defaultStackColIdx) ? msg.defaultStackColIdx : 6,
+        // Schema-known IP-column indices (Source, Destination) —
+        // mirrors the synchronous `fromPcap` factory so the worker
+        // path also gets deterministic GeoIP / ASN enrichment on both
+        // endpoints regardless of capture v4/v6 mix. See
+        // `PcapRenderer.TIMELINE_IP_COL_INDICES`.
+        ipColumns: PcapRenderer.TIMELINE_IP_COL_INDICES.slice(),
         pcapInfo,
         pcapFindings,
       });

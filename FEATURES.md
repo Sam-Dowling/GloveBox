@@ -49,7 +49,7 @@ Extensionless and renamed files are auto-routed via magic-byte sniff, extension 
 | **OpenPGP** | `.pgp` `.gpg` `.asc` `.sig` — ASCII-armored & binary packet streams; `.key` auto-disambiguated against X.509 |
 | **Java** | `.jar` `.war` `.ear` · `.class` |
 | **WebAssembly** | `.wasm` — sections / imports / exports / memory parsed; suspicious WASI and JS-bridge imports plus cryptominer / keylogger exports flagged; `modulehash` (SHA-256 over normalised import vector) for cluster pivoting. |
-| **Packet captures** | `.pcap` `.pcapng` `.cap` — Timeline view (Wireshark-style 9-column grid: `No. / Time / Source / Src Port / Destination / Dst Port / Protocol / Length / Info`) up to 1 M packets |
+| **Packet captures** | `.pcap` `.pcapng` `.cap` — Timeline view (Wireshark-style 9-column grid: `No. / Time / Source / Src Port / Destination / Dst Port / Protocol / Length / Info`) up to 1 M packets; auto Geo / ASN enrichment on both `Source` and `Destination` columns |
 | **Scripts** | `.wsf` `.wsc` `.wsh` (parsed) · `.vbs` `.ps1` `.bat` `.cmd` `.js` |
 | **Logs** | `.evtx` (Windows Event Log — binary EVTX parser) · `.log` (Apache CLF default + syslog / Zeek / JSONL / CEF / LEEF / logfmt / Apache error sniff) · `.cef` `.leef` |
 | **Data** | `.csv` `.tsv` · `.json` `.ndjson` `.jsonl` (array-shaped → tabular grid) · `.sqlite` `.db` (Chrome / Firefox / Edge history auto-detect) |

@@ -262,6 +262,93 @@ test('_detectIpColumns uses the strict-IPv4 parser, not a regex', () => {
   assert.match(UTIL, /charCodeAt/, 'isStrictIPv4 must remain a non-allocating loop, not a regex');
 });
 
+test('_detectIpColumns short-circuits on schema-driven `_ipColumns` hint', () => {
+  // The PCAP route publishes `PcapRenderer.TIMELINE_IP_COL_INDICES`
+  // and the factory + worker bridge thread it into the TimelineView
+  // ctor as `ipColumns`. The detector must take that hint as
+  // authoritative — the heuristic 80%-IPv4 sample scan would
+  // otherwise reject one or both endpoint columns on mixed v4/v6
+  // captures (where Source/Destination cells are a mix of IPv4
+  // literals and IPv6 literals, dropping the hit ratio below 0.8).
+  //
+  // Pin three properties of the short-circuit:
+  //
+  //   1. The hint is read off `this._ipColumns` (set by the ctor),
+  //      not off some renderer registry — keeps the contract local
+  //      to the view.
+  //   2. The short-circuit RETURNS before the heuristic loop runs
+  //      (so a hinted run never even touches `isStrictIPv4`). We
+  //      check this by asserting the short-circuit branch sits
+  //      lexically BEFORE the `for (let c = 0; c < baseCount; c++)`
+  //      heuristic loop.
+  //   3. Out-of-range indices are filtered (defends against schema
+  //      drift — a future PCAP renderer that swaps Source/Dst
+  //      column positions and forgets to update the constant must
+  //      not throw a "column index out of range" downstream).
+  const fnIdx = MIXIN.indexOf('_detectIpColumns()');
+  assert.notEqual(fnIdx, -1, '_detectIpColumns must exist');
+  // Find the body window — start at fnIdx, end at the next sibling
+  // method definition. `_detectIpColumnsExtracted` is the next one.
+  const bodyEnd = MIXIN.indexOf('_detectIpColumnsExtracted', fnIdx);
+  assert.notEqual(bodyEnd, -1, 'sibling method must follow');
+  const body = MIXIN.slice(fnIdx, bodyEnd);
+
+  // (1) hint read off `this._ipColumns`
+  assert.match(body, /this\._ipColumns/, 'must read `this._ipColumns` for the hint');
+
+  // (2) short-circuit lexically precedes the heuristic loop
+  const hintIdx = body.indexOf('this._ipColumns');
+  const loopIdx = body.search(/for\s*\(\s*let\s+c\s*=\s*0\s*;\s*c\s*<\s*baseCount/);
+  assert.notEqual(hintIdx, -1, 'hint branch missing');
+  assert.notEqual(loopIdx, -1, 'heuristic loop missing');
+  assert.ok(
+    hintIdx < loopIdx,
+    'schema hint must short-circuit BEFORE the heuristic 80%-IPv4 loop',
+  );
+
+  // (3) defensive filter against drift — the hint indices are
+  // validated against `baseCount` so a stale constant can't push
+  // out-of-range indices into `_enrichSingleIpCol`.
+  assert.match(
+    body,
+    /c\s*<\s*baseCount/,
+    'hint branch must validate indices against baseCount',
+  );
+});
+
+test('TimelineView ctor stores `ipColumns` ctor field as `_ipColumns`', () => {
+  // The factory + worker bridge pass `ipColumns: PcapRenderer.TIMELINE_IP_COL_INDICES.slice()`
+  // into the constructor. The ctor must filter to non-negative
+  // integers and stash a defensive copy — without the slice, a
+  // future caller that mutates the input array (e.g. push() to
+  // append an extracted column) would surprise the geoip path.
+  assert.match(
+    VIEW,
+    /this\._ipColumns\s*=\s*Array\.isArray\(opts\.ipColumns\)/,
+    'TimelineView ctor must accept `ipColumns` and store as `_ipColumns`',
+  );
+  assert.match(
+    VIEW,
+    /opts\.ipColumns[\s\S]{0,200}?\.slice\(\)/,
+    'ctor must defensively copy the input array (slice())',
+  );
+});
+
+test('_runGeoipEnrichment bypasses the neighbour-skip heuristic on schema-hinted runs', () => {
+  // Without this bypass, the ±3 base-column scan could veto
+  // enrichment on a hinted column whose neighbours happen to look
+  // ASN-shaped (e.g. an "AS Number" column adjacent to an IP).
+  // For a hinted run the renderer is authoritative; nothing in the
+  // neighbourhood should override that. Pin the disjunction so a
+  // refactor that swaps to a function-call form is visible in the
+  // diff.
+  assert.match(
+    MIXIN,
+    /bypassSkipHeuristic\s*=[\s\S]{0,200}?this\._ipColumns/,
+    '_runGeoipEnrichment must extend bypassSkipHeuristic to schema-hinted runs',
+  );
+});
+
 test('_classifyColumnNeighbourhood walks a ±3 window', () => {
   // The recap-step decision was looser ±3 adjacency. Pin so a
   // future "tighter window for fewer false positives" change is
@@ -453,6 +540,38 @@ test('column header menu offers single "Enrich IP" entry on IPv4 columns', () =>
     POPOVERS,
     /_runGeoipEnrichment\s*\(\s*\{\s*forceCol/,
     'column menu Enrich-IP click must call _runGeoipEnrichment({ forceCol: … })',
+  );
+});
+
+test('Events-grid column filter menu also surfaces "Enrich IP" via data-act="geoip"', () => {
+  // The Events-grid column-header click opens `_openColumnFilterMenu`
+  // (Excel-style), which is a SECOND surface offering the same forced
+  // enrichment escape hatch. This test pins the dedicated function
+  // exists and that, within its body, the Enrich-IP affordance keeps
+  // its `data-act="geoip"` attribute hook (the function builds DOM via
+  // an HTML string, not the `items[]` callback shape used by the slim
+  // `_openColumnMenu`). Loss of either pin breaks the dual-surface
+  // promise restored after the regression in commit f0dd560.
+  assert.match(
+    POPOVERS,
+    /_openColumnFilterMenu\s*\(\s*colIdx\s*,\s*anchor\s*\)\s*\{/,
+    'expected `_openColumnFilterMenu(colIdx, anchor)` to exist as the Excel-style filter for the grid header',
+  );
+  // Pin the Enrich-IP markup inside the filter-menu function body.
+  // Slice the function body so the assertion is robust against
+  // identical strings landing elsewhere in the module.
+  const m = POPOVERS.match(/_openColumnFilterMenu\s*\(\s*colIdx\s*,\s*anchor\s*\)\s*\{[\s\S]*?\n  \},\n/);
+  assert.ok(m, 'failed to slice the body of `_openColumnFilterMenu`');
+  const body = m[0];
+  assert.match(
+    body,
+    /data-act="geoip"/,
+    '`_openColumnFilterMenu` must render `data-act="geoip"` markup for the Enrich-IP entry',
+  );
+  assert.match(
+    body,
+    /_runGeoipEnrichment\s*\(\s*\{\s*forceCol/,
+    '`_openColumnFilterMenu` Enrich-IP click must call _runGeoipEnrichment({ forceCol: … })',
   );
 });
 

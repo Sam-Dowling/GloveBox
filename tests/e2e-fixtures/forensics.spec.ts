@@ -81,6 +81,29 @@ test.describe('forensics / Timeline-routed renderers', () => {
     // captured traffic; pin to a strictly positive count to catch
     // silent zero-row escapes back to the legacy card view.
     expect((result.timelineRowCount || 0)).toBeGreaterThan(0);
+
+    // Schema-driven GeoIP enrichment on BOTH endpoints. The TimelineView
+    // ctor's `ipColumns` hint (sourced from
+    // `PcapRenderer.TIMELINE_IP_COL_INDICES = [2, 4]`) makes
+    // `_detectIpColumns()` short-circuit past the heuristic 80%-IPv4
+    // sample scan, so even mixed v4/v6 captures or sparse traffic
+    // (where the heuristic gate fails on one or both columns) still
+    // produce `Source.geo` AND `Destination.geo`. Wait for both
+    // enrichment columns to land — the geoip pass runs at +100 ms
+    // post-mount and re-runs once `_app` is wired by the router, so
+    // 5 s is generous on cold CI.
+    await ctx.page.waitForFunction(() => {
+      const w = window as unknown as {
+        app: { _timelineCurrent?: { _extractedCols?: Array<{ name?: string; kind?: string }> } };
+      };
+      const tl = w.app && w.app._timelineCurrent;
+      if (!tl || !Array.isArray(tl._extractedCols)) return false;
+      const geoNames = tl._extractedCols
+        .filter(e => e && e.kind === 'geoip')
+        .map(e => e!.name || '');
+      return geoNames.includes('Source.geo')
+          && geoNames.includes('Destination.geo');
+    }, null, { timeout: 5_000 });
   });
 
   test('Chrome history SQLite loads via Timeline', async () => {

@@ -246,8 +246,13 @@
       // extracted path the target is by definition an extracted
       // column with no inherent base neighbours, so the heuristic is
       // bypassed there too (mirrors the forceCol branch which
-      // already does so).
-      const bypassSkipHeuristic = forceCol >= 0 || retryExtractedCols;
+      // already does so). Schema-hinted runs (e.g. PCAP via
+      // `_ipColumns`) also bypass: the renderer's claim is
+      // authoritative, never veto on neighbour heuristics that might
+      // misread `Src Port` / `Dst Port` numeric neighbours.
+      const bypassSkipHeuristic = forceCol >= 0
+        || retryExtractedCols
+        || (this._ipColumns && this._ipColumns.length > 0);
       let added = 0;
       for (const col of targetCols) {
         // Geo pass.
@@ -295,6 +300,20 @@
     _detectIpColumns() {
       if (!this.store || !this.store.rowCount || !this._baseColumns) return [];
       const baseCount = this._baseColumns.length;
+      // Schema-driven hint takes precedence — the renderer KNOWS its
+      // IP columns (currently PCAP via `PcapRenderer.TIMELINE_IP_COL_INDICES`),
+      // so we must NOT veto on the heuristic 80%-IPv4 sample scan
+      // (which mixed-v4/v6 captures fail). Validate indices against
+      // the live base-column count to defend against schema drift.
+      // Out-of-range or non-integer entries are filtered silently.
+      if (this._ipColumns && this._ipColumns.length) {
+        const out = [];
+        for (let i = 0; i < this._ipColumns.length; i++) {
+          const c = this._ipColumns[i];
+          if (Number.isInteger(c) && c >= 0 && c < baseCount) out.push(c);
+        }
+        return out;
+      }
       const sample = Math.min(this.store.rowCount, 200);
       const out = [];
       for (let c = 0; c < baseCount; c++) {
