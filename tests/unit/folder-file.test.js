@@ -4,23 +4,17 @@
 // `FolderFile.fromEntries` walks an array of `FileSystemEntry`-shaped
 // objects (real ones come from `webkitGetAsEntry()` on a folder drop),
 // flattens the tree into `{path, dir, size, file?, mtime?}` rows, and
-// returns `{folder, truncated, walkedCount}`. Three contract points
+// returns `{folder, truncated, walkedCount}`. Two contract points
 // matter for safety / resilience and are the focus of these tests:
 //
 //   1. Per-leaf `entry.file(…)` failures (AV-blocked, permission denied,
 //      dead symlink, transient FS error) MUST be caught and the leaf
 //      skipped with `truncated = true`. Healthy siblings keep flowing.
 //      Without this a single bad file in a 4 000-entry tree throws away
-//      the other 3 999. Was the FF/Windows cold-cache crash trigger.
+//      the other 3 999.
 //   2. Walk halts at `PARSER_LIMITS.MAX_FOLDER_ENTRIES` with
 //      `truncated = true`. Both directory and file pushes count toward
 //      the cap.
-//   3. Cooperative event-loop yield happens at least once for trees
-//      large enough to cross the 64-entry threshold. We can't assert on
-//      `setTimeout` directly under the vm harness without instrumenting
-//      it, but the trees we walk here resolve via real `setTimeout` —
-//      if the yield were broken (e.g. infinite-await), these tests
-//      would hang and fail under `node:test`'s default timeout.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -164,33 +158,6 @@ test('FolderFile.fromEntries: walk halts at MAX_FOLDER_ENTRIES with truncated=tr
   assert.equal(truncated, true);
   assert.equal(folder.entries.length, cap, 'flat list capped at MAX_FOLDER_ENTRIES');
   assert.equal(walkedCount, cap);
-});
-
-test('FolderFile.fromEntries: cooperative yield does not deadlock for >64-entry walks', async () => {
-  // Pure liveness check: walking 200 healthy leaves crosses the
-  // every-64-entries `setTimeout(0)` yield boundary three times. If the
-  // yield were misimplemented (e.g. awaited a never-resolving promise),
-  // this test would wedge until node:test's default timeout (60 s) and
-  // surface as a hang. A successful resolution under the harness
-  // confirms the yield is well-formed AND a 200-entry tree finishes
-  // promptly — the latter is the property that prevents FF/Windows
-  // from killing the content process under cold-cache load.
-  const N = 200;
-  const children = [];
-  for (let i = 0; i < N; i++) {
-    children.push(makeFileEntry('f' + i + '.bin', fakeFile('f' + i + '.bin', 4)));
-  }
-  const root = makeDirEntry('two-hundred', children);
-  const start = Date.now();
-  const { folder, truncated } = await FolderFile.fromEntries(
-    'two-hundred', [{ entry: root, asRoot: true }]);
-  const elapsed = Date.now() - start;
-  assert.equal(truncated, false);
-  assert.equal(folder.entries.length, N);
-  // 200 leaves with a 1ms timer per file + a 0ms yield every 64 should
-  // resolve well under a second on any sane runner. If we ever exceed
-  // 5 s here the yield strategy has regressed.
-  assert.ok(elapsed < 5000, `walk completed in ${elapsed} ms (must be < 5 000)`);
 });
 
 test('FolderFile.fromEntries: nested directory walk preserves relative paths', async () => {

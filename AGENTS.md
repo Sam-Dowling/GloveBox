@@ -611,10 +611,6 @@ in the same PR.**
 - `e76ba0e` — defer vendor compile, add early drag-drop bootstrap,
   idle-init `BgCanvas`.
 - `3b4aa78` — hosted-mode privacy bar; external-file drag gating.
-- `<pending>` — FF/Windows tab-crash on cold-cache folder drop:
-  skip `DataTransfer.files` access for directory drops in both early
-  bootstrap and App handler; per-leaf try/catch + every-64-entries
-  cooperative yield in `FolderFile.walkDir`.
 
 ### State leak & cleanup
 - `eb46706` — clear copy-content cache, sidebar highlight timers, stale
