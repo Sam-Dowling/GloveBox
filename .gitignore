@@ -38,12 +38,6 @@ loupe.cdx.json.sigstore
 # Generated files (optional machine-readable codemap)
 codemap.json
 
-# agents
-AGENTS.md
-.clinerules
-.agents
-.opencode
-
 # Todo / Plans
 TODO.md
 PLAN.md
