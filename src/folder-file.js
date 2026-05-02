@@ -88,6 +88,19 @@ class FolderFile {
    * rejected — the analyst still gets the first N entries plus a
    * visible `IOC.INFO` row from `FolderRenderer.analyzeForSecurity`.
    *
+   * Resilience guarantees
+   * ─────────────────────
+   *   • Per-leaf `entry.file()` failures (AV-blocked, permission denied,
+   *     dead symlink, transient FS error) are caught and the leaf is
+   *     skipped with `truncated = true`; sibling entries continue to be
+   *     walked. Without this a single bad file in a 4 000-entry tree
+   *     would throw away the other 3 999.
+   *   • Cooperative event-loop yield every 64 entries. The walker's
+   *     back-to-back `entry.file()` resolutions otherwise tip Firefox
+   *     on Windows past its content-process watchdog on cold-cache
+   *     directory drops, causing the tab to die with "Gah, your tab
+   *     just crashed" before this Promise ever resolves.
+   *
    * @param {string} rootName        Display name for the root.
    * @param {Array<{entry?: any, file?: File, path?: string,
    *                asRoot?: boolean}>} sources
@@ -114,6 +127,22 @@ class FolderFile {
     const flat = [];
     let truncated = false;
     let walkedCount = 0;
+
+    // Cooperative-yield counter, shared across the entire walk (every
+    // call to walkDir + every loose `src.file` source in the outer loop
+    // bumps it). Yielding to the event loop every 64 entries keeps
+    // Firefox / Windows happy on cold-cache directory drops where the
+    // back-to-back `entry.file()` resolutions otherwise cause the
+    // content process to be killed by its own watchdog ("Gah, your tab
+    // just crashed"). 64 is small enough to be invisible UX-wise and
+    // big enough that the yield overhead is negligible at 4 096 entries.
+    let yieldCounter = 0;
+    const maybeYield = async () => {
+      yieldCounter++;
+      if ((yieldCounter & 63) === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    };
 
     const pushDir = (path) => {
       if (flat.length >= cap) { truncated = true; return false; }
@@ -156,12 +185,26 @@ class FolderFile {
           const childPath = prefix ? prefix + '/' + child.name : child.name;
           if (child.isDirectory) {
             if (!pushDir(childPath)) return;
+            await maybeYield();
             await walkDir(child, childPath);
           } else if (child.isFile) {
-            const file = await new Promise((resolve, reject) => {
-              child.file((f) => resolve(f), (err) => reject(err));
-            });
+            // Per-leaf try/catch — a single AV-blocked, permission-denied,
+            // dead-symlink, or transient-FS-error leaf must NOT abort the
+            // whole walk. Mark the result truncated, skip the leaf, keep
+            // going. Without this, one bad file in a 4 000-entry tree
+            // throws away the other 3 999.
+            let file = null;
+            try {
+              file = await new Promise((resolve, reject) => {
+                child.file((f) => resolve(f), (err) => reject(err));
+              });
+            } catch (_) {
+              truncated = true;
+              await maybeYield();
+              continue;
+            }
             if (!pushFile(childPath, file)) return;
+            await maybeYield();
           }
         }
       }
@@ -191,6 +234,7 @@ class FolderFile {
         const relPath = (src.path || entry.name || '').replace(/^\/+/, '');
         if (entry.isDirectory) {
           if (!pushDir(relPath)) break;
+          await maybeYield();
           try { await walkDir(entry, relPath); }
           catch (e) {
             // A single failed directory shouldn't kill the whole ingest.
@@ -206,6 +250,7 @@ class FolderFile {
               entry.file((f) => resolve(f), (err) => reject(err));
             });
             if (!pushFile(relPath, file)) break;
+            await maybeYield();
           } catch (e) {
             // eslint-disable-next-line no-console
             console.warn('FolderFile: file read failed for', relPath, e);
@@ -217,6 +262,7 @@ class FolderFile {
         // to the bare file name (top-level of the synthetic root).
         const path = (src.path || src.file.name || '').replace(/^\/+/, '');
         if (!pushFile(path, src.file)) break;
+        await maybeYield();
       }
     }
 

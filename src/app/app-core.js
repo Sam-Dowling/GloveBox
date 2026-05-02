@@ -344,7 +344,17 @@ class App {
         // path (single-file vs synthetic folder) based on what's
         // available. We pass the entries on a side channel so it can
         // walk directories without us repeating the logic.
-        this._handleFiles(dt.files, { fsEntries });
+        //
+        // Skip the `dt.files` read entirely when any entry is a
+        // directory. On Firefox / Windows accessing `DataTransfer.files`
+        // for a directory drop triggers a synchronous shell-call that —
+        // on a cold FS cache — pushes the content process past its
+        // watchdog and the tab dies with "Gah, your tab just crashed"
+        // before `_handleFiles` ever runs. The fsEntries side-channel
+        // already carries everything we need to dispatch.
+        const hasDir = fsEntries.some(e => e && e.isDirectory);
+        const filesArg = hasDir ? null : (dt && dt.files);
+        this._handleFiles(filesArg, { fsEntries });
         return;
       }
       if (dt && dt.files && dt.files.length) {
