@@ -293,9 +293,14 @@ Object.assign(TimelineView.prototype, {
         onUseAsTimeline: role === 'main' ? (colIdx) => this._setTimeColFromGrid(colIdx) : null,
         onStackTimelineBy: role === 'main' ? (colIdx) => this._setStackColFromGrid(colIdx) : null,
         // Left-click on a grid header → open the Excel-style filter
-        // popover (same as the Top-Lists ▾ button). Right-click is
-        // wired separately via `contextmenu` to open the sort/hide menu.
-        onHeaderClick: role === 'main' ? (colIdx, anchor) => this._openColumnMenu(colIdx, anchor) : null,
+        // popover with Contains + value-checklist + column-scoped
+        // actions + Apply/Reset (`_openColumnFilterMenu`). Right-click
+        // is wired separately via `contextmenu` to open the sort/hide
+        // menu. Note: the Top-Values card `⋮` button calls the slim
+        // `_openColumnMenu` instead — the two surfaces deliberately
+        // diverge because the card already has its own per-card search
+        // input, while the grid does not.
+        onHeaderClick: role === 'main' ? (colIdx, anchor) => this._openColumnFilterMenu(colIdx, anchor) : null,
         // Column drag-reorder persistence — only on the main grid
         // (the suspicious-rows mini-grid is read-only). Receives the
         // post-reorder real-index array from GridViewer; we translate
@@ -596,28 +601,47 @@ Object.assign(TimelineView.prototype, {
     // actionable. Filter them out before pin-sorting so the pin path
     // sees the post-filter set.
     //
-    // Predicate: the column's stats reported a single distinct value
-    // and that value is the empty string. (`distinct === 0` would only
-    // happen with zero rows — not relevant for filtering.)
+    // Predicate: the column's stats reported zero distinct values, or a
+    // single distinct value that is the empty string. (`distinct === 0`
+    // would only happen with zero rows — not relevant for filtering.)
     //
     // Carve-outs:
     //   • Stats not yet computed → keep the card. The `'columns'` task
     //     coalesces a re-paint after the async stats land.
     //   • Pinned columns → always shown, even if empty. Pinning is an
     //     explicit user action and should not be silently overridden.
+    //
+    // ── All-unique-column suppression ────────────────────────────────────
+    // When every row's value in a column is unique (e.g. timestamp,
+    // event_record_id, sequence_no), the Top-Values card is also pure
+    // noise — every row is its own count = 1 bucket. `_computeColumnStats`
+    // sets `allUnique: true` on these slots and skips the sort entirely.
+    // UNLIKE the empty-column case above, the pinned carve-out does NOT
+    // apply: the pin button only exists on a rendered card, so the user
+    // can never have intentionally pinned an all-unique column from the
+    // current view; any stale persisted pin from a different file or
+    // filter is dormant and self-corrects when the column re-appears
+    // non-unique.
     const _pinnedNamesSet = new Set();
     const _nameOfCi = (ci) => cols[ci] || `(col ${ci + 1})`;
     if (this._pinnedCols) for (const pn of this._pinnedCols) _pinnedNamesSet.add(pn);
     const _isEmptyCol = (ci) => {
       const s = stats && stats[ci];
       if (!s || !s.values) return false;
-      if (s.values.length === 0) return true;
+      if (s.distinct === 0) return true;
       if (s.values.length === 1 && s.values[0][0] === '') return true;
       return false;
     };
-    const _filteredIndices = _indices.filter(ci =>
-      _pinnedNamesSet.has(_nameOfCi(ci)) || !_isEmptyCol(ci)
-    );
+    const _isAllUniqueCol = (ci) => {
+      const s = stats && stats[ci];
+      return !!(s && s.allUnique);
+    };
+    const _filteredIndices = _indices.filter(ci => {
+      // All-unique suppression takes precedence over the pin carve-out
+      // (see comment block above).
+      if (_isAllUniqueCol(ci)) return false;
+      return _pinnedNamesSet.has(_nameOfCi(ci)) || !_isEmptyCol(ci);
+    });
     _indices.length = 0;
     for (const ci of _filteredIndices) _indices.push(ci);
 

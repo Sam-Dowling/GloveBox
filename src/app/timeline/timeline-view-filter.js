@@ -444,9 +444,28 @@ Object.assign(TimelineView.prototype, {
 
     const out = new Array(span);
     for (let c = 0; c < span; c++) {
-      const arr = Array.from(stats[c].entries());
+      const m = stats[c];
+      const distinct = m.size;
+      // All-unique short-circuit: every row is its own bucket at
+      // count = 1 (e.g. timestamp, event_record_id, sequence_no). A
+      // Top-Values card for such a column is pure noise and the
+      // unbounded sort below would be the dominant cost on wide files.
+      // `_paintColumnCards` consumes `allUnique` to suppress the card
+      // entirely. Pinning is unreachable here because no card means no
+      // pin button; any stale persisted pin is dormant and self-corrects
+      // when the column re-appears non-unique under a different filter
+      // / file.
+      if (distinct === total && total > 0) {
+        out[c] = { total, distinct, values: [], allUnique: true };
+        continue;
+      }
+      const arr = Array.from(m.entries());
       arr.sort((a, b) => b[1] - a[1]);
-      out[c] = { total, distinct: arr.length, values: arr.slice(0, TIMELINE_COL_TOP_N) };
+      // No top-N cap — Top-Values cards already virtualise their row
+      // list (sizer + start..end window). The Excel filter menu has
+      // its own `_distinctValuesFor(colIdx, …, 200)` cap and is
+      // unaffected.
+      out[c] = { total, distinct, values: arr };
     }
     return out;
   },
@@ -574,9 +593,20 @@ Object.assign(TimelineView.prototype, {
       }
       const out = new Array(span);
       for (let c = 0; c < span; c++) {
-        const arr = Array.from(stats[c].entries());
+        const m = stats[c];
+        const distinct = m.size;
+        // All-unique short-circuit — see `_computeColumnStatsSync` above
+        // for the full rationale. Skips the unbounded sort on the worst
+        // offenders (timestamp / event_record_id / sequence_no) and
+        // signals `_paintColumnCards` to suppress the card.
+        if (distinct === total && total > 0) {
+          out[c] = { total, distinct, values: [], allUnique: true };
+          continue;
+        }
+        const arr = Array.from(m.entries());
         arr.sort((a, b) => b[1] - a[1]);
-        out[c] = { total, distinct: arr.length, values: arr.slice(0, TIMELINE_COL_TOP_N) };
+        // Uncapped — Top-Values card row list is windowed-virtualised.
+        out[c] = { total, distinct, values: arr };
       }
       return out;
     })();
