@@ -134,6 +134,27 @@ test.describe('Timeline GeoIP — bundled provider', () => {
     // `data-col` with the REAL column index (display reorder safe);
     // we look up the geo column's real index dynamically in case a
     // future schema change shifts it.
+    // Wait for the grid to actually paint the geo cells into the DOM.
+    // `_rebuildExtractedStateAndRender` updates `_extractedCols` synchronously
+    // but schedules the grid repaint via requestAnimationFrame; on slow CI
+    // machines the RAF may not have executed by the time a plain evaluate()
+    // runs. We wait here for at least one non-empty cell to appear — this also
+    // serves as the regression assertion: with the old empty-cell bug this
+    // waitForFunction would time out because cells would render as '' forever.
+    await ctx.page.waitForFunction(() => {
+      const w = window as unknown as {
+        app: { _timelineCurrent?: { columns?: string[] } };
+      };
+      const cols = w.app?._timelineCurrent?.columns;
+      if (!cols) return false;
+      const geoIdx = cols.indexOf('client_ip.geo');
+      if (geoIdx < 0) return false;
+      const cells = document.querySelectorAll(
+        `.tl-grid .grid-row .grid-cell[data-col="${geoIdx}"]`
+      );
+      return Array.from(cells).some(c => (c.textContent || '').trim().length > 0);
+    }, null, { timeout: 5_000 });
+
     const geoCellTexts = await ctx.page.evaluate(() => {
       const w = window as unknown as {
         app: { _timelineCurrent: { columns: string[] } };
