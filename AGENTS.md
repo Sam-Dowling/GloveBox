@@ -524,6 +524,10 @@ in the same PR.**
 - `9107360` — JS string-array obfuscator resolver; loads after
   `cmd-obfuscation.js` in `_DETECTOR_FILES`.
 - `3d3f8e6` — aggressive FP suppression across the finder pipeline.
+- `6a71ee7` — split per-candidate `_patternIocs` from generic
+  `_executeOutput` so only the CMD `for /f` branch attaches the
+  `for /f … do call %X` pattern; ClickFix mirror migrated to the same
+  mechanism.
 - `<pending>` — bash / python / php deobfuscators added (six branches each)
   + JS additions (packer / aaencode / Function-wrapper); all flow through
   `_processCommandObfuscation`; min decoded length 2 (was 3) so `'sh'`
