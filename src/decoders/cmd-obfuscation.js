@@ -135,7 +135,10 @@ Object.assign(EncodedContentDetector.prototype, {
    * Each candidate includes the obfuscated text and the technique detected.
    */
   _findCommandObfuscationCandidates(text, context) {
-    if (!text || text.length < 10) return [];
+    // Short-circuit: the shortest meaningful obfuscation any branch
+    // below can decode is a 9-char backtick-escaped `m`s`h`t`a
+    // (→ `mshta`). Anything shorter cannot carry a LOLBin signal.
+    if (!text || text.length < 9) return [];
     const candidates = [];
 
     // ── CMD caret insertion: p^o^w^e^r^s^h^e^l^l (single carets) and
@@ -158,8 +161,14 @@ Object.assign(EncodedContentDetector.prototype, {
     // `[a-zA-Z]+` (not just `[a-zA-Z]`) is required so `^^fi^^ng^^er` —
     // multi-letter runs separated by caret-runs — is captured. The
     // single-letter form `p^o^w^e^r^s^h^e^l^l` is a degenerate case
-    // (every letter-run has length 1) and is still matched.
-    const caretRe = /(?<![\w^])\^*[a-zA-Z]+(?:\^+[a-zA-Z]+){2,}(?![\w^])/g;
+    // (every letter-run has length 1) and is still matched. Trailing
+    // carets (`^^^certutil^^^ args`) and alnum-anchored continuations
+    // (`r^u^n^d^l^l^3^2`) are both accepted — the suffix `\^*\d*` lets
+    // digits and a final caret run close the match. This keeps the
+    // `echo ^^^p^o^w^e^r^s^h^e^l^l^^^ args` shape (echo-wrapped
+    // cmd-line insertion) and the `r^u^n^d^l^l^3^2` numeric-suffix
+    // LOLBin form both flowing through.
+    const caretRe = /(?<![\w^])\^*[a-zA-Z]+(?:\^+[a-zA-Z0-9]+){2,}\^*(?!\w)/g;
     let m;
     while ((m = caretRe.exec(text)) !== null) {
       throwIfAborted();
@@ -287,6 +296,17 @@ Object.assign(EncodedContentDetector.prototype, {
           return full;
         });
         if (anyResolved && resolved !== m[0] && resolved.length >= 3) {
+          // Amplification guard. `%X%%Y%` with a user-defined `set X=…`
+          // holding a multi-KB value would explode the candidate's
+          // deobfuscated length far past anything meaningful for the
+          // sidebar / IOC pass (and triggers the fuzz-harness
+          // 64×-raw-length invariant). In practice CMD Variable
+          // Concatenation on legitimately-obfuscated samples stays
+          // under ~8× raw; 32× is a generous headroom.
+          const _AMP_RATIO = 32;
+          const _ABS_CAP = 8 * 1024;
+          const _cap = Math.min(_ABS_CAP, _AMP_RATIO * Math.max(1, m[0].length));
+          if (resolved.length > _cap) resolved = resolved.slice(0, _cap);
           candidates.push({
             type: 'cmd-obfuscation',
             technique: 'CMD Variable Concatenation',
@@ -337,6 +357,58 @@ Object.assign(EncodedContentDetector.prototype, {
           else { resolved += `⟨!${cleaned}!⟩`; }
         }
         if (anyResolved && resolved.length >= 3) {
+          // Same amplification guard as the CMD Variable Concatenation
+          // branch above: cap resolved length at 32× raw or 8 KiB,
+          // whichever is smaller, so a big user-defined `set X=…` value
+          // can't explode the sidebar / trigger the fuzz 64×-invariant.
+          const _AMP_RATIO = 32;
+          const _ABS_CAP = 8 * 1024;
+          const _cap = Math.min(_ABS_CAP, _AMP_RATIO * Math.max(1, m[0].length));
+          if (resolved.length > _cap) resolved = resolved.slice(0, _cap);
+          candidates.push({
+            type: 'cmd-obfuscation',
+            technique: 'CMD Delayed-Expansion Indirection',
+            raw: m[0],
+            offset: m.index,
+            length: m[0].length,
+            deobfuscated: resolved,
+          });
+        }
+      }
+
+      // ── Single-bang delayed-expansion resolution: `!x! args` ──
+      //
+      // A `setlocal enabledelayedexpansion`-prefixed script commonly
+      // uses a single `!var!` to trigger a stored LOLBin name (the
+      // more compact variant of the `!%X%!…` indirection above). The
+      // concat branch above only matches 2+ consecutive refs — this
+      // catches the solitary bang form when the resolved value is a
+      // SENSITIVE_CMD_KEYWORD, matching the same confidence bar the
+      // caret-insertion branch uses.
+      //
+      // Gate: require a nearby `setlocal` or `enabledelayedexpansion`
+      // token in the input so `!x!` alone in a context where bangs
+      // are literal text (e.g. a log line) doesn't false-positive.
+      const hasDelayedExpansion = /\bsetlocal\b[\s\S]{0,200}?\benabledelayedexpansion\b|\benabledelayedexpansion\b/i.test(text);
+      if (hasDelayedExpansion) {
+        const singleBangRe = /(?<![\w!])!([\w^]+)!(?![\w!])/g;
+        while ((m = singleBangRe.exec(text)) !== null) {
+          throwIfAborted();
+          if (candidates.length >= this.maxCandidatesPerType) break;
+          const rawName = m[1];
+          const cleaned = _stripCarets(rawName).toLowerCase();
+          const v = vars[cleaned];
+          if (!v || typeof v.value !== 'string') continue;
+          const resolved = v.value;
+          if (resolved.length < 3) continue;
+          // Sensitivity gate — surface when the stored value is either
+          // a known LOLBin / shell-launch token OR any executable-
+          // looking filename (`*.exe`, `*.dll`, `*.bat`, `*.cmd`,
+          // `*.vbs`, `*.ps1`, `*.hta`). Benign scripts use `!VAR!` all
+          // the time; the obfuscation signal is delayed-expansion
+          // hiding a program/script name across a `set` + `!…!` pair.
+          const _EXE_SUFFIX = /\.(?:exe|dll|bat|cmd|vbs|ps1|hta|scr|pif|cpl)\b/i;
+          if (!SENSITIVE_CMD_KEYWORDS.test(resolved) && !_EXE_SUFFIX.test(resolved)) continue;
           candidates.push({
             type: 'cmd-obfuscation',
             technique: 'CMD Delayed-Expansion Indirection',
@@ -484,6 +556,17 @@ Object.assign(EncodedContentDetector.prototype, {
       const cleaned = inner.trim();
       if (cleaned.length < 3) continue;
 
+      // Amplification guard — same rationale as the CMD Variable
+      // Concatenation branch: a user-defined `set VAR=<large payload>`
+      // expanded inside the `for /f (…)` body can trivially exceed
+      // the fuzz-harness 64×-raw invariant (raw is the outer `for /f`
+      // scaffolding, deobf is the expanded inner command). Cap at
+      // 32× raw or 8 KiB, whichever is smaller.
+      const _AMP_RATIO = 32;
+      const _ABS_CAP = 8 * 1024;
+      const _cap = Math.min(_ABS_CAP, _AMP_RATIO * Math.max(1, m[0].length));
+      const cleanedCapped = cleaned.length > _cap ? cleaned.slice(0, _cap) : cleaned;
+
       let technique;
       // Tightened: the structural-only tier (zero env-vars resolved) is
       // dropped — pure-placeholder renderings are noise without a single
@@ -526,7 +609,7 @@ Object.assign(EncodedContentDetector.prototype, {
         raw: m[0],
         offset: m.index,
         length: m[0].length,
-        deobfuscated: cleaned,
+        deobfuscated: cleanedCapped,
         _executeOutput: executeOutput,
         _forFCall: hasCall,
         ..._patternIocs ? { _patternIocs } : {},
@@ -557,6 +640,76 @@ Object.assign(EncodedContentDetector.prototype, {
       throwIfAborted();
       envSubMatches.push({ match: m[0], offset: m.index });
     }
+
+    // ── Isolated single-token env-var substring against KNOWN_ENV_VARS ──
+    //
+    // The 3+-token line resolver below requires the whole text contain
+    // at least 3 substring tokens to emit a candidate — real-world
+    // obfuscators often do exactly that (line of 4-8 slices that
+    // spell a command). But `%COMSPEC:~20,3% /c whoami` is a
+    // standalone single-token abuse that the 3+-gate misses. We
+    // tier-gate it more strictly than the multi-token case:
+    //   • the variable MUST resolve against KNOWN_ENV_VARS (not
+    //     user-defined `set` vars — those already get the concat
+    //     branch above and wouldn't fire here unless they happen to
+    //     shadow a known env var),
+    //   • the sliced substring must be ≥2 chars (so trivial
+    //     single-char slices don't inflate the IOC surface).
+    // Technique label is the same `CMD Env Var Substring` string
+    // the multi-token full branch uses — downstream processing is
+    // identical.
+    if (envSubMatches.length >= 1) {
+      const standaloneRe = /%(\w+):~(-?\d+)(?:,(-?\d+))?%/g;
+      while ((m = standaloneRe.exec(text)) !== null) {
+        throwIfAborted();
+        if (candidates.length >= this.maxCandidatesPerType) break;
+        const vname = m[1];
+        const known = KNOWN_ENV_VARS[vname.toUpperCase()];
+        if (typeof known !== 'string') continue;
+        const start = parseInt(m[2], 10);
+        const len = (m[3] === undefined) ? null : parseInt(m[3], 10);
+        const sliced = _resolveCmdSubstring(known, start, len);
+        if (sliced === null || sliced.length < 2) continue;
+        candidates.push({
+          type: 'cmd-obfuscation',
+          technique: 'CMD Env Var Substring',
+          raw: m[0],
+          offset: m.index,
+          length: m[0].length,
+          deobfuscated: sliced,
+        });
+      }
+    }
+
+    // ── Bare `%COMSPEC%` (no substring slice) used as a LOLBin stand-in ──
+    //
+    // Attackers frequently type `%COMSPEC% /c <payload>` instead of
+    // `cmd.exe /c …` to evade PPL/signature heuristics keyed on the
+    // literal string `cmd.exe`. Resolve the bare form against
+    // KNOWN_ENV_VARS ONLY when the expanded payload matches a known
+    // LOLBin string (so generic `echo %PATH%` doesn't fire). Only the
+    // stock `%COMSPEC%` is surfaced — other known vars (`%SYSTEMROOT%`,
+    // `%PROGRAMFILES%`) resolve to filesystem paths that aren't
+    // themselves obfuscation signals.
+    {
+      const bareRe = /%(COMSPEC)%/gi;
+      while ((m = bareRe.exec(text)) !== null) {
+        throwIfAborted();
+        if (candidates.length >= this.maxCandidatesPerType) break;
+        const vname = m[1].toUpperCase();
+        const known = KNOWN_ENV_VARS[vname];
+        if (typeof known !== 'string') continue;
+        candidates.push({
+          type: 'cmd-obfuscation',
+          technique: 'CMD Env Var Substring',
+          raw: m[0],
+          offset: m.index,
+          length: m[0].length,
+          deobfuscated: known,
+        });
+      }
+    }
+
     if (envSubMatches.length >= 3) {
       // Find the line(s) containing these substring tokens, treat each
       // such line as one obfuscated command.
@@ -641,17 +794,29 @@ Object.assign(EncodedContentDetector.prototype, {
     // when the buffer is the pasted command itself rather than the page
     // that wrote it to the clipboard.
     {
-      const hasDeliveryVector = candidates.some(c =>
-        typeof c.deobfuscated === 'string' &&
-        /\bfor\s*\/f\b|cmd\.exe\b|\bmshta\b|\bpowershell\b|\bfinger\b/i.test(c.deobfuscated)
+      // (a) Delivery vector is present — check both already-emitted
+      // decoded candidates AND the raw text itself, so a literally-
+      // typed `powershell -NoP …` ClickFix payload still triggers
+      // (historically we only consulted `candidates`, which missed
+      // the plaintext paste-bait form).
+      const _vectorRe = /\bfor\s*\/f\b|cmd(?:\.exe)?\s*\/c\b|\bmshta\b|\bpowershell(?:\.exe)?\b|\bfinger\b|\bcertutil\b|\bbitsadmin\b|\bcurl\s+http/i;
+      const hasDeliveryVector = _vectorRe.test(text) || candidates.some(c =>
+        typeof c.deobfuscated === 'string' && _vectorRe.test(c.deobfuscated)
       );
       const cueMatch = CLICKFIX_CUES.exec(text);
-      const trailingEchoRe = /\becho\s+['"][^'"\r\n]*?\s{3,}['"]/i;
+      // Trailing echo signature — the canonical "hide behind
+      // off-screen scroll" trick is a quoted string containing a
+      // ≥3-space run immediately before OR after the content. Either
+      // position is the scroll-bait signal (leading-spaces for the
+      // "Verification complete" cue; trailing-spaces for the
+      // "Loading captcha …   " form).
+      const trailingEchoRe = /\becho\s+['"](?:\s{3,}[^'"\r\n]*|[^'"\r\n]*?\s{3,})['"]/i;
       const trailMatch = trailingEchoRe.exec(text);
       if (hasDeliveryVector && cueMatch && trailMatch && candidates.length < this.maxCandidatesPerType) {
         // Pick the most-relevant inner payload: prefer a for /f inner
         // command (the actual shell command), then the COMSPEC argv0
-        // tail, then the first sensitive caret/concat decode.
+        // tail, then the first sensitive caret/concat decode, then
+        // fall back to the delivery-vector line from the raw text.
         const pickPayload = () => {
           const forF = candidates.find(c => /for \/f/i.test(c.technique || ''));
           if (forF) return forF.deobfuscated;
@@ -660,7 +825,15 @@ Object.assign(EncodedContentDetector.prototype, {
           const sens = candidates.find(c =>
             typeof c.deobfuscated === 'string' && SENSITIVE_CMD_KEYWORDS.test(c.deobfuscated)
           );
-          return sens ? sens.deobfuscated : null;
+          if (sens) return sens.deobfuscated;
+          // Raw-text fallback: grab the line containing the delivery
+          // vector so the candidate's deobfuscated output is a useful
+          // string the analyst can actually read.
+          const lines = text.split(/\r?\n/);
+          for (const line of lines) {
+            if (_vectorRe.test(line)) return line.trim().slice(0, 400);
+          }
+          return null;
         };
         const payload = pickPayload();
         if (payload && payload.length >= 3) {
@@ -739,6 +912,16 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
     // ── PowerShell -replace chain: 'XYZ'.replace('X','a').replace('Y','b') ──
+    //
+    // Two shapes:
+    //   (a) ≥2 chained `.replace(...)` calls — classic deobfuscation
+    //       pipeline (`.replace('X','i').replace('Y','e').replace('Z','x')`).
+    //   (b) Single `.replace(SENTINEL,'')` that strips a repeated
+    //       sentinel from a pre-literal string — the "zero-replacement"
+    //       form (`'QWErpowershellQWEr'.replace('QWEr','')` → `powershell`).
+    //       Shape (a) was previously the only emitter; shape (b) is
+    //       cheap to recognise because the result length must shrink
+    //       *and* still name a LOLBin.
     const psReplace = /'[^']{2,80}'(?:\s*\.\s*replace\s*\(\s*'[^']*'\s*,\s*'[^']*'\s*\)){2,}/gi;
     while ((m = psReplace.exec(text)) !== null) {
       throwIfAborted();
@@ -764,14 +947,58 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
 
+    // Single `.replace(SENTINEL,'')` — the zero-replacement sentinel-
+    // strip form. A single chained call doesn't fire the ≥2-chain
+    // branch above, so handle it explicitly. We require an EMPTY
+    // second argument (non-empty single replacements are ambiguous
+    // with ordinary string processing and produced too many FPs in
+    // early prototypes) and the post-strip result must still name a
+    // known LOLBin — same gate the chain branch relies on.
+    const psSingleReplace = /'([^']{3,200})'\s*\.\s*replace\s*\(\s*'([^']{1,40})'\s*,\s*''\s*\)/gi;
+    while ((m = psSingleReplace.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const original = m[1];
+      const sentinel = m[2];
+      if (!sentinel) continue;
+      const result = original.split(sentinel).join('');
+      if (result.length < 3 || result === original) continue;
+      // Post-strip: require a suspicious PowerShell LOLBin keyword.
+      // Matches the keyword set used by the backtick branch above.
+      const psKeywords = /^(invoke-expression|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-process|new-object|set-executionpolicy|invoke-command|get-credential|convertto-securestring|frombase64string|encodedcommand|invoke-mimikatz|invoke-shellcode|powershell|cmd|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|finger|tftp|ssh|curl|winrs|installutil|msbuild|pip|iex)$/i;
+      if (!this._bruteforce && !psKeywords.test(result)) continue;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell -replace Sentinel Strip',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: result,
+      });
+    }
+
     // ── PowerShell backtick escape: I`nv`o`ke-`E`xp`ression ──
-    // Tightened pattern: require ≥2 literal backticks inside the token
-    // itself (not just an open character class that matches every word
-    // and then re-checks). Capped match length keeps backtracking
-    // bounded on adversarial inputs (the previous open `{4,}` form
-    // matched every word in the file and ran the suspicious-keyword
-    // test on each one — quadratic on documents full of long words).
-    const backtickRe = /\b[a-zA-Z]+(?:`[a-zA-Z]+){2,80}(?:-[a-zA-Z]+(?:`[a-zA-Z]+){0,80})?\b/g;
+    //
+    // The backtick in PowerShell is a generic escape character: any
+    // character preceded by a backtick passes through literally (with
+    // a handful of named-escape exceptions like `` `n ``, `` `t `` that
+    // do the obvious thing). Adversaries abuse it to break up LOLBin
+    // names into single-char-plus-backtick fragments so simple
+    // substring/keyword scanners miss them. The three canonical
+    // shapes we see in the wild are:
+    //
+    //   (a) compact:   I`nv`o`ke-`E`xp`ression     (multi-char segs)
+    //   (b) full-char: i`n`v`o`k`e`-`e`x`p`r`e`s`s`i`o`n  (every char)
+    //   (c) digit-tail: r`u`n`d`l`l`3`2 / re`gs`vr`32     (rundll32)
+    //
+    // We unify all three by allowing: word-chars + optional escaped-or-
+    // literal hyphen + word-chars, with backticks permitted between
+    // ANY two characters. The tightening that keeps ReDoS bounded is
+    // the outer `\b…\b` anchors, bounded repetition counts, and the
+    // post-match sanity test `(raw.match(/`/g).length >= 2)` — the
+    // real decision is still made by `suspiciousKeywords`, not the
+    // shape of the token itself.
+    const backtickRe = /\b[a-zA-Z][a-zA-Z0-9`]{2,200}(?:`?-`?[a-zA-Z0-9`]{1,200})?\b/g;
     while ((m = backtickRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
@@ -797,12 +1024,18 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
     // ── PowerShell format operator: '{0}{1}' -f 'Inv','oke-Expression' ──
+    //
     // Single repeated capture for trailing args; the previous shape had
-    // *two* adjacent identical (?:…)* groups, which let the engine 2^n-split
-    // on near-miss inputs (classic ReDoS). The argument-extraction loop at
-    // `args[0][1].matchAll(...)` below recovers each value, so the two
-    // groups were redundant anyway.
-    const fmtRe = /'(\{[0-9]\}[^']{0,60})'\s*-f\s*'([^']+)'(?:\s*,\s*'([^']+)')*/gi;
+    // *two* adjacent identical (?:…)* groups, which let the engine
+    // 2^n-split on near-miss inputs (classic ReDoS). The argument-
+    // extraction loop at `args[0][1].matchAll(...)` below recovers
+    // each value, so the two groups were redundant anyway.
+    //
+    // Arg bodies use `[^']*` (not `+`) so that empty-string arguments
+    // like `'{0}iex{1}' -f '',''` are accepted. The empty-arg form is
+    // a genuine obfuscator — e.g. a template whose sentinel positions
+    // end up as no-ops, leaving a LOLBin name embedded between them.
+    const fmtRe = /'(\{[0-9]\}[^']{0,60})'\s*-f\s*'([^']*)'(?:\s*,\s*'([^']*)')*/gi;
     while ((m = fmtRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;

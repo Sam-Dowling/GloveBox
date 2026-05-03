@@ -148,20 +148,24 @@ function genDelayedExpansion() {
 }
 
 function genEnvVarSubstring() {
-  // %COMSPEC:~N,M% — slice known env vars to reconstruct "cmd". The
-  // decoder's KNOWN_ENV_VARS table maps COMSPEC → 'C:\\Windows\\System32\\cmd.exe';
-  // indices 24..3 reconstruct "cmd".
+  // %COMSPEC:~N,M% — slice known env vars to reconstruct LOLBin tokens.
+  // The decoder's KNOWN_ENV_VARS table maps COMSPEC → `C:\\Windows\\System32\\cmd.exe`
+  // (27 chars). Offsets into that string:
+  //   positions 11–16 → "System"
+  //   positions 20–22 → "cmd"
+  //   positions 24–26 → "exe"
+  //   last 4 chars    → ".exe"
   const out = [];
-  // Slice out "cmd" from COMSPEC (at offset 24, length 3).
-  out.push(makeSeed('%COMSPEC:~24,3% /c whoami', 'cmd'));
+  // Slice out "cmd" from COMSPEC (at offset 20, length 3).
+  out.push(makeSeed('%COMSPEC:~20,3% /c whoami', 'cmd'));
   // Slice out ".exe"
   out.push(makeSeed('echo %COMSPEC:~-4%', '.exe'));
   // Slice "System" from COMSPEC
   out.push(makeSeed('%COMSPEC:~11,6%', 'System'));
-  // Combined several slices
+  // Combined several slices — positions 20,3 + 22,1 = "cmd" + "d" = "cmdd"
   out.push(makeSeed(
-    'set f=%COMSPEC:~24,3%%COMSPEC:~24,1%',
-    'cmdc',
+    'set f=%COMSPEC:~20,3%%COMSPEC:~22,1%',
+    'cmdd',
   ));
   return out;
 }

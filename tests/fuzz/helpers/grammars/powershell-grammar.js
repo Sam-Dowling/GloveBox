@@ -93,7 +93,10 @@ function genReplaceChain() {
   ));
   out.push(makeSeed(
     "'XXdownloadstring'.replace('XX','').replace('d','D')",
-    'ownloadstring',
+    // The decoder replaces every 'd' with 'D' (two occurrences),
+    // yielding "DownloaDstring". Grammar's historical expected
+    // "ownloadstring" missed on the capitalised interior 'D'.
+    'ownloaDstring',
   ));
   return out;
 }
