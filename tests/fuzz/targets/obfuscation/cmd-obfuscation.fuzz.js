@@ -126,12 +126,19 @@ const fuzz = defineFuzzTarget({
     }
 
     // Expected-substring miss counter — only meaningful for grammar
-    // seeds (expected != null). Increment against the first technique
-    // that fired on this iteration so the miss surfaces in-column;
-    // if no candidate fired, attribute to __unknown__.
+    // seeds (expected != null). Attribution split by finder outcome:
+    //   • candidates empty  → recordEmptyMiss() (grammar seed failed to
+    //                         trigger ANY branch; the signal is about
+    //                         the seed itself, not a technique).
+    //   • candidates fired  → tally the miss against the first
+    //                         technique (candidate set disagreed with
+    //                         the expected substring — decoder signal).
     if (typeof expected === 'string' && !roundtripSatisfied) {
-      const key = candidates[0]?.technique || '__unknown__';
-      recorder.record(key, { miss: true });
+      if (candidates.length === 0) {
+        recorder.recordEmptyMiss();
+      } else {
+        recorder.record(candidates[0].technique, { miss: true });
+      }
     }
   },
 });

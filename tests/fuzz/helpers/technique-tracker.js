@@ -59,10 +59,13 @@ function _installExitHook() {
       try {
         const stamp = `${process.pid}-${Date.now().toString(36)}`;
         const fp = path.join(DUMP_DIR, `techniques-${rec.targetId}-${stamp}.json`);
+        const payload = rec._serialise();
         fs.writeFileSync(fp, JSON.stringify({
-          targetId: rec.targetId,
-          catalog:  rec.catalog,
-          counters: rec._serialise(),
+          targetId:       rec.targetId,
+          catalog:        rec.catalog,
+          counters:       payload.counters,
+          unknownSamples: payload.unknownSamples,
+          emptyMisses:    payload.emptyMisses,
         }));
       } catch (err) {
         // Diagnostic only — never raise.
@@ -76,6 +79,12 @@ function _installExitHook() {
   });
 }
 
+// Cap on distinct unknown-technique sample strings retained per recorder.
+// Bounded to keep the JSON sidecar tiny (each sample is usually 30-80 bytes,
+// so 32 samples ≈ ≤3 KB) while giving the aggregator enough material to
+// make catalog drift visible at a glance.
+const UNKNOWN_SAMPLE_CAP = 32;
+
 /**
  * Build a recorder for a fuzz target.
  *
@@ -83,6 +92,7 @@ function _installExitHook() {
  * @param {string[]} catalog   Authoritative list of known technique names.
  * @returns {{
  *   record: (technique: string, info?: {success?: boolean, miss?: boolean}) => void,
+ *   recordEmptyMiss: () => void,
  *   snapshot: () => object,
  *   targetId: string,
  *   catalog: string[],
@@ -105,17 +115,39 @@ function makeTechniqueRecorder(targetId, catalog) {
   }
   counters.set('__unknown__', { hits: 0, decodeSuccess: 0, decodeFail: 0, expectedMiss: 0 });
 
+  // Distinct unknown-technique strings seen during the run. A non-empty
+  // set signals catalog drift — the aggregator renders it as a footnote
+  // under the per-module technique table.
+  const unknownSamples = new Set();
+
+  // Count of iterations whose grammar seed declared an `_expectedSubstring`
+  // but where the finder returned ZERO candidates (so there was nothing
+  // to attribute the miss to). Distinct from `__unknown__.expectedMiss`
+  // which now fires only when the finder did produce candidate(s) but
+  // none contained the expected substring under a KNOWN technique.
+  let emptyMisses = 0;
+
   const rec = {
     targetId,
     catalog: catalog.slice(),
     record(technique, info) {
-      const key = typeof technique === 'string' && counters.has(technique)
-        ? technique : '__unknown__';
+      const known = typeof technique === 'string' && counters.has(technique);
+      const key = known ? technique : '__unknown__';
+      if (!known && typeof technique === 'string' && technique.length > 0
+          && unknownSamples.size < UNKNOWN_SAMPLE_CAP) {
+        // Clip pathological values (shouldn't happen — technique strings
+        // in the decoders are all short literals — but a future change
+        // could introduce a dynamically-constructed string; bound it).
+        unknownSamples.add(technique.length > 160 ? technique.slice(0, 160) + '…' : technique);
+      }
       const c = counters.get(key);
       c.hits++;
       if (info && info.success === true) c.decodeSuccess++;
       else if (info && info.success === false) c.decodeFail++;
       if (info && info.miss === true) c.expectedMiss++;
+    },
+    recordEmptyMiss() {
+      emptyMisses++;
     },
     snapshot() {
       const out = {};
@@ -123,7 +155,11 @@ function makeTechniqueRecorder(targetId, catalog) {
       return out;
     },
     _serialise() {
-      return rec.snapshot();
+      return {
+        counters: rec.snapshot(),
+        unknownSamples: [...unknownSamples],
+        emptyMisses,
+      };
     },
   };
 

@@ -14,19 +14,19 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 const PHP_TECHNIQUE_CATALOG = Object.freeze([
-  // PHP1 — eval/onion
   'PHP eval(base64_decode(...))',
   'PHP eval(gzinflate(base64_decode(...)))',
   'PHP eval(gzuncompress(base64_decode(...)))',
   'PHP eval(gzdecode(base64_decode(...)))',
   'PHP eval(str_rot13(base64_decode(...)))',
-  // PHP2 — variable-variables
+  // Double-wrap onions (order mirrors source left-to-right):
+  'PHP eval(str_rot13(gzinflate(base64_decode(...))))',
+  'PHP eval(gzinflate(str_rot13(base64_decode(...))))',
+  'PHP eval(gzuncompress(str_rot13(base64_decode(...))))',
   'PHP Variable-Variables',
   'PHP Variable-Variables (anonymous)',
-  // PHP3 — reassembly
   'PHP chr-concat Reassembly',
   'PHP pack(H*) Reassembly',
-  // PHP4–6
   'PHP preg_replace /e modifier',
   'PHP Superglobal Callable',
   'PHP eval/system on Superglobal',
@@ -68,9 +68,10 @@ function genEvalOnion() {
     `<?php eval(base64_decode('${b64(payload)}')); ?>`,
     'base64_decode',
   ));
-  // str_rot13 wrap over base64
+  // str_rot13 wrap over base64 — payload must be ≥8 b64 chars for
+  // the decoder's outer regex (evalChainRe) to match.
   out.push(makeSeed(
-    `<?php eval(str_rot13(base64_decode('abcd'))); ?>`,
+    `<?php eval(str_rot13(base64_decode('${b64('somejunkhere')}'))); ?>`,
     'str_rot13',
   ));
   // gzinflate(base64_decode(...)) - structural shape; the payload bytes
@@ -88,6 +89,26 @@ function genEvalOnion() {
   out.push(makeSeed(
     `<?php eval(gzdecode(base64_decode('${b64('junk')}'))); ?>`,
     'gzdecode',
+  ));
+
+  // ── Double wrappers ──
+  // str_rot13(gzinflate(base64_decode(...))) — a classic WSO / b374k
+  // webshell onion. The decoder's regex matches up to 3 nested
+  // decoders; Decompressor absence still produces a technique-shape
+  // hit (the preview falls back to raw bytes).
+  out.push(makeSeed(
+    `<?php eval(str_rot13(gzinflate(base64_decode('${b64('junkdata')}')))); ?>`,
+    'str_rot13',
+  ));
+  // gzinflate(str_rot13(base64_decode(...))) — reversed wrapper order.
+  out.push(makeSeed(
+    `<?php eval(gzinflate(str_rot13(base64_decode('${b64('junkdata')}')))); ?>`,
+    'gzinflate',
+  ));
+  // gzuncompress(str_rot13(base64_decode(...))) — zlib-framed variant.
+  out.push(makeSeed(
+    `<?php eval(gzuncompress(str_rot13(base64_decode('${b64('junkdata')}')))); ?>`,
+    'gzuncompress',
   ));
   return out;
 }

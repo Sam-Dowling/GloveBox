@@ -111,8 +111,11 @@ const fuzz = defineFuzzTarget({
     }
 
     if (typeof expected === 'string' && !roundtripSatisfied) {
-      const key = candidates[0]?.technique || '__unknown__';
-      recorder.record(key, { miss: true });
+      if (candidates.length === 0) {
+        recorder.recordEmptyMiss();
+      } else {
+        recorder.record(candidates[0].technique, { miss: true });
+      }
     }
   },
 });

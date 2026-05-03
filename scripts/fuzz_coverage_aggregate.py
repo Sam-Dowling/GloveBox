@@ -512,12 +512,24 @@ def aggregate_and_render(coverage_dir: str, repo_root: str,
 def _aggregate_techniques(coverage_dir: str, repo_root: str,
                           target_ids: List[str]) -> Dict[str, dict]:
     """Walk each target's coverage dir, sum technique dumps, and return
-    a dict keyed by ``targetId`` mapping to ``{catalog, counters}``.
+    a dict keyed by ``targetId`` mapping to
+    ``{catalog, counters, unknownSamples, emptyMisses}``.
 
     ``target_ids`` is the list passed by the orchestrator; we probe each
     one under ``coverage_dir/<target_id>/`` for ``techniques-*.json``
     sidecars. Targets with no technique dumps are silently omitted from
     the result (same discipline as the coverage aggregator).
+
+    ``unknownSamples`` is the union of distinct ``technique`` strings
+    observed at runtime that were absent from the authoritative catalog
+    — a non-empty list signals catalog drift and is rendered as a
+    footnote under the per-module technique table.
+
+    ``emptyMisses`` is the count of iterations whose grammar seed
+    declared an expected substring but where the finder returned zero
+    candidates. It's intentionally NOT folded into ``__unknown__``
+    anymore: it's about the seed failing to trigger anything, not about
+    a divergent technique string.
     """
     by_target: Dict[str, dict] = {}
     for tid in target_ids:
@@ -530,6 +542,8 @@ def _aggregate_techniques(coverage_dir: str, repo_root: str,
         catalog: List[str] = []
         catalog_seen: set = set()
         counters: Dict[str, dict] = {}
+        unknown_samples: set = set()
+        empty_misses = 0
         for fp in dumps:
             try:
                 with open(fp, 'r', encoding='utf-8') as f:
@@ -552,8 +566,17 @@ def _aggregate_techniques(coverage_dir: str, repo_root: str,
                 )
                 for k in ('hits', 'decodeSuccess', 'decodeFail', 'expectedMiss'):
                     dst[k] += int(c.get(k, 0) or 0)
+            for s in (payload.get('unknownSamples') or []):
+                if isinstance(s, str) and s:
+                    unknown_samples.add(s)
+            empty_misses += int(payload.get('emptyMisses', 0) or 0)
         if counters:
-            by_target[tid] = {'catalog': catalog, 'counters': counters}
+            by_target[tid] = {
+                'catalog':        catalog,
+                'counters':       counters,
+                'unknownSamples': sorted(unknown_samples),
+                'emptyMisses':    empty_misses,
+            }
     return by_target
 
 
@@ -564,6 +587,11 @@ def _render_technique_md(by_target: Dict[str, dict]) -> str:
     technique floats against its peers — the analyst doesn't have to
     cross-reference five per-target tables to find "which branch did
     the fuzzer never reach?"
+
+    Per-module footnotes follow the table:
+      • ``empty-miss`` count for that module (grammar seeds that
+        triggered zero candidates).
+      • ``__unknown__`` sample strings (catalog drift surface).
     """
     if not by_target:
         return ''
@@ -581,7 +609,8 @@ def _render_technique_md(by_target: Dict[str, dict]) -> str:
         'output — a soft signal for silent wrong-decode regressions. '
         '`__unknown__` tallies candidates emitted with a `technique` '
         'string absent from the grammar catalog — a non-zero row means '
-        'the decoder surface diverged from the grammar.\n'
+        'the decoder surface diverged from the grammar (sample strings '
+        'are listed in the per-module footnote below).\n'
     )
     lines.append('| module | technique | hits | decode % | miss |')
     lines.append('|---|---|---:|---:|---:|')
@@ -614,6 +643,36 @@ def _render_technique_md(by_target: Dict[str, dict]) -> str:
                 f'| {miss} |'
             )
     lines.append('')
+
+    # Per-module footnotes — only emit a block when there's signal to report.
+    footnotes: List[str] = []
+    for tid in sorted(by_target):
+        entry = by_target[tid]
+        empty = int(entry.get('emptyMisses', 0) or 0)
+        samples = entry.get('unknownSamples') or []
+        if not empty and not samples:
+            continue
+        footnotes.append(f'**`{tid}`**')
+        if empty:
+            footnotes.append(
+                f'- `empty-miss = {empty}` — grammar seed declared an '
+                f'`_expectedSubstring` but the finder returned zero '
+                f'candidates. A high count points at seeds whose shape '
+                f'no branch matches (grammar bug) or at a decoder branch '
+                f'whose gate is too strict.'
+            )
+        if samples:
+            footnotes.append(
+                f'- `__unknown__` samples ({len(samples)} distinct):'
+            )
+            for s in samples:
+                footnotes.append(f'  - `{s}`')
+        footnotes.append('')  # blank line between modules
+
+    if footnotes:
+        lines.append('### Per-module footnotes\n')
+        lines.extend(footnotes)
+
     return '\n'.join(lines) + '\n'
 
 

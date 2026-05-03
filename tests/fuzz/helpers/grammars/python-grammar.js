@@ -79,56 +79,77 @@ function genExecMarshal() {
 
 function genCodecsDecode() {
   // codecs.decode('…', 'rot_13') / 'base64' / 'hex' / 'zlib'
+  //
+  // The decoder's SENSITIVE_PY_KEYWORDS gate (python-obfuscation.js:44)
+  // rejects decoded previews that lack exec/eval/os.system/subprocess/
+  // socket/powershell/cmd.exe/…/bin/sh tokens — so every seed's
+  // decoded substring MUST contain one of those names to fire a hit.
   const out = [];
+  // rot_13('bf.flfgrz') == 'os.system'
   out.push(makeSeed(
-    "import codecs\nx = codecs.decode('jubnzv', 'rot_13')\nexec(x)",
-    'whoami',  // rot13('jubnzv') == 'whoami'
+    "import codecs\nexec(codecs.decode('bf.flfgrz', 'rot_13'))",
+    'os.system',
   ));
+  // rot13('rkrp') == 'exec' (same branch, underscore-free alias)
   out.push(makeSeed(
-    "import codecs\ny = codecs.decode('" + b64('whoami') + "', 'base64')",
-    'whoami',
+    "import codecs\ncodecs.decode('rkrp', 'rot13')",
+    'exec',
   ));
+  // base64('os.system') = 'b3Muc3lzdGVt'
   out.push(makeSeed(
-    "import codecs\nz = codecs.decode('77686f616d69', 'hex')",
-    'whoami',
+    "import codecs\ny = codecs.decode('" + b64('os.system') + "', 'base64')",
+    'os.system',
+  ));
+  // hex('subprocess') = '73756270726f63657373'
+  out.push(makeSeed(
+    "import codecs\nz = codecs.decode('"
+    + Buffer.from('subprocess').toString('hex')
+    + "', 'hex')",
+    'subprocess',
   ));
   return out;
 }
 
 function genChrJoin() {
-  // ''.join(chr(x) for x in [119, 104, 111, 97, 109, 105])  # 'whoami'
+  // ''.join(chr(x) for x in [...]) — decoded payload MUST satisfy
+  // SENSITIVE_PY_KEYWORDS or the decoder drops it (line 394).
+  // 'os.system' codepoints: [111,115,46,115,121,115,116,101,109]
   return [
     makeSeed(
-      "payload = ''.join(chr(x) for x in [119, 104, 111, 97, 109, 105])\nexec(payload)",
-      'whoami',
+      "payload = ''.join(chr(x) for x in [111,115,46,115,121,115,116,101,109])\nexec(payload)",
+      'os.system',
     ),
+    // list-comprehension form spelling 'subprocess'
     makeSeed(
-      "cmd = ''.join([chr(i) for i in [99, 117, 114, 108]])",
-      'curl',
+      "cmd = ''.join([chr(i) for i in [115,117,98,112,114,111,99,101,115,115]])",
+      'subprocess',
     ),
   ];
 }
 
 function genBytesList() {
-  // bytes([119, 104, 111, 97, 109, 105]).decode()
+  // bytes([...]).decode() — decoded payload must satisfy SENSITIVE
+  // gate. 'os.system' codepoints.
   return [
     makeSeed(
-      "exec(bytes([119, 104, 111, 97, 109, 105]).decode())",
-      'whoami',
+      'exec(bytes([111,115,46,115,121,115,116,101,109]).decode())',
+      'os.system',
     ),
+    // 'socket' = [115,111,99,107,101,116]
     makeSeed(
-      "payload = bytes([99, 117, 114, 108]).decode('utf-8')",
-      'curl',
+      "payload = bytes([115,111,99,107,101,116]).decode('utf-8')",
+      'socket',
     ),
   ];
 }
 
 function genChrConcat() {
-  // chr(119)+chr(104)+chr(111)+chr(97)+chr(109)+chr(105)  # 'whoami'
+  // chr(N)+chr(N)+… — must spell a SENSITIVE keyword.
+  // 'exec' = 101,120,101,99
   return [
     makeSeed(
-      "eval(chr(119)+chr(104)+chr(111)+chr(97)+chr(109)+chr(105))",
-      'whoami',
+      'eval(chr(101)+chr(120)+chr(101)+chr(99))',
+      'exec',
     ),
   ];
 }
