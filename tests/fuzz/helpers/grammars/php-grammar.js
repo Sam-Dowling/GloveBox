@@ -62,53 +62,63 @@ function genEvalOnion() {
   // it attempts to actually run each wrapper via Decompressor.inflateSync
   // (degrades gracefully if Decompressor is absent — the fuzz target
   // doesn't load it).
+  //
+  // Expected-substring rationale:
+  //   The decoder emits the RESOLVED payload (or the best-effort preview
+  //   when a nested wrapper can't run), not the outer call chain. Grammar
+  //   expectations that asked for the PHP function name (`base64_decode`,
+  //   `str_rot13`, …) never matched because those names live in the
+  //   source, not the deobfuscated output. Each seed below now expects a
+  //   fragment of the actual decoded payload produced by the decoder.
   const payload = '<?php echo "hello from shell"; ?>';
   const out = [];
   out.push(makeSeed(
     `<?php eval(base64_decode('${b64(payload)}')); ?>`,
-    'base64_decode',
+    'hello from shell',
   ));
   // str_rot13 wrap over base64 — payload must be ≥8 b64 chars for
-  // the decoder's outer regex (evalChainRe) to match.
+  // the decoder's outer regex (evalChainRe) to match. Decoder emits
+  // rot13-of-b64-decoded (`somejunkhere` → `fbzrwhaxurer`).
   out.push(makeSeed(
     `<?php eval(str_rot13(base64_decode('${b64('somejunkhere')}'))); ?>`,
-    'str_rot13',
+    'fbzrwhaxurer',
   ));
   // gzinflate(base64_decode(...)) - structural shape; the payload bytes
-  // won't inflate but the finder pattern-matches regardless.
+  // won't inflate, so the decoder falls back to the raw b64-decoded
+  // preview: `junk`.
   out.push(makeSeed(
     `<?php eval(gzinflate(base64_decode('${b64('junk')}'))); ?>`,
-    'gzinflate',
+    'junk',
   ));
-  // gzuncompress wrap
+  // gzuncompress wrap — same fallback shape as gzinflate on random bytes.
   out.push(makeSeed(
     `<?php eval(gzuncompress(base64_decode('${b64('junk')}'))); ?>`,
-    'gzuncompress',
+    'junk',
   ));
-  // gzdecode wrap
+  // gzdecode wrap — same fallback shape.
   out.push(makeSeed(
     `<?php eval(gzdecode(base64_decode('${b64('junk')}'))); ?>`,
-    'gzdecode',
+    'junk',
   ));
 
   // ── Double wrappers ──
   // str_rot13(gzinflate(base64_decode(...))) — a classic WSO / b374k
   // webshell onion. The decoder's regex matches up to 3 nested
-  // decoders; Decompressor absence still produces a technique-shape
-  // hit (the preview falls back to raw bytes).
+  // decoders; when the inner compression fails on random bytes the
+  // preview is the b64-decoded raw payload.
   out.push(makeSeed(
     `<?php eval(str_rot13(gzinflate(base64_decode('${b64('junkdata')}')))); ?>`,
-    'str_rot13',
+    'junkdata',
   ));
   // gzinflate(str_rot13(base64_decode(...))) — reversed wrapper order.
   out.push(makeSeed(
     `<?php eval(gzinflate(str_rot13(base64_decode('${b64('junkdata')}')))); ?>`,
-    'gzinflate',
+    'junkdata',
   ));
   // gzuncompress(str_rot13(base64_decode(...))) — zlib-framed variant.
   out.push(makeSeed(
     `<?php eval(gzuncompress(str_rot13(base64_decode('${b64('junkdata')}')))); ?>`,
-    'gzuncompress',
+    'junkdata',
   ));
   return out;
 }
@@ -178,7 +188,10 @@ function genStreamWrapper() {
   return [
     makeSeed(
       "<?php include('data://text/plain;base64," + b64('<?php system("whoami"); ?>') + "'); ?>",
-      'data://',
+      // Decoder emits `data: → <?php system("whoami"); ?>` (base64 body
+      // expanded) — expect a substring from the resolved payload, not
+      // the outer `data://` wrapper literal.
+      'whoami',
     ),
     makeSeed(
       "<?php include('php://filter/convert.base64-decode/resource=payload.txt'); ?>",
