@@ -81,6 +81,31 @@ SHA_RE = re.compile(r'^[0-9a-f]{16}$')
 
 
 # ── Subprocess primitive ────────────────────────────────────────────────────
+def _build_run_once_env() -> dict:
+    """Construct the env passed to every run-once.js spawn.
+
+    Critically, we **strip** any inherited ``NODE_V8_COVERAGE`` /
+    ``LOUPE_FUZZ_COVERAGE_DIR`` so that minimisation runs (which
+    invoke run-once.js hundreds of times per pass) do NOT write
+    coverage dumps on every candidate. A user who set those vars in
+    their shell, or who ran the minimiser straight after a
+    ``run_fuzz.py --coverage`` session, would otherwise accumulate
+    junk dumps in the coverage dir AND pay a real wall-clock penalty
+    per candidate (V8 source coverage is documented to slow heavy
+    parsers ~9×; that compounds across hundreds of candidates into
+    minutes of wasted reduction time).
+
+    Coverage measurement is a property of full fuzz runs (see
+    ``scripts/run_fuzz.py --coverage``). Minimisation is a different
+    workflow with its own goals (shrink the input, preserve the
+    stack hash) that has nothing to gain from per-candidate coverage.
+    """
+    env = os.environ.copy()
+    env.pop('NODE_V8_COVERAGE', None)
+    env.pop('LOUPE_FUZZ_COVERAGE_DIR', None)
+    return env
+
+
 def _run_once(target_path: str, candidate_path: str, target_hash: str | None,
               timeout_s: float) -> dict:
     """Spawn run-once.js once and parse the resulting JSON line.
@@ -97,7 +122,7 @@ def _run_once(target_path: str, candidate_path: str, target_hash: str | None,
     try:
         proc = subprocess.run(
             cmd, cwd=BASE, capture_output=True, text=True,
-            timeout=timeout_s,
+            timeout=timeout_s, env=_build_run_once_env(),
         )
     except subprocess.TimeoutExpired:
         return {'_aborted': False, 'ok': False, 'threw': False,
