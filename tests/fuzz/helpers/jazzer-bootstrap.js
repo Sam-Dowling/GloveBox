@@ -119,11 +119,20 @@ const args = [
   CORPUS,
   // Keep instrumentation focused on our own source — vendor/, tests/,
   // node_modules/ are not the bug surface.
+  //
+  // NB: `includes` / `excludes` are SUBSTRING matches against the
+  // filepath (see `Instrumentor.doesMatchFilters` in
+  // @jazzer.js/instrumentor). A blanket `--excludes dist/` would
+  // silently exclude the fuzz bundle written by
+  // `tests/helpers/load-bundle.js::loadModulesAsRequire` (emitted at
+  // `dist/fuzz-bundles/src/bundle-<hash>.js` so the `src/` include
+  // matches it). That would leave the bundle uninstrumented and the
+  // fuzzer blind. `node_modules/` already covers the only dist subtree
+  // we actually want excluded (`dist/test-deps/node_modules/`).
   '--includes', 'src/',
   '--excludes', 'vendor/',
   '--excludes', 'tests/',
   '--excludes', 'node_modules/',
-  '--excludes', 'dist/',
   '--sync', 'false',
   // libFuzzer options below the `--`.
   '--',
@@ -137,7 +146,15 @@ const args = [
 const child = spawn(jazzerCli, args, {
   stdio: 'inherit',
   cwd: path.resolve(__dirname, '..', '..', '..'),  // repo root
-  env: process.env,
+  env: {
+    ...process.env,
+    // Signal to tests/fuzz/helpers/harness.js that we're about to run
+    // under Jazzer so it should load src/ via `require()` instead of
+    // `vm.runInContext`. The former triggers Jazzer's
+    // `hookRequire`-based sancov instrumentation; the latter bypasses
+    // it and reduces coverage-guided fuzzing to a blind random mutator.
+    LOUPE_FUZZ_JAZZER: '1',
+  },
 });
 
 child.on('exit', (code, signal) => {

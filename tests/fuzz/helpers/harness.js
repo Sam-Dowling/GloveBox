@@ -46,10 +46,21 @@ const REPO_ROOT = path.resolve(FUZZ_DIR, '..', '..');
 // We deliberately reuse the unit-test bundle loader. Any divergence
 // between fuzzing semantics and unit-test semantics would be a footgun
 // — a crash a fuzzer finds must reproduce as a unit test.
-const { loadModules, loadModulesWithManifest } = require(path.join(REPO_ROOT, 'tests', 'helpers', 'load-bundle.js'));
+const { loadModules, loadModulesWithManifest, loadModulesAsRequire } = require(path.join(REPO_ROOT, 'tests', 'helpers', 'load-bundle.js'));
 const { hashStack, normaliseError } = require('./crash-dedup.js');
 
 const fs = require('node:fs');
+
+// ── Under-Jazzer detection ──────────────────────────────────────────────────
+// `tests/fuzz/helpers/jazzer-bootstrap.js` sets `LOUPE_FUZZ_JAZZER=1`
+// before spawning Jazzer's CLI (Jazzer itself doesn't set a process env
+// we can sniff). When that flag is live we must load the bundle via
+// `loadModulesAsRequire` so Jazzer's `hookRequire`-based sancov
+// instrumentation fires — `vm.runInContext` silently bypasses the hook,
+// which is the footgun-of-record that kept coverage-guided fuzzing
+// running as a blind random mutator (`corp: 1/1b`, `new_units_added: 0`)
+// on every obfuscation / binary / text target until this fix landed.
+const UNDER_JAZZER = process.env.LOUPE_FUZZ_JAZZER === '1';
 
 // ── Coverage manifest sidecar ───────────────────────────────────────────────
 // When `scripts/run_fuzz.py` runs targets under V8 source coverage, it
@@ -145,7 +156,20 @@ function defineFuzzTarget(cfg) {
   let ctx = null;
   function ensureCtx() {
     if (ctx === null) {
-      if (COVERAGE_DIR) {
+      if (UNDER_JAZZER) {
+        // Coverage-guided mode — go through require() so Jazzer's
+        // `hookRequire` sancov-instrumentation fires on every src/
+        // file. The emitted bundle lives under dist/fuzz-bundles/src/
+        // (the `src/` segment is deliberate — Jazzer's `--includes
+        // src/` filter is a plain substring match on the filepath).
+        const { sandbox } = loadModulesAsRequire(cfg.modules, {
+          expose: cfg.expose,
+          shims: cfg.shims,
+        });
+        // Under Jazzer we don't write a coverage manifest — V8
+        // source-coverage isn't the signal here; the sancov edges are.
+        ctx = sandbox;
+      } else if (COVERAGE_DIR) {
         // Coverage run — record the bundle's char-offset → src/<file>.js
         // map alongside the V8 coverage dumps. Done once per process;
         // re-writing on subsequent calls would be redundant since the
