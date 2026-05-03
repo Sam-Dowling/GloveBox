@@ -1284,14 +1284,22 @@ class RendererRegistry {
       if (/^python\d?$/.test(cmd)) return 'py';
       if (cmd === 'node' || cmd === 'nodejs' || cmd === 'deno') return 'js';
       if (cmd === 'perl') return 'perl';
+      if (cmd === 'php' || /^php\d?$/.test(cmd)) return 'php';
+      if (cmd === 'ruby' || cmd === 'jruby') return 'ruby';
+      if (cmd === 'lua' || /^lua\d?$/.test(cmd)) return 'lua';
       if (cmd === 'osascript') return null; // routed to scpt by registry
     }
+
+    // ── PHP open-tag fast-path ──────────────────────────────────────────
+    // `<?php` (or its short-tag variant `<?=`) at file start is as
+    // unambiguous as a shebang — one indicator suffices.
+    if (/^\s*<\?(?:php\b|=)/.test(h)) return 'php';
 
     // ── Score-based detection (need ≥2 indicators per language) ─────────
     // Each language has a cheap regex bag; the highest-scoring language
     // with a score ≥ 2 wins. Ties resolve to `null` (ambiguous → don't
     // tag).
-    const scores = { ps1: 0, bash: 0, bat: 0, vbs: 0, js: 0, py: 0, perl: 0 };
+    const scores = { ps1: 0, bash: 0, bat: 0, vbs: 0, js: 0, py: 0, perl: 0, php: 0, ruby: 0, lua: 0 };
 
     // PowerShell — strong markers: `<#`/`#>` block comments,
     // `[CmdletBinding()]`, `param(` paired with `[Parameter`, well-known
@@ -1353,6 +1361,42 @@ class RendererRegistry {
     if (/\b(?:my|our|local)\s+[\$@%]\w+/.test(h)) scores.perl += 2;
     if (/^\s*package\s+\w[\w:]*\s*;/m.test(h)) scores.perl += 2;
     if (/\bsub\s+\w+\s*\{/.test(h)) scores.perl += 1;
+
+    // PHP — `<?php` is handled by the open-tag fast-path above. The
+    // score-based path catches PHP fragments embedded after a non-PHP
+    // header (rare but possible) plus pure-script fragments where the
+    // tag is missing because the file is `include`d. Indicators:
+    // superglobals (`$_GET`/`$_POST`), `function`/`class` paired with
+    // `$var` sigils, common stdlib calls (`echo`, `print_r`, `phpinfo`,
+    // `var_dump`), and the closing `?>` tag.
+    if (/\?>\s*$/.test(h.trim()) || /\bphpinfo\s*\(/i.test(h)) scores.php += 2;
+    if (/\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES|SESSION|ENV)\b/.test(h)) scores.php += 2;
+    if (/\bnamespace\s+\w[\w\\]*\s*;/m.test(h)) scores.php += 2;
+    if (/\b(?:public|private|protected|static)\s+function\s+\w+/.test(h)) scores.php += 2;
+    if (/\b(?:echo|print_r|var_dump|var_export|isset|empty|require_once|include_once)\s*[(\s'"]/.test(h)) scores.php += 1;
+    if (/->\s*\w+\s*\(|::\s*\w+\s*\(/.test(h) && /\$\w+/.test(h)) scores.php += 1;
+
+    // Ruby — `require '…'`, `def …`/`end` pairs, `class … < Foo`,
+    // sigil variables (`@var`, `@@cvar`, `$gvar`), `puts`/`p`, `do … end`
+    // blocks. The end-keyword is the strongest single Ruby signature —
+    // no other mainstream language uses it as a block terminator.
+    if (/^\s*require(?:_relative)?\s+['"]/m.test(h)) scores.ruby += 2;
+    if (/^\s*def\s+\w[\w?!=]*[\s\S]{0,400}?^\s*end\s*$/m.test(h)) scores.ruby += 2;
+    if (/^\s*class\s+\w+(?:\s*<\s*\w+)?\s*$/m.test(h)) scores.ruby += 2;
+    if (/@@?\w+\b/.test(h) && /\bend\b/.test(h)) scores.ruby += 2;
+    if (/\bputs\s+(?:["']|[a-z_])/.test(h) || /\bdo\s*(?:\|[\w,\s]+\|)?\s*$/m.test(h)) scores.ruby += 1;
+    if (/^\s*module\s+\w+\s*$/m.test(h)) scores.ruby += 1;
+
+    // Lua — `local x = …`, `function name(…)` paired with `end`,
+    // `require '…'`, `--` line comments, `nil`/`true`/`false`,
+    // `string.format`/`io.open`/`table.insert`. Lua's `end` keyword
+    // (like Ruby's) is the strongest signal.
+    if (/^\s*local\s+\w+\s*=/m.test(h)) scores.lua += 2;
+    if (/^\s*function\s+\w[\w.]*\s*\([\s\S]{0,200}?^\s*end\s*$/m.test(h)) scores.lua += 2;
+    if (/\b(?:string|table|io|os|math|coroutine)\.\w+\s*\(/.test(h)) scores.lua += 2;
+    if (/\bnil\b/.test(h) && /\bend\b/.test(h)) scores.lua += 1;
+    if (/^\s*require\s*['"(]/m.test(h)) scores.lua += 1;
+    if (/--\[\[[\s\S]*?\]\]/.test(h) || /^\s*--[^-\n].*$/m.test(h)) scores.lua += 1;
 
     // Penalty: `<html`, `<svg`, `<?xml`, JSON-style heads — these are
     // markup and shouldn't be tagged as scripts even if some incidental

@@ -1728,7 +1728,7 @@ extendApp({
       loading.appendChild(spinner);
       const msg = document.createElement('span');
       msg.className = 'sb-yara-loading-text';
-      msg.textContent = 'Scanning rules\u2026';
+      msg.textContent = 'Yara Scanning\u2026';
       loading.appendChild(msg);
       body.appendChild(loading);
     }

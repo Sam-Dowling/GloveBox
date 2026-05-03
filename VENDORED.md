@@ -19,7 +19,7 @@ tooling (Dependency-Track, Trivy, etc.).
 | File | Version | Licence | SHA-256 | Upstream |
 |---|---|---|---|---|
 | `vendor/exifr.min.js` | exifr **v7.1.3** | MIT | `2bd05117781c12ddd965dee846de3b3f986b5ecb4c7f6a78f2d2ec1db7c65ae7` | https://github.com/MikeKovarik/exifr |
-| `vendor/highlight.min.js` | Highlight.js **v11.9.0** (git `f47103d4f1`) | BSD-3-Clause | `d2581b9e0ea408beb5b73cd468eefff939f720979343c1d54c401a1c58395a0f` | https://github.com/highlightjs/highlight.js |
+| `vendor/highlight.min.js` | Highlight.js **v11.9.0** (core + 35 common languages) | BSD-3-Clause | `8f6245da657c3c3ff2f3fbac7320e68a808fd5f8cb411f0f200b0fbb9482a753` | https://github.com/highlightjs/highlight.js |
 | `vendor/jsqr.min.js` | jsQR **v1.4.0** | Apache-2.0 | `bc40c8a15196236b2314db0856f72ca0b49980cd5413b8c852a7349f5fee0859` | https://github.com/cozmo/jsQR |
 | `vendor/jszip.min.js` | JSZip **v3.10.1** | MIT **or** GPL-3.0 (dual) | `acc7e41455a80765b5fd9c7ee1b8078a6d160bbbca455aeae854de65c947d59e` | https://github.com/Stuk/jszip |
 | `vendor/lzma-d-min.js` | LZMA-JS (decoder-only) **v2.3.x** (nmrugg) | MIT | `850305b783d09b71731f6f293d1f1ed58180892ff0e68c73475873b510f753a3` | https://github.com/nmrugg/LZMA-JS |

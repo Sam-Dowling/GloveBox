@@ -109,10 +109,13 @@ class YaraEngine {
     is_javascript:      ['js'],
     is_python:          ['py'],
     is_perl:            ['perl'],
+    is_php:             ['php'],
+    is_ruby:            ['ruby'],
+    is_lua:             ['lua'],
     is_wsf:             ['wsf'],
     is_clickonce:       ['clickonce'],
     is_script:          ['ps1', 'bash', 'bat', 'vbs', 'js', 'py', 'perl',
-                         'scpt', 'wsf', 'hta', 'inf'],
+                         'php', 'ruby', 'lua', 'scpt', 'wsf', 'hta', 'inf'],
 
     // ── Email / certs / DBs ─────────────────────────────────────────────
     is_eml:             ['eml'],

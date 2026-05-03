@@ -41,57 +41,73 @@ class PlainTextRenderer {
     { value: 'latin1',    label: 'Latin-1 (ISO 8859-1)' },
   ];
 
-  // Map file extensions to highlight.js language names
+  // Map file extensions to highlight.js language names.
+  // Backed by the vendored v11.9.0 "Common" bundle (36 languages — see
+  // `vendor/highlight.min.js` and the smoke-test in
+  // `tests/unit/highlight-bundle.test.js`). Anything not registered with
+  // hljs is silently skipped at highlight time.
   static LANG_MAP = {
     // PowerShell
     'ps1': 'powershell', 'psm1': 'powershell', 'psd1': 'powershell',
-    // VBScript / VBA
+    // VBScript / VBA / VB.NET
     'vbs': 'vbscript', 'vbe': 'vbscript',
+    'vb': 'vbnet', 'vba': 'vbnet', 'bas': 'vbnet',
     // JavaScript
-    'js': 'javascript', 'jse': 'javascript', 'mjs': 'javascript',
+    'js': 'javascript', 'jse': 'javascript', 'mjs': 'javascript', 'cjs': 'javascript',
+    // TypeScript
+    'ts': 'typescript', 'tsx': 'typescript', 'mts': 'typescript', 'cts': 'typescript',
     // Batch / CMD
     'bat': 'dos', 'cmd': 'dos',
-    // Shell / Bash
-    'sh': 'bash', 'bash': 'bash', 'zsh': 'bash',
+    // Shell / Bash / POSIX
+    'sh': 'bash', 'bash': 'bash', 'zsh': 'bash', 'ksh': 'bash', 'ash': 'bash',
+    'dash': 'bash', 'profile': 'bash', 'bashrc': 'bash', 'zshrc': 'bash',
     // Python
-    'py': 'python', 'pyw': 'python',
+    'py': 'python', 'pyw': 'python', 'pyi': 'python', 'pyx': 'python',
     // Ruby / Perl / PHP
-    'rb': 'ruby', 'pl': 'perl', 'php': 'php',
+    'rb': 'ruby', 'rake': 'ruby', 'gemspec': 'ruby',
+    'pl': 'perl', 'pm': 'perl', 't': 'perl',
+    'php': 'php', 'php3': 'php', 'php4': 'php', 'php5': 'php', 'phtml': 'php',
     // XML / HTML / SVG
     'xml': 'xml', 'html': 'xml', 'htm': 'xml', 'xhtml': 'xml',
     'svg': 'xml', 'xsl': 'xml', 'xslt': 'xml', 'xaml': 'xml',
-    'mht': 'xml', 'mhtml': 'xml',
+    'mht': 'xml', 'mhtml': 'xml', 'plist': 'xml', 'rss': 'xml', 'atom': 'xml',
     // JSON
-    'json': 'json',
+    'json': 'json', 'jsonl': 'json', 'jsonc': 'json',
     // YAML
     'yml': 'yaml', 'yaml': 'yaml',
     // Config / INI
     'ini': 'ini', 'cfg': 'ini', 'conf': 'ini', 'toml': 'ini',
-    'reg': 'ini', 'inf': 'ini',
+    'reg': 'ini', 'inf': 'ini', 'properties': 'ini',
     // SQL
     'sql': 'sql',
-    // CSS
+    // CSS family
     'css': 'css',
+    'scss': 'scss', 'sass': 'scss',
+    'less': 'less',
     // C-family
     'c': 'c', 'h': 'c',
-    'cpp': 'cpp', 'cc': 'cpp', 'cxx': 'cpp', 'hpp': 'cpp', 'hxx': 'cpp',
+    'cpp': 'cpp', 'cc': 'cpp', 'cxx': 'cpp', 'hpp': 'cpp', 'hxx': 'cpp', 'c++': 'cpp',
     'cs': 'csharp',
-    'java': 'java',
+    'java': 'java', 'jsp': 'java',
     'go': 'go',
     'rs': 'rust',
     'swift': 'swift',
     'kt': 'kotlin', 'kts': 'kotlin',
-    // TypeScript
-    'ts': 'typescript', 'tsx': 'typescript',
+    // Objective-C
+    'm': 'objectivec', 'mm': 'objectivec',
     // Markdown
-    'md': 'markdown', 'markdown': 'markdown',
-    // Makefile
-    'makefile': 'makefile', 'mk': 'makefile',
+    'md': 'markdown', 'markdown': 'markdown', 'mdown': 'markdown', 'mkd': 'markdown',
+    // Makefile / build
+    'makefile': 'makefile', 'mk': 'makefile', 'mak': 'makefile',
     // Lua
     'lua': 'lua',
     // R
     'r': 'r',
-    // Diff
+    // GraphQL
+    'graphql': 'graphql', 'gql': 'graphql',
+    // WebAssembly text format
+    'wat': 'wasm', 'wast': 'wasm',
+    // Diff / patch
     'diff': 'diff', 'patch': 'diff',
   };
 
@@ -154,6 +170,32 @@ class PlainTextRenderer {
     // Markdown
     'text/markdown': 'markdown',
     'text/x-markdown': 'markdown',
+    // Less / SCSS / Sass
+    'text/x-less': 'less',
+    'text/x-scss': 'scss',
+    'text/x-sass': 'scss',
+    // Lua / R / Go / Rust / Swift / Kotlin
+    'text/x-lua': 'lua',
+    'application/x-lua': 'lua',
+    'text/x-r': 'r',
+    'application/x-r': 'r',
+    'text/x-go': 'go',
+    'text/x-rustsrc': 'rust',
+    'text/x-swift': 'swift',
+    'text/x-kotlin': 'kotlin',
+    // Objective-C
+    'text/x-objc': 'objectivec',
+    'text/x-objective-c': 'objectivec',
+    // GraphQL
+    'application/graphql': 'graphql',
+    'application/graphql+json': 'graphql',
+    // Diff / patch
+    'text/x-diff': 'diff',
+    'text/x-patch': 'diff',
+    // INI / config / TOML
+    'text/x-toml': 'ini',
+    'application/toml': 'ini',
+    'text/x-ini': 'ini',
   };
 
   // ── Shared "rich rendering" gate ────────────────────────────────────────
@@ -773,14 +815,19 @@ class PlainTextRenderer {
       'typescript': 'TypeScript',
       'powershell': 'PowerShell',
       'vbscript': 'VBScript',
+      'vbnet': 'VB.NET',
       'csharp': 'C#',
       'cpp': 'C++',
+      'objectivec': 'Objective-C',
       'dos': 'Batch',
       'bash': 'Shell',
+      'shell': 'Shell',
       'python': 'Python',
+      'python-repl': 'Python REPL',
       'ruby': 'Ruby',
       'perl': 'Perl',
       'php': 'PHP',
+      'php-template': 'PHP Template',
       'java': 'Java',
       'kotlin': 'Kotlin',
       'swift': 'Swift',
@@ -788,6 +835,8 @@ class PlainTextRenderer {
       'rust': 'Rust',
       'sql': 'SQL',
       'css': 'CSS',
+      'scss': 'SCSS',
+      'less': 'Less',
       'xml': 'XML/HTML',
       'json': 'JSON',
       'yaml': 'YAML',
@@ -796,7 +845,10 @@ class PlainTextRenderer {
       'makefile': 'Makefile',
       'lua': 'Lua',
       'r': 'R',
+      'graphql': 'GraphQL',
+      'wasm': 'WebAssembly',
       'diff': 'Diff',
+      'plaintext': 'Plain Text',
       'c': 'C',
     };
     return nameMap[lang] || (lang.charAt(0).toUpperCase() + lang.slice(1));
