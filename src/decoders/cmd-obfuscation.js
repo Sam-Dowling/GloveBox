@@ -507,6 +507,19 @@ Object.assign(EncodedContentDetector.prototype, {
       // mirror an IOC.PATTERN into the externalRefs surface.
       const executeOutput = !!forVar; // any reference of a %X is enough
 
+      // Attach the CMD-specific behavioural-tell mirror at the
+      // candidate site (not at the post-processor) so unrelated
+      // decoder families that also set `_executeOutput` (bash live
+      // fetch, python/php/js eval sinks) don't get tagged with this
+      // CMD-only IOC.PATTERN. `_executeOutput` retains its generic
+      // role of bumping severity in `_processCommandObfuscation`.
+      const _patternIocs = executeOutput
+        ? [{
+            url: 'for /f \u2026 do call %X \u2014 captured command output is executed as a shell command',
+            severity: 'high',
+          }]
+        : undefined;
+
       candidates.push({
         type: 'cmd-obfuscation',
         technique,
@@ -516,6 +529,7 @@ Object.assign(EncodedContentDetector.prototype, {
         deobfuscated: cleaned,
         _executeOutput: executeOutput,
         _forFCall: hasCall,
+        ..._patternIocs ? { _patternIocs } : {},
       });
     }
 
@@ -667,6 +681,10 @@ Object.assign(EncodedContentDetector.prototype, {
             length: rawSpan.length,
             deobfuscated: payload,
             _clickfix: true,
+            _patternIocs: [{
+              url: 'ClickFix run-dialog payload \u2014 instructs user to paste malicious command (T1204.001)',
+              severity: 'critical',
+            }],
           });
         }
       }
@@ -891,30 +909,35 @@ Object.assign(EncodedContentDetector.prototype, {
     if (matchedPatterns.length >= 3) severity = 'critical';
     if (iocs.length > 0) severity = severity === 'critical' ? 'critical' : 'high';
 
-    // Behavioural-tell escalation: `for /f … do call %X` means the
-    // captured command's stdout becomes the next shell command. Mirror
-    // an IOC.PATTERN into the IOC list (per the renderer-contract
-    // reminder "Mirror every Detection into externalRefs as
-    // IOC.PATTERN") and force at least 'high'.
+    // Behavioural-tell escalation: `_executeOutput` is a generic
+    // signal that the decoded payload is fed back into a shell
+    // (CMD `for /f \u2026 do call %X`, bash `curl \u2026 | sh`, python
+    // `eval(decoded)`, php `eval($decoded)`, JS `Function(\u2026)()` etc.).
+    // Severity bumps for every family. The family-specific IOC.PATTERN
+    // text \u2014 when emitted at all \u2014 is attached at the candidate site
+    // via `_patternIocs`, never inferred from `_executeOutput` here
+    // (otherwise non-CMD candidates would be mis-labelled with the
+    // CMD `for /f` pattern).
     if (candidate._executeOutput) {
-      iocs.push({
-        type: IOC.PATTERN,
-        url: 'for /f … do call %X — captured command output is executed as a shell command',
-        severity: 'high',
-      });
       if (severity !== 'critical') severity = 'high';
     }
 
-    // ClickFix run-dialog wrapper: align with the HTML-side detector
-    // at `src/renderers/html-renderer.js:247` (also critical, same
-    // MITRE technique tag).
-    if (candidate._clickfix) {
-      iocs.push({
-        type: IOC.PATTERN,
-        url: 'ClickFix run-dialog payload \u2014 instructs user to paste malicious command (T1204.001)',
-        severity: 'critical',
-      });
-      severity = 'critical';
+    // Per-candidate behaviour-pattern mirrors. Each entry becomes an
+    // IOC.PATTERN row in `externalRefs`. CMD-specific labels (the
+    // `for /f \u2026 do call %X` and ClickFix mirrors) live at their
+    // CMD candidate sites in this same file; other decoder families
+    // currently emit no mirror and rely on `_executeOutput` + the
+    // dangerousPatterns scoring above.
+    if (Array.isArray(candidate._patternIocs)) {
+      for (const p of candidate._patternIocs) {
+        iocs.push({
+          type: IOC.PATTERN,
+          url: p.url,
+          severity: p.severity || 'high',
+        });
+        if (p.severity === 'critical') severity = 'critical';
+        else if (p.severity === 'high' && severity !== 'critical') severity = 'high';
+      }
     }
 
     // finger.exe LOLBin target enrichment: the canonical ClickFix

