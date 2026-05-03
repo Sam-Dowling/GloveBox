@@ -49,10 +49,13 @@ ReDoS, integer overflow in length fields, infinite loops past the
 parser watchdog, memory blowup, invariant drift (an IOC that escapes
 the `IOC.*` enum, a `findings.risk` outside the canonical tier set).
 
-Fuzzing is the right tool for that surface. Each target loads its
-`src/` subset through `tests/helpers/load-bundle.js` — the same
-`vm.Context` loader the unit tests use — so any crash a fuzzer finds
-reproduces as a unit test by construction.
+Fuzzing is the right tool for that surface. Replay runs, crash
+reproduction, minimisation, and promoted regressions execute the same
+concatenated `src/` subset through `tests/helpers/load-bundle.js`'s
+`vm.Context` path that the unit tests use. Jazzer runs use the same
+target module, seed corpus, and expose list, but switch to
+`loadModulesAsRequire()` so Jazzer's `hookRequire` instrumentation can
+see the emitted bundle.
 
 ## Two execution modes
 
@@ -83,16 +86,14 @@ mutator and grows its corpus alongside the replay seeds under
 `dist/fuzz-corpus/<target>/`. Crashes land in
 `dist/fuzz-crashes/<target>/`.
 
-**Caveat — coverage signal across vm.Context.** The harness loads
-target source into a fresh `vm.Context` (matching the unit-test
-discipline). Jazzer.js's source instrumentation does not currently
-reach across that boundary, so coverage-guided fuzzing today behaves
-closer to a fast bytewise mutator than a true source-coverage feedback
-loop. The trade-off is deliberate: `vm.Context` isolation matches
-production worker semantics and keeps fuzz crashes reproducible as
-unit tests. A "flat" target loading mode that skips `vm.Context` is
-on the table whenever a real bug investigation needs source-coverage
-drilldown.
+When `jazzer-bootstrap.js` sets `LOUPE_FUZZ_JAZZER=1`, the harness swaps
+its normal `vm.Context` loader for `loadModulesAsRequire()`. That emits
+the concatenated target bundle under `dist/fuzz-bundles/src/` and loads
+it through `require()`, which is the path Jazzer's `hookRequire`
+sancov instrumentation can actually see. Replay and manifest-backed
+coverage measurement stay on the `vm.Context` path; Jazzer gets real
+mutation guidance without changing the target's source list, expose
+list, or seed contract.
 
 (That's about Jazzer.js's *mutation*-guiding coverage. For *measuring*
 which `src/` lines a fuzz run actually exercised, see
@@ -117,9 +118,11 @@ tests/fuzz/targets/
 ├── text/
 │   ├── csv-rfc4180.fuzz.js      ← CsvRenderer.parseChunk state machine
 │   ├── encoded-content.fuzz.js  ← EncodedContentDetector finder pipeline
+│   ├── encoded-decoder-chain.fuzz.js ← EncodedContentDetector.scan() over full `_DETECTOR_FILES`
 │   ├── evtx-detector.fuzz.js    ← EvtxDetector key/value tokenizer
 │   ├── ioc-extract.fuzz.js      ← extractIOCs / pushIOC plumbing
-│   └── ooxml-rel.fuzz.js        ← OoxmlRelScanner._classifyTarget tokenizer
+│   ├── ooxml-rel.fuzz.js        ← OoxmlRelScanner._classifyTarget tokenizer
+│   └── safe-regex.fuzz.js       ← safeRegex / safeMatchAll / safeExec / safeTest
 ├── obfuscation/
 │   ├── cmd-obfuscation.fuzz.js        ← _findCommandObfuscationCandidates (CMD branches)
 │   ├── powershell-obfuscation.fuzz.js ← _findCommandObfuscationCandidates (PS branches)
@@ -150,6 +153,20 @@ directly (the binary walker) rather than the 1-line
 fields; those are documented hard-fail paths and listed in
 `isExpectedError`.
 
+`text/encoded-content` and `text/encoded-decoder-chain` are
+complementary. The former fuzzes the regex finders plus the byte
+decoders in isolation; the latter loads the full `_DETECTOR_FILES`
+mixin chain and drives the public `scan(text, rawBytes, ctx)` entry
+point, catching orchestration bugs where finder output meets decoder
+dispatch.
+
+`text/safe-regex` exists because `safeRegex`, `safeMatchAll`,
+`safeExec`, and `safeTest` are the shared choke-point for every
+user-supplied regex surface in Loupe. It complements
+`text/ioc-extract`, which already reaches `src/constants.js`
+indirectly but not deeply enough to stress the regex helpers
+themselves.
+
 YARA targets fuzz `parseRules` and `scan` separately. The shapes are
 orthogonal — rule text vs file bytes — so fuzzing them jointly would
 double the search space without proportional bug-find gain.
@@ -165,12 +182,15 @@ the buffer side.
 tests/fuzz/
 ├── README.md                   (this file)
 ├── helpers/
-│   ├── harness.js              defineFuzzTarget + runReplay; loads src/
-│   │                           into vm.Context via tests/helpers/load-bundle.js
+│   ├── harness.js              defineFuzzTarget + runReplay; loader switch:
+│   │                           loadModules() for replay,
+│   │                           loadModulesWithManifest() for `--replay --coverage`,
+│   │                           loadModulesAsRequire() under Jazzer
 │   ├── crash-dedup.js          stack-hash digest (16-hex stable across runs)
 │   ├── seed-corpus.js          deterministic walker over examples/<dir>/
 │   ├── replay-runner.js        Node entry for --replay / --reproduce
 │   ├── jazzer-bootstrap.js     Node entry for the Jazzer.js CLI
+│   ├── technique-tracker.js    per-technique counters + exit-time JSON sidecars
 │   └── run-once.js             single-shot verifier for the minimiser
 └── targets/                    one *.fuzz.js per fuzz surface
 ```
@@ -178,6 +198,12 @@ tests/fuzz/
 `@jazzer.js/core` is a test-time dep, NOT a vendored runtime lib —
 treated identically to `@playwright/test`. Pinned via `JAZZER_VERSION`
 in `scripts/run_fuzz.py`; bumping is a one-line PR.
+
+Jazzer-backed runs materialise the current target bundle under
+`dist/fuzz-bundles/src/bundle-<hash>.js` (gitignored). The `src/`
+segment is deliberate: `jazzer --includes src/` is a plain substring
+match, so the emitted bundle must keep `src/` in its path to remain
+instrumented.
 
 ## Adding a new target
 
@@ -214,14 +240,18 @@ in `scripts/run_fuzz.py`; bumping is a one-line PR.
 
    module.exports = { fuzz, seeds, name: 'my-target' };
    ```
-3. Smoke it: `python scripts/run_fuzz.py --replay --quick targets/<area>/<name>`.
-4. Run a longer pass: `python scripts/run_fuzz.py --replay --iterations 1000 targets/<area>/<name>`.
+3. Smoke it: `python scripts/run_fuzz.py --replay --quick <area>/<name>`.
+4. Run a longer pass: `python scripts/run_fuzz.py --replay --iterations 1000 <area>/<name>`.
 5. Once green, commit. The next `python make.py fuzz` invocation
    automatically picks it up.
 
-The harness reuses `tests/helpers/load-bundle.js` verbatim. Anything a
-unit test can `loadModules([...])`, a fuzz target can. There is no
-divergence in semantics by design.
+The harness still builds on `tests/helpers/load-bundle.js`, but the
+loader path is mode-dependent: replay uses `loadModules()`,
+manifest-backed `--replay --coverage` runs use
+`loadModulesWithManifest()`, and Jazzer uses `loadModulesAsRequire()`
+so its sancov instrumentation stays live. Keep your target honest
+about which `src/` files and `expose` names it needs; the same target
+module drives replay, minimisation, promotion, and Jazzer runs.
 
 ## The 2.5 s per-iteration budget
 
@@ -333,39 +363,43 @@ preserves the find-time grouping by re-running the same
 
 ## Coverage measurement
 
-Pass `--coverage` to `python scripts/run_fuzz.py` to record V8 source
-coverage per target and emit a per-`src/<file>.js` line-coverage table
-in `dist/fuzz-coverage/summary.md`.
+Pass `--coverage` to `python scripts/run_fuzz.py` when you want
+coverage artefacts. Combined with `--replay`, the harness records V8
+source coverage per target and emits a per-`src/<file>.js`
+line-coverage table in `dist/fuzz-coverage/summary.md`. The same flag
+also enables the obfuscation-technique sidecars described later.
 
 ```bash
 # Coverage-aware quick smoke across two targets:
 python scripts/run_fuzz.py --replay --quick --coverage text/ioc-extract yara/scan
 
-# Coverage on every target under Jazzer.js (slow — V8 coverage adds
-# substantial overhead on heavy parsers, especially the binary ones):
-python scripts/run_fuzz.py --coverage --time 30
+# Longer manifest-backed pass on one target:
+python scripts/run_fuzz.py --replay --coverage --iterations 1000 text/safe-regex
 ```
 
 This is a *measurement* layer, distinct from Jazzer.js's coverage-
 guided mutation. The two answer different questions:
 
 - **Jazzer.js coverage-guided mutation** — internal feedback loop the
-  fuzzer uses to decide which inputs to mutate next. Currently
-  degraded by `vm.Context` isolation (see caveat above).
+  fuzzer uses to decide which inputs to mutate next. The harness keeps
+  that signal live by switching Jazzer runs to `loadModulesAsRequire()`
+  and emitting a require-backed bundle under `dist/fuzz-bundles/src/`
+  where Jazzer's `hookRequire` instrumentation can see it.
 - **`--coverage` line-coverage measurement** — external observation of
   which `src/<file>.js` lines a finished fuzz run actually
-  exercised. Implemented via `NODE_V8_COVERAGE`, which V8 supports
-  natively for `vm.runInContext` code without any of the
-  instrumentation that Jazzer.js's mutation feedback needs.
+  exercised. Implemented via `NODE_V8_COVERAGE` on the manifest-backed
+  replay path; this answers a different question from Jazzer's
+  mutation guidance.
 
 How it works:
 
 1. With `--coverage`, the orchestrator sets `NODE_V8_COVERAGE=<dir>`
    and `LOUPE_FUZZ_COVERAGE_DIR=<dir>` per target.
-2. The harness (`tests/fuzz/helpers/harness.js`) loads the target's
-   `src/` subset via `loadModulesWithManifest()` instead of
-   `loadModules()`, writes the bundle's char-offset → `src/<file>.js`
-   manifest into the same dir, and labels the bundle with a stable
+2. In the manifest-backed replay path, the harness
+   (`tests/fuzz/helpers/harness.js`) loads the target's `src/` subset
+   via `loadModulesWithManifest()` instead of `loadModules()`, writes
+   the bundle's char-offset → `src/<file>.js` manifest into the same
+   dir, and labels the bundle with a stable
    `loupe-fuzz-bundle://<target-id>` URL.
 3. V8 dumps per-process source-coverage JSON into the dir at process
    exit (libFuzzer / replay runner alike).
@@ -380,7 +414,11 @@ How it works:
    `dist/fuzz-coverage/summary.md`. JSON is available standalone via
    `python scripts/fuzz_coverage_aggregate.py --json`.
 
-The `summary.md` output has three blocks:
+Jazzer runs can still emit obfuscation-technique sidecars under the
+same `--coverage` flag, but the per-file `Coverage` tables are the
+manifest-backed replay view above.
+
+The `Coverage` block of `summary.md` has three tables:
 
 - **Per-target rollup** — one line per target, total covered /
   uncovered / unknown / executable lines.
@@ -389,6 +427,10 @@ The `summary.md` output has three blocks:
 - **Per-`src/` file rollup across all targets** — sorted by ascending
   coverage %, so the under-fuzzed files float to the top. Use this
   to decide which target to add or extend.
+
+When obfuscation targets ran under `--coverage`, `summary.md` also
+appends an `Obfuscation technique coverage` section with per-module
+footnotes for `empty-miss` and sampled `__unknown__` strings.
 
 Caveats:
 
@@ -402,6 +444,10 @@ Caveats:
   V8 implicit module function (which V8 reports without per-line
   attribution). Treat `covered + unknown` as the optimistic upper
   bound and `covered` as the conservative lower bound.
+- If you need exact per-`src/` line attribution, prefer
+  `--replay --coverage`. Jazzer runs switch to the require-backed
+  loader for mutation guidance rather than the manifest-backed replay
+  path described above.
 - V8 source coverage costs wall-clock — typically a few × slowdown
   on heavy binary parsers under `--coverage`. Skip the flag for
   pure crash-hunting runs; reach for it when investigating where
@@ -421,14 +467,19 @@ python scripts/fuzz_coverage_aggregate.py --coverage-dir /tmp/cov    # custom di
 The five `obfuscation/*` targets exist to drive an iterative
 "fuzz → review → fix → repeat" workflow against the command-obfuscation
 decoders (`src/decoders/{cmd,bash,python,php}-obfuscation.js` and
-`src/decoders/ps-mini-evaluator.js`). Each iteration produces a
-per-technique hit / decode-success / expected-miss table in
-`dist/fuzz-coverage/summary.md` § _Obfuscation technique coverage_ —
-rows with `hits = 0` are decoder branches the current seed corpus never
+`src/decoders/ps-mini-evaluator.js`). Each iteration produces two
+related outputs in `dist/fuzz-coverage/summary.md`:
+
+- a per-technique hit / decode-success / expected-miss table
+- per-module footnotes for `empty-miss` and sampled `__unknown__`
+  strings
+
+Rows with `hits = 0` are decoder branches the current seed corpus never
 reaches; rows with non-zero `hits` and low `decode %` are branches that
 fire but fail to produce usable `deobfuscated` output; non-zero `miss`
-counts are grammar seeds where the decoder's output no longer contains
-the expected substring (a silent wrong-decode signal).
+counts mean candidates fired under that technique but none preserved the
+seed's expected substring; non-zero `empty-miss` footnotes mean a seed
+declared `_expectedSubstring` but triggered zero candidates at all.
 
 The per-technique data comes from two sources that must stay in sync:
 
@@ -438,9 +489,17 @@ The per-technique data comes from two sources that must stay in sync:
    (`tests/fuzz/helpers/grammars/<shell>-grammar.js`) — parsed by
    `scripts/fuzz_coverage_aggregate.py` at render time, no `eval`.
 
+`powershell-obfuscation` is the one mixed-surface target: it records
+both the PowerShell-shaped branches emitted by the shared CMD/PS finder
+in `cmd-obfuscation.js` and the variable-resolution path in
+`ps-mini-evaluator.js`.
+
 A technique that fires in the decoder but is absent from the catalog
-lands in the `__unknown__` row of the table; a catalog entry that
-never fires has `hits = 0`. Either asymmetry is actionable.
+lands in the `__unknown__` row of the table and its sampled strings
+appear in the per-module footnotes; a catalog entry that never fires
+has `hits = 0`; a seed that yields zero candidates increments the
+module's `empty-miss` footnote instead of any technique row. Either
+asymmetry is actionable.
 
 ### Four-command loop
 
@@ -458,7 +517,8 @@ python scripts/run_fuzz.py --replay --coverage \
 python scripts/fuzz_coverage_aggregate.py
 
 # 3. Inspect the "Obfuscation technique coverage" section.
-#    Focus on rows where hits = 0, decode % < 50, or miss > 0.
+#    Focus on rows where hits = 0, decode % < 50, miss > 0,
+#    or the per-module footnotes report empty-miss / __unknown__ samples.
 #    Cross-reference against the per-src/ rollup — low line-coverage
 #    on src/decoders/<shell>-obfuscation.js pinpoints the branch.
 ${PAGER:-less} dist/fuzz-coverage/summary.md
@@ -473,16 +533,22 @@ ${PAGER:-less} dist/fuzz-coverage/summary.md
 #       src/decoders/<shell>-obfuscation.js to extend the decoder.
 #       Run `python make.py test-unit` afterwards to verify no
 #       existing test regressed.
-#    c. miss > 0 → the decoder emits a candidate but its `deobfuscated`
-#       output no longer contains the expected payload token. Likely a
-#       silent regression in the decoder's unwrapping logic.
+#    c. miss > 0 → candidates fired but their `deobfuscated` output no
+#       longer contains the expected payload token. Likely a silent
+#       regression in the decoder's unwrapping logic.
+#    d. empty-miss > 0 in the footnotes → the grammar seed never
+#       triggered any branch. Fix the seed shape or loosen the gate.
+#    e. __unknown__ samples in the footnotes → the decoder emitted a
+#       `technique` string absent from TECHNIQUE_CATALOG. Add or correct
+#       the catalog entry verbatim.
 #    Then loop to step 1.
 ```
 
 Longer coverage-guided passes trade runtime for mutation diversity:
 
 ```bash
-# 10 min per target under Jazzer.js libFuzzer mutation, with coverage.
+# 10 min per target under Jazzer.js libFuzzer mutation, with `--coverage`
+# so the obfuscation technique counters are still emitted.
 python scripts/run_fuzz.py --coverage --time 600 \
     obfuscation/cmd-obfuscation \
     obfuscation/powershell-obfuscation \
@@ -503,9 +569,9 @@ not a correctness signal on its own.
 |---|---|---|
 | `hits = 0` in catalog | Decoder branch exists, grammar seed doesn't trigger it | Add a grammar seed for the branch |
 | `hits > 0`, `decode %` < 50 | Decoder fires but can't resolve | Extend static parser in `src/decoders/<shell>-obfuscation.js` |
-| `miss > 0` on low-volume tech | Decoder output lost the payload token | Check recent changes to the branch's unwrapper |
-| `__unknown__` > 0 | Decoder emits a `technique` string absent from the grammar catalog | Add the string to `TECHNIQUE_CATALOG` |
-| A catalog entry is `__unknown__` only | Grammar catalog string doesn't match decoder emission verbatim | Fix the catalog string to match exactly |
+| `miss > 0` on a technique row | Candidates fired, but none preserved the expected token | Check recent changes to the branch's unwrapper |
+| `empty-miss > 0` in footnotes | `_expectedSubstring` seed triggered zero candidates | Fix the grammar seed shape or loosen the branch gate |
+| `__unknown__` > 0 / unknown samples listed | Decoder emits a `technique` string absent from the grammar catalog | Add or fix the matching `TECHNIQUE_CATALOG` entry |
 
 
 ## Reproducible build interaction

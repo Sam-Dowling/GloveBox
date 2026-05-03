@@ -105,8 +105,8 @@ tests/
   e2e-fixtures/                 Playwright + docs/index.test.html driving __loupeTest.loadBytes
   e2e-ui/                       Playwright UI ingress (file picker, drag-drop, paste)
   perf/                         Opt-in, LOUPE_PERF=1 only
-  fuzz/                         Opt-in, Jazzer.js + replay mutator; never enters bundle
-  helpers/load-bundle.js        vm-context loader for unit tests
+  fuzz/                         Opt-in, Jazzer.js + replay mutator + coverage/technique rollups; never enters bundle
+  helpers/load-bundle.js        vm-context loader + Jazzer require-bundle helper for unit tests/fuzzing
   helpers/playwright-helpers.ts useSharedBundlePage + cross-load reset
   e2e-fixtures/expected.jsonl   Snapshot matrix (range-based assertions, regenerable)
   e2e-fixtures/yara-rules-fired.json  YARA rule-coverage manifest
@@ -136,7 +136,7 @@ python scripts/lint_yara.py --fix       # autofix YARA meta-key order, comments,
 python make.py contract                 # static renderer-contract check (class + render method)
 python make.py sbom                     # opt-in; release-time only
 python make.py perf                     # opt-in; sets LOUPE_PERF=1 internally
-python make.py fuzz                     # opt-in; Jazzer.js coverage-guided over tests/fuzz/targets/
+python make.py fuzz                     # opt-in; Jazzer.js coverage-guided over tests/fuzz/targets/ via loadModulesAsRequire()
 
 # Test pipeline (opt-in; never blocks the default loop)
 python make.py test                     # test-build → test-unit → test-e2e

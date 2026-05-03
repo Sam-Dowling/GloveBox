@@ -100,20 +100,29 @@ SHA-256 in `VENDORED.md`.
 
 ## Testing
 
-Three independent layers, all opt-in:
+Three automated test layers plus two opt-in investigative harnesses:
 
 ```bash
 python make.py test          # test-build → test-unit → test-e2e
 python make.py test-build    # rebuild docs/index.test.html (--test-api)
 python make.py test-unit     # Node node:test over tests/unit/
 python make.py test-e2e      # Playwright (e2e-fixtures + e2e-ui)
+python make.py perf          # Timeline perf harness
+python make.py fuzz          # Fuzz harness under tests/fuzz/
 ```
 
 | Layer | Runner | Covers |
 |---|---|---|
 | `tests/unit/` | Node `node:test` (Node ≥ 20) | Pure modules in a `vm.Context`. No DOM, no App. |
 | `tests/e2e-fixtures/` | Playwright + `docs/index.test.html` | Real fixtures driven through `__loupeTest.loadBytes` → real `App._loadFile` → asserted findings shape. |
-| `tests/e2e-ui/` | Playwright | Ingress paths — file picker (`setInputFiles`), drag-drop (synthetic `DragEvent`), paste (planned). |
+| `tests/e2e-ui/` | Playwright | Ingress paths — file picker (`setInputFiles`), drag-drop (synthetic `DragEvent`), paste. |
+| `tests/fuzz/` | Jazzer.js + replay harness | Opt-in malformed-input fuzzing for parsers, decoders, and regex consumers. |
+| `tests/perf/` | Playwright | Opt-in Timeline performance harness (`LOUPE_PERF=1`). |
+
+`python make.py fuzz` runs every discovered `tests/fuzz/targets/**/*.fuzz.js`
+target under Jazzer by default; use
+`python scripts/run_fuzz.py --replay --quick` for the fast no-`npm`
+smoke path.
 
 `scripts/build.py --test-api` produces `docs/index.test.html`
 (gitignored) including `src/app/app-test-api.js`. The release path
@@ -122,8 +131,9 @@ emitted bundle and fails on `__LOUPE_TEST_API__` / `__loupeTest`. The
 reproducibility guarantee in [SECURITY.md § Reproducible
 Build](SECURITY.md#reproducible-build) covers `docs/index.html` only.
 
-Full runbook (Playwright provisioning, `__loupeTest` surface,
-performance harness): `tests/README.md` + `tests/perf/README.md`.
+Full runbooks (Playwright provisioning, `__loupeTest` surface,
+performance harness, fuzz harness): `tests/README.md` +
+`tests/perf/README.md` + `tests/fuzz/README.md`.
 
 ---
 

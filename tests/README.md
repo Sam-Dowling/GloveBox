@@ -2,13 +2,14 @@
 
 Loupe ships as a single 100% offline static HTML file with no committed
 `package.json` / `node_modules` / lockfile. The test pipeline preserves
-that constraint while adding three independent layers of coverage:
+that constraint while adding several complementary layers:
 
 | Layer            | Runner             | What it covers                                            |
 |------------------|--------------------|-----------------------------------------------------------|
 | `tests/unit/`    | Node `node:test`   | Pure modules from `src/` (no DOM, no App, no renderers).  |
 | `tests/e2e-fixtures/` | Playwright    | Real fixtures from `examples/` → real renderer dispatch.  |
 | `tests/e2e-ui/`  | Playwright         | UI ingress (file picker, drag-drop, paste) round-trips.   |
+| `tests/fuzz/`    | Jazzer.js + replay | Opt-in malformed-input fuzzing for parsers, decoders, and regex consumers — see `tests/fuzz/README.md`. |
 | `tests/perf/`    | Playwright         | Opt-in (`LOUPE_PERF=1`) Timeline performance harness — see `tests/perf/README.md`. |
 
 Everything is wired through `make.py`:
@@ -18,6 +19,8 @@ python make.py test          # full pipeline: test-build → test-unit → test-
 python make.py test-build    # rebuild docs/index.test.html (--test-api)
 python make.py test-unit     # node:test under tests/unit/
 python make.py test-e2e      # Playwright under tests/e2e-fixtures/ + tests/e2e-ui/
+python make.py perf          # Timeline perf harness (opt-in)
+python make.py fuzz          # fuzz harness under tests/fuzz/ (opt-in)
 ```
 
 `python make.py` (no args) is **unchanged** — the test pipeline is opt-in
@@ -120,11 +123,11 @@ that used to surface IOC X stops surfacing it.
 
 `tests/e2e-ui/` exercises the UI ingress paths — file picker (via
 `page.setInputFiles`), drag-drop (synthesised `DragEvent` carrying a
-`DataTransfer` with a `File`), and paste (synthesised `ClipboardEvent`
-— planned, not yet covered). Earlier project notes claimed Playwright
-cannot drive a file dialog; that's incorrect — `page.setInputFiles` is
-exactly the right API for the hidden `<input type="file">` Loupe wires
-its drop zone around.
+`DataTransfer` with a `File`), and paste (synthesised `Event('paste')`
+with a fake `clipboardData` shape). Earlier project notes claimed
+Playwright cannot drive a file dialog; that's incorrect —
+`page.setInputFiles` is exactly the right API for the hidden
+`<input type="file">` Loupe wires its drop zone around.
 
 ### Wall-time and parallelism
 
@@ -263,6 +266,28 @@ Synthesises `Event('paste')` with a faked `clipboardData` shape
 matching the `DataTransfer` interface the handler reads. Covers all
 four forks (file → image → text/plain → text/html) plus the
 input/textarea focus gate.
+
+## Fuzz harness — `tests/fuzz/`
+
+Opt-in only. `python make.py fuzz` runs every discovered
+`tests/fuzz/targets/**/*.fuzz.js` target under Jazzer.js by default;
+`python scripts/run_fuzz.py --replay --quick` is the fastest no-`npm`
+smoke path and is the same path used by crash reproduction,
+minimisation, and promoted regression tests.
+
+Loader model:
+
+- replay and promoted regressions use the same `vm.Context`-backed
+  `loadModules()` contract as `tests/unit/`
+- `--coverage` replay runs use `loadModulesWithManifest()` so
+  `dist/fuzz-coverage/summary.md` can attribute V8 coverage back to
+  `src/`
+- Jazzer runs switch to `loadModulesAsRequire()` so `hookRequire`
+  sancov instrumentation stays live on the emitted bundle under
+  `dist/fuzz-bundles/src/`
+
+Crash workflow, target authoring, line-coverage interpretation, and
+the obfuscation technique tables all live in `tests/fuzz/README.md`.
 
 ## Performance harness — `tests/perf/`
 

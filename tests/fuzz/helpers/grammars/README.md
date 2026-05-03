@@ -20,8 +20,9 @@ const X_TECHNIQUE_CATALOG = Object.freeze([
 function generateXSeeds() {
   // returns an Array<Buffer>; each Buffer may carry a non-enumerable
   // `_expectedSubstring` property consumed by the target as a soft
-  // roundtrip check (expectedMiss++ when the decoder's output no
-  // longer contains the named token)
+  // roundtrip check:
+  //   • candidates fired but token missing  → technique `expectedMiss`
+  //   • zero candidates at all              → per-module `empty-miss`
 }
 
 module.exports = { generateXSeeds, X_TECHNIQUE_CATALOG };
@@ -68,4 +69,5 @@ be bit-identical across runs so coverage deltas are meaningful.
    `python scripts/run_fuzz.py --replay --quick obfuscation/x-obfuscation`
 5. Verify the new technique appears in
    `dist/fuzz-coverage/summary.md § Obfuscation technique coverage`
-   after running with `--coverage`.
+   after running with `--coverage`, and that the per-module footnotes
+   stay free of surprising `empty-miss` / `__unknown__` signal.
