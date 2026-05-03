@@ -96,7 +96,7 @@ scripts/                        build, gates, test runners (all orchestrated by 
   lint_yara.py                  Comment-free, meta-key whitelist, canonical order; --fix autofixes
   check_renderer_contract.py    Static contract: class …Renderer + render( method
   generate_sbom.py              CycloneDX SBOM from VENDORED.md (release-time only)
-  run_tests_unit.py, run_tests_e2e.py, run_perf.py
+  run_tests_unit.py, run_tests_e2e.py, run_perf.py, run_fuzz.py
   fetch_geoip.py                Regenerate vendor/geoip-country-ipv4.bin
   misc/                         One-shot fixture generators (NOT in main pipeline)
 
@@ -105,6 +105,7 @@ tests/
   e2e-fixtures/                 Playwright + docs/index.test.html driving __loupeTest.loadBytes
   e2e-ui/                       Playwright UI ingress (file picker, drag-drop, paste)
   perf/                         Opt-in, LOUPE_PERF=1 only
+  fuzz/                         Opt-in, Jazzer.js + replay mutator; never enters bundle
   helpers/load-bundle.js        vm-context loader for unit tests
   helpers/playwright-helpers.ts useSharedBundlePage + cross-load reset
   e2e-fixtures/expected.jsonl   Snapshot matrix (range-based assertions, regenerable)
@@ -135,6 +136,7 @@ python scripts/lint_yara.py --fix       # autofix YARA meta-key order, comments,
 python make.py contract                 # static renderer-contract check (class + render method)
 python make.py sbom                     # opt-in; release-time only
 python make.py perf                     # opt-in; sets LOUPE_PERF=1 internally
+python make.py fuzz                     # opt-in; Jazzer.js coverage-guided over tests/fuzz/targets/
 
 # Test pipeline (opt-in; never blocks the default loop)
 python make.py test                     # test-build → test-unit → test-e2e
@@ -152,6 +154,16 @@ python scripts/run_tests_e2e.py --debug tests/e2e-fixtures/csv.spec.ts     # PWD
 LOUPE_PERF=1 python scripts/run_perf.py                  # 100k rows × 3 runs
 LOUPE_PERF=1 python scripts/run_perf.py --rows 10000 --runs 1   # smoke
 # Output: dist/perf-report.json + dist/perf-report.md
+
+# Fuzz harness (opt-in; never in CI; never enters the bundle)
+python scripts/run_fuzz.py --replay --quick              # 5 s/target, no npm install
+python scripts/run_fuzz.py --time 300 text/ioc-extract   # 5 min coverage-guided run
+python scripts/run_fuzz.py --reproduce <crash>/input.bin # replay one specific crash
+python scripts/fuzz_minimise.py <target> <crash-dir>     # shrink crashing input.bin → minimised.bin
+python scripts/fuzz_promote.py  <target> <crash-dir>     # mint tests/unit/<slug>-fuzz-regress-<sha>.test.js
+# Targets discoverable via `python scripts/run_fuzz.py --list`. Runbook:
+# tests/fuzz/README.md. Pinned dep: @jazzer.js/core (Apache-2.0) staged
+# under dist/test-deps/ alongside @playwright/test.
 
 # Regenerate snapshot matrix after a deliberate baseline shift
 LOUPE_EXPLORE=1 python scripts/run_tests_e2e.py tests/explore/dump-fixtures.spec.ts
