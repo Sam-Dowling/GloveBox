@@ -464,7 +464,157 @@ def aggregate_and_render(coverage_dir: str, repo_root: str,
         agg = aggregate_target(coverage_dir, repo_root, tid)
         if agg is not None:
             per_target.append(agg)
-    return _render_md(per_target)
+    md = _render_md(per_target)
+
+    # Obfuscation technique table — rendered alongside coverage, in the
+    # same summary.md block, sharing the same v8/<target_id>/ dirs so
+    # the technique JSON sidecars are found by the same walk. Returns
+    # empty string when no technique dumps exist (e.g. all targets were
+    # binary or the fuzz run didn't include any obfuscation targets).
+    tech_md = _render_technique_md(
+        _aggregate_techniques(coverage_dir, repo_root, target_ids),
+    )
+    if tech_md:
+        md += '\n' + tech_md
+    return md
+
+
+# ── Obfuscation technique aggregation ──────────────────────────────────────
+# The obfuscation fuzz targets install a `technique-tracker` recorder that
+# writes `techniques-<targetId>-<pid>-<stamp>.json` into the same
+# per-target dir as V8 coverage. Each file is a single JSON object of
+# shape:
+#
+#     {
+#       "targetId": "bash-obfuscation",
+#       "catalog":  ["Bash Variable Expansion (line)", …],
+#       "counters": {
+#         "Bash Variable Expansion (line)": {
+#            "hits": 42, "decodeSuccess": 40, "decodeFail": 2, "expectedMiss": 0
+#         },
+#         …,
+#         "__unknown__": { … }
+#       }
+#     }
+#
+# Multiple dumps per target (Jazzer.js worker fan-out) are summed.
+#
+# The renderer emits one table:
+#
+#     | module | technique | hits | decode% | miss |
+#
+# A ``technique`` is a verbatim copy of the ``candidate.technique`` string
+# the decoder emits. ``decode%`` = ``100 * decodeSuccess / hits``. ``miss``
+# is the number of iterations where a grammar seed's expected substring
+# did not appear in any candidate's output — a soft signal for wrong-
+# decode regressions that don't throw.
+
+def _aggregate_techniques(coverage_dir: str, repo_root: str,
+                          target_ids: List[str]) -> Dict[str, dict]:
+    """Walk each target's coverage dir, sum technique dumps, and return
+    a dict keyed by ``targetId`` mapping to ``{catalog, counters}``.
+
+    ``target_ids`` is the list passed by the orchestrator; we probe each
+    one under ``coverage_dir/<target_id>/`` for ``techniques-*.json``
+    sidecars. Targets with no technique dumps are silently omitted from
+    the result (same discipline as the coverage aggregator).
+    """
+    by_target: Dict[str, dict] = {}
+    for tid in target_ids:
+        tdir = os.path.join(coverage_dir, *tid.split('/'))
+        if not os.path.isdir(tdir):
+            continue
+        dumps = sorted(glob.glob(os.path.join(tdir, 'techniques-*.json')))
+        if not dumps:
+            continue
+        catalog: List[str] = []
+        catalog_seen: set = set()
+        counters: Dict[str, dict] = {}
+        for fp in dumps:
+            try:
+                with open(fp, 'r', encoding='utf-8') as f:
+                    payload = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                # Opportunistic — a half-written dump doesn't break the run.
+                continue
+            # Catalog is preserved in source order from the first file that
+            # contributes it; later files union into the seen set. Two
+            # files contradicting catalogs is a harness bug (targetId
+            # collision) but we tolerate via the union.
+            for tech in payload.get('catalog', []):
+                if tech not in catalog_seen:
+                    catalog.append(tech)
+                    catalog_seen.add(tech)
+            for tech, c in (payload.get('counters') or {}).items():
+                dst = counters.setdefault(
+                    tech,
+                    {'hits': 0, 'decodeSuccess': 0, 'decodeFail': 0, 'expectedMiss': 0},
+                )
+                for k in ('hits', 'decodeSuccess', 'decodeFail', 'expectedMiss'):
+                    dst[k] += int(c.get(k, 0) or 0)
+        if counters:
+            by_target[tid] = {'catalog': catalog, 'counters': counters}
+    return by_target
+
+
+def _render_technique_md(by_target: Dict[str, dict]) -> str:
+    """Render the per-technique hit / decode% / expected-miss table.
+
+    Emits one consolidated table across every target so an under-fuzzed
+    technique floats against its peers — the analyst doesn't have to
+    cross-reference five per-target tables to find "which branch did
+    the fuzzer never reach?"
+    """
+    if not by_target:
+        return ''
+    lines: List[str] = []
+    lines.append('## Obfuscation technique coverage\n')
+    lines.append(
+        'Per-technique hit counts emitted by the obfuscation fuzz targets. '
+        'Techniques are listed in the decoder\'s authoritative catalog '
+        '(`tests/fuzz/helpers/grammars/*-grammar.js`); a row with `hits = 0` '
+        'is a decoder branch the fuzz run never reached. `decode %` is '
+        '`decodeSuccess / hits`; a consistently low % on a branch with '
+        'non-zero hits is a candidate for a grammar seed or decoder fix. '
+        '`miss` counts iterations where a grammar seed\'s expected '
+        'substring did not appear in any candidate\'s `deobfuscated` '
+        'output — a soft signal for silent wrong-decode regressions. '
+        '`__unknown__` tallies candidates emitted with a `technique` '
+        'string absent from the grammar catalog — a non-zero row means '
+        'the decoder surface diverged from the grammar.\n'
+    )
+    lines.append('| module | technique | hits | decode % | miss |')
+    lines.append('|---|---|---:|---:|---:|')
+    # Stable row order: per target in catalog order, then __unknown__, then
+    # any technique present in counters but absent from catalog (another
+    # divergence signal).
+    for tid in sorted(by_target):
+        entry = by_target[tid]
+        catalog = entry['catalog']
+        counters = entry['counters']
+        ordered: List[str] = list(catalog)
+        if '__unknown__' in counters and '__unknown__' not in ordered:
+            ordered.append('__unknown__')
+        for tech, _c in counters.items():
+            if tech not in ordered:
+                ordered.append(tech)
+        for tech in ordered:
+            c = counters.get(tech)
+            if c is None:
+                continue
+            hits = int(c.get('hits', 0))
+            ok = int(c.get('decodeSuccess', 0))
+            miss = int(c.get('expectedMiss', 0))
+            pct = (100.0 * ok / hits) if hits else 0.0
+            lines.append(
+                f'| `{tid}` '
+                f'| {tech} '
+                f'| {hits} '
+                f'| {pct:.1f} '
+                f'| {miss} |'
+            )
+    lines.append('')
+    return '\n'.join(lines) + '\n'
 
 
 # ── CLI ─────────────────────────────────────────────────────────────────────
@@ -510,10 +660,20 @@ def _cli() -> int:
             per_target.append(agg)
 
     if args.json:
-        json.dump(per_target, sys.stdout, indent=2)
+        json.dump({
+            'coverage': per_target,
+            'techniques': _aggregate_techniques(
+                args.coverage_dir, repo_root, targets,
+            ),
+        }, sys.stdout, indent=2)
         print()
     else:
         sys.stdout.write(_render_md(per_target))
+        tech_md = _render_technique_md(
+            _aggregate_techniques(args.coverage_dir, repo_root, targets),
+        )
+        if tech_md:
+            sys.stdout.write('\n' + tech_md)
     return 0
 
 

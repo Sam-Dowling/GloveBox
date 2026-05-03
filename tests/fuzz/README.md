@@ -120,6 +120,13 @@ tests/fuzz/targets/
 │   ├── evtx-detector.fuzz.js    ← EvtxDetector key/value tokenizer
 │   ├── ioc-extract.fuzz.js      ← extractIOCs / pushIOC plumbing
 │   └── ooxml-rel.fuzz.js        ← OoxmlRelScanner._classifyTarget tokenizer
+├── obfuscation/
+│   ├── cmd-obfuscation.fuzz.js        ← _findCommandObfuscationCandidates (CMD branches)
+│   ├── powershell-obfuscation.fuzz.js ← _findCommandObfuscationCandidates (PS branches)
+│   │                                    + _findPsVariableResolutionCandidates
+│   ├── bash-obfuscation.fuzz.js       ← _findBashObfuscationCandidates (B1–B6 + /dev/tcp)
+│   ├── python-obfuscation.fuzz.js     ← _findPythonObfuscationCandidates
+│   └── php-obfuscation.fuzz.js        ← _findPhpObfuscationCandidates
 └── yara/
     ├── parse-rules.fuzz.js      ← YaraEngine.parseRules (grammar parser)
     └── scan.fuzz.js             ← YaraEngine.scan (rule execution engine)
@@ -408,6 +415,98 @@ python scripts/fuzz_coverage_aggregate.py --json                # JSON
 python scripts/fuzz_coverage_aggregate.py --target text/ioc-extract  # single target
 python scripts/fuzz_coverage_aggregate.py --coverage-dir /tmp/cov    # custom dir
 ```
+
+## Obfuscation deobfuscation iteration loop
+
+The five `obfuscation/*` targets exist to drive an iterative
+"fuzz → review → fix → repeat" workflow against the command-obfuscation
+decoders (`src/decoders/{cmd,bash,python,php}-obfuscation.js` and
+`src/decoders/ps-mini-evaluator.js`). Each iteration produces a
+per-technique hit / decode-success / expected-miss table in
+`dist/fuzz-coverage/summary.md` § _Obfuscation technique coverage_ —
+rows with `hits = 0` are decoder branches the current seed corpus never
+reaches; rows with non-zero `hits` and low `decode %` are branches that
+fire but fail to produce usable `deobfuscated` output; non-zero `miss`
+counts are grammar seeds where the decoder's output no longer contains
+the expected substring (a silent wrong-decode signal).
+
+The per-technique data comes from two sources that must stay in sync:
+
+1. The decoder's `candidate.technique` string (emitted in
+   `src/decoders/<shell>-obfuscation.js`).
+2. The grammar's `TECHNIQUE_CATALOG` constant
+   (`tests/fuzz/helpers/grammars/<shell>-grammar.js`) — parsed by
+   `scripts/fuzz_coverage_aggregate.py` at render time, no `eval`.
+
+A technique that fires in the decoder but is absent from the catalog
+lands in the `__unknown__` row of the table; a catalog entry that
+never fires has `hits = 0`. Either asymmetry is actionable.
+
+### Four-command loop
+
+```bash
+# 1. Run the obfuscation targets under --coverage so both V8 line
+#    coverage and technique counters are recorded.
+python scripts/run_fuzz.py --replay --coverage \
+    obfuscation/cmd-obfuscation obfuscation/powershell-obfuscation \
+    obfuscation/bash-obfuscation obfuscation/python-obfuscation \
+    obfuscation/php-obfuscation
+
+# 2. Render dist/fuzz-coverage/summary.md (already done at the end of
+#    step 1; re-run standalone after a manual tweak to the aggregator
+#    or to regenerate after deleting artefacts).
+python scripts/fuzz_coverage_aggregate.py
+
+# 3. Inspect the "Obfuscation technique coverage" section.
+#    Focus on rows where hits = 0, decode % < 50, or miss > 0.
+#    Cross-reference against the per-src/ rollup — low line-coverage
+#    on src/decoders/<shell>-obfuscation.js pinpoints the branch.
+${PAGER:-less} dist/fuzz-coverage/summary.md
+
+# 4. Act on the signal:
+#    a. Branch exists in decoder but never fires → add a grammar seed
+#       in tests/fuzz/helpers/grammars/<shell>-grammar.js that exercises
+#       the structural pattern (generate 2–4 variants with
+#       `_expectedSubstring` pinned).
+#    b. Branch fires but decode % is low → the decoder's static parser
+#       isn't resolving the pattern; edit
+#       src/decoders/<shell>-obfuscation.js to extend the decoder.
+#       Run `python make.py test-unit` afterwards to verify no
+#       existing test regressed.
+#    c. miss > 0 → the decoder emits a candidate but its `deobfuscated`
+#       output no longer contains the expected payload token. Likely a
+#       silent regression in the decoder's unwrapping logic.
+#    Then loop to step 1.
+```
+
+Longer coverage-guided passes trade runtime for mutation diversity:
+
+```bash
+# 10 min per target under Jazzer.js libFuzzer mutation, with coverage.
+python scripts/run_fuzz.py --coverage --time 600 \
+    obfuscation/cmd-obfuscation \
+    obfuscation/powershell-obfuscation \
+    obfuscation/bash-obfuscation \
+    obfuscation/python-obfuscation \
+    obfuscation/php-obfuscation
+```
+
+Any crash found during the loop goes through the existing crash
+workflow (see § _Crash workflow_): minimise → promote to a permanent
+`tests/unit/<target>-fuzz-regress-<sha>.test.js`. The technique table
+is advisory — it tells you _where_ to dig; it does not gate CI, it is
+not a correctness signal on its own.
+
+### Signal meaning cheat sheet
+
+| Row | Likely cause | Action |
+|---|---|---|
+| `hits = 0` in catalog | Decoder branch exists, grammar seed doesn't trigger it | Add a grammar seed for the branch |
+| `hits > 0`, `decode %` < 50 | Decoder fires but can't resolve | Extend static parser in `src/decoders/<shell>-obfuscation.js` |
+| `miss > 0` on low-volume tech | Decoder output lost the payload token | Check recent changes to the branch's unwrapper |
+| `__unknown__` > 0 | Decoder emits a `technique` string absent from the grammar catalog | Add the string to `TECHNIQUE_CATALOG` |
+| A catalog entry is `__unknown__` only | Grammar catalog string doesn't match decoder emission verbatim | Fix the catalog string to match exactly |
+
 
 ## Reproducible build interaction
 

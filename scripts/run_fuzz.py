@@ -214,6 +214,12 @@ def _augment_env_for_coverage(env: dict, target_id: str) -> None:
     cov = _prepare_coverage_dir(target_id)
     env['NODE_V8_COVERAGE'] = cov
     env['LOUPE_FUZZ_COVERAGE_DIR'] = cov
+    # Technique JSON sidecars co-locate with manifest + V8 dumps so the
+    # aggregator finds both at the same walk path
+    # (dist/fuzz-coverage/v8/<target_id>/). The dedicated env var is
+    # exposed in case a future target wants to split the destinations
+    # (e.g. skip V8 coverage but still record technique counters).
+    env['LOUPE_FUZZ_TECHNIQUE_DIR'] = cov
     env['LOUPE_FUZZ_TARGET_ID'] = target_id
 
 
