@@ -24,10 +24,13 @@ static host; there is no backend, no module loader, no network at runtime.
 **Agents must…**
 - Use the **fff** MCP tools (`fff_find_files`, `fff_grep`, `fff_multi_grep`)
   for all in-repo file/content search instead of default tools.
-- Stage `src/` edits only. **Never** stage `docs/index.html`,
+- **Never** stage build artefacts: `docs/index.html`,
   `docs/index.test.html`, `dist/`, `loupe.html*`, `playwright-report/`,
   `test-results/`, `.opencode/`, `.agents/` — every one of these is
-  gitignored and produced by CI/release/test runs.
+  gitignored and produced by CI/release/test runs. Edits to `scripts/`,
+  `tests/`, `vendor/` (with VENDORED.md update), and the top-level docs
+  (`README.md`, `FEATURES.md`, `CONTRIBUTING.md`, `SECURITY.md`,
+  `VENDORED.md`, `AGENTS.md`) are first-class — stage them as needed.
 - **Keep this file alive, but lean.** Update `AGENTS.md` when you change
   behaviour, gates, or build steps that contradict it. New gotchas go
   under [Recurring pain-points](#recurring-pain-points--gotchas-with-commit-refs)
@@ -667,9 +670,9 @@ in the same PR.**
 
 ## PR / commit hygiene
 
-- Stage `src/` edits only. Never stage build artefacts (see
-  [Repository map](#repository-map)). `git status` should show **no**
-  `docs/` or `dist/` paths.
+- Stage source / test / script / doc edits as needed. Never stage build
+  artefacts (see [Repository map](#repository-map)). `git status` should
+  show **no** `docs/` or `dist/` paths.
 - Run `python make.py` locally before pushing. If you touched a renderer
   also run at least `python make.py test-unit`; for renderer logic
   changes also run `python make.py test-e2e`.
