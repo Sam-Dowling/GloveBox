@@ -2350,3 +2350,38 @@ def _check_no_test_api_in_release():
         )
 
 _check_no_test_api_in_release()
+
+
+# ── Build gate: fuzz-harness paths must NEVER appear in any built bundle ──────
+# `tests/fuzz/` lives entirely outside `JS_FILES` / `CSS_FILES` /
+# `_DETECTOR_FILES` — `scripts/build.py` does not enumerate it and never
+# concatenates anything from there. This gate is the defence-in-depth net:
+# we re-read the just-written bundle and assert no `tests/fuzz/` substring
+# appears in it. A leak would only happen if a future contributor added a
+# fuzz path to one of the file lists, or to a vendored / generated file
+# whose source-of-truth contains a fuzz path comment. Either way, the gate
+# fires before the bundle reaches Pages / Sigstore signing.
+#
+# Unlike `_check_no_test_api_in_release`, this gate runs for BOTH the
+# release and `--test-api` builds — fuzz code must never enter either
+# bundle, since the test bundle is what Playwright drives.
+def _check_no_fuzz_path_in_bundle():
+    with open(out, 'r', encoding='utf-8') as _f:
+        bundle = _f.read()
+    leaks = []
+    # Match the directory prefix only — a YARA rule matching the literal
+    # `tests/fuzz` substring would be exotic but possible; the path-form
+    # markers below are unambiguous.
+    for marker in ('tests/fuzz/helpers/', 'tests/fuzz/targets/'):
+        if marker in bundle:
+            leaks.append(marker)
+    if leaks:
+        raise SystemExit(
+            'Build gate failed — fuzz harness path(s) leaked into bundle: '
+            + ', '.join(leaks) + '\n'
+            'tests/fuzz/ must never enter docs/index.html or '
+            'docs/index.test.html. Check JS_FILES / CSS_FILES / '
+            '_DETECTOR_FILES in scripts/build.py for an erroneous entry.'
+        )
+
+_check_no_fuzz_path_in_bundle()

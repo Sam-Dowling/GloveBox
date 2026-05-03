@@ -84,6 +84,13 @@ STEPS: dict[str, tuple[str, str, list[str]]] = {
     # DEFAULT_STEPS and TEST_STEPS — perf measurements should never
     # be coupled to the build / test loop.
     'perf':       ('Run Timeline perf harness',   'scripts/run_perf.py',           []),
+    # `fuzz` is opt-in (mirrors `perf` and `sbom`). Wraps
+    # `scripts/run_fuzz.py`, which provisions @jazzer.js/core ephemerally
+    # under dist/test-deps/ and drives every *.fuzz.js target under
+    # tests/fuzz/targets/ for 60 s by default. NEVER part of the default
+    # or test pipeline — fuzzing is a deliberate, manual activity. See
+    # tests/fuzz/README.md for the runbook.
+    'fuzz':       ('Run fuzz harness (Jazzer.js)', 'scripts/run_fuzz.py',          []),
 }
 
 DEFAULT_STEPS = ['verify', 'regex', 'parity', 'yara-lint', 'build', 'contract']
