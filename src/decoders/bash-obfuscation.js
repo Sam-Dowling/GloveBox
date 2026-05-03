@@ -39,7 +39,7 @@
 // LOLBin / shell-launcher / network-fetch / persistence keywords. Includes
 // /dev/tcp (bash built-in TCP redirection — the canonical reverse-shell
 // primitive) and the curl|sh family that pipe-to-shell variants resolve to.
-const SENSITIVE_BASH_KEYWORDS = /\b(?:bash|sh|zsh|ksh|dash|eval|exec|source|\.\s+\/|curl|wget|nc|ncat|netcat|socat|openssl\s+s_client|fetch|python\d?|perl|php|ruby|telnet|ssh|scp|rsync|finger|nslookup|dig|drill|host|host\s+-t|tftp|base64\s+-d|xxd\s+-r|gzip\s+-d|gunzip|bzip2\s+-d|bunzip2|chmod\s+\+x|chmod\s+[0-7]{3,4}|crontab|systemctl|service|launchctl|sudo|su\b|setuid|usermod|chattr|setcap|sed\s+-i|tee\s+-a|>>?\s*\/etc\/|\/dev\/tcp\/|\/dev\/udp\/|>\s*\/dev\/null|2>&1|powershell|pwsh|wmic|certutil|mshta|rundll32|regsvr32)\b/i;
+const SENSITIVE_BASH_KEYWORDS = /\b(?:bash|sh|zsh|ksh|dash|eval|exec|source|\.\s+\/|curl|wget|nc|ncat|netcat|socat|openssl\s+s_client|fetch|python\d?|perl|php|ruby|telnet|ssh|scp|rsync|finger|nslookup|dig|drill|host|host\s+-t|tftp|base64\s+-d|xxd\s+-r|gzip\s+-d|gunzip|bzip2\s+-d|bunzip2|chmod\s+\+x|chmod\s+[0-7]{3,4}|crontab|systemctl|service|launchctl|sudo|su\b|setuid|usermod|chattr|setcap|sed\s+-i|tee\s+-a|>>?\s*\/etc\/|\/dev\/tcp\/|\/dev\/udp\/|>\s*\/dev\/null|2>&1|powershell|pwsh|wmic|certutil|mshta|rundll32|regsvr32|whoami|id\b|uname|hostname|netstat|iptables|ps\s+(?:aux?|-ef)|ifconfig|ip\s+addr|cat\s+\/etc\/(?:passwd|shadow)|kill(?:all)?\s+-9|rm\s+-rf)\b/i;
 
 // Helper: dequote a bash literal value. Strips outer single or double
 // quotes and unescapes `\"` / `\\` inside double-quoted strings; for
@@ -265,8 +265,17 @@ Object.assign(EncodedContentDetector.prototype, {
       if (candidates.length >= this.maxCandidatesPerType) break;
       const name = m[1];
       const op = m[2];
-      const value = vars[name];
-      if (value === undefined) continue;
+      let value = vars[name];
+      // Default-value expansion `${V:-default}` — if V is unset OR
+      // empty, resolve to the literal default. This is the one
+      // parameter-expansion shape where an undefined variable is a
+      // LEGITIMATE input (the attacker's signal: `unset CMD` then
+      // `${CMD:-wget}` yields `wget`). For every other op we require
+      // a populated `vars[name]`.
+      if (value === undefined) {
+        if (op.startsWith(':-')) value = '';
+        else continue;
+      }
       const resolved = _resolveParamExpansion(value, op);
       if (resolved === null || resolved === m[0] || resolved.length < 1) continue;
       // Only emit single-token expansions that resolve to something
@@ -521,11 +530,15 @@ Object.assign(EncodedContentDetector.prototype, {
     // printf inner expression, decode it. Recursion (chasing further
     // encodings inside the cleartext) is performed by the parent
     // detector via `_processCandidate` once this candidate is consumed.
-    const evalCmdSubRe = /\b(?:eval|exec|source|\.)\s+(?:"\$\(|\$\(|`)\s*echo\s+["']([A-Za-z0-9+/=\s]{4,4096})["']\s*\|\s*base64\s+-(?:d|decode)\s*(?:\)|`)/g;
+    // The base64 body can appear quoted (`"abc=="`) or as a bare
+    // token — bash's parser tolerates both inside `echo`. `[A-Za-z0-9+/=]`
+    // without surrounding quotes is the compact form seen in one-liner
+    // droppers; the quoted form survives spaces-in-echo stylings.
+    const evalCmdSubRe = /\b(?:eval|exec|source|\.)\s+(?:"\$\(|\$\(|`)\s*echo\s+(?:["']([A-Za-z0-9+/=\s]{4,4096})["']|([A-Za-z0-9+/=]{4,4096}))\s*\|\s*base64\s+-(?:d|decode)\s*(?:\)|`)/g;
     while ((m = evalCmdSubRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
-      const b64 = m[1].replace(/\s+/g, '');
+      const b64 = (m[1] || m[2] || '').replace(/\s+/g, '');
       let decoded = '';
       try {
         decoded = (typeof atob === 'function')
@@ -628,10 +641,13 @@ Object.assign(EncodedContentDetector.prototype, {
 
     // Concatenated single-char vars: V1=l; V2=s; $V1$V2 → ls
     //
-    // We require ≥3 single-char-or-short vars adjacent without
-    // intervening whitespace; the joined value must hit
-    // SENSITIVE_BASH_KEYWORDS to fire (otherwise legitimate
-    // `$prefix$mid$suffix` path-building emits noise).
+    // We require ≥2 resolved single-char-or-short vars adjacent
+    // without intervening whitespace (the partial form `$a$b$UNDEF`
+    // resolving only two is still a strong obfuscation signal when
+    // the resolved fragment matches SENSITIVE_BASH_KEYWORDS). The
+    // 3+-token outer regex remains — ≥2 resolved out of 3+ tokens is
+    // the "partial" case the bash grammar documents; three resolved
+    // is the full case.
     const charConcatRe = /(?:\$\{?[A-Za-z_]\w*\}?){3,12}/g;
     while ((m = charConcatRe.exec(text)) !== null) {
       throwIfAborted();
@@ -648,10 +664,25 @@ Object.assign(EncodedContentDetector.prototype, {
         if (v !== undefined) { joined += v; resolved++; }
         else { joined += `\u27e8${im[1]}\u27e9`; unresolved++; }
       }
-      if (resolved < 3) continue;
+      if (resolved < 2) continue;
       if (joined.length < 3) continue;
       if (joined === raw) continue;
-      if (!SENSITIVE_BASH_KEYWORDS.test(joined) && !this._bruteforce) continue;
+      // Sensitivity gate:
+      //   • Full (zero unresolved): the joined string must match
+      //     SENSITIVE_BASH_KEYWORDS — a clean, fully-resolved
+      //     concatenation of 3+ vars that still doesn't name a LOLBin
+      //     is almost always benign path-building.
+      //   • Partial (≥1 unresolved token, ≥2 resolved): the
+      //     obfuscation signal is the structure itself — the
+      //     attacker is concatenating short var fragments with at
+      //     least one deliberately undefined slot. We emit the
+      //     partial candidate with placeholder markers intact; the
+      //     joined string will fail the SENSITIVE test but the
+      //     deobfuscation signal is meaningful on its own.
+      const passesGate = unresolved > 0
+        ? (resolved >= 2)
+        : SENSITIVE_BASH_KEYWORDS.test(joined);
+      if (!passesGate && !this._bruteforce) continue;
       candidates.push({
         type: 'cmd-obfuscation',
         technique: unresolved === 0
@@ -666,8 +697,14 @@ Object.assign(EncodedContentDetector.prototype, {
 
     // ── /dev/tcp reverse shell — the canonical bash reverse-shell
     //    primitive. Detection-only (no decode); the post-processor
-    //    bumps severity via _executeOutput + dangerousPatterns.
-    const devTcpRe = /\b(?:bash|sh)\s+-i\b[^\r\n]{0,200}>\s*&?\s*\/dev\/tcp\/[\w.\-]+\/\d{1,5}|\b\/dev\/tcp\/[\w.\-]+\/\d{1,5}\b[^\r\n]{0,200}\b(?:0<&|>&)\d/gi;
+    //    bumps severity via _executeOutput + dangerousPatterns. Three
+    //    shapes we recognise:
+    //      (1) bash -i … >& /dev/tcp/host/port        (classic)
+    //      (2) /dev/tcp/host/port … 0<& | >& N        (fd redirect pair)
+    //      (3) exec N<>/dev/tcp/host/port             (bi-directional
+    //          bash bind — the compact form used by tiny stagers
+    //          where the shell payload follows via `cat <&N`.)
+    const devTcpRe = /\b(?:bash|sh)\s+-i\b[^\r\n]{0,200}>\s*&?\s*\/dev\/tcp\/[\w.\-]+\/\d{1,5}|\b\/dev\/tcp\/[\w.\-]+\/\d{1,5}\b[^\r\n]{0,200}\b(?:0<&|>&)\d|\bexec\s+\d{1,3}\s*<>\s*\/dev\/tcp\/[\w.\-]+\/\d{1,5}/gi;
     while ((m = devTcpRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;

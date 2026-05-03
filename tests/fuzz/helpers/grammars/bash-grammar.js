@@ -57,14 +57,18 @@ function genVariableExpansion() {
     'V=powershell_is_long\necho ${V:0:10}',
     'powershell',
   ));
-  // Global substitution — single fragment.
+  // Global substitution — single fragment. Decoder emits the joined
+  // result after stripping every `X`. Source value is segmented so
+  // the stripped output ("whoami foo") is a legitimate shell command
+  // with word boundaries around the LOLBin token.
   out.push(makeSeed(
-    'X=aXbXcXwhoamiXdX\necho ${X//X/}',
+    'X=XwhoamiX foo\necho ${X//X/}',
     'whoami',
   ));
-  // Prefix strip
+  // Prefix strip — ${P#prefix_} drops the literal "prefix_" prefix.
+  // Value includes a trailing space so `curl` is word-bounded.
   out.push(makeSeed(
-    'P=prefix_curl_payload\necho ${P#prefix_}',
+    'P=prefix_curl \necho ${P#prefix_}',
     'curl',
   ));
   // Suffix strip
