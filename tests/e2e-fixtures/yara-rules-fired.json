@@ -33,9 +33,7 @@
       "Info_Reverse_Shell_Patterns"
     ],
     "examples/elf/example.so": [
-      "Info_SVG_Image_Present",
-      "Info_Tracking_Pixel",
-      "SVG_Redirect_Phish"
+      "Info_SVG_Image_Present"
     ],
     "examples/elf/overlay-zip-elf": [
       "Embedded_ZIP_In_Non_Archive"
@@ -44,15 +42,20 @@
       "Info_Email_EML_Format",
       "Info_Email_Multipart_Mixed"
     ],
-    "examples/email/example.msg": [
-      "MSI_Network_Indicators"
-    ],
     "examples/email/phishing-example.eml": [
       "Info_Email_DKIM_Fail",
       "Info_Email_DMARC_Fail",
       "Info_Email_Reply_To_Mismatch_Indicator",
       "Info_Email_SPF_Fail",
-      "Info_External_Image_Load"
+      "Info_External_Image_Load",
+      "Info_Tracking_Pixel"
+    ],
+    "examples/encoded-payloads/bash-obfuscation-suite.sh": [
+      "Bash_Base64_Execution",
+      "Bash_DevTcp_Reverse_Shell",
+      "Bash_IFS_Reassembly",
+      "Bash_Variable_Obfuscation",
+      "Shell_Curl_Wget_Pipe_Exec"
     ],
     "examples/encoded-payloads/encoded-base64-pe.txt": [
       "Encoded_Base64_PE_Header"
@@ -64,11 +67,14 @@
     "examples/encoded-payloads/example-safelinks.txt": [
       "Info_Unique_Token_In_URL"
     ],
+    "examples/encoded-payloads/js-additional-obfuscation.js": [
+      "JS_Deobfuscation_Heavy",
+      "Standalone_HTML_Code_Execution"
+    ],
     "examples/encoded-payloads/js-string-array-obfuscation.js": [
       "Obfuscated_Download_Cradle",
       "PowerShell_Download_Cradle",
       "Standalone_Download_Network_Indicators",
-      "Standalone_HTML_Code_Execution",
       "Standalone_PowerShell_Indicators"
     ],
     "examples/encoded-payloads/mixed-obfuscations.txt": [
@@ -77,7 +83,6 @@
       "Hex_Shellcode_Pattern",
       "JS_Bracket_Hex_Property_Execution",
       "JS_Comment_Injection_Obfuscation",
-      "JS_Deobfuscation_Heavy",
       "JS_Obfuscated_Payload",
       "JS_Proxy_Function_Hiding",
       "JS_ROT13_Cipher_Implementation",
@@ -100,6 +105,18 @@
     "examples/encoded-payloads/nested-triple-b64-url.txt": [
       "Info_BITSAdmin_Reference"
     ],
+    "examples/encoded-payloads/php-webshell-suite.php": [
+      "PHP_Eval_Superglobal",
+      "PHP_Preg_Replace_E_Modifier",
+      "PHP_Variable_Variable_Obfuscation",
+      "PHP_Webshell_Decoder_Onion"
+    ],
+    "examples/encoded-payloads/python-obfuscation-suite.py": [
+      "Info_Socket_Connection",
+      "Python_Char_Construction",
+      "Python_Reverse_Shell",
+      "Standalone_Script_Shell_Execution"
+    ],
     "examples/images/example.jpg": [
       "Info_JPEG_Appended_Data"
     ],
@@ -117,7 +134,6 @@
       "Info_Alternate_Data_Stream"
     ],
     "examples/json/array-of-objects-example.json": [
-      "HTML_Data_URI_Payload",
       "Info_Data_URI_Scheme"
     ],
     "examples/macos-scripts/example.applescript": [
@@ -149,12 +165,8 @@
     ],
     "examples/macos-system/example.app": [
       "Info_DNS_TXT_Lookup",
-      "Info_Quoted_Printable_Obfuscation",
       "Info_Sensitive_File_Extensions",
       "ZIP_Contains_MacApp_Bundle"
-    ],
-    "examples/macos-system/example.dmg": [
-      "Info_Zero_Width_Characters"
     ],
     "examples/macos-system/example.pkg": [
       "PKG_Xar_Archive"
@@ -187,7 +199,6 @@
       "Office_Remote_Template_Injection",
       "Standalone_COM_Objects",
       "Standalone_LOLBin_Indicators",
-      "Standalone_Script_Shell_Execution",
       "VBA_AutoExec_Trigger",
       "VBA_Certutil_Decode",
       "VBA_Download_Capability",
@@ -237,6 +248,7 @@
       "PE_Service_Persistence"
     ],
     "examples/web/encoded-entities.html": [
+      "HTML_Data_URI_Payload",
       "HTML_Entity_Obfuscated_Script",
       "Info_HTML_Entity_Obfuscation",
       "Standalone_HTA_VBScript_Indicators",
@@ -264,6 +276,7 @@
       "SVG_Location_Redirect",
       "SVG_Meta_Refresh_Redirect",
       "SVG_Phishing_Multi_Indicator",
+      "SVG_Redirect_Phish",
       "SVG_XMLHttpRequest_Fetch",
       "SVG_XXE_Entity",
       "Standalone_HTML_Credential_Indicators",
@@ -374,9 +387,9 @@
     ]
   },
   "summary": {
-    "anchorFixtures": 67,
-    "rulesFiredInCorpus": 238,
-    "rulesUnanchored": 345,
+    "anchorFixtures": 69,
+    "rulesFiredInCorpus": 247,
+    "rulesUnanchored": 336,
     "totalRulesDefined": 583
   },
   "unanchoredRules": [
@@ -385,18 +398,14 @@
     "Archive_Double_Extension",
     "BAT_Recursive_Copy_Drop",
     "BITSAdmin_Download",
-    "Bash_Base64_Execution",
     "Bash_Bashrc_Persistence",
     "Bash_Command_Not_Found_Hijack",
     "Bash_Cron_Persistence",
     "Bash_DD_Pipe_Shell",
-    "Bash_DevTcp_Reverse_Shell",
     "Bash_Env_I_Masking",
     "Bash_Heredoc_Exec",
-    "Bash_IFS_Reassembly",
     "Bash_SSH_Key_Injection",
     "Bash_Sudoers_Tampering",
-    "Bash_Variable_Obfuscation",
     "BrowserExt_Eval_InScript",
     "BrowserExt_LegacyXUL_Bootstrap",
     "BrowserExt_NativeHost_Bridge",
@@ -492,14 +501,15 @@
     "Info_Macro_Builder_Artifacts",
     "Info_Outlook_Credential_Reference",
     "Info_Punycode_Domain",
+    "Info_Quoted_Printable_Obfuscation",
     "Info_Screenshot_Capture",
     "Info_Service_Installation",
-    "Info_Socket_Connection",
     "Info_UAC_Bypass_Indicators",
     "Info_UTF7_Encoded_Content",
     "Info_VM_Detection_Strings",
     "Info_Vercel_Netlify_Hosting",
     "Info_Webcam_Microphone_Access",
+    "Info_Zero_Width_Characters",
     "Info_iOS_MobileConfig",
     "JS_Clipboard_Paste_Lure",
     "JS_DocumentWrite_With_Obfuscation",
@@ -538,6 +548,7 @@
     "MSI_Embedded_PE",
     "MSI_Embedded_Script",
     "MSI_Encoded_Content",
+    "MSI_Network_Indicators",
     "MSI_Service_Install",
     "MSI_Suspicious_CustomAction",
     "MachO_AMOS_Credential_Prompt",
@@ -642,16 +653,10 @@
     "PE_Suspicious_Strings_CnC",
     "PE_Themida_Packed",
     "PE_VMProtect_Packed",
-    "PHP_Eval_Superglobal",
-    "PHP_Preg_Replace_E_Modifier",
-    "PHP_Variable_Variable_Obfuscation",
-    "PHP_Webshell_Decoder_Onion",
     "PasswordManager_DB_Reference",
     "PostEx_Tool_Reference",
     "PowerShell_TCPClient_RevShell",
     "Punycode_IDN_Homograph",
-    "Python_Char_Construction",
-    "Python_Reverse_Shell",
     "REG_File_Association_Hijack",
     "REG_IFEO_Debugger",
     "REG_Persistence_Winlogon",
@@ -681,7 +686,6 @@
     "SVG_Base64_Script_Payload",
     "SVG_Event_Handler_Error",
     "Scheduled_Task_XML",
-    "Shell_Curl_Wget_Pipe_Exec",
     "Standalone_RTF_Exploit_Patterns",
     "Standalone_RTF_OLE_Keywords",
     "Suspicious_Finger_LOLBin",

@@ -345,6 +345,7 @@ rule CMSTP_INF_Bypass
         severity    = "critical"
         category    = "defense-evasion"
         mitre       = "T1218.003"
+        applies_to  = "inf"
 
     strings:
         $a = "[version]" nocase
@@ -364,6 +365,7 @@ rule Info_Contains_MachO_Binary
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $macho32    = { CE FA ED FE }
@@ -381,6 +383,7 @@ rule Info_Contains_Java_JAR
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $pk       = { 50 4B 03 04 }
@@ -397,6 +400,7 @@ rule Info_Contains_Java_Class
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $magic = { CA FE BA BE 00 }
@@ -412,6 +416,7 @@ rule Info_Contains_DotNet_Assembly
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $mz       = { 4D 5A }
@@ -432,6 +437,7 @@ rule Info_Contains_DLL_Export
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $mz      = { 4D 5A }
@@ -586,6 +592,7 @@ rule Info_Email_Content_Transfer_Encoding
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "eml, msg"
 
     strings:
         $a = "Content-Transfer-Encoding: base64" nocase
@@ -602,6 +609,7 @@ rule Info_Email_Multipart_Mixed
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "eml, msg"
 
     strings:
         $a = "Content-Type: multipart/mixed" nocase
@@ -617,6 +625,7 @@ rule Info_PNG_Appended_Data
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1027.001"
+        applies_to  = "any"
 
     strings:
         $png_header = { 89 50 4E 47 0D 0A 1A 0A }
@@ -633,6 +642,7 @@ rule Info_JPEG_Appended_Data
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1027.001"
+        applies_to  = "any"
 
     strings:
         $soi = { FF D8 FF }
@@ -669,6 +679,7 @@ rule Info_SVG_Image_Present
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $svg = "<svg" nocase
@@ -685,6 +696,7 @@ rule Info_WMI_Event_Subscription
         severity    = "info"
         category    = "persistence"
         mitre       = "T1546.003"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = "__EventFilter" nocase
@@ -704,6 +716,7 @@ rule Info_Service_Installation
         severity    = "info"
         category    = "persistence"
         mitre       = "T1543.003"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = "sc create" nocase
@@ -724,6 +737,7 @@ rule Info_BITSAdmin_Reference
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1197"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = "bitsadmin" nocase
@@ -741,6 +755,7 @@ rule Info_Alternate_Data_Stream
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1564.004"
+        applies_to  = "any"
 
     strings:
         $a = /[a-zA-Z]:\\[^\s:]+:[^\s:]+/ nocase
@@ -758,6 +773,7 @@ rule Info_DLL_Sideload_Indicators
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1574.002"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = "version.dll" nocase
@@ -778,6 +794,7 @@ rule Info_Android_APK
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $pk       = { 50 4B 03 04 }
@@ -795,6 +812,7 @@ rule Info_iOS_MobileConfig
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $plist = "<!DOCTYPE plist" nocase
@@ -814,6 +832,7 @@ rule Info_ICS_Calendar_Invite
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $begin = "BEGIN:VCALENDAR" nocase
@@ -832,6 +851,7 @@ rule Info_ICS_Calendar_With_URL
         severity    = "info"
         category    = "phishing"
         mitre       = "T1566.002"
+        applies_to  = "any"
 
     strings:
         $begin = "BEGIN:VCALENDAR" nocase
@@ -851,6 +871,7 @@ rule Info_Apple_Disk_Image_DMG
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $a = { 78 01 73 0D 62 62 60 }
@@ -868,6 +889,7 @@ rule Info_Shortcut_WEBLOC
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $plist = "<!DOCTYPE plist" nocase
@@ -884,6 +906,7 @@ rule Info_Linux_Desktop_Entry
         severity    = "info"
         category    = "execution"
         mitre       = "T1204.002"
+        applies_to  = "any"
 
     strings:
         $header = "[Desktop Entry]" nocase
@@ -901,6 +924,7 @@ rule Info_Cloudflare_Workers_URL
         severity    = "info"
         category    = "info"
         mitre       = "T1583.001"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = ".workers.dev" nocase
@@ -917,6 +941,7 @@ rule Info_Azure_Hosting_URL
         severity    = "info"
         category    = "info"
         mitre       = "T1583.001"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = ".azurewebsites.net" nocase
@@ -936,6 +961,7 @@ rule Info_AWS_Hosting_URL
         severity    = "info"
         category    = "info"
         mitre       = "T1583.001"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = ".amazonaws.com" nocase
@@ -954,6 +980,7 @@ rule Info_Google_Cloud_Hosting_URL
         severity    = "info"
         category    = "info"
         mitre       = "T1583.001"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = ".appspot.com" nocase
@@ -973,6 +1000,7 @@ rule Info_Firebase_Dynamic_Link
         severity    = "info"
         category    = "info"
         mitre       = "T1583.001"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = ".page.link" nocase
@@ -989,6 +1017,7 @@ rule Info_Vercel_Netlify_Hosting
         severity    = "info"
         category    = "info"
         mitre       = "T1583.001"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = ".vercel.app" nocase
@@ -1006,6 +1035,7 @@ rule Info_Heroku_Render_Hosting
         severity    = "info"
         category    = "info"
         mitre       = "T1583.001"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = ".herokuapp.com" nocase
@@ -1022,6 +1052,7 @@ rule Info_Tracking_Pixel
         severity    = "info"
         category    = "collection"
         mitre       = "T1114"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = "width=\"1\" height=\"1\"" nocase
@@ -1041,6 +1072,7 @@ rule Info_External_Image_Load
         severity    = "info"
         category    = "collection"
         mitre       = "T1114"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $img_http1 = "<img" nocase
@@ -1060,6 +1092,7 @@ rule Info_Unique_Token_In_URL
         severity    = "info"
         category    = "collection"
         mitre       = "T1114"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = /https?:\/\/[^\s]{10,}[?&][a-zA-Z]+=[-a-zA-Z0-9_]{20,}/
@@ -1075,6 +1108,7 @@ rule Info_Web_Beacon_Keywords
         severity    = "info"
         category    = "collection"
         mitre       = "T1114"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = "web beacon" nocase
@@ -1095,6 +1129,7 @@ rule Info_UTF7_Encoded_Content
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = "+ADw-script" nocase
@@ -1114,6 +1149,7 @@ rule Info_MIME_Encoded_Words
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "eml, msg"
 
     strings:
         $b64  = /=\?[A-Za-z0-9\-]+\?B\?[A-Za-z0-9+\/=]+\?=/
@@ -1130,6 +1166,7 @@ rule Info_Quoted_Printable_Obfuscation
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "eml, msg"
 
     strings:
         $qp = /=[0-9A-Fa-f]{2}/
@@ -1145,6 +1182,7 @@ rule Info_HTML_Entity_Obfuscation
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $dec = /&#[0-9]{2,4};/
@@ -1161,6 +1199,7 @@ rule Info_CSS_Content_Injection
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = "content:" nocase
@@ -1179,6 +1218,7 @@ rule Info_Zero_Width_Characters
         severity    = "info"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $zwsp  = { E2 80 8B }
@@ -2178,6 +2218,7 @@ rule MSI_Embedded_Script
         severity    = "high"
         category    = "execution"
         mitre       = "T1218.007"
+        applies_to  = "msi"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2199,6 +2240,7 @@ rule MSI_Suspicious_CustomAction
         severity    = "high"
         category    = "execution"
         mitre       = "T1218.007"
+        applies_to  = "msi"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2223,6 +2265,7 @@ rule MSI_Network_Indicators
         severity    = "medium"
         category    = "command-and-control"
         mitre       = "T1105"
+        applies_to  = "msi"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2241,6 +2284,7 @@ rule MSI_Encoded_Content
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "msi"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2260,6 +2304,7 @@ rule MSI_Service_Install
         severity    = "medium"
         category    = "persistence"
         mitre       = "T1543.003"
+        applies_to  = "msi"
 
     strings:
         $ole = { D0 CF 11 E0 A1 B1 1A E1 }
@@ -2277,6 +2322,7 @@ rule URL_Encoded_Command
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $ps = "%70%6f%77%65%72%73%68%65%6c%6c" nocase
@@ -2296,6 +2342,7 @@ rule ClickOnce_AppRef_MS
         severity    = "critical"
         category    = "execution"
         mitre       = "T1204.002"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $appref  = ".application#" nocase
@@ -2315,6 +2362,7 @@ rule Scheduled_Task_XML
         severity    = "high"
         category    = "persistence"
         mitre       = "T1053.005"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $task   = "<Task " nocase
@@ -2338,6 +2386,7 @@ rule ISO_Disk_Image
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1553.005"
+        applies_to  = "iso"
 
     strings:
         $cd001 = "CD001" ascii
@@ -2355,6 +2404,7 @@ rule HTA_Stealth_Window
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1218.005"
+        applies_to  = "hta"
 
     strings:
         $hta     = "<HTA:APPLICATION" nocase
@@ -2375,6 +2425,7 @@ rule Suspicious_Finger_LOLBin
         severity    = "high"
         category    = "command-and-control"
         mitre       = "T1105"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $bare      = /\bfinger\s+[\w.+\-]+@[\w.\-]+\.[a-z]{2,}/ nocase
@@ -2393,6 +2444,7 @@ rule Suspicious_ClickFix_RunDialog
         severity    = "critical"
         category    = "execution"
         mitre       = "T1204.001"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $forf_call = /for\s*\/f[^()\r\n]{0,200}\([^)\r\n]+\)\s*do\s+(call\s+)?%/ nocase
@@ -2669,6 +2721,7 @@ rule PostEx_Tool_Reference
         severity    = "high"
         category    = "execution"
         mitre       = "T1059"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = "Rubeus" ascii wide
@@ -2709,6 +2762,7 @@ rule Homoglyph_Process_Name
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1036.005"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $cyr_exe = /[\xD0-\xD1][\x80-\xBF][\w]{0,40}\.(exe|bat|ps1|dll|cmd|vbs|js|hta|msi|scr)\b/ nocase

@@ -5,6 +5,7 @@ rule PDF_JavaScript_Execution
         severity    = "high"
         category    = "execution"
         mitre       = "T1059.007"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -23,6 +24,7 @@ rule PDF_AutoOpen_Action
         severity    = "high"
         category    = "execution"
         mitre       = "T1204.002"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -40,6 +42,7 @@ rule PDF_Launch_Action
         severity    = "critical"
         category    = "execution"
         mitre       = "T1204.002"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -56,6 +59,7 @@ rule PDF_Embedded_File_Attachment
         severity    = "medium"
         category    = "delivery"
         mitre       = "T1566.001"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -73,6 +77,7 @@ rule PDF_Obfuscated_Stream
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -92,6 +97,7 @@ rule PDF_SubmitForm_Action
         severity    = "high"
         category    = "exfiltration"
         mitre       = "T1048"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -108,6 +114,7 @@ rule PDF_URI_Link
         severity    = "low"
         category    = "initial-access"
         mitre       = "T1566.002"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -125,6 +132,7 @@ rule PDF_GoToR_Remote_Link
         severity    = "high"
         category    = "initial-access"
         mitre       = "T1566.002"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -142,6 +150,7 @@ rule PDF_XFA_Form
         severity    = "high"
         category    = "execution"
         mitre       = "T1203"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -160,6 +169,7 @@ rule PDF_Encrypted_Content
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -176,6 +186,7 @@ rule PDF_Phishing_QR_Code_Indicators
         severity    = "medium"
         category    = "initial-access"
         mitre       = "T1566.002"
+        applies_to  = "pdf"
 
     strings:
         $pdf = { 25 50 44 46 }
@@ -194,6 +205,7 @@ rule RTF_Embedded_Object
         severity    = "high"
         category    = "execution"
         mitre       = "T1204.002"
+        applies_to  = "rtf"
 
     strings:
         $rtf = "{\\rtf"
@@ -212,6 +224,7 @@ rule RTF_Equation_Editor_Exploit
         severity    = "critical"
         category    = "execution"
         mitre       = "T1203"
+        applies_to  = "rtf"
 
     strings:
         $rtf = "{\\rtf"
@@ -228,6 +241,7 @@ rule RTF_Obfuscated_Header
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "rtf"
 
     strings:
         $rtf = "{\\rtf"
@@ -245,6 +259,7 @@ rule RTF_Large_Hex_Blob
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "rtf"
 
     strings:
         $rtf = "{\\rtf"
@@ -262,6 +277,7 @@ rule RTF_Package_Object
         severity    = "critical"
         category    = "execution"
         mitre       = "T1204.002"
+        applies_to  = "rtf"
 
     strings:
         $rtf = "{\\rtf"
@@ -280,6 +296,7 @@ rule OneNote_Embedded_Script
         severity    = "critical"
         category    = "execution"
         mitre       = "T1204.002"
+        applies_to  = "onenote"
 
     strings:
         $magic = { E4 52 5C 7B 8C D8 A7 4D }
@@ -303,6 +320,7 @@ rule OneNote_Any_Embedded_File
         severity    = "high"
         category    = "delivery"
         mitre       = "T1566.001"
+        applies_to  = "onenote"
 
     strings:
         $magic = { E4 52 5C 7B 8C D8 A7 4D }
@@ -319,6 +337,7 @@ rule SVG_Redirect_Phish
         severity    = "high"
         category    = "initial-access"
         mitre       = "T1566.002"
+        applies_to  = "svg"
 
     strings:
         $svg = "<svg" nocase
@@ -338,6 +357,7 @@ rule SVG_Base64_Embedded_Content
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "svg"
 
     strings:
         $svg = "<svg" nocase
@@ -356,6 +376,7 @@ rule HTML_Smuggling
         severity    = "critical"
         category    = "defense-evasion"
         mitre       = "T1027.006"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $a = "new Blob" nocase
@@ -377,6 +398,7 @@ rule HTML_Credential_Phish_Form
         severity    = "high"
         category    = "credential-access"
         mitre       = "T1056.003"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $form = "<form" nocase
@@ -403,6 +425,7 @@ rule HTML_Meta_Redirect_Phish
         severity    = "high"
         category    = "initial-access"
         mitre       = "T1566.002"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $a = "http-equiv=\"refresh\"" nocase
@@ -421,6 +444,7 @@ rule HTML_JavaScript_Redirect
         severity    = "high"
         category    = "initial-access"
         mitre       = "T1566.002"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $a = "window.location" nocase
@@ -440,6 +464,7 @@ rule HTML_Obfuscated_Phish_Page
         severity    = "critical"
         category    = "credential-access"
         mitre       = "T1056.003"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $a = "atob(" nocase
@@ -461,6 +486,7 @@ rule HTML_Invisible_Iframe
         severity    = "high"
         category    = "initial-access"
         mitre       = "T1566.002"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $a = "<iframe" nocase
@@ -482,6 +508,7 @@ rule HTML_Captcha_Phish_Gate
         severity    = "high"
         category    = "initial-access"
         mitre       = "T1566.002"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $a = "captcha" nocase
@@ -501,6 +528,7 @@ rule HTML_LocalStorage_Exfil
         severity    = "medium"
         category    = "credential-access"
         mitre       = "T1056.003"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $a = "localStorage" nocase
@@ -520,6 +548,7 @@ rule HTML_Data_URI_Payload
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $a = "data:text/html;base64" nocase
@@ -538,6 +567,7 @@ rule HTML_WebSocket_Exfil
         severity    = "medium"
         category    = "exfiltration"
         mitre       = "T1048"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $a = "new WebSocket" nocase
@@ -611,6 +641,7 @@ rule PDF_AcroForm_With_JavaScript
         severity    = "high"
         category    = "execution"
         mitre       = "T1059.007"
+        applies_to  = "pdf"
 
     strings:
         $pdf   = { 25 50 44 46 }
@@ -629,6 +660,7 @@ rule PDF_RichMedia_Content
         severity    = "high"
         category    = "execution"
         mitre       = "T1203"
+        applies_to  = "pdf"
 
     strings:
         $pdf   = { 25 50 44 46 }
@@ -645,6 +677,7 @@ rule PDF_ObjectStream_With_Action
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "pdf"
 
     strings:
         $pdf   = { 25 50 44 46 }
@@ -664,6 +697,7 @@ rule PDF_Eval_Obfuscation
         severity    = "critical"
         category    = "execution"
         mitre       = "T1059.007"
+        applies_to  = "pdf"
 
     strings:
         $pdf   = { 25 50 44 46 }
@@ -684,6 +718,7 @@ rule HTML_Entity_Obfuscated_Script
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $entity_chain = /(&#x?[0-9a-fA-F]{2,4};){10,}/ ascii
@@ -701,6 +736,7 @@ rule MHTML_Smuggling
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027.006"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $mime    = "MIME-Version:" nocase
@@ -723,6 +759,7 @@ rule OneNote_Embedded_PE
         severity    = "critical"
         category    = "execution"
         mitre       = "T1204.002"
+        applies_to  = "onenote"
 
     strings:
         $magic = { E4 52 5C 7B 8C D8 A7 4D }
@@ -740,6 +777,7 @@ rule HTML_Smuggling_Password_Hint
         severity    = "critical"
         category    = "defense-evasion"
         mitre       = "T1027.006"
+        applies_to  = "is_html, svg, eml, msg"
 
     strings:
         $blob   = "new Blob" nocase
@@ -803,6 +841,7 @@ rule OOXML_External_Template
         severity    = "high"
         category    = "initial-access"
         mitre       = "T1221"
+        applies_to  = "is_office_ooxml"
 
     strings:
         $extmode   = "TargetMode=\"External\"" nocase
@@ -823,6 +862,7 @@ rule OOXML_DDE_Field_Code
         severity    = "high"
         category    = "execution"
         mitre       = "T1559.002"
+        applies_to  = "is_office_ooxml"
 
     strings:
         $instr1 = "w:instrText" nocase

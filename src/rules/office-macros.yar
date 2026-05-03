@@ -561,6 +561,7 @@ rule AddIn_XLL_File
         severity    = "critical"
         category    = "execution"
         mitre       = "T1137.006"
+        applies_to  = "pe"
 
     strings:
         $mz = { 4D 5A }

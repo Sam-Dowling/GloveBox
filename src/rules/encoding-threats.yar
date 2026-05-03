@@ -5,6 +5,7 @@ rule Double_Extension_Any_File
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1036.007"
+        applies_to  = "any"
 
     strings:
         $a = ".pdf.hta" nocase
@@ -31,6 +32,7 @@ rule Right_To_Left_Override
         severity    = "critical"
         category    = "defense-evasion"
         mitre       = "T1036.002"
+        applies_to  = "any"
 
     strings:
         $a = { E2 80 AE }

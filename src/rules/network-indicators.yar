@@ -5,6 +5,7 @@ rule UNC_Path_NTLM_Theft
         severity    = "high"
         category    = "credential-access"
         mitre       = "T1187"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = /\\\\[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\\/
@@ -21,6 +22,7 @@ rule WebDAV_Reference
         severity    = "high"
         category    = "credential-access"
         mitre       = "T1187"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = "\\\\DavWWWRoot\\" nocase
@@ -38,6 +40,7 @@ rule Credential_Dumping_Commands
         severity    = "high"
         category    = "credential-access"
         mitre       = "T1003"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a     = "procdump" nocase
@@ -59,6 +62,7 @@ rule Exfil_Telegram_Bot_API
         severity    = "medium"
         category    = "exfiltration"
         mitre       = "T1567"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $api1 = "api.telegram.org" nocase
@@ -78,6 +82,7 @@ rule Exfil_Discord_Webhook
         severity    = "high"
         category    = "exfiltration"
         mitre       = "T1567"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $webhook = "discord.com/api/webhooks/" nocase
@@ -94,6 +99,7 @@ rule Exfil_Slack_Webhook
         severity    = "high"
         category    = "exfiltration"
         mitre       = "T1567"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $hook = "hooks.slack.com/services/" nocase
@@ -110,6 +116,7 @@ rule SSH_Private_Key_Reference
         severity    = "medium"
         category    = "credential-access"
         mitre       = "T1552.004"
+        applies_to  = "any"
 
     strings:
         $rsa     = "-----BEGIN RSA PRIVATE KEY-----"
@@ -131,6 +138,7 @@ rule Exfil_Pastebin_Reference
         severity    = "info"
         category    = "exfiltration"
         mitre       = "T1567.002"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $pb1 = "pastebin.com" nocase
@@ -151,6 +159,7 @@ rule Punycode_IDN_Homograph
         severity    = "medium"
         category    = "phishing"
         mitre       = "T1036"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = /https?:\/\/[a-zA-Z0-9\-\.]{0,253}xn--[a-z0-9\-]{2,63}/
@@ -167,6 +176,7 @@ rule Abuse_TLD_DDNS_Tunnel
         severity    = "medium"
         category    = "command-and-control"
         mitre       = "T1568.002"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $a = ".ngrok.io" nocase
@@ -193,6 +203,7 @@ rule Tunneling_Tool_Reference
         severity    = "high"
         category    = "command-and-control"
         mitre       = "T1572"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $chisel       = /\bchisel(\.exe)?\s+(client|server)\b/ nocase
@@ -230,6 +241,7 @@ rule Exfil_File_Drop_Hosts
         severity    = "medium"
         category    = "exfiltration"
         mitre       = "T1567.002"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $mega       = "mega.nz" nocase
@@ -268,6 +280,7 @@ rule Exfil_OAST_Collaborator
         severity    = "high"
         category    = "exfiltration"
         mitre       = "T1071.004"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $interactsh   = "interactsh-server" nocase

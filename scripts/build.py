@@ -219,6 +219,14 @@ YARA_APPLIES_TO = {
     'src/rules/msix-threats.yar':            'msix',
     'src/rules/browserext-threats.yar':      'browserext',
     'src/rules/npm-threats.yar':             'npm',
+    # Office-macro rules cover legacy OLE (doc/xls/ppt/msg), OOXML
+    # (docx/xlsx/pptx) and ODF (odt/ods/odp) hosts plus RTF (the third
+    # magic 0x74725C7B in most rules). `is_office` expands to the 12
+    # office-host formats; `rtf` is appended as a bare formatTag so the
+    # RTF-specific OLE-object / DDE rules in the file still fire on .rtf
+    # input. Without this gate the rules' `uint16(0) == 0x4B50` clause
+    # would also accept any non-office ZIP container (jar/msix/npm/etc).
+    'src/rules/office-macros.yar':           'is_office, rtf',
     # NB: `wasm-threats.yar` is intentionally NOT in YARA_APPLIES_TO. The
     # `Info_Contains_WebAssembly` rule must fire on embedded WASM blobs in
     # *any* container (script, PE overlay, archive entry, etc.); gating the

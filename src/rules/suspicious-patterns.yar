@@ -5,6 +5,7 @@ rule Embedded_PE_Header
         severity    = "critical"
         category    = "defense-evasion"
         mitre       = "T1027.009"
+        applies_to  = "any"
 
     strings:
         $mz = { 4D 5A 90 00 }
@@ -20,6 +21,7 @@ rule Suspicious_COM_Hijack_CLSID
         severity    = "medium"
         category    = "persistence"
         mitre       = "T1546.015"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $clsid_mmcfx   = "{49CBB1C7-97D1-485A-9EC1-A26065633066}" nocase
@@ -38,6 +40,7 @@ rule General_Hex_Encoded_Shellcode
         severity    = "high"
         category    = "defense-evasion"
         mitre       = "T1027"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $hex_prefix = /\\x[0-9a-fA-F]{2}(\\x[0-9a-fA-F]{2}){15,}/
@@ -54,6 +57,7 @@ rule Embedded_ZIP_In_Non_Archive
         severity    = "medium"
         category    = "defense-evasion"
         mitre       = "T1027.009"
+        applies_to  = "any"
 
     strings:
         $pk = { 50 4B 03 04 }
@@ -69,6 +73,7 @@ rule Embedded_Compressed_Stream
         severity    = "info"
         category    = "file-type"
         mitre       = ""
+        applies_to  = "any"
 
     strings:
         $zlib_default = { 78 9C }
@@ -86,6 +91,7 @@ rule Crypto_Miner_Indicators
         severity    = "high"
         category    = "impact"
         mitre       = "T1496"
+        applies_to  = "text_like, decoded-payload"
 
     strings:
         $pool1  = "stratum+tcp://" nocase
@@ -113,6 +119,7 @@ rule OLE10Native_Embedded_Executable
         severity    = "critical"
         category    = "execution"
         mitre       = "T1204.002"
+        applies_to  = "is_office, rtf"
 
     strings:
         $ole    = { D0 CF 11 E0 A1 B1 1A E1 }
