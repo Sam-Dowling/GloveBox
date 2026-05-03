@@ -335,7 +335,9 @@ test('bash-obfuscation: post-processor does NOT attach CMD `for /f` pattern to l
     `bash candidate must not carry the CMD \`for /f\` pattern; got: ${JSON.stringify(host(patternIocs))}`);
 
   // The URL IOC from the decoded payload survives into the finding.
-  const urlIoc = (finding.iocs || []).find(i => /evil\.example\.com/.test(i.url || ''));
+  const urlIoc = (finding.iocs || []).find(
+    i => i.type === IOC.URL && i.url === 'https://evil.example.com?payload=1234'
+  );
   assert.ok(urlIoc, `expected URL IOC preserved; got: ${JSON.stringify(host(finding.iocs))}`);
 
   // Severity is bumped per `_executeOutput` semantics. A URL IOC plus
