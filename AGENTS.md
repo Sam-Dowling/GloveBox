@@ -653,6 +653,7 @@ in the same PR.**
   gate.
 - `6c9f2b1` — `safeStorage` wrapper + migration; `extendApp` collision
   guard.
+- `<pending>` — vendored highlight.js "Common" bundle never registered `powershell` / `dos` / `vbscript` despite FEATURES.md + LANG_MAP claiming them; appended eight upstream per-language IIFEs (`powershell, dos, vbscript, dockerfile, nginx, apache, x86asm, properties`) onto `vendor/highlight.min.js` + added `tests/unit/highlight-bundle.test.js` parity gate.
 
 ### Drag-drop & ingress
 - `e937d32` — drag-and-drop files were captured by iframe → use

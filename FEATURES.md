@@ -56,7 +56,7 @@ Extensionless and renamed files are auto-routed via magic-byte sniff, extension 
 | **Data** | `.csv` `.tsv` · `.json` `.ndjson` `.jsonl` (array-shaped → tabular grid) · `.sqlite` `.db` (Chrome / Firefox / Edge history auto-detect) |
 | **Images** | `.jpg` `.jpeg` `.png` `.gif` `.bmp` `.webp` `.ico` `.tif` `.tiff` `.avif` — preview + steganography / polyglot detection |
 | **SVG** | `.svg` — sandboxed preview + source view, deep SVG-specific security analysis |
-| **Catch-all** | *Any file* — line-numbered text view (encoding auto-detect, 35-language syntax highlighting via vendored highlight.js v11.9.0 covering bash / sh / zsh / batch / cmd / PowerShell / JavaScript / TypeScript / Python / Perl / PHP / Ruby / Lua / Go / Rust / C / C++ / C# / Swift / Kotlin / Objective-C / Visual Basic / Java / Scala / R / SQL / Markdown / YAML / TOML / JSON / XML / HTML / CSS / SCSS / Less / GraphQL / Dockerfile / Makefile / diff / properties; toggle in the toolbar, soft-wraps minified single-line files) or hex dump for binary data |
+| **Catch-all** | *Any file* — line-numbered text view (encoding auto-detect, 44-language syntax highlighting via vendored highlight.js v11.9.0 covering PowerShell / Batch / VBScript / bash / sh / zsh / JavaScript / TypeScript / Python / Perl / PHP / Ruby / Lua / Go / Rust / C / C++ / C# / Swift / Kotlin / Objective-C / VB.NET / Java / R / SQL / Markdown / YAML / JSON / XML / HTML / CSS / SCSS / Less / GraphQL / Dockerfile / Makefile / nginx / Apache / x86 Assembly / diff / INI / TOML / properties / plaintext; toggle in the toolbar, soft-wraps minified single-line files) or hex dump for binary data |
 
 ---
 

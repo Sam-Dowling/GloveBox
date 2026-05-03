@@ -42,10 +42,14 @@ class PlainTextRenderer {
   ];
 
   // Map file extensions to highlight.js language names.
-  // Backed by the vendored v11.9.0 "Common" bundle (36 languages — see
-  // `vendor/highlight.min.js` and the smoke-test in
-  // `tests/unit/highlight-bundle.test.js`). Anything not registered with
-  // hljs is silently skipped at highlight time.
+  // Backed by the vendored v11.9.0 bundle (44 languages — the upstream
+  // "Common" set of 36 plus `powershell`, `dos`, `vbscript`,
+  // `dockerfile`, `nginx`, `apache`, `x86asm`, `properties`, each
+  // appended as a self-registering IIFE; see `vendor/highlight.min.js`
+  // and the parity assertion in `tests/unit/highlight-bundle.test.js`).
+  // Anything not registered with hljs is silently skipped at highlight
+  // time, so any LANG_MAP value below MUST appear in `hljs.listLanguages()`
+  // or the parity test will fail.
   static LANG_MAP = {
     // PowerShell
     'ps1': 'powershell', 'psm1': 'powershell', 'psd1': 'powershell',
@@ -77,7 +81,9 @@ class PlainTextRenderer {
     'yml': 'yaml', 'yaml': 'yaml',
     // Config / INI
     'ini': 'ini', 'cfg': 'ini', 'conf': 'ini', 'toml': 'ini',
-    'reg': 'ini', 'inf': 'ini', 'properties': 'ini',
+    'reg': 'ini', 'inf': 'ini',
+    // Java .properties (purpose-built grammar rather than falling back to ini)
+    'properties': 'properties',
     // SQL
     'sql': 'sql',
     // CSS family
@@ -109,6 +115,11 @@ class PlainTextRenderer {
     'wat': 'wasm', 'wast': 'wasm',
     // Diff / patch
     'diff': 'diff', 'patch': 'diff',
+    // Dockerfile / Containerfile (no canonical extension; matched by
+    // filename in `_detectLanguage` below, plus `.dockerfile` for rare cases)
+    'dockerfile': 'dockerfile', 'containerfile': 'dockerfile',
+    // x86 / x86-64 assembly listings
+    'asm': 'x86asm', 's': 'x86asm', 'nasm': 'x86asm', 'inc': 'x86asm',
   };
 
   // Map MIME types to highlight.js language names (fallback when extension is unknown)
@@ -196,6 +207,26 @@ class PlainTextRenderer {
     'text/x-toml': 'ini',
     'application/toml': 'ini',
     'text/x-ini': 'ini',
+    // PowerShell / Batch / VBScript (Windows scripting)
+    'application/x-powershell': 'powershell',
+    'text/x-powershell': 'powershell',
+    'application/x-msdos-program': 'dos',
+    'text/x-msdos-batch': 'dos',
+    'text/x-vbscript': 'vbscript',
+    'application/x-vbscript': 'vbscript',
+    // Dockerfile
+    'text/x-dockerfile': 'dockerfile',
+    // Web-server configs (nginx / Apache)
+    'text/x-nginx-conf': 'nginx',
+    'application/x-nginx-conf': 'nginx',
+    'text/x-apache-conf': 'apache',
+    // x86 / x86-64 assembly
+    'text/x-asm': 'x86asm',
+    'text/x-x86asm': 'x86asm',
+    'text/x-nasm': 'x86asm',
+    // Java .properties
+    'text/x-java-properties': 'properties',
+    'text/x-properties': 'properties',
   };
 
   // ── Shared "rich rendering" gate ────────────────────────────────────────
@@ -665,6 +696,18 @@ class PlainTextRenderer {
     if (!lang && mimeType) {
       lang = PlainTextRenderer.MIME_TO_LANG[mimeType];
     }
+    // Extensionless filename matches (Dockerfile / Containerfile /
+    // Makefile / Jenkinsfile). Compared case-insensitively against the
+    // basename (strip path separators) — tolerates variants like
+    // `Dockerfile.build`.
+    if (!lang && fileName) {
+      const base = String(fileName).split(/[\\/]/).pop().toLowerCase();
+      if (base === 'dockerfile' || base === 'containerfile' || base.startsWith('dockerfile.')) {
+        lang = 'dockerfile';
+      } else if (base === 'makefile' || base === 'gnumakefile') {
+        lang = 'makefile';
+      }
+    }
 
     // Gate: hljs must be available AND user preference on AND the same
     // shared rich-render gate that decided whether the toggle was even
@@ -850,6 +893,11 @@ class PlainTextRenderer {
       'diff': 'Diff',
       'plaintext': 'Plain Text',
       'c': 'C',
+      'dockerfile': 'Dockerfile',
+      'nginx': 'nginx',
+      'apache': 'Apache',
+      'x86asm': 'x86 Assembly',
+      'properties': 'Properties',
     };
     return nameMap[lang] || (lang.charAt(0).toUpperCase() + lang.slice(1));
   }
