@@ -1667,8 +1667,14 @@ extendApp({
     // round-trips (Detections / IOCs). Must match the keys used by
     // `_snapshotSectionOpenState` in app-load.js and `_resolveSectionOpen`.
     const _sbKey = sectionTitle === 'Detections' ? 'detections' : 'iocs';
+    const _yaraScanning = (_sbKey === 'detections') && !!this._yaraScanInProgress;
     det.dataset.sbSection = _sbKey;
-    det.open = this._resolveSectionOpen(_sbKey, refs.length > 0);
+    // Force the Detections section open while YARA is still in flight so the
+    // analyst sees the live "still scanning" row instead of a collapsed
+    // section that looks indistinguishable from "scan finished clean".
+    // Once the scan clears, the usual fallback re-applies: empty sections
+    // collapse again, populated ones stay open.
+    det.open = _yaraScanning ? true : this._resolveSectionOpen(_sbKey, refs.length > 0);
 
 
     const sum = document.createElement('summary');
@@ -1718,7 +1724,6 @@ extendApp({
     // disappears the moment results land. Rendered for the Detections
     // section only — IOC extraction is synchronous within the parser
     // pipeline so no equivalent indicator is needed there.
-    const _yaraScanning = (_sbKey === 'detections') && !!this._yaraScanInProgress;
     if (_yaraScanning) {
       const loading = document.createElement('div');
       loading.className = 'sb-yara-loading';
