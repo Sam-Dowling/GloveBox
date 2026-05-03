@@ -521,6 +521,11 @@ in the same PR.**
 - `9107360` — JS string-array obfuscator resolver; loads after
   `cmd-obfuscation.js` in `_DETECTOR_FILES`.
 - `3d3f8e6` — aggressive FP suppression across the finder pipeline.
+- `<pending>` — bash / python / php deobfuscators added (six branches each)
+  + JS additions (packer / aaencode / Function-wrapper); all flow through
+  `_processCommandObfuscation`; min decoded length 2 (was 3) so `'sh'`
+  shell-launch atoms aren't suppressed; `_EXEC_INTENT_RE` extended with
+  cross-shell vocabulary so decoded payloads survive `_pruneFindings`.
 
 ### IOC plumbing
 - `dfc594c` — replace bespoke type literals with `IOC.*` constants
