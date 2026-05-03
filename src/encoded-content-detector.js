@@ -45,11 +45,16 @@
 // this regex is overwhelmingly noise — the canonical example is the bash
 // help-text interleaved-separator FP class (47 findings, zero exec hits).
 //
+// Cross-shell vocabulary (bash / sh / python / php / ruby / perl) is
+// included so payloads decoded by bash-obfuscation.js / python-obfuscation.js
+// / php-obfuscation.js survive `_pruneFindings`. The pattern is a single
+// safeRegex builtin — keep additions strictly literal alternations to
+// avoid catastrophic-backtracking hazards.
+const _EXEC_INTENT_RE = /\b(eval|exec|invoke|iex|powershell|pwsh|cmd\.exe|wscript|cscript|mshta|regsvr32|rundll32|certutil|bitsadmin|schtasks|wmic|finger|tftp|curl|wget|nltest|installutil|msbuild|downloadstring|downloadfile|frombase64string|new-object|start-process|shellexecute|invoke-expression|invoke-webrequest|set-executionpolicy|encodedcommand|fromcharcode|bash|zsh|ksh|dash|nc|ncat|netcat|socat|ssh|scp|rsync|telnet|chmod|chattr|crontab|systemctl|sudo|setuid|os\.system|os\.popen|subprocess|pty\.spawn|__import__|marshal\.loads|zlib\.decompress|codecs\.decode|base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|shell_exec|passthru|proc_open|preg_replace|create_function|file_get_contents|fsockopen|backtick)\b|https?:\/\/|\/dev\/tcp\/|php:\/\/|data:[^,]*;base64,/i; /* safeRegex: builtin */
+
 // `_RETAIN_CLASSIFICATIONS` lists decoded-content classifications that are
 // always worth surfacing even without an IOC or exec-keyword match (PE/ELF
 // payloads, scripts, archives, encrypted/packed blobs in XOR contexts).
-const _EXEC_INTENT_RE = /\b(eval|exec|invoke|iex|powershell|pwsh|cmd\.exe|wscript|cscript|mshta|regsvr32|rundll32|certutil|bitsadmin|schtasks|wmic|finger|tftp|curl|nltest|installutil|msbuild|downloadstring|downloadfile|frombase64string|new-object|start-process|shellexecute|invoke-expression|invoke-webrequest|set-executionpolicy|encodedcommand|fromcharcode)\b|https?:\/\//i;
-
 const _RETAIN_CLASSIFICATIONS = /pe executable|elf|mach-o|hta|powershell|vbscript|shell script|jscript|wsf|ole|pdf|rtf|java class|zip archive|rar archive|7-zip|gzip|zlib|deobfuscated command|encrypted\/packed/i;
 
 class EncodedContentDetector {
@@ -358,6 +363,45 @@ class EncodedContentDetector {
     const jsStringArrayCandidates = (typeof this._findJsStringArrayCandidates === 'function')
       ? _runFinder(this._findJsStringArrayCandidates)
       : [];
+    // Bash / POSIX-shell obfuscation finder. Emits the same
+    // `cmd-obfuscation` candidate shape as cmd-obfuscation.js and
+    // ps-mini-evaluator.js so the `_processCommandObfuscation`
+    // post-processor (severity scoring, IOC mirroring, ClickFix marks)
+    // is reused unchanged. Defensively guarded against mixin-order
+    // regressions.
+    const bashObfCandidates       = (typeof this._findBashObfuscationCandidates === 'function')
+      ? _runFinder(this._findBashObfuscationCandidates)
+      : [];
+    // Python obfuscation finder. Emits the same `cmd-obfuscation`
+    // candidate shape (six branches: P1 zlib+base64 carrier, P2 marshal
+    // loads, P3 codecs.decode, P4 char-array reassembly, P5 builtin
+    // string-concat, P6 subprocess/os.system/socket sinks). Defensively
+    // guarded against mixin-order regressions.
+    const pyObfCandidates         = (typeof this._findPythonObfuscationCandidates === 'function')
+      ? _runFinder(this._findPythonObfuscationCandidates)
+      : [];
+    // PHP webshell / dropper finder. Emits the same `cmd-obfuscation`
+    // candidate shape (six branches: PHP1 eval(decoder-onion), PHP2
+    // variable-variables, PHP3 chr/pack reassembly, PHP4 preg_replace
+    // /e modifier, PHP5 superglobal eval, PHP6 data:/php:// stream
+    // wrapper include). Defensively guarded.
+    const phpObfCandidates        = (typeof this._findPhpObfuscationCandidates === 'function')
+      ? _runFinder(this._findPhpObfuscationCandidates)
+      : [];
+    // JS additional obfuscator shapes — packer.js (Dean Edwards),
+    // aaencode/jjencode (Hasegawa pure-symbol encoders), and
+    // Function-wrapper carriers (Function(atob('...'))(),
+    // Function(unescape('...'))(), Function.constructor RCE).
+    // Defensively guarded against mixin-order regressions.
+    const jsPackerCandidates      = (typeof this._findJsPackerCandidates === 'function')
+      ? _runFinder(this._findJsPackerCandidates)
+      : [];
+    const jsAaJjCandidates        = (typeof this._findJsAaJjEncodeCandidates === 'function')
+      ? _runFinder(this._findJsAaJjEncodeCandidates)
+      : [];
+    const jsFnWrapperCandidates   = (typeof this._findJsFunctionWrapperCandidates === 'function')
+      ? _runFinder(this._findJsFunctionWrapperCandidates)
+      : [];
     // Interleaved-separator finder (`$\x00W\x00C\x00=…`, `a.b.c.d…`,
     // `&#0;A&#0;B…`). Defensively guarded so a missing prototype method
     // doesn't blow up the bundle if the mixin order regresses.
@@ -480,6 +524,30 @@ class EncodedContentDetector {
       if (result) findings.push(result);
     }
     for (const cand of jsStringArrayCandidates) {
+      const result = await this._processCommandObfuscation(cand);
+      if (result) findings.push(result);
+    }
+    for (const cand of bashObfCandidates) {
+      const result = await this._processCommandObfuscation(cand);
+      if (result) findings.push(result);
+    }
+    for (const cand of pyObfCandidates) {
+      const result = await this._processCommandObfuscation(cand);
+      if (result) findings.push(result);
+    }
+    for (const cand of phpObfCandidates) {
+      const result = await this._processCommandObfuscation(cand);
+      if (result) findings.push(result);
+    }
+    for (const cand of jsPackerCandidates) {
+      const result = await this._processCommandObfuscation(cand);
+      if (result) findings.push(result);
+    }
+    for (const cand of jsAaJjCandidates) {
+      const result = await this._processCommandObfuscation(cand);
+      if (result) findings.push(result);
+    }
+    for (const cand of jsFnWrapperCandidates) {
       const result = await this._processCommandObfuscation(cand);
       if (result) findings.push(result);
     }

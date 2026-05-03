@@ -849,7 +849,15 @@ Object.assign(EncodedContentDetector.prototype, {
     // installutil / msbuild / pip) align with SENSITIVE_CMD_KEYWORDS
     // above. The ≥2 / ≥3 escalation gate at the bottom keeps a single
     // benign `curl` from reaching `'high'` on its own.
+    //
+    // Cross-shell additions (bash / sh / zsh / dash / python / php /
+    // ruby / perl) ensure that bash-obfuscation.js, python-obfuscation.js,
+    // and php-obfuscation.js candidates that decode to non-Windows
+    // payloads still get scored — without these, a bash decoder onion
+    // landing on `system($_REQUEST['c'])` would only score 0 dangerous
+    // patterns and stay at the default 'medium' tier.
     const dangerousPatterns = [
+      // Windows / PowerShell vocabulary
       /powershell/i, /cmd\.exe/i, /wscript/i, /cscript/i, /mshta/i,
       /certutil/i, /bitsadmin/i, /regsvr32/i, /rundll32/i,
       /invoke-expression/i, /invoke-webrequest/i, /downloadstring/i,
@@ -859,6 +867,23 @@ Object.assign(EncodedContentDetector.prototype, {
       /http:\/\//i, /https:\/\//i, /\\\\/,
       /\bfinger\b/i, /\btftp\b/i, /\bnltest\b/i, /\bssh\b/i, /\bcurl\b/i,
       /\bwinrs\b/i, /\binstallutil\b/i, /\bmsbuild\b/i, /\bpip\b/i,
+      // Bash / POSIX-shell vocabulary
+      /\b(?:bash|sh|zsh|ksh|dash)\s/i, /\bwget\b/i, /\bnc(?:at)?\b/i,
+      /\bnetcat\b/i, /\bsocat\b/i, /\/dev\/tcp\//i, /\/dev\/udp\//i,
+      /\bbase64\s+-d\b/i, /\bxxd\s+-r\b/i, /\bgzip\s+-d\b/i,
+      /\bchmod\s+\+x\b/i, /\bcrontab\b/i, /\bsudo\b/i, /\b\/etc\/passwd\b/i,
+      /\b\/etc\/shadow\b/i, /\b\/etc\/cron/i,
+      // Python vocabulary
+      /\bos\.system\b/i, /\bos\.popen\b/i, /\bsubprocess\.(?:run|Popen|call|check_output|getoutput)\b/,
+      /\b__import__\s*\(\s*['"](?:os|subprocess|socket|ctypes|marshal)/i,
+      /\bmarshal\.loads\b/, /\bzlib\.decompress\b/, /\bcodecs\.decode\b/,
+      /\bpty\.spawn\b/, /\bsocket\.socket\b/i,
+      // PHP webshell vocabulary
+      /\bbase64_decode\b/i, /\bgzinflate\b/i, /\bgzuncompress\b/i,
+      /\bstr_rot13\b/i, /\bshell_exec\b/i, /\bpassthru\b/i,
+      /\bproc_open\b/i, /\bpreg_replace\b/i, /\bcreate_function\b/i,
+      /\$_(?:GET|POST|REQUEST|COOKIE)\s*\[/i,
+      /\bdata:\/\/|php:\/\//i,
     ];
     const matchedPatterns = dangerousPatterns.filter(p => p.test(deobf));
     let severity = 'medium';

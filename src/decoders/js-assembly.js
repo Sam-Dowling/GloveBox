@@ -504,7 +504,298 @@
 
       return candidates;
     },
+
+    // ── Three additional JS-obfuscation resolvers ──
+    //
+    // These three methods extend js-assembly.js with the most common JS
+    // obfuscator shapes that don't fit the string-array layout above:
+    //
+    //   1. Dean Edwards p.a.c.k.e.r (`packer.js`) — the `eval(function(p,a,c,k,e,d)…)`
+    //      idiom that's been around since 2004 and is still the dominant
+    //      delivery shape for jQuery / WordPress-pwn JS droppers.
+    //   2. aaencode / jjencode — Yosuke Hasegawa's pure-symbol JS encoders.
+    //      Detection-only (we surface the carrier; full decode requires
+    //      executing the script in a sandbox, which we won't do).
+    //   3. Function('...')() / new Function(atob('…'))() — the canonical
+    //      "code in a string" carrier. We surface the inner code source
+    //      when it's a static string literal or `atob(literal)` call.
+    //
+    // Each emits the same `cmd-obfuscation` candidate shape consumed by
+    // `_processCommandObfuscation` in cmd-obfuscation.js — same severity
+    // scoring, IOC mirroring, and `_executeOutput` escalation used by the
+    // sister bash / python / php finders.
+
+    /**
+     * Find Dean Edwards p.a.c.k.e.r-style payloads. The carrier shape is
+     * fixed:
+     *
+     *   eval(function(p,a,c,k,e,d){…return p}('<PAYLOAD>',<A>,<C>,'<K>'.split('|'),0,{}))
+     *
+     * `<A>` is the radix used to map dictionary indices in the payload
+     * (commonly 36 or 62), `<C>` is the dictionary length, and `<K>` is
+     * a `|`-separated list of identifiers that replace `\bN\b` tokens
+     * in the payload (where `N` is rendered in base-`<A>`). For a full
+     * spec see <https://dean.edwards.name/packer/> — we re-implement the
+     * decoder here statically (no eval).
+     */
+    _findJsPackerCandidates(text, _context) {
+      if (!text || text.length < 60 || text.length > MAX_SOURCE_BYTES) return [];
+      // Quick reject: every packer carrier contains the exact opening
+      // `eval(function(p,a,c,k,e,d)` (whitespace-tolerant).
+      if (!/eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*[dr]\s*\)/.test(text)) {
+        return [];
+      }
+      const candidates = [];
+      // Capture the four trailing arguments: '<PAYLOAD>',<A>,<C>,'<K>'.split('|'),0,{}
+      // The full body inside `function(p,a,c,k,e,d){…}` is opaque and
+      // varies between packer revisions; we only need the call-site args.
+      // Quote-tolerant body classes: a `'`-quoted string can contain
+      // unescaped `"` (and vice versa), so we capture the chosen quote
+      // in a back-reference and exclude only it. Escaped chars (`\.`)
+      // are also accepted so real dropper output with `\x27` / `\\` /
+      // `\'` survives. The two args we want are PAYLOAD (m[2]) and
+      // DICT (m[6]); they may use different quote styles.
+      const callRe = /eval\s*\(\s*function\s*\(\s*p\s*,\s*a\s*,\s*c\s*,\s*k\s*,\s*e\s*,\s*[dr]\s*\)\s*\{[\s\S]{0,4096}?\}\s*\(\s*(['"])((?:(?!\1)[^\\]|\\.){2,1048576}?)\1\s*,\s*(\d{1,3})\s*,\s*(\d{1,5})\s*,\s*(['"])((?:(?!\5)[^\\\r\n]|\\.){0,524288})\5\s*\.\s*split\s*\(\s*(['"])\|\7\s*\)/g;
+      let m;
+      while ((m = callRe.exec(text)) !== null) {
+        throwIfAborted();
+        if (candidates.length >= this.maxCandidatesPerType) break;
+        const payload = m[2];
+        const radix = parseInt(m[3], 10);
+        const dictLen = parseInt(m[4], 10);
+        const dict = m[6].split('|');
+        if (radix < 2 || radix > 62 || dict.length !== dictLen) continue;
+        const decoded = _packerDecode(payload, radix, dict);
+        if (!decoded || decoded.length < 4) continue;
+        candidates.push({
+          type: 'cmd-obfuscation',
+          technique: 'JS p.a.c.k.e.r (Dean Edwards)',
+          raw: m[0],
+          offset: m.index,
+          length: m[0].length,
+          deobfuscated: decoded,
+          _executeOutput: true,
+        });
+      }
+      return candidates;
+    },
+
+    /**
+     * Find aaencode / jjencode payloads. Both encode arbitrary JS into
+     * pure-symbol strings (aaencode uses Japanese kaomoji, jjencode uses
+     * a small alphabet of `[]{}()+!_`). We can't statically execute these
+     * (they recover the source via JS-engine semantics), so this branch
+     * is detection-only — we emit a candidate naming the carrier so the
+     * post-processor can flag it `_executeOutput: true` (the construct
+     * itself is the IOC).
+     */
+    _findJsAaJjEncodeCandidates(text, _context) {
+      if (!text || text.length < 60 || text.length > MAX_SOURCE_BYTES) return [];
+      const candidates = [];
+      // aaencode signature: opens with `ﾟωﾟﾉ= /｀ｍ´）ﾉ ~┻━┻` (or similar
+      // kaomoji burst). The exact opening varies but every aaencode
+      // dump contains a long run of dense Hangul/Greek/Cyrillic/halfwidth
+      // chars followed by `(ﾟДﾟ)[ﾟεﾟ]+` style signature tokens. The
+      // canonical aaencode token alphabet uses U+0370-U+03FF (Greek),
+      // U+0400-U+04FF (Cyrillic), and U+30A0-U+30FF / U+FF00-U+FFEF
+      // (katakana / halfwidth-fullwidth). We accept all four ranges so
+      // a `(ﾟДﾟ)` token (where `Д` is Cyrillic and `ﾟ` is halfwidth)
+      // matches.
+      // The prefix-to-token gap may span newlines (real aaencode dumps
+      // are typically a single very long line, but synthetic / pretty-
+      // printed samples can split). Use `[\s\S]*?` instead of `.*?` so
+      // the connector spans line breaks.
+      const aaCharClass = '[\\u0370-\\u03FF\\u0400-\\u04FF\\u30A0-\\u30FF\\uFF00-\\uFFEF]';
+      const aaSig = new RegExp(`${aaCharClass}{4,}[\\s\\S]{0,2048}?\\(\\s*${aaCharClass}+\\s*\\)`); /* safeRegex: builtin */
+      if (aaSig.test(text)) {
+        const m = aaSig.exec(text);
+        if (m) {
+          const start = Math.max(0, m.index - 20);
+          const end = Math.min(text.length, m.index + 200);
+          candidates.push({
+            type: 'cmd-obfuscation',
+            technique: 'JS aaencode (Hasegawa kaomoji obfuscation)',
+            raw: text.slice(start, end),
+            offset: start,
+            length: end - start,
+            deobfuscated: 'aaencode payload \u2014 statically opaque; sandbox required to recover JS',
+            _executeOutput: true,
+          });
+        }
+      }
+      // jjencode signature: a single long line where >=80% of chars are
+      // in the small jjencode alphabet (`[]{}()+!_/$.\\`) and the line
+      // is ≥200 chars long. We also require the canonical opening
+      // `<NAME>=~[]; <NAME>={…}` shape so a legitimate minified file
+      // doesn't fire.
+      const jjSig = /([A-Za-z_$][A-Za-z0-9_$]{0,40})\s*=\s*~\s*\[\s*\]\s*;\s*\1\s*=\s*\{/;
+      const jm = jjSig.exec(text);
+      if (jm) {
+        // Confirm the dense-symbol ratio of the next ~500 chars to cut
+        // FPs against minifier output that happens to start `x=~[];`.
+        const window2 = text.slice(jm.index, Math.min(text.length, jm.index + 500));
+        let symbol = 0;
+        for (let i = 0; i < window2.length; i++) {
+          const c = window2[i];
+          if ('[]{}()+!_/$.\\'.indexOf(c) >= 0) symbol++;
+        }
+        if (symbol / window2.length > 0.4) {
+          candidates.push({
+            type: 'cmd-obfuscation',
+            technique: 'JS jjencode (Hasegawa symbol-only obfuscation)',
+            raw: window2.slice(0, 200),
+            offset: jm.index,
+            length: Math.min(200, window2.length),
+            deobfuscated: 'jjencode payload \u2014 statically opaque; sandbox required to recover JS',
+            _executeOutput: true,
+          });
+        }
+      }
+      return candidates;
+    },
+
+    /**
+     * Find Function-wrapper carriers:
+     *
+     *   Function('return ' + atob('<B64>'))()
+     *   (new Function(atob('<B64>')))()
+     *   Function(unescape('%XX%XX…'))()
+     *   Function.constructor('payload')()
+     *
+     * The inner code is what makes the construct dangerous — we surface
+     * the cleartext when the wrapped expression is a static literal /
+     * atob(literal) / unescape(literal) call. Anything more dynamic
+     * (string-concat with a variable, indirect lookup) is flagged as
+     * structural-only.
+     */
+    _findJsFunctionWrapperCandidates(text, _context) {
+      if (!text || text.length < 16 || text.length > MAX_SOURCE_BYTES) return [];
+      const candidates = [];
+      // Function(atob('B64'))() / new Function(atob('B64'))()
+      const fnAtobRe = /(?:new\s+)?Function\s*\(\s*(?:['"]return\s+['"]\s*\+\s*)?atob\s*\(\s*(['"])([A-Za-z0-9+/=\s]{8,524288})\1\s*\)\s*(?:\+\s*['"][^'"\r\n]{0,40}['"])?\s*\)\s*\(\s*\)/g;
+      let m;
+      while ((m = fnAtobRe.exec(text)) !== null) {
+        throwIfAborted();
+        if (candidates.length >= this.maxCandidatesPerType) break;
+        const b64 = m[2].replace(/\s+/g, '');
+        let decoded = '';
+        try {
+          if (typeof atob === 'function') decoded = atob(b64);
+          /* eslint-disable-next-line no-undef */
+          else decoded = Buffer.from(b64, 'base64').toString('binary');
+        } catch (_) { continue; }
+        if (decoded.length < 4) continue;
+        candidates.push({
+          type: 'cmd-obfuscation',
+          technique: 'JS Function(atob(...))()',
+          raw: m[0],
+          offset: m.index,
+          length: m[0].length,
+          deobfuscated: decoded,
+          _executeOutput: true,
+        });
+      }
+      // Function(unescape('%XX%XX…'))()
+      const fnUnescapeRe = /(?:new\s+)?Function\s*\(\s*unescape\s*\(\s*(['"])((?:%[0-9a-fA-F]{2}|[\w\-.~!*'();:@&=+$,/?#[\]]){8,8192})\1\s*\)\s*\)\s*\(\s*\)/g;
+      while ((m = fnUnescapeRe.exec(text)) !== null) {
+        throwIfAborted();
+        if (candidates.length >= this.maxCandidatesPerType) break;
+        let decoded = '';
+        try { decoded = decodeURIComponent(m[2]); }
+        catch (_) {
+          // legacy unescape() falls back to %uXXXX → BMP codepoint
+          decoded = m[2].replace(/%([0-9a-fA-F]{2})/g, (_full, h) => String.fromCharCode(parseInt(h, 16)));
+        }
+        if (decoded.length < 4) continue;
+        candidates.push({
+          type: 'cmd-obfuscation',
+          technique: 'JS Function(unescape(...))()',
+          raw: m[0],
+          offset: m.index,
+          length: m[0].length,
+          deobfuscated: decoded,
+          _executeOutput: true,
+        });
+      }
+      // Function.constructor('payload')() / Function.prototype.constructor.call(...)
+      const fnConstructorRe = /\b(?:Function|[A-Za-z_$]\w{0,40})\s*(?:\.\s*(?:prototype\s*\.\s*)?constructor)\s*\(\s*(['"])([^'"\r\n]{4,4096})\1\s*\)\s*(?:\.\s*call\s*\([^)]{0,80}\)|\(\s*\))/g;
+      while ((m = fnConstructorRe.exec(text)) !== null) {
+        throwIfAborted();
+        if (candidates.length >= this.maxCandidatesPerType) break;
+        const payload = m[2];
+        if (payload.length < 4) continue;
+        candidates.push({
+          type: 'cmd-obfuscation',
+          technique: 'JS Function.constructor RCE',
+          raw: m[0],
+          offset: m.index,
+          length: m[0].length,
+          deobfuscated: payload,
+          _executeOutput: true,
+        });
+      }
+      return candidates;
+    },
   });
+
+  // ── packer.js static decoder ─────────────────────────────────────────────
+  //
+  // Re-implements Dean Edwards' p.a.c.k.e.r unpacker statically: every
+  // dictionary index `i` (0 ≤ i < dict.length) is rendered into base-`radix`
+  // and any whole-word match in the payload is substituted with `dict[i]`
+  // (when `dict[i]` is non-empty; otherwise the token is preserved). Mirrors
+  // the original packer.js v3 unpacker:
+  //   while (c--) if (k[c]) p = p.replace(new RegExp('\\b'+e(c)+'\\b','g'), k[c]);
+  //
+  // We use an O(n) reverse-scan of the payload instead of `replace` per
+  // index because the worst-case dict size is ~10000 and the regex-per-
+  // index loop would become O(n*k). The walk classifies each char as
+  // identifier-vs-non-identifier and substitutes whole tokens when the
+  // token's base-radix interpretation is < dict.length AND dict[idx] is
+  // non-empty.
+  function _packerDecode(payload, radix, dict) {
+    const isIdent = c => (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c === '_' || c === '$';
+    let out = '';
+    let i = 0;
+    while (i < payload.length) {
+      const c = payload[i];
+      if (!isIdent(c)) { out += c; i++; continue; }
+      // Read the whole identifier token
+      let j = i;
+      while (j < payload.length && isIdent(payload[j])) j++;
+      const tok = payload.slice(i, j);
+      // Try interpreting tok as base-`radix` integer. If invalid (any
+      // char outside the radix's digit set), preserve verbatim.
+      const idx = _parseRadixInt(tok, radix);
+      if (idx >= 0 && idx < dict.length && dict[idx] && dict[idx].length > 0) {
+        out += dict[idx];
+      } else {
+        out += tok;
+      }
+      i = j;
+    }
+    return out;
+  }
+
+  // Parse `s` as a base-`radix` integer (0 ≤ radix ≤ 62). Lowercase
+  // letters represent digits 10..35 and uppercase letters represent
+  // 36..61 — packer.js's `e()` function uses the same convention. Returns
+  // -1 if any character is out of range.
+  function _parseRadixInt(s, radix) {
+    if (!s) return -1;
+    let n = 0;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      let d = -1;
+      if (c >= 48 && c <= 57) d = c - 48;          // '0'..'9'
+      else if (c >= 97 && c <= 122) d = c - 87;    // 'a'..'z' → 10..35
+      else if (c >= 65 && c <= 90) d = c - 29;     // 'A'..'Z' → 36..61
+      if (d < 0 || d >= radix) return -1;
+      n = n * radix + d;
+      if (n > Number.MAX_SAFE_INTEGER) return -1;
+    }
+    return n;
+  }
 
   // Top-level `,` splitter — matches the `setTimeout(<expr>, <ms>)` shape.
   // Hoisted out of the closure for unit-test reachability via the

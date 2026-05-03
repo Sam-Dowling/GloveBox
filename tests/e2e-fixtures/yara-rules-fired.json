@@ -376,8 +376,8 @@
   "summary": {
     "anchorFixtures": 67,
     "rulesFiredInCorpus": 238,
-    "rulesUnanchored": 331,
-    "totalRulesDefined": 569
+    "rulesUnanchored": 345,
+    "totalRulesDefined": 583
   },
   "unanchoredRules": [
     "AD_Database_Dump",
@@ -386,6 +386,16 @@
     "BAT_Recursive_Copy_Drop",
     "BITSAdmin_Download",
     "Bash_Base64_Execution",
+    "Bash_Bashrc_Persistence",
+    "Bash_Command_Not_Found_Hijack",
+    "Bash_Cron_Persistence",
+    "Bash_DD_Pipe_Shell",
+    "Bash_DevTcp_Reverse_Shell",
+    "Bash_Env_I_Masking",
+    "Bash_Heredoc_Exec",
+    "Bash_IFS_Reassembly",
+    "Bash_SSH_Key_Injection",
+    "Bash_Sudoers_Tampering",
     "Bash_Variable_Obfuscation",
     "BrowserExt_Eval_InScript",
     "BrowserExt_LegacyXUL_Bootstrap",
@@ -632,6 +642,10 @@
     "PE_Suspicious_Strings_CnC",
     "PE_Themida_Packed",
     "PE_VMProtect_Packed",
+    "PHP_Eval_Superglobal",
+    "PHP_Preg_Replace_E_Modifier",
+    "PHP_Variable_Variable_Obfuscation",
+    "PHP_Webshell_Decoder_Onion",
     "PasswordManager_DB_Reference",
     "PostEx_Tool_Reference",
     "PowerShell_TCPClient_RevShell",

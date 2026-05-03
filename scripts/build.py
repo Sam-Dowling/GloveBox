@@ -469,6 +469,41 @@ _DETECTOR_FILES = [
     # AFTER cmd-obfuscation.js (it consumes `_processCommandObfuscation`).
     # See PLAN.md → D6.
     'src/decoders/js-assembly.js',
+    # bash-obfuscation.js — POSIX-shell obfuscation/deobfuscation:
+    # ${V:n:m} parameter slicing, $'…' ANSI-C quoting, printf '\xNN'
+    # chains, curl|sh / base64-pipe-to-shell, eval $(…) command
+    # substitution unrolling, IFS / brace-expansion fragmentation,
+    # /dev/tcp reverse shells. Emits `cmd-obfuscation` candidates so
+    # the `_processCommandObfuscation` pipeline (severity scoring, IOC
+    # mirroring, ClickFix marks) is reused unchanged. Must load AFTER
+    # cmd-obfuscation.js (consumes _processCommandObfuscation). No
+    # cross-decoder state — independent of ps-mini-evaluator.js /
+    # js-assembly.js load order.
+    'src/decoders/bash-obfuscation.js',
+    # python-obfuscation.js — Python obfuscation/deobfuscation:
+    # exec(zlib.decompress(b64decode(b'…'))) carriers, marshal.loads
+    # bytecode, codecs.decode rot13/hex/base64/zlib, char-array
+    # reassembly (chr-join / bytes-list / chr-concat), builtin
+    # string-concat lookup (getattr(__builtins__, 'e'+'val')),
+    # subprocess/os.system/pty.spawn/socket sinks. Emits
+    # `cmd-obfuscation` candidates so the `_processCommandObfuscation`
+    # pipeline is reused unchanged. Must load AFTER cmd-obfuscation.js.
+    # Calls Decompressor.inflateSync (defined in src/decompressor.js,
+    # loaded earlier in JS_FILES) to unpack zlib-wrapped payloads.
+    'src/decoders/python-obfuscation.js',
+    # php-obfuscation.js — PHP webshell / dropper detection: PHP1
+    # eval(gzinflate(base64_decode(...))) decoder onion (b374k / WSO /
+    # r57 family), PHP2 variable-variables ($$x with concatenated
+    # symbol-table lookup), PHP3 chr/pack reassembly resolving to
+    # PHP_DANGEROUS_FNS names, PHP4 preg_replace('/.../e') deprecated
+    # exec primitive, PHP5 superglobal callable patterns
+    # ($_GET[0]($_POST[1]) and eval($_REQUEST[...])), PHP6
+    # data://text/plain;base64,... and php://filter stream-wrapper
+    # includes. Emits `cmd-obfuscation` candidates so the
+    # `_processCommandObfuscation` pipeline is reused unchanged. Calls
+    # Decompressor.inflateSync (deflate-raw / zlib / gzip) to unwrap
+    # gzinflate / gzuncompress / gzdecode chains.
+    'src/decoders/php-obfuscation.js',
     # interleaved-separator.js — finds + decodes interleaved-separator
     # obfuscation (`$\x00W\x00C\x00=\x00…` → `$WC=…`). Two-pass finder:
     # (1) single-character separator at strides 2/3/4 (e.g. `a.b.c.d`),

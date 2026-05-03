@@ -1516,3 +1516,248 @@ rule CredFile_Walk_CrossOS
     condition:
         3 of them
 }
+
+rule Bash_DevTcp_Reverse_Shell
+{
+    meta:
+        description = "Detects bash /dev/tcp reverse-shell — bash -i with stdio redirected to attacker via /dev/tcp/<host>/<port>"
+        severity = "critical"
+        category = "execution"
+        mitre = "T1059.004"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $devtcp_redirect_1 = /bash\s+-i\b[^\r\n]{0,200}>\s*&?\s*\/dev\/tcp\// nocase
+        $devtcp_redirect_2 = /sh\s+-i\b[^\r\n]{0,200}>\s*&?\s*\/dev\/tcp\// nocase
+        $devtcp_dup_1 = /\/dev\/tcp\/[\w.\-]+\/\d{1,5}\b[^\r\n]{0,200}\b0<&\d/ nocase
+        $devtcp_dup_2 = /\/dev\/tcp\/[\w.\-]+\/\d{1,5}\b[^\r\n]{0,200}\b>&\d/ nocase
+        $exec_devtcp = /exec\s+\d+<>\s*\/dev\/tcp\// nocase
+    condition:
+        any of them
+}
+
+rule Bash_Bashrc_Persistence
+{
+    meta:
+        description = "Detects bash persistence via ~/.bashrc / ~/.bash_profile / /etc/profile.d injection — write-and-redirect into a shell-startup file"
+        severity = "high"
+        category = "persistence"
+        mitre = "T1546.004"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $bashrc_append_1 = /(?:echo|printf|cat\s+>>?)[^\r\n]{0,200}>>?\s*['"]?\$?HOME?[\\\/]\.bashrc\b/ nocase
+        $bashrc_append_2 = /(?:echo|printf|cat\s+>>?)[^\r\n]{0,200}>>?\s*['"]?[\\\/]?\.bash_profile\b/ nocase
+        $bashrc_append_3 = /(?:echo|printf|cat\s+>>?)[^\r\n]{0,200}>>?\s*['"]?[\\\/]?\.profile\b/ nocase
+        $profiled = /\/etc\/profile\.d\/[^\r\n]{1,80}\.sh\b/ nocase
+        $bashrc_tee = /tee\s+-a\s+[^\r\n]{0,80}\.(?:bashrc|bash_profile|profile|zshrc)\b/ nocase
+    condition:
+        any of them
+}
+
+rule Bash_Sudoers_Tampering
+{
+    meta:
+        description = "Detects /etc/sudoers tampering — appending NOPASSWD or ALL=(ALL) entries to grant unattended root"
+        severity = "critical"
+        category = "privilege-escalation"
+        mitre = "T1548.003"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $nopasswd_append_1 = /(?:echo|printf|cat\s+>>?)[^\r\n]{0,200}NOPASSWD[^\r\n]{0,80}>>?\s*\/etc\/sudoers\b/ nocase
+        $nopasswd_append_2 = /(?:echo|printf)[^\r\n]{0,200}>>?\s*\/etc\/sudoers\.d\// nocase
+        $visudo_pipe = /\bvisudo\b[^\r\n]{0,80}\bNOPASSWD\b/ nocase
+        $sudoers_tee = /tee\s+-a\s+\/etc\/sudoers/ nocase
+        $passwd_root = /(?:echo|printf)[^\r\n]{0,200}>>?\s*\/etc\/passwd\b/ nocase
+    condition:
+        any of them
+}
+
+rule Bash_Cron_Persistence
+{
+    meta:
+        description = "Detects cron-job persistence — installing entries via crontab(1) -, /etc/cron.* drop, or systemd timer drop"
+        severity = "high"
+        category = "persistence"
+        mitre = "T1053.003"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $crontab_pipe_1 = /\(crontab\s+-l[^\r\n]{0,40}\|[^\r\n]{0,200}\)\s*\|\s*crontab\s+-/ nocase
+        $crontab_pipe_2 = /(?:echo|printf)[^\r\n]{0,200}\|\s*crontab\s+-/ nocase
+        $cron_dir_1 = /(?:cp|mv|tee|>>?)[^\r\n]{0,200}\/etc\/cron\.(?:d|hourly|daily|weekly|monthly)\// nocase
+        $cron_at = /\bat\s+(?:now|\+\d+\s*(?:min|hour|day))[^\r\n]{0,200}<<</ nocase
+        $systemd_timer = /\.timer\b[\s\S]{0,500}OnBootSec\s*=/ nocase
+    condition:
+        any of them
+}
+
+rule Bash_SSH_Key_Injection
+{
+    meta:
+        description = "Detects SSH authorized_keys injection — appending an attacker pubkey to grant persistent passwordless login"
+        severity = "critical"
+        category = "persistence"
+        mitre = "T1098.004"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $authkeys_append_1 = /(?:echo|printf|cat\s+>>?)[^\r\n]{0,400}>>?\s*[^\r\n]{0,80}\.ssh\/authorized_keys\b/ nocase
+        $authkeys_append_2 = /tee\s+-a\s+[^\r\n]{0,80}\.ssh\/authorized_keys\b/ nocase
+        $mkdir_ssh = /mkdir\s+-p\s+[^\r\n]{0,80}\.ssh[^\r\n]{0,200}chmod\s+(?:700|600)/ nocase
+        $ssh_keygen = /ssh-keygen\s+-(?:t|f)\s+\w+[^\r\n]{0,200}-N\s+['"]['"]?/ nocase
+        $rsa_pubkey = /ssh-(?:rsa|ed25519|ecdsa-sha2-nistp\d+)\s+[A-Za-z0-9+\/=]{200,}/
+    condition:
+        ($authkeys_append_1 or $authkeys_append_2 or $mkdir_ssh) and ($rsa_pubkey or $authkeys_append_1)
+}
+
+rule Bash_IFS_Reassembly
+{
+    meta:
+        description = "Detects IFS-reassembly obfuscation — IFS reassigned to a separator char, command split into tokens reassembled at exec time via eval/exec/$cmd"
+        severity = "high"
+        category = "obfuscation"
+        mitre = "T1027"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $ifs_ansi_eval = /\bIFS\s*=\s*\$'(?:[^'\\]|\\.){1,40}'[\s\S]{0,400}?\b(?:eval|exec)\s+\$\{?\w+\}?/ nocase
+        $ifs_quoted_eval = /\bIFS\s*=\s*['"][^'"\r\n]{1,40}['"][\s\S]{0,400}?\b(?:eval|exec)\s+\$\{?\w+\}?/ nocase
+        $ifs_brace_concat = /\bIFS\s*=[\s\S]{0,400}?\$\{?\w+\}?\$\{?\w+\}?\$\{?\w+\}?/ nocase
+    condition:
+        any of them
+}
+
+rule Bash_Heredoc_Exec
+{
+    meta:
+        description = "Detects bash here-document execution — script body delivered inline via <<EOF then piped to sh / bash / interpreter"
+        severity = "medium"
+        category = "execution"
+        mitre = "T1059.004"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $heredoc_sh = /<<-?\s*['"]?\w+['"]?[\s\S]{20,4096}?\b\w+\s*\|\s*(?:ba)?sh\b/ nocase
+        $heredoc_python = /<<-?\s*['"]?\w+['"]?[\s\S]{20,4096}?\bpython\d?\s+-/ nocase
+        $heredoc_perl = /<<-?\s*['"]?\w+['"]?[\s\S]{20,4096}?\bperl\s+-e\s+/ nocase
+        $heredoc_curl = /<<-?\s*['"]?\w+['"]?[\s\S]{20,4096}?\bcurl\s+-d\s+@-/ nocase
+    condition:
+        any of them
+}
+
+rule Bash_DD_Pipe_Shell
+{
+    meta:
+        description = "Detects dd pipe-to-shell — dd extracts an embedded payload from a host file (offset/skip) and pipes it to a shell"
+        severity = "high"
+        category = "execution"
+        mitre = "T1059.004"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $dd_skip_pipe = /\bdd\s+if=[^\r\n]{1,200}skip=\d+[^\r\n]{0,200}\|\s*(?:ba)?sh\b/ nocase
+        $dd_bs_pipe = /\bdd\s+if=[^\r\n]{1,200}\bbs=\d+[^\r\n]{0,200}\|\s*(?:ba)?sh\b/ nocase
+        $tail_byte_pipe = /\btail\s+-c\s+[+\-]?\d+[^\r\n]{0,200}\|\s*(?:ba)?sh\b/ nocase
+        $head_byte_pipe = /\bhead\s+-c\s+\d+[^\r\n]{0,200}\|\s*(?:ba)?sh\b/ nocase
+    condition:
+        any of them
+}
+
+rule Bash_Command_Not_Found_Hijack
+{
+    meta:
+        description = "Detects command_not_found_handle hijack — overriding the handler to silently exec arbitrary commands when an unknown name is typed"
+        severity = "high"
+        category = "persistence"
+        mitre = "T1546"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $cnf_handle_def = /\bcommand_not_found_handle\s*\(\s*\)\s*\{/ nocase
+        $cnf_handler_def = /\bcommand_not_found_handler\s*\(\s*\)\s*\{/ nocase
+        $cnf_export = /\bexport\s+-f\s+command_not_found_handle/ nocase
+    condition:
+        any of them
+}
+
+rule Bash_Env_I_Masking
+{
+    meta:
+        description = "Detects env -i masking — wiping the environment before launching a shell to bypass auditd/HISTFILE/PROMPT_COMMAND telemetry"
+        severity = "medium"
+        category = "defense-evasion"
+        mitre = "T1562.003"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $env_i_bash = /\benv\s+-i\b[^\r\n]{0,200}\b(?:ba)?sh\b/ nocase
+        $unset_history = /\bunset\s+(?:HISTFILE|HISTSIZE|HISTFILESIZE|PROMPT_COMMAND)\b/ nocase
+        $histfile_devnull = /\bHISTFILE\s*=\s*\/dev\/null\b/ nocase
+        $set_no_history = /\bset\s+\+o\s+history\b/ nocase
+    condition:
+        any of them
+}
+
+rule PHP_Webshell_Decoder_Onion
+{
+    meta:
+        description = "Detects PHP webshell decoder onion — eval/assert wrapping nested base64_decode/gzinflate/gzuncompress/str_rot13 chains (b374k / WSO / r57 family)"
+        severity = "critical"
+        category = "execution"
+        mitre = "T1059"
+        applies_to = "php, plaintext, decoded-payload"
+    strings:
+        $eval_b64 = /(?:eval|assert)\s*\(\s*base64_decode\s*\(\s*['"][A-Za-z0-9+\/=]{16,}['"]\s*\)\s*\)/ nocase
+        $eval_gz_b64 = /(?:eval|assert)\s*\(\s*gzinflate\s*\(\s*base64_decode\s*\(/ nocase
+        $eval_rot_gz = /(?:eval|assert)\s*\(\s*str_rot13\s*\(\s*gzinflate\s*\(\s*base64_decode\s*\(/ nocase
+        $eval_gzuncompress = /(?:eval|assert)\s*\(\s*gzuncompress\s*\(\s*base64_decode\s*\(/ nocase
+        $eval_gzdecode = /(?:eval|assert)\s*\(\s*gzdecode\s*\(\s*base64_decode\s*\(/ nocase
+        $create_function_b64 = /create_function\s*\(\s*['"]['"]?\s*,\s*base64_decode\s*\(/ nocase
+    condition:
+        any of them
+}
+
+rule PHP_Eval_Superglobal
+{
+    meta:
+        description = "Detects PHP one-line shell — eval/system/shell_exec called with $_GET / $_POST / $_REQUEST / $_COOKIE / $_SERVER user-controlled data"
+        severity = "critical"
+        category = "execution"
+        mitre = "T1059"
+        applies_to = "php, plaintext, decoded-payload"
+    strings:
+        $eval_get = /\beval\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[/ nocase
+        $assert_get = /\bassert\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[/ nocase
+        $system_get = /\b(?:system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[/ nocase
+        $superglobal_call = /\$_(?:GET|POST|REQUEST|COOKIE)\s*\[\s*['"]?[^\]'"\r\n]{1,40}['"]?\s*\]\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[/ nocase
+        $callback_filter = /\b(?:array_filter|array_map|usort|preg_replace_callback)\s*\([^)]{0,200}\$_(?:GET|POST|REQUEST|COOKIE)/ nocase
+    condition:
+        any of them
+}
+
+rule PHP_Preg_Replace_E_Modifier
+{
+    meta:
+        description = "Detects deprecated preg_replace /e modifier — the replacement string is evaluated as PHP code (RCE primitive on PHP < 7.0; legacy webshell shape)"
+        severity = "high"
+        category = "execution"
+        mitre = "T1059"
+        applies_to = "php, plaintext, decoded-payload"
+    strings:
+        $preg_e_1 = /preg_replace(?:_callback)?\s*\(\s*['"]\/[^'"\r\n]{1,200}\/[a-zA-Z]{0,12}e[a-zA-Z]{0,12}['"]/ nocase
+        $preg_e_2 = /preg_replace(?:_callback)?\s*\(\s*['"]#[^'"\r\n]{1,200}#[a-zA-Z]{0,12}e[a-zA-Z]{0,12}['"]/ nocase
+        $preg_e_3 = /preg_replace(?:_callback)?\s*\(\s*['"]~[^'"\r\n]{1,200}~[a-zA-Z]{0,12}e[a-zA-Z]{0,12}['"]/ nocase
+    condition:
+        any of them
+}
+
+rule PHP_Variable_Variable_Obfuscation
+{
+    meta:
+        description = "Detects PHP variable-variables obfuscation — $$x or ${'a'.'b'.'c'}() calling a string-concat-resolved function name (system / eval / shell_exec)"
+        severity = "high"
+        category = "obfuscation"
+        mitre = "T1027"
+        applies_to = "php, plaintext, decoded-payload"
+    strings:
+        $double_dollar_call = /\$\$\w+\s*\(/ nocase
+        $brace_concat_call = /\$\{\s*['"][^'"\r\n]{1,40}['"](?:\s*\.\s*['"][^'"\r\n]{1,40}['"]){1,12}\s*\}\s*\(/ nocase
+        $assign_concat = /\$\w+\s*=\s*['"][a-z]{2,8}['"](?:\s*\.\s*['"][a-z]{1,8}['"]){1,8}\s*;/ nocase
+        $chr_concat_dangerous = /chr\s*\(\s*\d{1,3}\s*\)(?:\s*\.\s*chr\s*\(\s*\d{1,3}\s*\)){2,32}/ nocase
+        $pack_h_dangerous = /pack\s*\(\s*['"]H\*['"]\s*,\s*['"][0-9a-fA-F]{6,200}['"]\s*\)/ nocase
+    condition:
+        ($double_dollar_call or $brace_concat_call) and ($assign_concat or $chr_concat_dangerous or $pack_h_dangerous)
+        or 2 of ($chr_concat_dangerous, $pack_h_dangerous, $double_dollar_call, $brace_concat_call)
+}

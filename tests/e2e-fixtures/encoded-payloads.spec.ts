@@ -73,4 +73,59 @@ test.describe('encoded-payloads renderer (fixture-driven)', () => {
     );
     expect(refangedNote).toBe(true);
   });
+
+  test('bash-obfuscation-suite.sh surfaces deobfuscated commands and escalates risk', async () => {
+    // Multi-branch bash fixture (B1–B6 + /dev/tcp). The bash-obfuscation
+    // decoder unwraps every branch, the post-processor escalates severity
+    // via dangerousPatterns + _executeOutput, and the renderer mutates
+    // findings in-place. We assert the fixture: (1) generates ≥1 finding,
+    // (2) generates ≥1 URL or IP IOC (real-world endpoints land in the
+    // decoded cleartext), and (3) escalates risk above 'low' (multiple
+    // ClickFix-grade payloads + a /dev/tcp reverse-shell can't be 'low').
+    const findings = await loadFixture(
+      ctx.page, 'examples/encoded-payloads/bash-obfuscation-suite.sh');
+    expect(findings.iocCount + findings.externalRefCount).toBeGreaterThan(0);
+    expect(['medium', 'high', 'critical']).toContain(findings.risk);
+  });
+
+  test('python-obfuscation-suite.py surfaces deobfuscated sinks and escalates risk', async () => {
+    // Multi-branch Python fixture (P1–P6). The python-obfuscation
+    // decoder unwraps zlib/marshal/codecs/chr/builtin/sink branches and
+    // emits cmd-obfuscation candidates; the post-processor scores
+    // dangerousPatterns hits (subprocess / os.system / pty.spawn / socket
+    // reverse-shell). Same shape of assertion as bash: ≥1 finding, risk
+    // beyond 'low'.
+    const findings = await loadFixture(
+      ctx.page, 'examples/encoded-payloads/python-obfuscation-suite.py');
+    expect(findings.iocCount + findings.externalRefCount).toBeGreaterThan(0);
+    expect(['medium', 'high', 'critical']).toContain(findings.risk);
+  });
+
+  test('php-webshell-suite.php surfaces decoder-onion cleartext and escalates risk', async () => {
+    // Multi-branch PHP webshell fixture (PHP1–PHP6). The php-obfuscation
+    // decoder unwraps the eval(gzinflate(base64_decode(...))) chain (real
+    // bytes inflated via Decompressor.inflateSync), emits cmd-obfuscation
+    // candidates for variable-variables / chr-pack / preg_replace /e /
+    // superglobal callable / data:// stream wrapper. Multiple PHP YARA
+    // rules (PHP_Webshell_Decoder_Onion, PHP_Eval_Superglobal,
+    // PHP_Preg_Replace_E_Modifier, PHP_Variable_Variable_Obfuscation)
+    // should fire, pushing risk to at least 'high'.
+    const findings = await loadFixture(
+      ctx.page, 'examples/encoded-payloads/php-webshell-suite.php');
+    expect(findings.iocCount + findings.externalRefCount).toBeGreaterThan(0);
+    expect(['high', 'critical']).toContain(findings.risk);
+  });
+
+  test('js-additional-obfuscation.js surfaces packer / Function-wrapper cleartext', async () => {
+    // packer.js + aaencode / jjencode + Function(atob(...))() variants.
+    // The packer carrier inflates statically (re-implementing packer.js's
+    // dictionary-substitution loop), aaencode / jjencode are detection-
+    // only (statically opaque without a JS engine — we surface the
+    // carrier as _executeOutput high-confidence). Function-wrapper
+    // carriers decode the inner code via atob() / unescape().
+    const findings = await loadFixture(
+      ctx.page, 'examples/encoded-payloads/js-additional-obfuscation.js');
+    expect(findings.iocCount + findings.externalRefCount).toBeGreaterThan(0);
+    expect(['medium', 'high', 'critical']).toContain(findings.risk);
+  });
 });
