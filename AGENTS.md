@@ -663,6 +663,9 @@ in the same PR.**
   Timeline e2e.
 - `e8ab1b1` — permanent unit coverage for engine, rule perf, and regex
   shapes.
+- `<pending>` — fuzz coverage aggregator must paint covered/uncovered
+  per-process then union COVERED-wins-over-UNCOVERED across processes;
+  inverted order produces 100% coverage everywhere.
 
 ---
 
