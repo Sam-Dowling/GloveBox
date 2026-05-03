@@ -264,8 +264,26 @@ Object.assign(EncodedContentDetector.prototype, {
       }
       const preview = _phpBytesPreview(final);
       if (!preview || preview.length < 2) continue;
+      // Build the pretty technique string in INNER-FIRST call order.
+      //
+      // `chainNames` is already innermost-first (we reversed on line
+      // above). PHP source `eval(A(B(C(base64_decode('…')))))` at
+      // runtime applies C → B → A, so the innermost wrapper is the
+      // last name in source order — i.e. the first entry in the already-
+      // reversed `chainNames`. To emit the label as the reader sees
+      // the source (`eval(A(B(C(base64_decode(...)))))`) we reverse
+      // BACK to outer-first and concatenate `${name}(` per layer,
+      // closing all parens at the tail.
+      //
+      // Count of closing parens: one per decoder name + one for
+      // `base64_decode` + one for the outer `eval` = chainNames.length + 2
+      // — but the outer `eval(` contributes its own `)` already; the
+      // inner closing chain is `chainNames.length + 1` to close each
+      // decoder name and the `base64_decode` call.
+      const outerFirst = [...chainNames].reverse();
+      const chainPrefix = outerFirst.map(n => `${n}(`).join('');
       const techPretty = chainNames.length
-        ? `PHP eval(${[...chainNames].reverse().join('(')}base64_decode(...)${')'.repeat(chainNames.length + 1)}`
+        ? `PHP eval(${chainPrefix}base64_decode(...)${')'.repeat(chainNames.length + 1)}`
         : 'PHP eval(base64_decode(...))';
       candidates.push({
         type: 'cmd-obfuscation',

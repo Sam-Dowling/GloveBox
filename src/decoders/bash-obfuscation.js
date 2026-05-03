@@ -276,7 +276,7 @@ Object.assign(EncodedContentDetector.prototype, {
       if (!SENSITIVE_BASH_KEYWORDS.test(resolved) && !this._bruteforce) continue;
       candidates.push({
         type: 'cmd-obfuscation',
-        technique: 'Bash Variable Expansion',
+        technique: 'Bash Variable Expansion (single)',
         raw: m[0],
         offset: m.index,
         length: m[0].length,
@@ -424,14 +424,23 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
     // base64-pipe-to-shell where the payload is right there
-    //   echo "BASE64STR" | base64 -d | (ba)?sh
+    //   echo "BASE64STR" | base64 -d | (ba)?sh        (quoted)
+    //   echo BASE64STR   | base64 -d | (ba)?sh        (unquoted)
     // Min payload of 4 base64 chars = 3 bytes; small enough to catch
     // 'sh' (=='c2g=') yet large enough to skip random short echoes.
-    const echoB64ShRe = /\becho\s+["']([A-Za-z0-9+/=\s]{4,4096})["']\s*\|\s*base64\s+-(?:d|decode)\s*\|\s*(?:ba)?sh\b/gi;
+    //
+    // Quotes are optional on both sides. Without quotes the body
+    // cannot contain whitespace (the shell would split on it into
+    // separate echo args) — so the quoted form permits `\s` inside,
+    // the unquoted form does not. Two alternation arms make that split
+    // explicit and keep each arm's character class small, which also
+    // avoids catastrophic backtracking that a single "allow \s, but
+    // only if quoted" form would otherwise need look-ahead to express.
+    const echoB64ShRe = /\becho\s+(?:["']([A-Za-z0-9+/=\s]{4,4096})["']|([A-Za-z0-9+/=]{4,4096}))\s*\|\s*base64\s+-(?:d|decode)\s*\|\s*(?:ba)?sh\b/gi;
     while ((m = echoB64ShRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
-      const b64 = m[1].replace(/\s+/g, '');
+      const b64 = (m[1] || m[2] || '').replace(/\s+/g, '');
       let decoded = '';
       try {
         decoded = (typeof atob === 'function')
