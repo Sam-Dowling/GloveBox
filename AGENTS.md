@@ -547,6 +547,28 @@ in the same PR.**
   `_processCommandObfuscation`; min decoded length 2 (was 3) so `'sh'`
   shell-launch atoms aren't suppressed; `_EXEC_INTENT_RE` extended with
   cross-shell vocabulary so decoded payloads survive `_pruneFindings`.
+- `25f2e66` — cap CMD deobfuscated expansion at 32× raw / 8 KiB across
+  variable-concat, delayed-expansion, and `for /f` indirect branches;
+  Jazzer found raw=6 → deobf=410 and raw=94 → deobf=6165 within seconds
+  of the sancov-instrumentation fix.
+- `25f2e66` — PS backtick-escape regex couldn't bridge `` `-` `` (split
+  `i\`n\`v\`o\`k\`e\`-\`e\`x\`p\`r\`e\`s\`s\`i\`o\`n` into two halves
+  that both failed the keyword gate); rewrote to allow backticks +
+  digits anywhere in the token including around the hyphen.
+- `25f2e66` — added PS `-replace` sentinel-strip branch (single `.replace`),
+  empty-arg format operator (`'{0}iex{1}' -f '',''`), standalone
+  `%KNOWN_ENV:~N,M%` slicer, bare `%COMSPEC%` resolver, single-bang
+  delayed-expansion under `setlocal enabledelayedexpansion`.
+- `0b37971` — BASH `${CMD:-default}` on unset var resolves to default;
+  every other param-expansion op still requires populated `vars[name]`.
+- `0b37971` — BASH partial Variable Concatenation emits with placeholder
+  markers when `unresolved > 0 && resolved >= 2` — partiality IS the
+  obfuscation signal; full-resolution case still requires SENSITIVE_BASH_KEYWORDS.
+- `0b37971` — BASH `exec N<>/dev/tcp/…` third alternation for the
+  compact bi-directional bind-to-fd reverse-shell primitive.
+- `b088604` — Python `''.join(chr(x) for x in [N,N,…])` generator form
+  + `[chr(i) for i in [N,N,…]]` list-comp form — P4 chr-join only
+  matched the adjacency form before.
 
 ### IOC plumbing
 - `dfc594c` — replace bespoke type literals with `IOC.*` constants
@@ -666,6 +688,13 @@ in the same PR.**
 - `<pending>` — fuzz coverage aggregator must paint covered/uncovered
   per-process then union COVERED-wins-over-UNCOVERED across processes;
   inverted order produces 100% coverage everywhere.
+- `4fc090a` — Jazzer.js v4 sancov instrumentation fires via
+  `hookRequire` — `vm.runInContext` silently bypasses it, reducing
+  coverage-guided fuzzing to blind random mutation (`corp: 1/1b`,
+  `new_units_added: 0`). Added `loadModulesAsRequire` that emits a
+  CommonJS bundle to `dist/fuzz-bundles/src/bundle-<hash>.js` (the
+  `src/` segment is load-bearing — Jazzer's `--includes src/` is a
+  plain substring match). Dropped `--excludes dist/` in bootstrap.
 
 ---
 
