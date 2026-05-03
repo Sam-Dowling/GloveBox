@@ -602,6 +602,7 @@ in the same PR.**
   `safeRegex`.
 - `3457a09` — YARA editor rule import routes through `safeRegex`.
 - `ecf78ae` — inline `safeRegex` helpers into worker shims (parity).
+- `<pending>` — bound `invisRe` to `\w{2,64}` + route every IOC `matchAll` through `safeMatchAll`; unbounded `\w{2,}` froze main thread for ~7 s on 165 KB single-line `.ps1`.
 
 ### Build determinism / load order
 - `8e4735a` — backtick-comment-terminator build gate.

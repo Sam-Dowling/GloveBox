@@ -286,10 +286,23 @@ function extractInterestingStringsCore(text, opts) {
   const sources = [text || '', ...vbaModuleSources];
   const full = sources.join('\n');
 
+  // Bounded `matchAll` shim — every IOC regex below routes through this so a
+  // single pathological regex (e.g. unbounded quantifier-around-rare-char on a
+  // long single-line input) cannot monopolise the main thread. Caps each
+  // regex at 500 ms wall-clock and 10 000 matches; both are well above the
+  // realistic worst case (per-type IOC cap is 200, every regex below is a
+  // tight prefix-anchored shape that matches in <1 ms on legitimate input).
+  // Returns a plain array so existing `for (const m of ...)` loops are
+  // byte-equivalent at the call site. Defence-in-depth on top of the bounded
+  // quantifiers — see CONTRIBUTING.md § Regex Safety. Args mirror the
+  // canonical `safeMatchAll(re, str, budgetMs, maxMatches)` signature in
+  // src/constants.js / src/workers/encoded-worker-shim.js.
+  const _matchAll = (str, re) => safeMatchAll(re, str, 500, 10000).matches;
+
   // ── URL extraction ─────────────────────────────────────────────────────
   const urlSpans = [];
   /* safeRegex: builtin */
-  for (const m of full.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g)) {
+  for (const m of _matchAll(full, /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g)) {
     urlSpans.push([m.index, m.index + m[0].length]);
     processUrl(m[0], 'info', m.index, m[0].length);
   }
@@ -297,7 +310,7 @@ function extractInterestingStringsCore(text, opts) {
 
   // ── Email extraction ───────────────────────────────────────────────────
   /* safeRegex: builtin */
-  for (const m of full.matchAll(/\b[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,6}\b/g)) {
+  for (const m of _matchAll(full, /\b[a-zA-Z0-9._%+\-]{2,}@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,6}\b/g)) {
     add(IOC.EMAIL, m[0], 'info', null, { offset: m.index, length: m[0].length });
   }
 
@@ -321,7 +334,7 @@ function extractInterestingStringsCore(text, opts) {
   };
   /* safeRegex: builtin */
   const ipRe = /(?<![\d.])(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)(?::(\d{1,5}))?(?![\d.])/g;
-  for (const m of full.matchAll(ipRe)) {
+  for (const m of _matchAll(full, ipRe)) {
     if (_insideUrl(m.index)) continue;
     const preceding = full.slice(Math.max(0, m.index - 16), m.index);
     if (/\b(?:v|ver|version|build|release|rev|revision|compiled)\b[\s.:#=_-]*$/i.test(preceding)) continue;
@@ -355,7 +368,11 @@ function extractInterestingStringsCore(text, opts) {
   // path lands on the bracketed form the analyst sees.
   const _ipv6CompressedRe = /(?<![:\w])((?:[0-9A-Fa-f]{1,4}:){0,7}:(?:[0-9A-Fa-f]{1,4}:){0,7}[0-9A-Fa-f]{0,4})(?![:\w.])/g;
   const _ipv6FullRe = /(?<![:\w])((?:[0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4})(?![:\w.])/g;
-  const _ipv6BracketRe = /\[((?:[0-9A-Fa-f]{1,4}:|:){2,}[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{1,4}){0,7})\](?::(\d{1,5}))?/g;
+  // ReDoS bound: `{2,}` would match an unbounded run of `[hex]:` / `:` chars.
+  // Real IPv6 addresses have at most 8 hextet groups, so `{2,9}` (one extra
+  // for the trailing colon in `::`) suffices and prevents O(n²)-shaped
+  // backtracking on long colon-rich inputs (binary blobs, hex dumps).
+  const _ipv6BracketRe = /\[((?:[0-9A-Fa-f]{1,4}:|:){2,9}[0-9A-Fa-f]{0,4}(?::[0-9A-Fa-f]{1,4}){0,7})\](?::(\d{1,5}))?/g;
 
   const _expandIpv6 = (addr) => {
     // Returns the 8-hextet array on success, null on malformed input.
@@ -431,17 +448,17 @@ function extractInterestingStringsCore(text, opts) {
   };
 
   /* safeRegex: builtin */
-  for (const m of full.matchAll(_ipv6BracketRe)) {
+  for (const m of _matchAll(full, _ipv6BracketRe)) {
     const port = m[2] ? Number(m[2]) : null;
     _processIpv6(m[0], m[1], port, m.index, m[0].length, m[0]);
   }
   /* safeRegex: builtin */
-  for (const m of full.matchAll(_ipv6CompressedRe)) {
+  for (const m of _matchAll(full, _ipv6CompressedRe)) {
     if (_insideUrl(m.index)) continue;
     _processIpv6(m[0], m[1], null, m.index, m[0].length, null);
   }
   /* safeRegex: builtin */
-  for (const m of full.matchAll(_ipv6FullRe)) {
+  for (const m of _matchAll(full, _ipv6FullRe)) {
     if (_insideUrl(m.index)) continue;
     _processIpv6(m[0], m[1], null, m.index, m[0].length, null);
   }
@@ -453,7 +470,7 @@ function extractInterestingStringsCore(text, opts) {
   // long unterminated `C:\aaa…aaa` input. Bounds preserve every
   // legitimate match shape — Windows MAX_PATH is 260 chars total.
   /* safeRegex: builtin */
-  for (const m of full.matchAll(/[A-Za-z]:\\(?:[\w\-. ]{1,255}\\){1,32}[\w\-. ]{2,255}/g)) {
+  for (const m of _matchAll(full, /[A-Za-z]:\\(?:[\w\-. ]{1,255}\\){1,32}[\w\-. ]{2,255}/g)) {
     const path = _trimPathExtGarbage(m[0]);
     add(IOC.FILE_PATH, path, 'medium', null, { offset: m.index, length: path.length });
   }
@@ -462,19 +479,19 @@ function extractInterestingStringsCore(text, opts) {
   // ReDoS-hardened: server name ≤255, segments ≤255, depth ≤32 (parity
   // with the renderer-side _UNC_RE in constants.js).
   /* safeRegex: builtin */
-  for (const m of full.matchAll(/\\\\[\w.\-]{2,255}(?:\\[\w.\-]{1,255}){1,32}/g)) {
+  for (const m of _matchAll(full, /\\\\[\w.\-]{2,255}(?:\\[\w.\-]{1,255}){1,32}/g)) {
     add(IOC.UNC_PATH, m[0], 'medium', null, { offset: m.index, length: m[0].length });
   }
 
   // ── Unix file paths ────────────────────────────────────────────────────
   /* safeRegex: builtin */
-  for (const m of full.matchAll(/\/(?:usr|etc|bin|sbin|tmp|var|opt|home|root|dev|proc|sys|lib|mnt|run|srv|Library|Applications|System|private)\/[\w.\-/]{2,}/g)) {
+  for (const m of _matchAll(full, /\/(?:usr|etc|bin|sbin|tmp|var|opt|home|root|dev|proc|sys|lib|mnt|run|srv|Library|Applications|System|private)\/[\w.\-/]{2,}/g)) {
     add(IOC.FILE_PATH, m[0], 'info', null, { offset: m.index, length: m[0].length });
   }
 
   // ── Windows registry keys ──────────────────────────────────────────────
   /* safeRegex: builtin */
-  for (const m of full.matchAll(/\b(?:HKEY_(?:LOCAL_MACHINE|CURRENT_USER|CLASSES_ROOT|USERS|CURRENT_CONFIG)|HK(?:LM|CU|CR|U|CC))\\[\w\-. \\]{4,}/g)) {
+  for (const m of _matchAll(full, /\b(?:HKEY_(?:LOCAL_MACHINE|CURRENT_USER|CLASSES_ROOT|USERS|CURRENT_CONFIG)|HK(?:LM|CU|CR|U|CC))\\[\w\-. \\]{4,}/g)) {
     add(IOC.REGISTRY_KEY, m[0], 'medium', null, { offset: m.index, length: m[0].length });
   }
 
@@ -485,7 +502,7 @@ function extractInterestingStringsCore(text, opts) {
 
   /* safeRegex: builtin */
   const defangedUrlRe = /\bhxxps?(?:\[:\/?\/?\]|:\/\/)[^\s"'<>]{4,}/gi;
-  for (const m of full.matchAll(defangedUrlRe)) {
+  for (const m of _matchAll(full, defangedUrlRe)) {
     const result = _refangString(m[0]);
     if (result && result.refanged.match(/^https?:\/\//i)) {
       const cleaned = result.refanged.replace(/[.,;:!?)\]>]+$/, '');
@@ -503,7 +520,7 @@ function extractInterestingStringsCore(text, opts) {
   // (real-world FQDNs rarely exceed 5), path body ≤2048 chars.
   /* safeRegex: builtin */
   const defangedDomainRe = /\b[\w\-]{1,63}(?:\[\.\][\w\-]{1,63}){1,8}(?:\/[^\s"'<>]{0,2048})?\b/g;
-  for (const m of full.matchAll(defangedDomainRe)) {
+  for (const m of _matchAll(full, defangedDomainRe)) {
     const result = _refangString(m[0]);
     if (result) {
       const cleaned = result.refanged.replace(/[.,;:!?)\]>]+$/, '');
@@ -519,7 +536,7 @@ function extractInterestingStringsCore(text, opts) {
 
   /* safeRegex: builtin */
   const defangedIpRe = /(?<![\d.])\d{1,3}\[\.\]\d{1,3}\[\.\]\d{1,3}\[\.\]\d{1,3}(?![\d.])/g;
-  for (const m of full.matchAll(defangedIpRe)) {
+  for (const m of _matchAll(full, defangedIpRe)) {
     const result = _refangString(m[0]);
     if (result) {
       const parts = result.refanged.split('.').map(Number);
@@ -537,7 +554,7 @@ function extractInterestingStringsCore(text, opts) {
 
   /* safeRegex: builtin */
   const defangedEmailRe = /\b[a-zA-Z0-9._%+\-]+\[@\][a-zA-Z0-9.\-\[\]]+\b/g;
-  for (const m of full.matchAll(defangedEmailRe)) {
+  for (const m of _matchAll(full, defangedEmailRe)) {
     const result = _refangString(m[0]);
     if (result) {
       const cleaned = result.refanged.replace(/[.,;:!?)\]>]+$/, '');
@@ -556,7 +573,7 @@ function extractInterestingStringsCore(text, opts) {
   // relative to `full` and will work for highlighting in combined view.
   for (const src of vbaModuleSources) {
     /* safeRegex: builtin */
-    for (const m of (src || '').matchAll(/https?:\/\/[^\s"']{6,}/g)) {
+    for (const m of _matchAll((src || ''), /https?:\/\/[^\s"']{6,}/g)) {
       const v = m[0].replace(/[.,;:!?)\]>]+$/, '');
       if (!seen.has(v)) {
         const unwrapped = _unwrapSafeLink(v);
@@ -606,7 +623,7 @@ function extractInterestingStringsCore(text, opts) {
     // shape-only regex specific enough that random text rarely matches.
     /* safeRegex: builtin */
     const btcLegacyRe = /(?<![A-Za-z0-9])[13][1-9A-HJ-NP-Za-km-z]{25,34}(?![A-Za-z0-9])/g;
-    for (const m of full.matchAll(btcLegacyRe)) {
+    for (const m of _matchAll(full, btcLegacyRe)) {
       if (_insideUrl(m.index)) continue;
       if (cryptoHits >= CRYPTO_CAP) break;
       _emitCrypto(m[0], 'BTC (legacy P2PKH/P2SH)', m.index, m[0].length);
@@ -616,7 +633,7 @@ function extractInterestingStringsCore(text, opts) {
     // alphabet excludes `1`, `b`, `i`, `o` to avoid visual confusion.
     /* safeRegex: builtin */
     const btcBech32Re = /(?<![a-z0-9])bc1[02-9ac-hj-np-z]{6,87}(?![a-z0-9])/g;
-    for (const m of full.matchAll(btcBech32Re)) {
+    for (const m of _matchAll(full, btcBech32Re)) {
       if (_insideUrl(m.index)) continue;
       if (cryptoHits >= CRYPTO_CAP) break;
       // Bech32 addresses are 42 chars (P2WPKH) or 62 chars (P2WSH);
@@ -631,7 +648,7 @@ function extractInterestingStringsCore(text, opts) {
     // burn address (well-known, not a pivot).
     /* safeRegex: builtin */
     const ethRe = /(?<![A-Za-z0-9])0x[0-9a-fA-F]{40}(?![0-9a-fA-F])/g;
-    for (const m of full.matchAll(ethRe)) {
+    for (const m of _matchAll(full, ethRe)) {
       if (_insideUrl(m.index)) continue;
       if (cryptoHits >= CRYPTO_CAP) break;
       const lower = m[0].toLowerCase();
@@ -646,7 +663,7 @@ function extractInterestingStringsCore(text, opts) {
     // length + leading-byte combo.
     /* safeRegex: builtin */
     const xmrRe = /(?<![A-Za-z0-9])4[0-9AB][1-9A-HJ-NP-Za-km-z]{93}(?:[1-9A-HJ-NP-Za-km-z]{11})?(?![A-Za-z0-9])/g;
-    for (const m of full.matchAll(xmrRe)) {
+    for (const m of _matchAll(full, xmrRe)) {
       if (_insideUrl(m.index)) continue;
       if (cryptoHits >= CRYPTO_CAP) break;
       if (m[0].length !== 95 && m[0].length !== 106) continue;
@@ -659,7 +676,7 @@ function extractInterestingStringsCore(text, opts) {
     // vs. raw 56-char base32 strings (which appear in many binary blobs).
     /* safeRegex: builtin */
     const onionRe = /(?<![a-z0-9])([a-z2-7]{56})\.onion(?![a-z0-9])/g;
-    for (const m of full.matchAll(onionRe)) {
+    for (const m of _matchAll(full, onionRe)) {
       if (cryptoHits >= CRYPTO_CAP) break;
       _emitCrypto(m[0], 'Tor onion v3', m.index, m[0].length);
     }
@@ -668,7 +685,7 @@ function extractInterestingStringsCore(text, opts) {
     // exact, leading bytes are fixed.
     /* safeRegex: builtin */
     const ipfsV0Re = /(?<![A-Za-z0-9])Qm[1-9A-HJ-NP-Za-km-z]{44}(?![A-Za-z0-9])/g;
-    for (const m of full.matchAll(ipfsV0Re)) {
+    for (const m of _matchAll(full, ipfsV0Re)) {
       if (_insideUrl(m.index)) continue;
       if (cryptoHits >= CRYPTO_CAP) break;
       _emitCrypto(m[0], 'IPFS CIDv0', m.index, m[0].length);
@@ -679,7 +696,7 @@ function extractInterestingStringsCore(text, opts) {
     // Stricter than catching any `b…` base32 to keep the noise down.
     /* safeRegex: builtin */
     const ipfsV1Re = /(?<![a-z0-9])bafy[a-z2-7]{55}(?![a-z0-9])/g;
-    for (const m of full.matchAll(ipfsV1Re)) {
+    for (const m of _matchAll(full, ipfsV1Re)) {
       if (_insideUrl(m.index)) continue;
       if (cryptoHits >= CRYPTO_CAP) break;
       _emitCrypto(m[0], 'IPFS CIDv1', m.index, m[0].length);
@@ -723,7 +740,7 @@ function extractInterestingStringsCore(text, opts) {
     // group key, AROA = IAM role, AIDA = IAM user.
     /* safeRegex: builtin */
     const awsRe = /(?<![A-Z0-9])(AKIA|ASIA|AGPA|AROA|AIDA)[0-9A-Z]{16}(?![A-Z0-9])/g;
-    for (const m of full.matchAll(awsRe)) {
+    for (const m of _matchAll(full, awsRe)) {
       _emitSecret(m[0], 'AWS access key ID', 'high', m.index, m[0].length);
     }
 
@@ -733,12 +750,12 @@ function extractInterestingStringsCore(text, opts) {
     // 82-char body (3 segments separated by underscores).
     /* safeRegex: builtin */
     const githubRe = /(?<![A-Za-z0-9_])gh[opusr]_[A-Za-z0-9]{36}(?![A-Za-z0-9_])/g;
-    for (const m of full.matchAll(githubRe)) {
+    for (const m of _matchAll(full, githubRe)) {
       _emitSecret(m[0], 'GitHub token', 'high', m.index, m[0].length);
     }
     /* safeRegex: builtin */
     const githubPatRe = /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{82}(?![A-Za-z0-9_])/g;
-    for (const m of full.matchAll(githubPatRe)) {
+    for (const m of _matchAll(full, githubPatRe)) {
       _emitSecret(m[0], 'GitHub fine-grained PAT', 'high', m.index, m[0].length);
     }
 
@@ -748,7 +765,7 @@ function extractInterestingStringsCore(text, opts) {
     // `xoxsomething` text.
     /* safeRegex: builtin */
     const slackRe = /(?<![A-Za-z0-9])xox[abprs]-\d+-\d+-\d+-[A-Za-z0-9]{32,}(?![A-Za-z0-9])/g;
-    for (const m of full.matchAll(slackRe)) {
+    for (const m of _matchAll(full, slackRe)) {
       _emitSecret(m[0], 'Slack token', 'high', m.index, m[0].length);
     }
 
@@ -757,7 +774,7 @@ function extractInterestingStringsCore(text, opts) {
     // which is intentionally not a secret and is excluded.
     /* safeRegex: builtin */
     const stripeRe = /(?<![A-Za-z0-9_])(?:sk|rk)_live_[A-Za-z0-9]{24,}(?![A-Za-z0-9])/g;
-    for (const m of full.matchAll(stripeRe)) {
+    for (const m of _matchAll(full, stripeRe)) {
       _emitSecret(m[0], 'Stripe live API key', 'high', m.index, m[0].length);
     }
 
@@ -766,7 +783,7 @@ function extractInterestingStringsCore(text, opts) {
     // GitHub repo. Must be word-boundary isolated.
     /* safeRegex: builtin */
     const googleRe = /(?<![A-Za-z0-9_-])AIza[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/g;
-    for (const m of full.matchAll(googleRe)) {
+    for (const m of _matchAll(full, googleRe)) {
       _emitSecret(m[0], 'Google API key', 'high', m.index, m[0].length);
     }
 
@@ -777,7 +794,7 @@ function extractInterestingStringsCore(text, opts) {
     // PGP / PRIVATE / ENCRYPTED PRIVATE.
     /* safeRegex: builtin */
     const pemRe = /-----BEGIN (?:RSA |DSA |EC |DH |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----/g;
-    for (const m of full.matchAll(pemRe)) {
+    for (const m of _matchAll(full, pemRe)) {
       _emitSecret(m[0], 'PEM private key', 'high', m.index, m[0].length);
     }
 
@@ -789,7 +806,7 @@ function extractInterestingStringsCore(text, opts) {
     // routinely logged and aren't a credential by themselves.
     /* safeRegex: builtin */
     const jwtRe = /(?<![A-Za-z0-9_=-])eyJ[A-Za-z0-9_=-]{10,}\.eyJ[A-Za-z0-9_=-]{10,}\.[A-Za-z0-9_=-]{10,}(?![A-Za-z0-9_=-])/g;
-    for (const m of full.matchAll(jwtRe)) {
+    for (const m of _matchAll(full, jwtRe)) {
       _emitSecret(m[0], 'JWT', 'medium', m.index, m[0].length);
     }
   } catch (_) { /* secret-leak scan is best-effort */ }
@@ -826,7 +843,7 @@ function extractInterestingStringsCore(text, opts) {
     const bidiLineRe = new RegExp(
       `[^\\n]{0,200}[${TROJAN_BIDI_CHARS}][^\\n]{0,200}`, 'g'
     );
-    for (const m of full.matchAll(bidiLineRe)) {
+    for (const m of _matchAll(full, bidiLineRe)) {
       if (bidiHits++ >= TROJAN_CAP) break;
       /* safeRegex: builtin */
       const ch = m[0].match(new RegExp(`[${TROJAN_BIDI_CHARS}]`));
@@ -837,15 +854,20 @@ function extractInterestingStringsCore(text, opts) {
     }
 
     // Invisible characters embedded in identifier-like runs (≥ 2 word chars
-    // either side). Catches `pas\u200Bsword` shape splits without firing on
-    // legitimate ZWNJ inside Devanagari / Arabic text (which is bracketed
-    // by non-word chars).
+    // either side, ≤ 64 — real identifiers don't legitimately exceed that).
+    // The {2,64} bound is critical: an unbounded `\w{2,}` on both sides of
+    // a rare-char class produces catastrophic O(n²) backtracking on long
+    // single-line `\w` inputs (e.g. 165 KB base64 PowerShell payloads froze
+    // the main thread for ~7 s before the bound was added). Catches
+    // `pas\u200Bsword` shape splits without firing on legitimate ZWNJ
+    // inside Devanagari / Arabic text (which is bracketed by non-word
+    // chars). Mirrors the bounded shape `mixedRe` already uses.
     let invisHits = 0;
     /* safeRegex: builtin */
     const invisRe = new RegExp(
-      `\\w{2,}[${INVIS_CHARS}]\\w{2,}`, 'g'
+      `\\w{2,64}[${INVIS_CHARS}]\\w{2,64}`, 'g'
     );
-    for (const m of full.matchAll(invisRe)) {
+    for (const m of _matchAll(full, invisRe)) {
       if (invisHits++ >= TROJAN_CAP) break;
       /* safeRegex: builtin */
       const ch = m[0].match(new RegExp(`[${INVIS_CHARS}]`));
@@ -861,7 +883,7 @@ function extractInterestingStringsCore(text, opts) {
     let mixedHits = 0;
     /* safeRegex: builtin */
     const mixedRe = /[A-Za-z\u0400-\u04FF\u0370-\u03FF]{2,64}/g;
-    for (const m of full.matchAll(mixedRe)) {
+    for (const m of _matchAll(full, mixedRe)) {
       if (mixedHits >= TROJAN_CAP) break;
       const w = m[0];
       const hasLatin = /[A-Za-z]/.test(w);

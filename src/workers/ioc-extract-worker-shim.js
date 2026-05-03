@@ -108,3 +108,41 @@ function _trimPathExtGarbage(path) {
   const extM = tail.match(_KNOWN_EXT_RE);
   return extM ? path.slice(0, ls + 1 + dot + extM[0].length) : path;
 }
+
+// ── safeMatchAll (mirrors src/constants.js) ─────────────────────────────────
+//
+// Bounded regex-match iterator used by `extractInterestingStringsCore` so a
+// single pathological regex on a long single-line input cannot monopolise
+// the worker. Body byte-equivalent with `src/constants.js`; the parity gate
+// (`scripts/check_shim_parity.py`) diffs them.
+function safeMatchAll(re, str, budgetMs, maxMatches) {
+  const matches = [];
+  if (!re || typeof str !== 'string') return { matches, truncated: false, timedOut: false };
+  // Force `g` flag so `exec` advances; otherwise we would infinite loop.
+  let rx = re;
+  if (!rx.global) {
+    /* safeRegex: builtin */
+    try { rx = new RegExp(rx.source, rx.flags + 'g'); }
+    catch (_e) { return { matches, truncated: false, timedOut: false }; }
+  }
+  rx.lastIndex = 0;
+  const cap = maxMatches || 10000;
+  const budget = budgetMs || 100;
+  const start = Date.now();
+  let truncated = false, timedOut = false;
+  let i = 0;
+  let m;
+  try {
+    while ((m = rx.exec(str)) !== null) {
+      matches.push(m);
+      // Always advance on zero-width match
+      if (m.index === rx.lastIndex) rx.lastIndex++;
+      if (matches.length >= cap) { truncated = true; break; }
+      if ((++i & 0xFF) === 0 && Date.now() - start > budget) {
+        timedOut = true;
+        break;
+      }
+    }
+  } catch (_e) { /* swallow */ }
+  return { matches, truncated, timedOut };
+}

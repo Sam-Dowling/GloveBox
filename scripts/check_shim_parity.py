@@ -80,6 +80,8 @@ MIRRORS = [
         # constants.js the IOC core reads at module load. No safeRegex —
         # every regex literal in `extractInterestingStringsCore` is a
         # `/* safeRegex: builtin */` builtin, not a user-supplied pattern.
+        # `safeMatchAll` is mirrored here because the IOC core routes every
+        # `matchAll` site through it as defence-in-depth against ReDoS.
         "path": ROOT / "src" / "workers" / "ioc-extract-worker-shim.js",
         "consts": [
             "_KNOWN_EXT_RE",
@@ -88,6 +90,7 @@ MIRRORS = [
             "looksLikeIpVersionString",
             "stripDerTail",
             "_trimPathExtGarbage",
+            "safeMatchAll",
         ],
         "ioc_table": True,
     },
