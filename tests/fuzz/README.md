@@ -33,6 +33,10 @@ python scripts/run_fuzz.py --list
 # Crash → permanent regression test (see § Crash workflow):
 python scripts/fuzz_minimise.py text/ioc-extract dist/fuzz-crashes/text/ioc-extract/<sha>
 python scripts/fuzz_promote.py  text/ioc-extract dist/fuzz-crashes/text/ioc-extract/<sha>
+
+# Per-src/file line-coverage table (see § Coverage measurement):
+python scripts/run_fuzz.py --replay --quick --coverage
+python scripts/fuzz_coverage_aggregate.py
 ```
 
 ## Why a separate fuzz layer
@@ -89,6 +93,10 @@ production worker semantics and keeps fuzz crashes reproducible as
 unit tests. A "flat" target loading mode that skips `vm.Context` is
 on the table whenever a real bug investigation needs source-coverage
 drilldown.
+
+(That's about Jazzer.js's *mutation*-guiding coverage. For *measuring*
+which `src/` lines a fuzz run actually exercised, see
+§ Coverage measurement.)
 
 ## Targets
 
@@ -315,6 +323,91 @@ libFuzzer's `-minimize_crash=1`: libFuzzer collapses two distinct
 bugs that share a target into one minimal input; Loupe's minimiser
 preserves the find-time grouping by re-running the same
 `crash-dedup.js` for every candidate.
+
+## Coverage measurement
+
+Pass `--coverage` to `python scripts/run_fuzz.py` to record V8 source
+coverage per target and emit a per-`src/<file>.js` line-coverage table
+in `dist/fuzz-coverage/summary.md`.
+
+```bash
+# Coverage-aware quick smoke across two targets:
+python scripts/run_fuzz.py --replay --quick --coverage text/ioc-extract yara/scan
+
+# Coverage on every target under Jazzer.js (slow — V8 coverage adds
+# substantial overhead on heavy parsers, especially the binary ones):
+python scripts/run_fuzz.py --coverage --time 30
+```
+
+This is a *measurement* layer, distinct from Jazzer.js's coverage-
+guided mutation. The two answer different questions:
+
+- **Jazzer.js coverage-guided mutation** — internal feedback loop the
+  fuzzer uses to decide which inputs to mutate next. Currently
+  degraded by `vm.Context` isolation (see caveat above).
+- **`--coverage` line-coverage measurement** — external observation of
+  which `src/<file>.js` lines a finished fuzz run actually
+  exercised. Implemented via `NODE_V8_COVERAGE`, which V8 supports
+  natively for `vm.runInContext` code without any of the
+  instrumentation that Jazzer.js's mutation feedback needs.
+
+How it works:
+
+1. With `--coverage`, the orchestrator sets `NODE_V8_COVERAGE=<dir>`
+   and `LOUPE_FUZZ_COVERAGE_DIR=<dir>` per target.
+2. The harness (`tests/fuzz/helpers/harness.js`) loads the target's
+   `src/` subset via `loadModulesWithManifest()` instead of
+   `loadModules()`, writes the bundle's char-offset → `src/<file>.js`
+   manifest into the same dir, and labels the bundle with a stable
+   `loupe-fuzz-bundle://<target-id>` URL.
+3. V8 dumps per-process source-coverage JSON into the dir at process
+   exit (libFuzzer / replay runner alike).
+4. `scripts/fuzz_coverage_aggregate.py` walks each target's dir,
+   merges all per-process coverage entries with `count > 0` over
+   `count == 0` (cross-process union), maps char ranges through the
+   manifest, and projects covered/uncovered chars onto per-line
+   counts. Lines that contain only whitespace, comments, or `*`
+   block-comment continuation are excluded from the executable line
+   count to keep the percentage meaningful.
+5. The aggregator's Markdown output is appended to
+   `dist/fuzz-coverage/summary.md`. JSON is available standalone via
+   `python scripts/fuzz_coverage_aggregate.py --json`.
+
+The `summary.md` output has three blocks:
+
+- **Per-target rollup** — one line per target, total covered /
+  uncovered / unknown / executable lines.
+- **Per-target file detail** — one table per target showing
+  per-`src/<file>.js` line counts.
+- **Per-`src/` file rollup across all targets** — sorted by ascending
+  coverage %, so the under-fuzzed files float to the top. Use this
+  to decide which target to add or extend.
+
+Caveats:
+
+- Coverage data only includes files actually loaded by the target's
+  `modules` list. A `src/foo-renderer.js` that no fuzz target loads
+  contributes nothing to the rollup; that's not the same as "0%
+  covered".
+- The `unknown` column counts lines inside the bundle but outside
+  any V8-tracked function range. In practice these are almost
+  always top-level `const X = …` declarations attributed to the
+  V8 implicit module function (which V8 reports without per-line
+  attribution). Treat `covered + unknown` as the optimistic upper
+  bound and `covered` as the conservative lower bound.
+- V8 source coverage costs wall-clock — typically a few × slowdown
+  on heavy binary parsers under `--coverage`. Skip the flag for
+  pure crash-hunting runs; reach for it when investigating where
+  the harness *isn't* reaching.
+
+Standalone CLI for re-rendering after a manual fuzz run:
+
+```bash
+python scripts/fuzz_coverage_aggregate.py                       # all targets, Markdown
+python scripts/fuzz_coverage_aggregate.py --json                # JSON
+python scripts/fuzz_coverage_aggregate.py --target text/ioc-extract  # single target
+python scripts/fuzz_coverage_aggregate.py --coverage-dir /tmp/cov    # custom dir
+```
 
 ## Reproducible build interaction
 

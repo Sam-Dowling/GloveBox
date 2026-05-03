@@ -185,25 +185,82 @@ function makeSandbox(extra) {
  * @returns {object} the sandbox after evaluation.
  */
 function loadModules(relPaths, opts) {
+  const result = loadModulesWithManifest(relPaths, opts);
+  return result.sandbox;
+}
+
+/**
+ * Variant of `loadModules` that also returns a sidecar manifest
+ * describing each loaded `src/` file's character-offset region inside
+ * the combined script that was handed to `vm.runInContext`. Used by
+ * the fuzz harness's coverage feedback (`tests/fuzz/helpers/harness.js`
+ * + `scripts/run_fuzz.py`) to attribute V8 source-coverage ranges back
+ * to individual `src/<file>.js` paths.
+ *
+ * Manifest shape:
+ *   {
+ *     filename: string,                   // the `filename` passed to vm
+ *     totalChars: number,                 // length of the combined source
+ *     files: [
+ *       { rel, abs, start, end, lines },  // half-open [start, end)
+ *       …
+ *     ],
+ *     // The trailing exposure block sits at [exposeStart, totalChars).
+ *     exposeStart: number,
+ *   }
+ *
+ * `start` / `end` are CHARACTER offsets (UTF-16 code units, same
+ * numbering as `String.prototype.charAt`) — that's the indexing V8's
+ * source-coverage report uses for its `startOffset` / `endOffset`
+ * fields. ASCII-clean source maps these 1:1 to bytes, but the few
+ * non-ASCII glyphs in our header comments are handled correctly here
+ * regardless.
+ *
+ * Unit tests should keep using `loadModules`; only callers that need
+ * the manifest pay the (negligible) cost of building it.
+ *
+ * @param {string[]} relPaths
+ * @param {object}   [opts]   same shape as loadModules's opts
+ * @returns {{sandbox: object, manifest: object}}
+ */
+function loadModulesWithManifest(relPaths, opts) {
   if (!Array.isArray(relPaths) || relPaths.length === 0) {
     throw new Error('load-bundle: relPaths must be a non-empty array');
   }
   const o = opts || {};
   const expose = Array.isArray(o.expose) ? o.expose : DEFAULT_EXPOSE;
+  const filename = (typeof o.filename === 'string' && o.filename)
+    ? o.filename
+    : 'load-bundle:concatenated';
   const sandbox = makeSandbox(o.shims);
   vm.createContext(sandbox);
 
   // Concatenate every source file into one script, separated by sentinel
   // comments so a stack trace on a syntax error still localises to the
-  // right file (the line numbers won't match the original file's line
-  // numbers, but the sentinel + the column position get us close enough
-  // — and any real failure here is a build-gate level mistake, not an
-  // everyday test failure).
+  // right file. As a side-effect we record each file's character region
+  // for the optional coverage manifest.
   let combined = '';
+  const manifestFiles = [];
   for (const rel of relPaths) {
     const abs = resolveSrc(rel);
     combined += `\n// ─── load-bundle: ${rel} ───\n`;
-    combined += fs.readFileSync(abs, 'utf8');
+    const start = combined.length;
+    const text = fs.readFileSync(abs, 'utf8');
+    combined += text;
+    const end = combined.length;
+    manifestFiles.push({
+      rel,
+      abs,
+      start,
+      end,
+      // Cheapest accurate line count: count `\n` in the file body and
+      // add 1 if the file doesn't end on a newline (so the last line
+      // is counted). Fuzz coverage attribution divides covered chars
+      // by line offsets within this region.
+      lines: text.length === 0
+        ? 0
+        : (text.match(/\n/g) || []).length + (text.endsWith('\n') ? 0 : 1),
+    });
   }
 
   // Trailing exposure block: project requested top-level bindings onto
@@ -211,6 +268,7 @@ function loadModules(relPaths, opts) {
   // declared by any of the loaded files surfaces as `undefined` rather
   // than throwing a ReferenceError, which keeps `expose` lists permissive
   // (tests only assert on the names they care about).
+  const exposeStart = combined.length;
   combined += '\n// ─── load-bundle: expose ───\n';
   for (const name of expose) {
     // Whitelist identifier shape so we never inject a hostile name.
@@ -221,10 +279,19 @@ function loadModules(relPaths, opts) {
   }
 
   vm.runInContext(combined, sandbox, {
-    filename: 'load-bundle:concatenated',
+    filename,
     displayErrors: true,
   });
-  return sandbox;
+
+  return {
+    sandbox,
+    manifest: {
+      filename,
+      totalChars: combined.length,
+      files: manifestFiles,
+      exposeStart,
+    },
+  };
 }
 
 // Default expose set: every public symbol the unit tests in this repo
@@ -298,4 +365,4 @@ function host(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-module.exports = { loadModules, resolveSrc, REPO_ROOT, DEFAULT_EXPOSE, host };
+module.exports = { loadModules, loadModulesWithManifest, resolveSrc, REPO_ROOT, DEFAULT_EXPOSE, host };

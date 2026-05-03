@@ -181,6 +181,42 @@ def _ensure_dist_dirs(target_id: str) -> tuple[str, str]:
     return corpus, crashes
 
 
+def _coverage_dir_for(target_id: str) -> str:
+    """Per-target subdirectory under dist/fuzz-coverage/v8/ for V8's
+    NODE_V8_COVERAGE dumps + the harness's manifest sidecar. Cleaned
+    fresh at the start of each --coverage run so stale per-process
+    JSON from a previous invocation can't pollute the next aggregation
+    pass."""
+    return os.path.join(COVERAGE_DIR, 'v8', *target_id.split('/'))
+
+
+def _prepare_coverage_dir(target_id: str) -> str:
+    d = _coverage_dir_for(target_id)
+    if os.path.isdir(d):
+        # Fresh slate per run: the V8 dump + manifest filenames are
+        # process-pid suffixed and would otherwise accumulate across
+        # invocations until they hit the filesystem.
+        for entry in os.listdir(d):
+            full = os.path.join(d, entry)
+            try:
+                if os.path.isdir(full):
+                    shutil.rmtree(full)
+                else:
+                    os.remove(full)
+            except OSError:
+                pass
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _augment_env_for_coverage(env: dict, target_id: str) -> None:
+    """Add NODE_V8_COVERAGE + harness env vars in-place."""
+    cov = _prepare_coverage_dir(target_id)
+    env['NODE_V8_COVERAGE'] = cov
+    env['LOUPE_FUZZ_COVERAGE_DIR'] = cov
+    env['LOUPE_FUZZ_TARGET_ID'] = target_id
+
+
 def _run_replay(target_path: str, target_id: str, args) -> int:
     """Drive the target through its declared seeds + the deterministic
     byte-mutator in tests/fuzz/helpers/harness.js. No npm install
@@ -198,8 +234,11 @@ def _run_replay(target_path: str, target_id: str, args) -> int:
         cmd += ['--continue-on-error']
     if args.reproduce:
         cmd += ['--reproduce', args.reproduce]
+    env = os.environ.copy()
+    if args.coverage:
+        _augment_env_for_coverage(env, target_id)
     print(f'$ {" ".join(cmd)}', flush=True)
-    return subprocess.call(cmd, cwd=BASE)
+    return subprocess.call(cmd, cwd=BASE, env=env)
 
 
 def _run_jazzer(target_path: str, target_id: str, args) -> int:
@@ -231,6 +270,12 @@ def _run_jazzer(target_path: str, target_id: str, args) -> int:
     env['LOUPE_FUZZ_CORPUS'] = corpus
     env['LOUPE_FUZZ_CRASHES'] = crashes
     env['LOUPE_FUZZ_TIME'] = str(total_seconds)
+    if args.coverage:
+        # Note: NODE_V8_COVERAGE applies to the orchestrating Node process.
+        # Jazzer.js's libFuzzer wrapper drives many fuzz iterations within
+        # ONE Node process, so a single coverage dump captures aggregate
+        # coverage for the whole run — exactly what we want.
+        _augment_env_for_coverage(env, target_id)
 
     cmd = [node, bootstrap]
     print(f'$ {" ".join(cmd)}  '
@@ -273,6 +318,12 @@ def main() -> int:
                         help='replay one specific input file against a target.')
     parser.add_argument('--list', action='store_true',
                         help='list discovered targets and exit.')
+    parser.add_argument('--coverage', action='store_true',
+                        help='record V8 source coverage per target and emit a '
+                             'per-src/file line-coverage table in '
+                             'dist/fuzz-coverage/summary.md. Adds a few percent '
+                             'wall-clock overhead and ~1 MiB of dist/ output '
+                             'per target.')
     args = parser.parse_args()
 
     if args.list:
@@ -327,6 +378,24 @@ def main() -> int:
         f.write('| target | rc | seconds |\n|---|---:|---:|\n')
         for s in summary:
             f.write(f'| {s["target"]} | {s["rc"]} | {s["seconds"]:.1f} |\n')
+
+        if args.coverage:
+            # Lazy-import the aggregator only when the flag is set — keeps
+            # the default-path import surface minimal.
+            from fuzz_coverage_aggregate import aggregate_and_render
+            try:
+                cov_section = aggregate_and_render(
+                    coverage_dir=os.path.join(COVERAGE_DIR, 'v8'),
+                    repo_root=BASE,
+                    target_ids=[s['target'] for s in summary],
+                )
+                f.write('\n')
+                f.write(cov_section)
+            except Exception as exc:
+                # Aggregation is opportunistic; don't poison the run on
+                # a parse error.
+                f.write(f'\n## Coverage\n\n_aggregation failed: {exc}_\n')
+                print(f'WARN  coverage aggregation failed: {exc}', file=sys.stderr)
     print(f'\nWrote {os.path.relpath(md, BASE)}')
     print(f'OK    fuzz pipeline finished in {dt_total:.2f}s '
           f'(rc={overall_rc})')

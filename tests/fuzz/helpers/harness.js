@@ -46,8 +46,30 @@ const REPO_ROOT = path.resolve(FUZZ_DIR, '..', '..');
 // We deliberately reuse the unit-test bundle loader. Any divergence
 // between fuzzing semantics and unit-test semantics would be a footgun
 // — a crash a fuzzer finds must reproduce as a unit test.
-const { loadModules } = require(path.join(REPO_ROOT, 'tests', 'helpers', 'load-bundle.js'));
+const { loadModules, loadModulesWithManifest } = require(path.join(REPO_ROOT, 'tests', 'helpers', 'load-bundle.js'));
 const { hashStack, normaliseError } = require('./crash-dedup.js');
+
+const fs = require('node:fs');
+
+// ── Coverage manifest sidecar ───────────────────────────────────────────────
+// When `scripts/run_fuzz.py` runs targets under V8 source coverage, it
+// sets `LOUPE_FUZZ_COVERAGE_DIR` to a per-target directory. The harness
+// uses `loadModulesWithManifest` instead of `loadModules` and writes a
+// `manifest.json` next to V8's per-process coverage dumps so the
+// orchestrator can attribute coverage ranges back to individual
+// `src/<file>.js` paths after the run completes. Outside coverage runs
+// the variable is unset and the harness pays nothing for the feature.
+const COVERAGE_DIR = process.env.LOUPE_FUZZ_COVERAGE_DIR || '';
+
+function _coverageBundleFilename() {
+  // Stable URL-shaped identifier so V8's coverage JSON `url` field
+  // exactly matches the manifest's `filename`. The target id, when
+  // available via env (`scripts/run_fuzz.py` sets `LOUPE_FUZZ_TARGET_ID`),
+  // makes per-target manifests easy to tell apart in a multi-target
+  // accumulated dump.
+  const tid = process.env.LOUPE_FUZZ_TARGET_ID || 'unknown';
+  return `loupe-fuzz-bundle://${tid}`;
+}
 
 // ── Per-iteration timing budget ─────────────────────────────────────────────
 // Jazzer.js's libFuzzer integration kills slow units at a configurable
@@ -123,10 +145,40 @@ function defineFuzzTarget(cfg) {
   let ctx = null;
   function ensureCtx() {
     if (ctx === null) {
-      ctx = loadModules(cfg.modules, {
-        expose: cfg.expose,
-        shims: cfg.shims,
-      });
+      if (COVERAGE_DIR) {
+        // Coverage run — record the bundle's char-offset → src/<file>.js
+        // map alongside the V8 coverage dumps. Done once per process;
+        // re-writing on subsequent calls would be redundant since the
+        // bundle layout is identical for the lifetime of the process.
+        const filename = _coverageBundleFilename();
+        const { sandbox, manifest } = loadModulesWithManifest(cfg.modules, {
+          expose: cfg.expose,
+          shims: cfg.shims,
+          filename,
+        });
+        try {
+          fs.mkdirSync(COVERAGE_DIR, { recursive: true });
+          // Suffix with the parent process pid + a high-res timestamp so
+          // multiple processes (e.g. Jazzer.js worker fan-out) each
+          // contribute a manifest without races. The orchestrator
+          // tolerates duplicates — they describe the same bundle layout.
+          const stamp = `${process.pid}-${Date.now().toString(36)}`;
+          const fp = path.join(COVERAGE_DIR, `manifest-${stamp}.json`);
+          fs.writeFileSync(fp, JSON.stringify(manifest));
+        } catch (err) {
+          // Coverage is opportunistic; a write failure here MUST NOT
+          // break the fuzz run. Surface to stderr only.
+          process.stderr.write(
+            `harness: failed to write coverage manifest: ${err.message}\n`,
+          );
+        }
+        ctx = sandbox;
+      } else {
+        ctx = loadModules(cfg.modules, {
+          expose: cfg.expose,
+          shims: cfg.shims,
+        });
+      }
     }
     return ctx;
   }

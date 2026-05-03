@@ -161,6 +161,8 @@ python scripts/run_fuzz.py --time 300 text/ioc-extract   # 5 min coverage-guided
 python scripts/run_fuzz.py --reproduce <crash>/input.bin # replay one specific crash
 python scripts/fuzz_minimise.py <target> <crash-dir>     # shrink crashing input.bin → minimised.bin
 python scripts/fuzz_promote.py  <target> <crash-dir>     # mint tests/unit/<slug>-fuzz-regress-<sha>.test.js
+python scripts/run_fuzz.py --coverage --replay --quick   # also emit per-src/file line-coverage table
+python scripts/fuzz_coverage_aggregate.py                # re-render coverage table from existing dumps
 # Targets discoverable via `python scripts/run_fuzz.py --list`. Runbook:
 # tests/fuzz/README.md. Pinned dep: @jazzer.js/core (Apache-2.0) staged
 # under dist/test-deps/ alongside @playwright/test.
