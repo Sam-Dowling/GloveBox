@@ -209,6 +209,25 @@ extendApp({
         new Promise(r => setTimeout(r, remaining)),
       ]);
     }
+    // Drain any in-flight inner-file load kicked off by `openInnerFile`
+    // (which calls `_loadFile` fire-and-forget). Without this, a test that
+    // clicks an archive row button and immediately calls `_navJumpTo` can
+    // race: `waitForIdle` exits on the PARENT's non-null `currentResult`,
+    // `_navJumpTo` bumps the epoch (E+1), but the inner `_loadFile` is still
+    // awaiting its buffer read; it later calls `_setRenderResult(_emptyResult)`
+    // (bumping to E+2), captures that epoch, completes its render, finds
+    // E+2 === E+2 (not superseded), and overwrites the restored parent result.
+    // Draining here ensures the inner render has stamped `currentResult`
+    // before the caller can call `_navJumpTo`, so the jump's epoch bump
+    // correctly supersedes any further inner-file writes.
+    // Mirrors the `_timelineLoadInFlight` drain above.
+    if (this._openInnerFileInFlight) {
+      const remaining = Math.max(0, timeoutMs - (Date.now() - t0));
+      await Promise.race([
+        this._openInnerFileInFlight.catch(() => {}),
+        new Promise(r => setTimeout(r, remaining)),
+      ]);
+    }
   },
 
   /** JSON-serialisable snapshot of `app.findings` plus a summary of the

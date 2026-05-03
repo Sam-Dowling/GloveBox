@@ -1477,7 +1477,21 @@ extendApp({
     if (typeof opts._maxRecursionDepth === 'number') {
       this._pendingMaxRecursionDepth = opts._maxRecursionDepth;
     }
-    this._loadFile(file, parentBuf || null);
+    // Track the fire-and-forget load so `_testApiWaitForIdle` can drain
+    // it before calling `_navJumpTo`. Without this, `waitForIdle` exits
+    // immediately on the PREVIOUS file's non-null `currentResult`, and
+    // a subsequent `_navJumpTo` races with the inner file's `_loadFile`
+    // still in flight — the inner render can call `_setRenderResult`
+    // AFTER the nav-jump epoch bump and thereby own the new epoch,
+    // overwriting the restored ancestor's `currentResult`. Mirrors the
+    // `_timelineLoadInFlight` pattern in `timeline-router.js`. Only the
+    // test API reads this field; production logic is unaffected.
+    const _innerP = this._loadFile(file, parentBuf || null)
+      .catch(() => { /* errors already surfaced by _loadFile */ });
+    this._openInnerFileInFlight = _innerP;
+    _innerP.then(() => {
+      if (this._openInnerFileInFlight === _innerP) this._openInnerFileInFlight = null;
+    });
   },
 
   // Wire `open-inner-file` events from a container renderer (msg / eml /
