@@ -5,7 +5,7 @@
 // post-processor (severity tier from dangerousPatterns + IOCs +
 // _executeOutput escalation).
 //
-// Six finder branches:
+// Six finder branches plus four Phase-3 fills:
 //   P1  exec(zlib.decompress(base64.b64decode(b'…')))
 //         The canonical "compressed marshalled payload" dropper carrier.
 //         Also handles eval/compile wrappers and the
@@ -28,6 +28,20 @@
 //         os.{system,popen,execv,execl,…}(…)
 //         Command-execution sinks. Detection-only when the argument is
 //         non-literal; literal-arg variants surface the cleartext.
+//   P7  pickle.loads(base64.b64decode(b'…'))    [Phase 3]
+//         Pickle RCE primitive (CWE-502 / T1059.006). Distinct from P2:
+//         pickle operates on arbitrary objects, not just code-objects,
+//         so __reduce__ hooks execute at unpickling time.
+//   P8  (lambda s: exec(s))(…) / alias = exec; alias(…)    [Phase 3]
+//         Lambda-wrapped IIFE around exec/eval/compile, or named-alias
+//         form. Both are recall-grade obfuscations aimed at defeating
+//         literal `eval`/`exec` string scanners.
+//   P9  bytes([b ^ KEY for b in b'…'])    [Phase 3]
+//         Single-byte XOR list-comprehension decode. Resolves against
+//         a literal int key (decimal or 0xNN) and a literal bytestring.
+//   P10 exec(bytes.fromhex('…').decode())    [Phase 3]
+//         Hex-alphabet alternative to P1/P2; dodges generic base64
+//         YARA rules.
 //
 // Mounted via `Object.assign(EncodedContentDetector.prototype, …)`.
 // `scripts/build.py` _DETECTOR_FILES loads this AFTER cmd-obfuscation.js
@@ -607,6 +621,238 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: m.index,
         length: raw.length,
         deobfuscated: `socket connect ${host}:${port} \u2192 dup2/pty.spawn`,
+        _executeOutput: true,
+      });
+    }
+
+    // ── P7: exec(pickle.loads(base64.b64decode('…'))) ──
+    //
+    // Pickle is the textbook RCE primitive in Python — a crafted
+    // pickle stream can declare a `__reduce__` hook that executes
+    // arbitrary code at unpickling time (CWE-502). Distinct from
+    // P2 (marshal) because pickle operates on arbitrary Python
+    // objects, not code-objects-only, so the attack surface is much
+    // wider. Also accept the cPickle alias for Python 2 payloads
+    // that still ship in legacy droppers, and the `_pickle`
+    // internal-C-impl alias occasionally seen in packed stagers.
+    const p7Re = /\b(?:exec|eval)?\s*\(?\s*(?:pickle|cPickle|_pickle)\s*\.\s*loads\s*\(\s*(?:base64\s*\.\s*b64decode\s*\(\s*)?(b?['"][A-Za-z0-9+/=\s]{8,65536}['"])/g;
+    while ((m = p7Re.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const lit = _dequotePyLiteral(m[1]);
+      if (lit === null) continue;
+      const bytes = _b64ToBytes(lit);
+      if (!bytes || bytes.length < 4) continue;
+      // Pickle protocol headers: 0x80 + proto-version (0-5) is PROTO
+      // opcode; classic unprotocoled streams start with an ASCII
+      // opcode (`(` for MARK, `c` for GLOBAL, `S` for SHORT_BINSTRING,
+      // `]` for EMPTY_LIST). Relaxed gate — bruteforce mode bypasses.
+      const b0 = bytes[0];
+      const looksLikePickle = (b0 === 0x80 && bytes[1] <= 0x05)
+                           || b0 === 0x28 /* ( */
+                           || b0 === 0x63 /* c */
+                           || b0 === 0x53 /* S */
+                           || b0 === 0x5D /* ] */
+                           || b0 === 0x7D /* } */;
+      if (!this._bruteforce && !looksLikePickle) continue;
+      const preview = _bytesToPreview(bytes) || `<pickle payload ${bytes.length}B>`;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'Python pickle.loads(b64)',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: preview,
+        _executeOutput: true,
+        _patternIocs: [{
+          type: 'pattern',
+          value: 'Python pickle.loads() RCE primitive (CWE-502)',
+          severity: 'high',
+          note: 'T1059.006 — unpickling attacker-controlled bytes executes __reduce__',
+        }],
+      });
+    }
+
+    // ── P8: lambda-wrapped exec ──
+    //
+    //   (lambda s: exec(s))(base64.b64decode(b'…').decode())
+    //   (lambda: exec(payload))()
+    //   (lambda _e: _e(b64decode(b'…').decode()))(exec)
+    //
+    // The lambda is a passthrough; the obfuscation signal is the IIFE
+    // shape around `exec`/`eval`/`compile`. We surface it so the
+    // analyst sees the execution intent even when the payload itself
+    // is inside a nested call we can't fully resolve.
+    //
+    // Also match a named alias form: `_e = exec; _e(payload)` — very
+    // common in cryptominer droppers. That's emitted as a second
+    // branch below because its shape is structurally different.
+    // Recognise two structural shapes:
+    //   Shape A: (lambda PARAMS: SINK(...))(ARGS)   — sink literally
+    //            inside the lambda body.
+    //   Shape B: (lambda P: P(...))(SINK)            — sink passed AS
+    //            the IIFE argument; the lambda's body calls its
+    //            single parameter by the same name (alias-in-IIFE).
+    //
+    // Both are textbook AMSI-bypass / defeat-literal-scanner tricks.
+    // We anchor on `(lambda` + `:` + bounded look-ahead for the sink
+    // token; the trailing `)(…)` closure confirms the IIFE shape.
+    // `[\s\S]` (not `[^)]`) lets the body cross quoted substrings
+    // that contain `)` — common when the payload is a quoted call.
+    const p8LambdaRe = /\(\s*lambda\b[^:\r\n]{0,80}:[\s\S]{0,500}?\b(exec|eval|compile)\s*\(/g;
+    while ((m = p8LambdaRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      // Confirm the IIFE closure `)(…)` sits within a bounded window
+      // after the anchor. Without this, a stray `lambda x: exec(x)`
+      // used as a higher-order-function argument would fire.
+      const window = text.slice(m.index, m.index + 1500);
+      if (!/\)\s*\(/.test(window)) continue;
+      const sink = m[1];
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: `Python lambda-wrapped ${sink}`,
+        raw: window.slice(0, Math.min(window.length, 400)),
+        offset: m.index,
+        length: Math.min(window.length, 400),
+        deobfuscated: `IIFE: lambda \u2192 ${sink}(\u2026)`,
+        _executeOutput: true,
+      });
+    }
+    // Shape B: `(lambda P: P(...))(sink)` — sink passed as IIFE arg,
+    // body calls the lambda's parameter (self-referential alias).
+    const p8ShapeBRe = /\(\s*lambda\s+([A-Za-z_]\w{0,15})\s*:\s*\1\s*\([\s\S]{0,500}?\)\s*\)\s*\(\s*(exec|eval|compile)\s*\)/g;
+    while ((m = p8ShapeBRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const sink = m[2];
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: `Python lambda-wrapped ${sink}`,
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: `IIFE alias: (lambda ${m[1]}: ${m[1]}(\u2026))(${sink})`,
+        _executeOutput: true,
+      });
+    }
+    // Named-alias form: assign a builtin to a short name, then call
+    // through the alias.
+    const p8AliasRe = /\b([A-Za-z_]\w{0,15})\s*=\s*(exec|eval|compile)\s*(?:[\r\n]|;)[\s\S]{0,200}?\b\1\s*\(/g;
+    while ((m = p8AliasRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const alias = m[1];
+      const sink = m[2];
+      // Suppress the self-assigning `exec = exec` no-op and any alias
+      // that shadows a name already in the dangerous-builtin set
+      // (that would be a refactoring-style re-export, not obfuscation).
+      if (alias === sink) continue;
+      if (DANGEROUS_BUILTINS.has(alias)) continue;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: `Python Aliased ${sink}`,
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: `${alias} = ${sink}; \u2026; ${alias}(\u2026)`,
+        _executeOutput: true,
+      });
+    }
+
+    // ── P9: bytes XOR list-comprehension decode ──
+    //
+    //   bytes([b ^ 0x42 for b in b'\x35\x2a\x0d\x26\x2f\x2b\x2b'])
+    //   bytearray(b ^ 0x42 for b in b'\x35\x2a\x0d\x26\x2f\x2b\x2b')
+    //   bytes(c ^ 66 for c in b'…')
+    //
+    // Single-byte XOR is the cheapest "encryption" a dropper can
+    // afford and still defeats naive string scanners. Resolve
+    // against a literal int (decimal or 0xNN) + literal bytestring.
+    // Require ≥4 bytes input so a stray `b ^ 0x20` in a bit-twiddling
+    // library doesn't fire.
+    // Key group is m[1]; the `b` bytes-literal prefix is outside the
+    // quote capture group so the back-ref \2 references ONLY the
+    // quote character (otherwise `(b?['"])\2` would demand a
+    // matching `b'` at the end instead of a bare `'`).
+    const p9Re = /\b(?:bytes|bytearray)\s*\(\s*\[?\s*(?:[A-Za-z_]\w{0,15})\s*\^\s*(0x[0-9A-Fa-f]{1,2}|\d{1,3})\s+for\s+(?:[A-Za-z_]\w{0,15})\s+in\s+b?(['"])((?:\\x[0-9A-Fa-f]{2}|\\[0-7]{1,3}|[^\\'"\r\n]){4,4096})\2\s*\]?\s*\)/g;
+    while ((m = p9Re.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const keyTok = m[1];
+      const key = keyTok.startsWith('0x') ? parseInt(keyTok.slice(2), 16) : parseInt(keyTok, 10);
+      if (!Number.isFinite(key) || key < 0 || key > 255) continue;
+      const body = m[3];
+      // Decode the bytestring literal to Uint8Array first
+      const srcBytes = [];
+      let i = 0;
+      while (i < body.length && srcBytes.length < 4096) {
+        if (body[i] === '\\' && body[i + 1] === 'x'
+            && /^[0-9A-Fa-f]{2}$/.test(body.slice(i + 2, i + 4))) {
+          srcBytes.push(parseInt(body.slice(i + 2, i + 4), 16));
+          i += 4;
+        } else if (body[i] === '\\' && /^[0-7]$/.test(body[i + 1])) {
+          let end = i + 2;
+          while (end < i + 4 && end < body.length && /^[0-7]$/.test(body[end])) end++;
+          srcBytes.push(parseInt(body.slice(i + 1, end), 8));
+          i = end;
+        } else {
+          srcBytes.push(body.charCodeAt(i));
+          i++;
+        }
+      }
+      if (srcBytes.length < 4) continue;
+      // Apply XOR key
+      const decoded = new Uint8Array(srcBytes.length);
+      for (let j = 0; j < srcBytes.length; j++) decoded[j] = srcBytes[j] ^ key;
+      const preview = _bytesToPreview(decoded);
+      if (!preview) continue;
+      // Suppress cases where the decode produces pure garbage (no
+      // printable ASCII majority) AND isn't flagged by the sensitive
+      // keyword gate — that's usually a false positive on a bit
+      // twiddle inside crypto / hash library code.
+      if (!this._bruteforce && !SENSITIVE_PY_KEYWORDS.test(preview)) continue;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'Python bytes XOR List-Comp',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: preview,
+      });
+    }
+
+    // ── P10: exec(bytes.fromhex('…').decode()) ──
+    //
+    //   exec(bytes.fromhex('696d706f7274206f73...').decode())
+    //   eval(bytearray.fromhex('…').decode('utf-8'))
+    //   exec(bytes.fromhex('…').decode('latin-1'))
+    //
+    // Alternative to base64 where the hex alphabet (0-9a-f) dodges
+    // generic base64 YARA rules. `.decode()` defaults to UTF-8; we
+    // accept an explicit codec arg too. Require ≥16 hex chars (8
+    // source bytes) — shorter is almost always legitimate crypto
+    // fixtures.
+    const p10Re = /\b(?:exec|eval|compile)\s*\(\s*(?:bytes|bytearray)\s*\.\s*fromhex\s*\(\s*(['"])([0-9A-Fa-f\s]{16,131072})\1\s*\)\s*\.\s*decode\s*\([^)]{0,40}\)/g;
+    while ((m = p10Re.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const hex = m[2].replace(/\s+/g, '');
+      if (hex.length % 2 !== 0) continue;
+      const bytes = new Uint8Array(hex.length / 2);
+      for (let j = 0; j < hex.length; j += 2) {
+        bytes[j / 2] = parseInt(hex.slice(j, j + 2), 16);
+      }
+      const preview = _bytesToPreview(bytes);
+      if (!preview) continue;
+      if (!this._bruteforce && !SENSITIVE_PY_KEYWORDS.test(preview)) continue;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'Python bytes.fromhex().decode()',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: preview,
         _executeOutput: true,
       });
     }

@@ -3,11 +3,14 @@
 // targets/obfuscation/python-obfuscation.fuzz.js
 //
 // Fuzz `EncodedContentDetector.prototype._findPythonObfuscationCandidates`
-// (src/decoders/python-obfuscation.js). Covers the 15 technique branches:
+// (src/decoders/python-obfuscation.js). Covers the 24 technique branches:
 // exec(zlib.decompress(…)), exec(marshal.loads(…)), codecs.decode with
 // rot13/base64/hex/zlib, chr-join / bytes-list / chr-concat reassembly,
-// getattr-based builtin string-concat, and subprocess / os.system /
-// pty.spawn / socket reverse-shell sinks.
+// getattr-based builtin string-concat, subprocess / os.system / pty.spawn
+// / socket reverse-shell sinks, plus Phase-3 fills: pickle.loads (RCE
+// primitive), lambda-wrapped exec/eval/compile IIFEs, named-alias exec/
+// eval/compile, single-byte XOR list-comp decode, and
+// bytes.fromhex().decode() hex-alphabet wrappers.
 //
 // python-obfuscation.js calls `Decompressor.inflateSync` inside the
 // zlib-wrapped branch; the finder guards with `typeof Decompressor`

