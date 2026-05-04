@@ -422,7 +422,8 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
     // pack('H*', 'HEXSTRING') — reverse-hex unpack. Captures the most
-    // common form; pack('c*', N1, N2, …) is rarer and skipped.
+    // common form; pack('c*', N1, N2, …) / pack('c4', …) is handled
+    // by the signed-char branch below.
     const phpPackHRe = /pack\s*\(\s*['"]H\*['"]\s*,\s*['"]([0-9a-fA-F\s]{4,4096})['"]\s*\)/g;
     while ((m = phpPackHRe.exec(text)) !== null) {
       throwIfAborted();
@@ -438,6 +439,41 @@ Object.assign(EncodedContentDetector.prototype, {
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'PHP pack(H*) Reassembly',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: _phpClipDeobfToAmpBudget(s, m[0]),
+        _executeOutput: PHP_DANGEROUS_FNS.has(s),
+      });
+    }
+
+    // pack('c*', N1, N2, …) / pack('c4', 101, 118, 97, 108) —
+    // signed-char form. The `c` format emits one byte per numeric
+    // argument (mod 256 on the PHP side, which matches masking the
+    // low 8 bits here). Malware uses it as an alternative to chr()
+    // concat for emitting short function names like `eval` / `system`.
+    // Gate: output must be a dangerous PHP function name or match the
+    // shared sensitive-keywords set (unless --bruteforce).
+    const phpPackCRe = /pack\s*\(\s*['"]c(\*|[1-9]\d{0,2})['"]\s*,\s*((?:-?\d{1,4}\s*,\s*){1,63}-?\d{1,4})\s*\)/g;
+    while ((m = phpPackCRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const spec = m[1];
+      const nums = m[2].split(',').map(t => parseInt(t.trim(), 10));
+      if (nums.some(n => !Number.isFinite(n))) continue;
+      if (spec !== '*') {
+        const want = parseInt(spec, 10);
+        if (!Number.isFinite(want) || want < 1) continue;
+        if (nums.length < want) continue;
+        nums.length = want;
+      }
+      let s = '';
+      for (const n of nums) s += String.fromCharCode(n & 0xFF);
+      if (s.length < 3) continue;
+      if (!PHP_DANGEROUS_FNS.has(s) && !SENSITIVE_PHP_KEYWORDS.test(s) && !this._bruteforce) continue;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PHP pack(c*) Reassembly',
         raw: m[0],
         offset: m.index,
         length: m[0].length,
@@ -628,6 +664,37 @@ Object.assign(EncodedContentDetector.prototype, {
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'PHP $GLOBALS Callable',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: _phpClipDeobfToAmpBudget(resolved, m[0]),
+        _executeOutput: true,
+      });
+    }
+
+    // PHP8b — concat-key variant: $GLOBALS['sys'.'tem']('id'). The
+    // string literal is split across PHP's `.` concat operator so the
+    // dangerous function name never appears contiguously in source.
+    // We accept up to 8 concatenated fragments (each a single/double
+    // quoted \w+ run), resolve by concatenation, then reuse the same
+    // dangerous-fn / superglobal gate as the direct form above.
+    const phpGlobalsConcatRe = /\$GLOBALS\s*\[\s*(['"][A-Za-z_]\w{0,63}['"](?:\s*\.\s*['"]\w{1,64}['"]){1,7})\s*\](?:\s*\[\s*[^\]]{0,80}\])?\s*\(\s*([^)]{0,400})\)/g;
+    while ((m = phpGlobalsConcatRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const fragRe = /['"](\w{1,64})['"]/g;
+      let frag;
+      let name = '';
+      while ((frag = fragRe.exec(m[1])) !== null) name += frag[1];
+      if (!name || name.length > 128) continue;
+      const isFn = PHP_DANGEROUS_FNS.has(name);
+      const isUserInputVar = /^_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)$/.test(name);
+      if (!isFn && !isUserInputVar && !this._bruteforce) continue;
+      const args = (m[2] || '').trim();
+      const resolved = isFn ? `${name}(${args})` : `$${name}[...](${args})`;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PHP $GLOBALS Callable (concat key)',
         raw: m[0],
         offset: m.index,
         length: m[0].length,

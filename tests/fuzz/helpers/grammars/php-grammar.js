@@ -27,6 +27,7 @@ const PHP_TECHNIQUE_CATALOG = Object.freeze([
   'PHP Variable-Variables (anonymous)',
   'PHP chr-concat Reassembly',
   'PHP pack(H*) Reassembly',
+  'PHP pack(c*) Reassembly',
   'PHP preg_replace /e modifier',
   'PHP Superglobal Callable',
   'PHP eval/system on Superglobal',
@@ -34,6 +35,7 @@ const PHP_TECHNIQUE_CATALOG = Object.freeze([
   // ── Phase 4 additions ────────────────────────────────────────
   'PHP create_function Legacy',
   'PHP $GLOBALS Callable',
+  'PHP $GLOBALS Callable (concat key)',
   'PHP Backtick shell_exec',
 ]);
 
@@ -159,6 +161,16 @@ function genReassembly() {
     "<?php $f = pack('H*', '73797374656d'); $f('whoami'); ?>",
     'system',
   ));
+  // pack('c4', 101, 118, 97, 108) → 'eval'
+  out.push(makeSeed(
+    "<?php $f = pack('c4', 101, 118, 97, 108); $f('phpinfo();'); ?>",
+    'eval',
+  ));
+  // pack('c*', …) with trailing arg — signed-char variable-length.
+  out.push(makeSeed(
+    "<?php $f = pack('c*', 115, 121, 115, 116, 101, 109); $f('id'); ?>",
+    'system',
+  ));
   return out;
 }
 
@@ -238,9 +250,10 @@ function genCreateFunctionLegacy() {
 }
 
 function genGlobalsCallable() {
-  // PHP8 — $GLOBALS['…'](…). Two dispatch shapes:
+  // PHP8 — $GLOBALS['…'](…). Three dispatch shapes:
   //   - key resolves to a dangerous PHP function name
   //   - key names a superglobal (user-input dispatch)
+  //   - key is split across string-concat operators (`'sys'.'tem'`)
   return [
     makeSeed(
       "<?php $GLOBALS['system']('whoami'); ?>",
@@ -257,6 +270,20 @@ function genGlobalsCallable() {
     ),
     makeSeed(
       "<?php $GLOBALS['eval']('phpinfo();'); ?>",
+      'eval',
+    ),
+    // Concat-key split — reassembled name must still resolve to a
+    // dangerous PHP function name for the decoder to emit.
+    makeSeed(
+      "<?php $GLOBALS['sys'.'tem']('id'); ?>",
+      'system',
+    ),
+    makeSeed(
+      "<?php $GLOBALS['sh'.'ell_'.'exec']('whoami'); ?>",
+      'shell_exec',
+    ),
+    makeSeed(
+      "<?php $GLOBALS['ev'.'al']('phpinfo();'); ?>",
       'eval',
     ),
   ];

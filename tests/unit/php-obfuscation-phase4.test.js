@@ -212,3 +212,64 @@ test('php-obfuscation: PHP6 data:base64 include amp clamp caps payload preview',
   assert.ok(deobf.length <= 8 * 1024, `deobf length ${deobf.length} exceeds 8 KiB cap`);
   assert.ok(deobf.length <= 32 * hits[0].raw.length, `deobf (${deobf.length}) > 32× raw (${hits[0].raw.length})`);
 });
+
+// ── PHP3b: pack('c4' / 'c*', N, N, …) signed-char reassembly ───────────────
+
+test("php-obfuscation: PHP3 pack('c4', 101, 118, 97, 108) → 'eval' fires", () => {
+  const text = "<?php $f = pack('c4', 101, 118, 97, 108); $f('phpinfo();'); ?>";
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => c.technique === 'PHP pack(c*) Reassembly');
+  assert.equal(hits.length, 1, `expected 1 pack(c*) hit; got: ${JSON.stringify(host(cands))}`);
+  assert.equal(hits[0].deobfuscated, 'eval');
+  assert.equal(hits[0]._executeOutput, true);
+});
+
+test("php-obfuscation: PHP3 pack('c*', …) variable-length fires", () => {
+  const text = "<?php $f = pack('c*', 115, 121, 115, 116, 101, 109); $f('id'); ?>";
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => c.technique === 'PHP pack(c*) Reassembly');
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].deobfuscated, 'system');
+});
+
+test("php-obfuscation: PHP3 pack('c4', …) with too few args does not fire", () => {
+  // 3 args for 'c4' should not emit — the format requires ≥4 chars.
+  const text = "<?php pack('c4', 101, 118, 97); ?>";
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => c.technique === 'PHP pack(c*) Reassembly');
+  assert.equal(hits.length, 0);
+});
+
+test("php-obfuscation: PHP3 pack('c*', …) resolving to benign string is suppressed", () => {
+  // 'hello' is not a dangerous PHP function and not in SENSITIVE_PHP_KEYWORDS.
+  const text = "<?php pack('c*', 104, 101, 108, 108, 111); ?>";
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => c.technique === 'PHP pack(c*) Reassembly');
+  assert.equal(hits.length, 0);
+});
+
+// ── PHP8b: $GLOBALS['sys'.'tem'] concat-key callable indirection ───────────
+
+test("php-obfuscation: PHP8 $GLOBALS['sys'.'tem'](…) concat-key fires", () => {
+  const text = "<?php $GLOBALS['sys'.'tem']('id'); ?>";
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => c.technique === 'PHP $GLOBALS Callable (concat key)');
+  assert.equal(hits.length, 1, `expected 1 concat-key hit; got: ${JSON.stringify(host(cands))}`);
+  assert.match(hits[0].deobfuscated, /system\('id'\)/);
+  assert.equal(hits[0]._executeOutput, true);
+});
+
+test("php-obfuscation: PHP8 $GLOBALS['sh'.'ell_'.'exec'](…) 3-way concat fires", () => {
+  const text = "<?php $GLOBALS['sh'.'ell_'.'exec']('whoami'); ?>";
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => c.technique === 'PHP $GLOBALS Callable (concat key)');
+  assert.equal(hits.length, 1);
+  assert.match(hits[0].deobfuscated, /shell_exec/);
+});
+
+test("php-obfuscation: PHP8 $GLOBALS['he'.'lper'](…) concat to unknown name is suppressed", () => {
+  const text = "<?php $GLOBALS['he'.'lper']('arg'); ?>";
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => c.technique === 'PHP $GLOBALS Callable (concat key)');
+  assert.equal(hits.length, 0);
+});
