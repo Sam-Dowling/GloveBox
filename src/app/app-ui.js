@@ -407,6 +407,65 @@ extendApp({
         }
       }
 
+      // ═══════ 5.5. Reassembled Script ═════════════════════════════════════
+      // When `EncodedReassembler.build()` stitched two or more decoded spans
+      // back into a single reconstructed script during `_loadFile`
+      // (findings.reconstructedScript), surface the stitched body (sentinels
+      // stripped) PLUS any novel IOCs the re-analyse pass found only after
+      // stitching, PLUS any decoded-payload YARA rules that hit the
+      // stitched body. This sits BEFORE "Deobfuscated Findings" (priority
+      // 6) because the reassembled script is a distilled view of that
+      // section's per-finding payloads — showing it first anchors the
+      // reader before they scroll the per-finding detail.
+      //
+      // Shrink ladder: reuse the same charCap scaling as the per-finding
+      // Deobfuscated Findings section. The stitched body can be megabytes
+      // on pathological inputs; the final Shrink-to-Fit pass in
+      // `_buildAnalysisText` will trim with the section's maxLen.
+      const _recon = f.reconstructedScript;
+      if (_recon && _recon.text && Array.isArray(_recon.spans) && _recon.spans.length >= 2) {
+        const stripFn = (window.EncodedReassembler && typeof window.EncodedReassembler.stripSentinels === 'function')
+          ? window.EncodedReassembler.stripSentinels
+          : (t) => t;
+        const stitched = stripFn(_recon.text);
+        const stitchedMax = charCap(12000);
+        const pct = Math.round(((_recon.coverage && _recon.coverage.ratio) || 0) * 100);
+        let d = '\n## Reassembled Script\n';
+        d += '*N encoded spans spliced back into the source for a whole-script view of a parallel-obfuscation payload. IOCs tagged ';
+        d += '`_fromReassembly` below were NOT visible in the per-finding cards above — only the stitched body surfaces them.*\n\n';
+        d += `- **Spans stitched:** ${_recon.spans.length}\n`;
+        d += `- **Coverage:** ${pct}% of source (${_recon.coverage ? _recon.coverage.bytesReplaced : 0} / ${_recon.coverage ? _recon.coverage.sourceBytes : 0} bytes)\n`;
+        if (_recon.techniques && _recon.techniques.length) {
+          d += `- **Techniques:** ${_recon.techniques.map(t => `\`${t}\``).join(', ')}\n`;
+        }
+        if (_recon.severity && _recon.severity !== 'info') {
+          d += `- **Max span severity:** ${_recon.severity}\n`;
+        }
+        if (_recon.truncated) d += `- **Truncated:** output ceiling hit; reconstruction is partial.\n`;
+        if (_recon.collisions && _recon.collisions.length) {
+          d += `- **Overlaps resolved:** ${_recon.collisions.length} (higher severity / longer decoded text wins)\n`;
+        }
+        if (Array.isArray(_recon.yaraHits) && _recon.yaraHits.length) {
+          d += `- **YARA on stitched body:** ${_recon.yaraHits.map(h => `\`${h.ruleName}\`${h.severity ? ' (' + h.severity + ')' : ''}`).join(', ')}\n`;
+        }
+        if (Array.isArray(_recon.novelIocs) && _recon.novelIocs.length) {
+          d += `- **Novel IOCs (reassembly-only):** ${_recon.novelIocs.length}\n`;
+          for (const ioc of _recon.novelIocs.slice(0, 12)) {
+            const v = ioc && (ioc.url || ioc.value);
+            if (v) d += `  - \`${tp(v)}\`${ioc.type ? ` _(${ioc.type})_` : ''}\n`;
+          }
+          if (_recon.novelIocs.length > 12) {
+            d += `  - … +${_recon.novelIocs.length - 12} more (full list in Signatures & IOCs below)\n`;
+          }
+        }
+        d += '\n### Stitched body\n```\n';
+        d += (stitchedMax !== Infinity && stitched.length > stitchedMax)
+          ? stitched.slice(0, stitchedMax) + '\n… (truncated)'
+          : stitched;
+        d += '\n```\n';
+        sections.push({ text: d, priority: 5.5, maxLen: charCap(14000) });
+      }
+
       // ═══════ 6. Deobfuscated Findings ════════════════════════════════════
       // Walk the full innerFindings tree — every decoded layer (including
       // deeper ones like Base64 → gzip → PowerShell) becomes its own section
@@ -1579,6 +1638,16 @@ extendApp({
         nicelisted: !!r._nicelisted,               // carried through to STIX/MISP/CSV
         nicelistSource: r._nicelistSource || null, // 'Default Nicelist' | user-list display name | null
       };
+      // Reassembly provenance (Phase 4). When `_fromReassembly` is set the
+      // IOC was surfaced ONLY by the EncodedReassembler's post-stitch
+      // regex sweep — i.e. invisible in the per-finding cards above. CSV
+      // / JSON consumers can use the flag to segregate stitched-only
+      // IOCs; STIX / MISP use it to stamp `x_loupe_source = reassembly`
+      // on the emitted SCO / attribute.
+      if (r._fromReassembly) {
+        row.fromReassembly = true;
+        if (r._reconstructedHash) row.reconstructedHash = r._reconstructedHash;
+      }
       // Attach geo / ASN enrichment for IPv4 IOCs only. Both fields are
       // optional — only set when the corresponding provider returned a
       // record. JSON exporter forwards `row.geo` / `row.asn`; CSV
@@ -1802,6 +1871,16 @@ extendApp({
           + 'Matched Loupe nicelist' + src
           + '; treat as benign unless confirmed otherwise.';
       }
+      // Reassembly provenance — STIX 2.1 custom property prefixed
+      // `x_loupe_*` per the spec's custom-property convention (§11.3).
+      // Receivers that want to de-prioritise / separately triage
+      // indicators surfaced only by stitching can key on this field.
+      if (ioc.fromReassembly) {
+        ind.x_loupe_source = 'reassembly';
+        if (ioc.reconstructedHash) ind.x_loupe_reconstructed_hash = ioc.reconstructedHash;
+        const rlabel = 'loupe-reassembly-derived';
+        ind.labels = Array.isArray(ind.labels) ? Array.from(new Set([...ind.labels, rlabel])) : [rlabel];
+      }
       objects.push(ind);
       indicatorIds.push(id);
     }
@@ -1971,6 +2050,17 @@ extendApp({
         a.to_ids = '0';
         const src = ioc.nicelistSource ? ` (${ioc.nicelistSource})` : '';
         a.comment = '[loupe-nicelisted' + src + '] ' + (a.comment || ioc.type);
+      }
+      // Reassembly provenance tag — receivers can filter on a single
+      // substring if they want to triage stitched-only indicators
+      // separately. Keep `to_ids` as-is (the indicator itself is just as
+      // actionable as any other IOC; reassembly only changes how it was
+      // discovered).
+      if (ioc.fromReassembly) {
+        const tag = ioc.reconstructedHash
+          ? `[loupe-reassembly:${ioc.reconstructedHash}]`
+          : '[loupe-reassembly]';
+        a.comment = tag + ' ' + (a.comment || ioc.type);
       }
       pushAttr(a);
     }

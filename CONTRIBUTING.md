@@ -345,6 +345,51 @@ never prunes. Rules opt in via `meta: applies_to` ⊇ `decoded-payload`
 Bypassed in bruteforce mode; failure demotes to no-op via
 `_reportNonFatal('decoded-yara-gate', …, {silent: true})`.
 
+### Reassembled-script pipeline
+
+`src/encoded-reassembler.js` runs AFTER `decoded-yara-filter`. For each
+top-level `EncodedContentDetector` finding it picks the deepest decoded
+text (`_deobfuscatedText` > textual `decodedBytes` > outer), splices
+the result into the source at the finding's byte range wrapped in
+invisible U+2063 sentinels, and exposes
+`findings.reconstructedScript = { text, spans, sourceMap, coverage,
+collisions, techniques, reconstructedHash, severity, yaraHits?,
+novelIocs?, analyzeStats?, truncated }`.
+
+Then `EncodedReassembler.analyze()` runs the IOC regex sweep and a
+`formatTag = "decoded-payload"` YARA scan over the sentinel-stripped
+stitched body; novel IOCs (diffed against `findings.interestingStrings`
++ `externalRefs`) land on `findings.interestingStrings` tagged
+`_fromReassembly: true` + `_reconstructedHash: <hash>`. YARA hits
+attach to `reconstructedScript.yaraHits`.
+
+The sidebar paints a single composite card at the top of the
+Deobfuscation section (`_renderReassembledScriptCard` in
+`app-sidebar.js`) — per-finding cards below retain provenance detail.
+The "Load stitched script for analysis" button opens the sentinel-
+stripped body as a synthetic file with `opts._isReassemblyChild = true`,
+which flips `this._isReassemblyChild` in `_loadFile` so the child load
+does NOT recursively reassemble its own reassembled body.
+
+Bounds: `PARSER_LIMITS.REASSEMBLY_{MAX_FINDINGS, MAX_OUTPUT_BYTES,
+MIN_COVERAGE, MIN_FINDINGS_USED}` (64, 4 MiB, 5 %, 2). Sidebar skips
+the card when `spans.length < 2`; analyze() never throws (every
+upstream failure collapses to a typed `skipped` reason).
+
+Exports: `_collectIocs` forwards `fromReassembly` + `reconstructedHash`
+into the row shape; the STIX builder emits `x_loupe_source =
+"reassembly"` + `x_loupe_reconstructed_hash` + `loupe-reassembly-
+derived` label on the indicator SDO; the MISP builder prefixes
+`[loupe-reassembly:<hash>]` onto the attribute comment. Summary / copy-
+analysis adds a priority-5.5 "Reassembled Script" section between
+Macros and Deobfuscated Findings.
+
+Rules: `src/rules/reassembled-payloads.yar` ships four gated rules
+(`Reassembled_IEX_Invocation`, `Reassembled_DownloadExec_Chain`,
+`Reassembled_Reverse_Shell_Indicator`,
+`Reassembled_Staged_PowerShell_Loader`) all with
+`applies_to = "decoded-payload"`.
+
 ### Iframe sandbox helper
 
 `src/sandbox-preview.js` is the single source of truth for the
