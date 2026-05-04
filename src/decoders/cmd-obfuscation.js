@@ -1151,6 +1151,495 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
 
+    // ── PowerShell -EncodedCommand / -enc / -ec <UTF-16LE-base64> ──
+    //
+    // The canonical PowerShell stager:
+    //   powershell.exe -NoProfile -Exec Bypass -EncodedCommand JABjAD0…
+    //
+    // The argument is a base64-encoded UTF-16LE byte sequence. This is
+    // the most common PowerShell obfuscation technique in the wild —
+    // every Cobalt Strike, Metasploit, Empire, and hand-rolled Win loader
+    // uses it. We recognise all three argument spellings
+    // (`-EncodedCommand`, `-enc`, `-ec`) and the typical PowerShell
+    // abbreviation where only the prefix matters (`-encod`, `-encode`).
+    //
+    // The decode pipeline:
+    //   1. base64-decode → raw bytes
+    //   2. interpret as UTF-16LE → text
+    //   3. if the result is printable ASCII-ish, emit as deobfuscated
+    //
+    // Gate: the decoded text must match `_EXEC_INTENT_RE` OR be ≥8
+    // printable chars. The first is the strong-signal gate (ClickFix /
+    // C2 stagers always contain `iex` / `Invoke-` / `DownloadString`);
+    // the second covers legitimate admin scripts that also get pulled
+    // into `-EncodedCommand` form by tools like `Start-Job -ScriptBlock`
+    // — an analyst still wants to see them decoded.
+    //
+    // `safeRegex`-like bounds: min 8 b64 chars (6 bytes decoded, 3 UTF-16
+    // chars) so we don't fire on random `-ec Ab` noise, cap at 32 KiB
+    // of base64 (which is 16 KiB of decoded text — within the 32× raw
+    // cap when the encoded arg is ≥512 bytes, which is the practical
+    // floor anyway).
+    // Only match the documented short-forms `-EncodedCommand` / `-enc`
+    // / `-ec`. Dropped the bare `-e` alias to avoid colliding with the
+    // dozens of legit PS params that start with `e`
+    // (`-ExecutionPolicy`, `-ExpandProperty`, `-Exclude`, ...). The
+    // left anchor is start-of-string / whitespace / `;` / `|` / `&` —
+    // NOT `\b`, because `\b` fails between a space and `-` (both are
+    // non-word chars; JS regex `\b` transitions on word-char boundary
+    // only, which a preceding space → `-` transition is not).
+    const encCmdRe = /(?:^|[\s;|&'"])(?:-|\u2013)(?:EncodedCommand|EncodedArgument|Enc|Ec)\s+([A-Za-z0-9+/=]{8,32768})(?=\s|$|[;\r\n'"])/gi;
+    while ((m = encCmdRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const b64 = m[1].replace(/\s+/g, '');
+      // Require minimum decoded-bytes length and valid base64 padding.
+      if (b64.length < 8 || (b64.length % 4) !== 0) continue;
+      let bytes;
+      try {
+        if (typeof atob === 'function') {
+          const bin = atob(b64);
+          bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+        } else {
+          bytes = new Uint8Array(Buffer.from(b64, 'base64'));
+        }
+      } catch (_) { continue; }
+      if (!bytes || bytes.length < 4) continue;
+      // UTF-16LE decode. `_tryDecodeUTF16LE` enforces low-NUL-density
+      // + printable-ratio, so garbage base64 that happens to look like
+      // UTF-16LE to the naive decoder still returns null.
+      let decoded = null;
+      if (typeof this._tryDecodeUTF16LE === 'function') {
+        decoded = this._tryDecodeUTF16LE(bytes);
+      }
+      // Fallback: try UTF-8 (some `-enc` payloads actually use UTF-8,
+      // despite the documented UTF-16LE convention).
+      if (!decoded && typeof this._tryDecodeUTF8 === 'function') {
+        decoded = this._tryDecodeUTF8(bytes);
+      }
+      if (!decoded || decoded.length < 4) continue;
+      // Printable-ratio gate — at least 80% printable ASCII + common
+      // whitespace. Anything below is almost certainly noise.
+      let printable = 0;
+      for (let i = 0; i < Math.min(decoded.length, 256); i++) {
+        const cc = decoded.charCodeAt(i);
+        if ((cc >= 0x20 && cc < 0x7f) || cc === 0x09 || cc === 0x0a || cc === 0x0d) printable++;
+      }
+      const sampleLen = Math.min(decoded.length, 256);
+      if (printable / Math.max(1, sampleLen) < 0.8) continue;
+      // Gate: exec-intent keyword is required unless bruteforce mode.
+      // Without the exec-intent gate, a legit `-ec` of a version-string
+      // or build-identifier (seen in MS-signed installers) would fire.
+      // PowerShell-`-EncodedCommand` payloads authored by adversaries
+      // always contain at least `iex` / `Invoke-` / `DownloadString` /
+      // `FromBase64String` — `_EXEC_INTENT_RE` covers all three.
+      if (!this._bruteforce && !_EXEC_INTENT_RE.test(decoded)) continue;
+      const clipped = _clipDeobfToAmpBudget(decoded, m[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell -EncodedCommand (UTF-16LE base64)',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: clipped,
+        _patternIocs: [{
+          url: 'powershell.exe -EncodedCommand \u2014 UTF-16LE base64 argument (T1059.001 / T1027) canonical PowerShell stager',
+          severity: 'high',
+        }],
+      });
+    }
+
+    // ── PowerShell [char]N + [char]N + [char]N char-array reassembly ──
+    //
+    // Empire / Nishang / PowerSploit stubs routinely break a keyword
+    // into `[char]0x49 + [char]0x45 + [char]0x58` (→ "IEX") to dodge
+    // string-match AV. Accepts both decimal (`[char]105`) and hex
+    // (`[char]0x69`) forms, with optional `[System.Char]` / `[System.Convert]::ToChar`
+    // variants. Min 3 chars joined so random `[char]65 + [char]66` noise
+    // (e.g. a unit-test assertion string) doesn't fire without an
+    // exec-intent gate.
+    const charArrRe = /(?:\[(?:System\.)?[Cc]har\]\s*(?:0x[0-9a-fA-F]{1,4}|\d{1,5})\s*\+?\s*){3,60}/g;
+    while ((m = charArrRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const raw = m[0];
+      if (raw.length > 2048) continue;
+      // Extract every numeric operand.
+      const nums = [...raw.matchAll(/\[(?:System\.)?[Cc]har\]\s*(0x[0-9a-fA-F]{1,4}|\d{1,5})/g)]
+        .map(n => n[1].toLowerCase().startsWith('0x') ? parseInt(n[1], 16) : parseInt(n[1], 10));
+      if (nums.length < 3) continue;
+      let joined = '';
+      let anyHigh = false;
+      for (const n of nums) {
+        if (!Number.isFinite(n) || n < 0 || n > 0x10ffff) { joined = ''; break; }
+        if (n > 0x7f) anyHigh = true;
+        joined += String.fromCodePoint(n);
+      }
+      if (joined.length < 3) continue;
+      // Post-assemble gate: exec-intent OR a suspicious sensitive
+      // keyword. Noise like `[char]65+[char]66+[char]67` (→ ABC) does
+      // NOT fire unless bruteforce is on.
+      if (!this._bruteforce) {
+        if (!_EXEC_INTENT_RE.test(joined) && !SENSITIVE_CMD_KEYWORDS.test(joined)) continue;
+      }
+      // Suppress high-bit noise that passed the keyword gate only by
+      // accident (garbled unicode with `iex` substring by pure chance).
+      if (anyHigh && !/\b(iex|invoke|powershell|cmd|certutil|rundll32)\b/i.test(joined)) continue;
+      const clipped = _clipDeobfToAmpBudget(joined, raw);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell [char]N+[char]N Reassembly',
+        raw,
+        offset: m.index,
+        length: raw.length,
+        deobfuscated: clipped,
+      });
+    }
+
+    // ── PowerShell [Convert]::FromBase64String / UTF8.GetString full form ──
+    //
+    // The canonical AMSI-bypass / downloader stager:
+    //   [System.Text.Encoding]::UTF8.GetString(
+    //     [System.Convert]::FromBase64String('<b64>'))
+    //   [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('<b64>'))
+    //
+    // Unlike the bare `FromBase64String('…')` form (already caught by
+    // the b64 finder), the `Encoding.GetString` wrapper tells us the
+    // byte interpretation (UTF-8 / UTF-16LE / ASCII) directly, so we
+    // can decode without guessing. We emit a cmd-obfuscation candidate
+    // which flows through the same promotion as -EncodedCommand.
+    const convFromB64Re = /\[\s*(?:System\.)?(?:Text\.)?Encoding\s*\]\s*::\s*(UTF8|Unicode|ASCII|UTF7|BigEndianUnicode)\s*\.\s*GetString\s*\(\s*\[\s*(?:System\.)?Convert\s*\]\s*::\s*FromBase64String\s*\(\s*(['"])([A-Za-z0-9+/=\s]{8,32768})\2\s*\)\s*\)/gi;
+    while ((m = convFromB64Re.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const enc = (m[1] || '').toLowerCase();
+      const b64 = (m[3] || '').replace(/\s+/g, '');
+      if (b64.length < 8 || (b64.length % 4) !== 0) continue;
+      let bytes;
+      try {
+        if (typeof atob === 'function') {
+          const bin = atob(b64);
+          bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+        } else {
+          bytes = new Uint8Array(Buffer.from(b64, 'base64'));
+        }
+      } catch (_) { continue; }
+      if (!bytes || bytes.length < 2) continue;
+      let decoded = null;
+      try {
+        if (enc === 'unicode' || enc === 'bigendianunicode') {
+          // PowerShell's [Text.Encoding]::Unicode == UTF-16LE.
+          // BigEndianUnicode is UTF-16BE; browsers' TextDecoder
+          // supports both labels.
+          const label = enc === 'bigendianunicode' ? 'utf-16be' : 'utf-16le';
+          decoded = new TextDecoder(label, { fatal: false }).decode(bytes);
+        } else if (enc === 'utf7') {
+          // UTF-7 is not universally supported by TextDecoder; fall
+          // back to UTF-8 which decodes ASCII subset cleanly. Real
+          // UTF-7 payloads are exceedingly rare.
+          decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        } else {
+          decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        }
+      } catch (_) { continue; }
+      if (!decoded || decoded.length < 3) continue;
+      // Printable-ratio gate (identical to -EncodedCommand branch).
+      let printable = 0;
+      const sampleLen = Math.min(decoded.length, 256);
+      for (let i = 0; i < sampleLen; i++) {
+        const cc = decoded.charCodeAt(i);
+        if ((cc >= 0x20 && cc < 0x7f) || cc === 0x09 || cc === 0x0a || cc === 0x0d) printable++;
+      }
+      if (printable / Math.max(1, sampleLen) < 0.8) continue;
+      if (!this._bruteforce && !_EXEC_INTENT_RE.test(decoded)) continue;
+      const clipped = _clipDeobfToAmpBudget(decoded, m[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: `PowerShell [Convert]::FromBase64String + ${enc.toUpperCase()}.GetString`,
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: clipped,
+      });
+    }
+
+    // ── PowerShell -bxor inline-key payload decode ──
+    //
+    // BloodHound / SharpHound / Cobalt Strike often embed shellcode or
+    // a string-keyed payload as a numeric array XOR'd against an
+    // inline single-byte or short repeating key:
+    //
+    //   $b = @(0x12,0x34,0x56,...); $b | % { $_ -bxor 0x5a }
+    //   $key=0x42; $enc=@(...); $dec=($enc | ForEach-Object { $_ -bxor $key })
+    //   -join($enc | ForEach-Object { [char]($_ -bxor 0x5a) })
+    //
+    // We recognise: inline byte array `@(N,N,...)` of length ≥8, an
+    // inline single-byte key (decimal or 0xHH), and the `-bxor` token.
+    // The decoded bytes are interpreted as ASCII and gated through the
+    // same exec-intent check.
+    // Split the match into two cheaper passes: (1) find the `@(N,N,...)`
+    // literal with ≥8 elements, (2) within 200 chars, locate the
+    // `-bxor <key>` token. This avoids the single-regex worst case
+    // where a long byte array with no trailing `-bxor` backtracks
+    // through every element.
+    const bxorArrRe = /@\s*\(\s*((?:0x[0-9a-fA-F]{1,2}|\d{1,3})(?:\s*,\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})){7,8191})\s*\)/g;
+    const bxorKeyRe = /-b?xor\s*(0x[0-9a-fA-F]{1,2}|\d{1,3})/i;
+    let bxorIterBudget = this.maxCandidatesPerType * 4; // ensure cheap scan bound even with early-continue
+    while ((m = bxorArrRe.exec(text)) !== null && bxorIterBudget-- > 0) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const arrEnd = m.index + m[0].length;
+      const tailWindow = text.substring(arrEnd, Math.min(text.length, arrEnd + 200));
+      const keyM = bxorKeyRe.exec(tailWindow);
+      if (!keyM) continue;
+      const arrSrc = m[1];
+      const keySrc = keyM[1];
+      const key = keySrc.toLowerCase().startsWith('0x')
+        ? parseInt(keySrc, 16)
+        : parseInt(keySrc, 10);
+      if (!Number.isFinite(key) || key < 0 || key > 255) continue;
+      const nums = arrSrc.split(/\s*,\s*/).map(t => {
+        return t.toLowerCase().startsWith('0x') ? parseInt(t, 16) : parseInt(t, 10);
+      });
+      if (nums.length < 8 || nums.length > 8192) continue;
+      let decoded = '';
+      let allPrintable = true;
+      for (const n of nums) {
+        if (!Number.isFinite(n) || n < 0 || n > 255) { decoded = ''; break; }
+        const c = (n ^ key) & 0xff;
+        if (!((c >= 0x20 && c < 0x7f) || c === 0x09 || c === 0x0a || c === 0x0d)) allPrintable = false;
+        decoded += String.fromCharCode(c);
+      }
+      if (decoded.length < 4) continue;
+      // Gate: must be mostly printable + exec-intent OR a known
+      // shellcode tell (e.g. 'kernel32', 'VirtualAlloc', 'wininet').
+      if (!allPrintable) {
+        // Non-printable decode — only emit if bruteforce on.
+        if (!this._bruteforce) continue;
+      } else if (!this._bruteforce && !_EXEC_INTENT_RE.test(decoded)
+                 && !/kernel32|virtualalloc|wininet|wsock32|winexec|loadlibrary/i.test(decoded)) {
+        continue;
+      }
+      const rawSpan = text.substring(m.index, arrEnd + keyM.index + keyM[0].length);
+      const clipped = _clipDeobfToAmpBudget(decoded, rawSpan);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell -bxor Inline-Key Decode',
+        raw: rawSpan,
+        offset: m.index,
+        length: rawSpan.length,
+        deobfuscated: clipped,
+        _patternIocs: [{
+          url: `PowerShell inline XOR-decoded payload (key=0x${key.toString(16).padStart(2, '0')}, ${nums.length} bytes) \u2014 T1027.013 Encrypted/Encoded File`,
+          severity: 'high',
+        }],
+      });
+    }
+
+    // ── PowerShell [scriptblock]::Create(…).Invoke() ──
+    //
+    // A canonical `iex` replacement used by post-2020 AMSI-bypass chains
+    // (Invoke-Obfuscation's SB token, CS beacon stagers). Reveals the
+    // script-block source by the `::Create('…')` argument and flags
+    // `.Invoke()` as the execution sink.
+    //
+    //   [scriptblock]::Create('Invoke-Expression …').Invoke()
+    //   ([ScriptBlock]::Create($s)).Invoke()
+    //
+    // We statically resolve only the literal-string form; the
+    // `$var`-argument form falls through to `_findPsVariableResolutionCandidates`.
+    const sbCreateRe = /\[\s*(?:System\.Management\.Automation\.)?[Ss]cript[Bb]lock\s*\]\s*::\s*Create\s*\(\s*(['"])((?:\\.|(?!\1).){3,2048})\1\s*\)\s*(?:\.\s*Invoke\s*\(\s*\))?/g;
+    while ((m = sbCreateRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const body = (m[2] || '').replace(/\\'/g, "'").replace(/\\"/g, '"');
+      if (body.length < 3) continue;
+      if (!this._bruteforce && !_EXEC_INTENT_RE.test(body)) continue;
+      const clipped = _clipDeobfToAmpBudget(body, m[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell [scriptblock]::Create',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: clipped,
+        _patternIocs: [{
+          url: '[scriptblock]::Create(\u2026).Invoke() \u2014 canonical iex replacement for AMSI bypass (T1059.001)',
+          severity: 'high',
+        }],
+      });
+    }
+
+    // ── PowerShell AMSI-bypass pattern (structural IOC, not a decode) ──
+    //
+    // The canonical AMSI-disable string:
+    //   [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').
+    //     GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
+    //
+    // Adversaries concat/split/escape the `amsiInitFailed` token
+    // aggressively. We catch the pattern via a bounded regex against
+    // `AmsiUtils` + `amsiInitFailed` (with optional concat splits);
+    // emit a `_patternIocs` entry at severity `critical`. The "raw"
+    // value is the full matched span, "deobfuscated" is the recovered
+    // canonical form.
+    //
+    // Structurally recognised shapes (concat-joined from the source):
+    //   'amsi' + 'InitFailed'
+    //   'amsi'+'Init'+'Failed'
+    //   "amsi${null}InitFailed"  (`${null}`-insertion obfuscator trick)
+    //
+    // All flagged as a single technique; the FP rate is essentially
+    // zero (a legitimate script never mentions `AmsiUtils`).
+    const amsiRe = /AmsiUtils[\s\S]{0,400}?(?:amsi|['"]\s*amsi\s*['"]\s*\+\s*['"]|amsi\$\{null\})/gi;
+    while ((m = amsiRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const raw = m[0];
+      if (raw.length > 400) continue;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell AMSI Bypass',
+        raw,
+        offset: m.index,
+        length: raw.length,
+        deobfuscated: 'System.Management.Automation.AmsiUtils.amsiInitFailed \u2190 $true (AMSI disabled)',
+        _patternIocs: [{
+          url: 'AMSI bypass \u2014 AmsiUtils.amsiInitFailed SetValue($null,$true) (T1562.001 Disable or Modify Tools)',
+          severity: 'critical',
+        }],
+      });
+    }
+
+    // ── CMD set /a arithmetic-to-character computation ──
+    //
+    //   set /a X=0x68 & set /a Y=0x69
+    //   set /a K=%X%+1
+    //   for /l %%i in (…) do call set "S=%S%!chr:~%%i,1!"
+    //
+    // Attackers use `set /a` to compute ASCII codepoints that later feed
+    // a `!chr:~N,1!` string-slice or a `-join` on an array. We recognise
+    // the simpler form: a block of ≥4 `set /a X=<num>` statements where
+    // the assigned values are all valid printable ASCII. Decoded output
+    // is the concatenation of `chr(X)` in assignment order — noisy on
+    // pure-arithmetic loops but high-signal on malware where the vars
+    // spell out `powershell.exe -enc …`.
+    const setAReExtract = /\bset\s+\/a\s+(?:"[^"]+"|[^\r\n&|;]{1,120})/gi;
+    {
+      // Collect all `set /a` statements first; emit one combined
+      // candidate if ≥4 of them assign printable-ASCII-valued literals
+      // in sequence.
+      const setAMatches = [...text.matchAll(setAReExtract)];
+      if (setAMatches.length >= 4 && candidates.length < this.maxCandidatesPerType) {
+        throwIfAborted();
+        const assigns = [];
+        const assignRe = /set\s+\/a\s+(?:"\s*([A-Za-z_]\w*)\s*=\s*([^"\r\n]+?)\s*"|([A-Za-z_]\w*)\s*=\s*([^\s&|;\r\n]+))/gi;
+        let am;
+        while ((am = assignRe.exec(text)) !== null) {
+          const name = am[1] || am[3];
+          const valSrc = (am[2] || am[4] || '').trim();
+          // Only accept a single integer literal; ignore expressions
+          // (`%X%+1`, `X<<2` etc.) to avoid a symbol-table rebuild.
+          let val = null;
+          if (/^0x[0-9a-fA-F]{1,4}$/.test(valSrc)) val = parseInt(valSrc, 16);
+          else if (/^\d{1,5}$/.test(valSrc)) val = parseInt(valSrc, 10);
+          if (val !== null && name) assigns.push({ name, val, idx: am.index });
+          if (assigns.length >= 256) break;
+        }
+        if (assigns.length >= 4) {
+          let joined = '';
+          let allPrintable = true;
+          for (const a of assigns) {
+            if (a.val < 0x20 || a.val > 0x7e) { allPrintable = false; break; }
+            joined += String.fromCharCode(a.val);
+          }
+          if (allPrintable && joined.length >= 4
+              && (this._bruteforce || _EXEC_INTENT_RE.test(joined)
+                  || SENSITIVE_CMD_KEYWORDS.test(joined))) {
+            const first = assigns[0].idx;
+            const last = assigns[assigns.length - 1].idx;
+            const rawSpan = text.substring(first, Math.min(text.length, last + 40));
+            const clipped = _clipDeobfToAmpBudget(joined, rawSpan);
+            candidates.push({
+              type: 'cmd-obfuscation',
+              technique: 'CMD set /a Arithmetic-to-Character',
+              raw: rawSpan,
+              offset: first,
+              length: rawSpan.length,
+              deobfuscated: clipped,
+            });
+          }
+        }
+      }
+    }
+
+    // ── CMD call :label indirection with obfuscated labels ──
+    //
+    // `call :<labelname> <args>` followed later by `:<labelname>` +
+    // body. Obfuscators use this to break a single command into
+    // dozens of labelled sub-routines so linear string search misses
+    // the payload. We detect: a `call :X` that resolves to a
+    // `:X` label elsewhere in the file, where the NEXT non-empty
+    // line (or the trailing text on the same line, whichever is
+    // non-empty) names a LOLBin. The emitted `deobfuscated` is that
+    // body text.
+    {
+      // Build a cheap label table keyed on lowercased label name.
+      // `value` is the effective body — trailing text on the same
+      // line if non-empty, otherwise the next non-empty line (capped
+      // at 240 chars to bound memory on pathological `.bat`s).
+      const labelLineRe = /^[ \t]*:(\w{1,64})\b([^\r\n]*)$/gmi;
+      const labels = new Map();
+      let lm;
+      while ((lm = labelLineRe.exec(text)) !== null) {
+        if (labels.size >= 128) break;
+        const name = lm[1].toLowerCase();
+        if (labels.has(name)) continue;
+        let body = (lm[2] || '').trim();
+        if (body.length === 0) {
+          // Walk forward to the next non-empty line.
+          const afterLabel = lm.index + lm[0].length;
+          let nextStart = afterLabel;
+          while (nextStart < text.length && (text[nextStart] === '\r' || text[nextStart] === '\n')) nextStart++;
+          const lineEnd = text.indexOf('\n', nextStart);
+          const cutoff = lineEnd < 0 ? text.length : lineEnd;
+          body = text.substring(nextStart, Math.min(cutoff, nextStart + 240)).trim();
+        }
+        if (body.length > 0) labels.set(name, { body, offset: lm.index });
+      }
+      if (labels.size > 0) {
+        const callLabelRe = /\bcall\s+:(\w{1,64})(?:\s+([^\r\n]{0,200}))?/gi;
+        while ((m = callLabelRe.exec(text)) !== null) {
+          throwIfAborted();
+          if (candidates.length >= this.maxCandidatesPerType) break;
+          const name = m[1].toLowerCase();
+          const entry = labels.get(name);
+          if (!entry) continue;
+          const resolved = (entry.body + (m[2] ? ' ' + m[2] : '')).trim();
+          if (resolved.length < 3) continue;
+          // Only surface when the resolved body looks like a command
+          // (exec-intent / SENSITIVE_CMD_KEYWORDS match). Otherwise
+          // a legitimate `call :helper` would fire on every script
+          // with an internal subroutine.
+          if (!this._bruteforce
+              && !_EXEC_INTENT_RE.test(resolved)
+              && !SENSITIVE_CMD_KEYWORDS.test(resolved)) {
+            continue;
+          }
+          const clipped = _clipDeobfToAmpBudget(resolved, m[0]);
+          candidates.push({
+            type: 'cmd-obfuscation',
+            technique: 'CMD call :label Indirection',
+            raw: m[0],
+            offset: m.index,
+            length: m[0].length,
+            deobfuscated: clipped,
+          });
+        }
+      }
+    }
+
     return candidates;
   },
 
