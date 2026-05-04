@@ -13,18 +13,31 @@
 
 Object.assign(TimelineView.prototype, {
 
+  // Walk a parsed JSON value and invoke `cb(pathKey, path, leafValue)` for
+  // every primitive leaf reachable within `maxDepth` levels. `path` is a
+  // MUTABLE shared array — the function pushes segments on the way in and
+  // pops them on the way out, avoiding the per-level array allocation that
+  // `path.concat(k)` would incur. Callers that want to retain the path
+  // (e.g. to build a `pathStats` record) must call `path.slice()` inside
+  // the callback — see `_autoExtractScan` which does exactly that.
   _jsonCollectLeafPaths(value, path, cb, maxDepth) {
     if (path.length >= maxDepth) return;
     if (value == null) return;
     if (typeof value === 'object') {
       if (Array.isArray(value)) {
-        // Treat all array entries as the same path (use [*]).
+        // Treat all array entries as the same path segment (use [*]).
+        path.push('[*]');
         for (let i = 0; i < Math.min(value.length, 5); i++) {
-          this._jsonCollectLeafPaths(value[i], path.concat('[*]'), cb, maxDepth);
+          this._jsonCollectLeafPaths(value[i], path, cb, maxDepth);
         }
+        path.pop();
       } else {
-        for (const k of Object.keys(value)) {
-          this._jsonCollectLeafPaths(value[k], path.concat(k), cb, maxDepth);
+        const keys = Object.keys(value);
+        for (let ki = 0; ki < keys.length; ki++) {
+          const k = keys[ki];
+          path.push(k);
+          this._jsonCollectLeafPaths(value[k], path, cb, maxDepth);
+          path.pop();
         }
       }
     } else {
@@ -139,13 +152,23 @@ Object.assign(TimelineView.prototype, {
     const srcValues = (opts && Array.isArray(opts.srcValues)
       && opts.srcValues.length === this.store.rowCount) ? opts.srcValues : null;
 
+    // Cache key: encode both the source column and the row index so that
+    // two JSON columns at different indices don't collide. We use a
+    // bitwise composite — colIdx occupies the high 20 bits, rowIndex the
+    // low 20 bits. This supports up to 1 M rows and 4 096 columns, which
+    // comfortably covers any realistic CSV/EVTX/PCAP file. For grids that
+    // exceed these bounds the key still works — it just produces false
+    // cache hits across distant row/col pairs, which is no worse than the
+    // previous (always-wrong-across-columns) behaviour.
+    const cacheBase = colIdx * 0x100000; // colIdx << 20
     for (let i = 0; i < this.store.rowCount; i++) {
       const raw = srcValues ? srcValues[i] : this._cellAt(i, colIdx);
       if (!raw) { values[i] = ''; continue; }
-      let parsed = this._jsonCache.get(i);
+      const cacheKey = cacheBase + i;
+      let parsed = this._jsonCache.get(cacheKey);
       if (parsed === undefined) {
         try { parsed = JSON.parse(raw); } catch (_) { parsed = null; }
-        this._jsonCache.set(i, parsed);
+        this._jsonCache.set(cacheKey, parsed);
       }
       if (parsed == null || typeof parsed !== 'object') { values[i] = ''; continue; }
       const v = this._jsonPathGetWithStar(parsed, path);

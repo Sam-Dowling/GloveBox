@@ -395,6 +395,11 @@ Object.assign(TimelineView.prototype, {
           cachedSrcValues = null;
           cachedSrcCol = -1;
         }
+        // Note: we do NOT clear _jsonCache between source-column groups.
+        // The cache is now keyed by (colIdx << 20 | rowIdx) so entries
+        // from the finished group stay valid for any later non-pump caller
+        // (Extract dialog, JSON-tree pick) that targets the same column.
+        // Cross-column collisions are impossible with the compound key.
 
         // Yield between proposals — each `_applyAutoProposal` is itself
         // an O(rows) hot loop and will register as a LongTask on big
