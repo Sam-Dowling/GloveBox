@@ -336,7 +336,21 @@ class SqliteRenderer {
       // TEXT: length = (serialType - 13) / 2
       const len = (serialType - 13) / 2;
       if (ctx.pos + len > bytes.length) { ctx.pos += len; return ''; }
-      const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(ctx.pos, ctx.pos + len));
+      // Reuse a single lazy-initialised decoder — `_readValue` runs once
+      // per cell, so instantiating `new TextDecoder(...)` here fires
+      // thousands of times on a 20 k-row history DB (each row has
+      // `url` + `title` + `term` + `target_path` as TEXT serial types).
+      // `TextDecoder.decode()` with the default `stream: false` is
+      // stateless and safe to reuse across concurrent calls within the
+      // same sync `_parseDb` pass. The handle is kept on the instance,
+      // not class-static, so two concurrent parses (e.g. a reentrant
+      // analyse of an inner sqlite from an outer archive) don't trample
+      // each other's options; construction is amortised across the
+      // whole parse.
+      if (!this._utf8Decoder) {
+        this._utf8Decoder = new TextDecoder('utf-8', { fatal: false });
+      }
+      const text = this._utf8Decoder.decode(bytes.subarray(ctx.pos, ctx.pos + len));
       ctx.pos += len;
       return text;
     }
