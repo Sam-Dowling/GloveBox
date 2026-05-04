@@ -329,3 +329,71 @@ test('_findIOCMatches short-circuits verbatim fallback when ref._fromReassembly'
   );
 });
 
+// ── Bug fix: per-finding preview rejects binary/marshal synopsis envelopes ─
+
+const SIDEBAR_SRC = fs.readFileSync(path.join(REPO_ROOT, 'src/app/app-sidebar.js'), 'utf8');
+
+test('_extractTextPreview guards _deobfuscatedText through EncodedReassembler._isPlaceholderStub', () => {
+  // Decoder-emitted synopsis envelopes like
+  //   `<binary 45B (likely marshal/pickle): 789c2b4a…>`
+  // (see src/decoders/python-obfuscation.js:177,192 and
+  // src/decoders/php-obfuscation.js:131,143) are analyst breadcrumbs for
+  // non-printable payloads — they are NOT the decoded text. The
+  // reassembler already rejects them via `_isPlaceholderStub` when
+  // picking the deepest text node; the sidebar's per-finding preview
+  // must reject them too, otherwise the green-tier `.enc-decoded-preview`
+  // block renders the envelope verbatim.
+  //
+  // We pin the source-level wiring rather than the DOM output because
+  // `app-sidebar.js` is a mixin file that can't be loaded in isolation.
+  // The pin has two halves:
+  //   1. a local `_isPlaceholderStub` resolves off
+  //      `window.EncodedReassembler._isPlaceholderStub` (single source of
+  //      truth with the reassembler);
+  //   2. `_extractTextPreview` gates its `_deobfuscatedText` return on
+  //      `!_isPlaceholderStub(f._deobfuscatedText)` so stub envelopes
+  //      fall through to the `decodedBytes` branch.
+  assert.match(
+    SIDEBAR_SRC,
+    /const\s+_isPlaceholderStub\s*=\s*\(\s*window\.EncodedReassembler[\s\S]{0,80}?window\.EncodedReassembler\._isPlaceholderStub\s*\)/,
+    '_extractTextPreview must resolve _isPlaceholderStub off window.EncodedReassembler'
+  );
+  const fn = SIDEBAR_SRC.match(/const\s+_extractTextPreview\s*=\s*\([^)]*\)\s*=>\s*\{[\s\S]*?\n\s{6}\};/);
+  assert.ok(fn, '_extractTextPreview helper must be locatable in app-sidebar.js');
+  assert.match(
+    fn[0],
+    /_deobfuscatedText[\s\S]*?!\s*_isPlaceholderStub\s*\(\s*f\._deobfuscatedText\s*\)/,
+    '_extractTextPreview must gate its _deobfuscatedText return on !_isPlaceholderStub(...)'
+  );
+});
+
+// ── Bug fix: analyze() remaps stripped-text _sourceOffset/_sourceLength ───
+
+const REASSEMBLER_SRC = fs.readFileSync(path.join(REPO_ROOT, 'src/encoded-reassembler.js'), 'utf8');
+
+test('analyze() rewrites stripped-text _sourceOffset via mapStrippedToSource', () => {
+  // Before the fix, `analyze()` branched on `typeof row.offset === 'number'`
+  // — a field `extractInterestingStringsCore` never populates. The core
+  // stamps `_sourceOffset`/`_sourceLength` as STRIPPED-text coordinates;
+  // without the remap those leaked through as "source" offsets, so the
+  // sidebar click-to-focus highlighted unrelated byte ranges. The fix
+  // must read the stripped offset from either `row.offset` or
+  // `row._sourceOffset`, feed it to `mapStrippedToSource`, and rewrite
+  // (or clear) the pair on the row.
+  assert.match(
+    REASSEMBLER_SRC,
+    /const\s+strippedOff\s*=\s*\(typeof\s+row\.offset\s*===\s*['"]number['"]\)\s*\?\s*row\.offset\s*:\s*\(typeof\s+row\._sourceOffset\s*===\s*['"]number['"]\s*\?\s*row\._sourceOffset\s*:\s*null\)/,
+    'analyze() must read the stripped offset from row.offset OR row._sourceOffset'
+  );
+  assert.match(
+    REASSEMBLER_SRC,
+    /mapStrippedToSource\s*\(\s*reconstructed\s*,\s*strippedOff\s*\)/,
+    'analyze() must remap the stripped offset through mapStrippedToSource'
+  );
+  assert.match(
+    REASSEMBLER_SRC,
+    /delete\s+row\._sourceOffset[\s\S]{0,80}?delete\s+row\._sourceLength/,
+    'analyze() must clear _sourceOffset/_sourceLength on mapping failure (never leak stale stripped-text offsets)'
+  );
+});
+

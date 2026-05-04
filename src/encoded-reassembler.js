@@ -650,17 +650,58 @@
           // for reassembly-derived rows (see app-sidebar-focus.js) so
           // an out-of-file decoded value can't land on an unrelated
           // occurrence of the same literal in plaintext.
-          if (typeof row.offset === 'number') {
-            const mapped = mapStrippedToSource(reconstructed, row.offset);
+          //
+          // `extractInterestingStringsCore` already writes `_sourceOffset`
+          // / `_sourceLength` onto every row — but those values index into
+          // the STRIPPED text we just fed it (the input buffer's own
+          // coordinates), NOT into the original source file. If we leave
+          // them as-is, the sidebar's click-to-focus highlights whatever
+          // byte range of `_rawText` happens to live at that stripped
+          // offset — which for IOCs inside spliced (decoded) spans will
+          // point at an unrelated sentinel-stripped neighbour instead of
+          // the encoded source region that actually produced the IOC.
+          // We therefore ALWAYS rewrite the pair through
+          // `mapStrippedToSource`, using the stripped-text offset
+          // (preferring the canonical `offset` field, falling back to
+          // the already-stamped `_sourceOffset` when the core used the
+          // `sourceInfo` path instead). Spliced entries return the
+          // encoded span's source offset + length; verbatim entries
+          // return the exact source offset + row's own length (prefer
+          // the `length` field, fall back to the core-stamped
+          // `_sourceLength` — which is the stripped-match length, which
+          // for non-splice rows equals the source-match length).
+          //
+          // When the mapping fails (offset out of range / no sourceMap
+          // entry match), we CLEAR the pair rather than leave the stale
+          // stripped-text value in place. A null pointer is safer than
+          // a misleading one — `_findIOCMatches` will then short-circuit
+          // on `_fromReassembly` and the DOM-textwalker fallback will at
+          // least search for the IOC value itself via `_highlightText`.
+          const strippedOff = (typeof row.offset === 'number')
+            ? row.offset
+            : (typeof row._sourceOffset === 'number' ? row._sourceOffset : null);
+          const strippedLen = (typeof row.length === 'number' && row.length > 0)
+            ? row.length
+            : (typeof row._sourceLength === 'number' && row._sourceLength > 0
+              ? row._sourceLength
+              : 0);
+          if (strippedOff !== null) {
+            const mapped = mapStrippedToSource(reconstructed, strippedOff);
             if (mapped) {
               row._sourceOffset = mapped.sourceOffset;
               // For splice entries use the encoded-span length; for
-              // verbatim regions use the row's own length (single
-              // character when unknown).
+              // verbatim regions use the row's own match length (so the
+              // highlight covers the exact IOC text, not a single byte).
               row._sourceLength = mapped.isSplice
                 ? mapped.sourceLength
-                : (typeof row.length === 'number' && row.length > 0 ? row.length : 1);
+                : (strippedLen > 0 ? strippedLen : 1);
+            } else {
+              delete row._sourceOffset;
+              delete row._sourceLength;
             }
+          } else {
+            delete row._sourceOffset;
+            delete row._sourceLength;
           }
           row._highlightText = row.url || row.value;
           result.novelIocs.push(row);
@@ -734,6 +775,11 @@
     // Exposed for the `_decodeAsText` regression tests.
     _decodeAsText,
     _pickDeepestTextNode,
+    // Exposed so the sidebar's per-finding preview can reject the same
+    // synopsis envelopes (`<binary …B: …>`, `<marshal payload …>`) the
+    // reassembler already rejects when picking the deepest text node.
+    // Single source of truth — keeps the two sites in lockstep.
+    _isPlaceholderStub,
   };
 
 })();

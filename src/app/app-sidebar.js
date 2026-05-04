@@ -1144,8 +1144,23 @@ extendApp({
       // hovering the card already highlights the encoded source in the view).
       // Shared helper so the "deepest layer" block below can reuse the same
       // UTF-8-safe text-extraction rules.
+      //
+      // `_deobfuscatedText` may be a decoder-emitted SYNOPSIS envelope like
+      //   `<binary 45B (likely marshal/pickle): 789c2b4a2dce…>`
+      // (see `python-obfuscation.js:177,192` and `php-obfuscation.js:131,143`)
+      // — the decoder's analyst-breadcrumb for non-printable byte payloads.
+      // We route such envelopes through the same `_isPlaceholderStub` guard
+      // the reassembler uses in `_pickDeepestTextNode`, so the green tier
+      // stays clean and we fall through to `decodedBytes` (which, for the
+      // marshal/pickle case, will also return null via the binary-heuristic
+      // branch below — correctly yielding no green preview at all).
+      const _isPlaceholderStub = (window.EncodedReassembler
+        && window.EncodedReassembler._isPlaceholderStub)
+        || (() => false);
       const _extractTextPreview = (f) => {
-        if (f._deobfuscatedText) return f._deobfuscatedText;
+        if (f._deobfuscatedText && !_isPlaceholderStub(f._deobfuscatedText)) {
+          return f._deobfuscatedText;
+        }
         if (f.decodedBytes && f.decodedBytes.length > 0) {
           try {
             const t = new TextDecoder('utf-8', { fatal: true }).decode(f.decodedBytes.slice(0, 800));
