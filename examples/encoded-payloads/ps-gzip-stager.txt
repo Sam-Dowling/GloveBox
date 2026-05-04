@@ -1,0 +1,9 @@
+# === Loupe Test File: PowerShell Gzip Stager ===
+# HARMLESS test file exercising the Phase D Gzip-stager decoder.
+# The base64 below decompresses to a benign Write-Host call.
+
+$bytes = [Convert]::FromBase64String("H4sIAAAAAAAAA/PMK8vPTtV1rSgoSi0uzszPU1APL8osSdX1yC8uUchIzcnJV0grys9VSK/KLFAoLklMTy1SBwCihpSsNQAAAA==")
+$ms    = New-Object IO.MemoryStream(,$bytes)
+$gz    = New-Object IO.Compression.GzipStream($ms, [IO.Compression.CompressionMode]::Decompress)
+$sr    = New-Object IO.StreamReader($gz)
+iex $sr.ReadToEnd()
