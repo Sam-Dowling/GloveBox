@@ -3,11 +3,14 @@
 // targets/obfuscation/bash-obfuscation.fuzz.js
 //
 // Fuzz `EncodedContentDetector.prototype._findBashObfuscationCandidates`
-// (src/decoders/bash-obfuscation.js). Covers 15 technique branches across
+// (src/decoders/bash-obfuscation.js). Covers 26 technique branches across
 // B1 (variable expansion), B2 (ANSI-C quoting), B3 (printf chains),
 // B4 (pipe-to-shell — live fetch + base64/xxd variants), B5 (eval
-// $(…) command substitution), B6 (IFS / brace fragmentation), plus the
-// /dev/tcp reverse-shell structural recognition.
+// $(…) command substitution), B6 (IFS / brace fragmentation), the
+// /dev/tcp reverse-shell structural recognition, plus Phase-2 fills:
+// B7 (echo -e hex/octal), B8 (${!pointer} indirect expansion), B9
+// (awk/perl/python{,3}/ruby/node/php inline executors), and B10
+// (tr rot13 here-string cipher).
 //
 // Loads cmd-obfuscation.js because bash-obfuscation.js consumes
 // `_processCommandObfuscation` from that module (build.py load order).

