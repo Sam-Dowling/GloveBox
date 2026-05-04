@@ -573,6 +573,16 @@ in the same PR.**
 - `b088604` — Python `''.join(chr(x) for x in [N,N,…])` generator form
   + `[chr(i) for i in [N,N,…]]` list-comp form — P4 chr-join only
   matched the adjacency form before.
+- `be98aa5` — `EncodedReassembler.mapReconToSource` splice-region width
+  used `sourceLength` (encoded width) instead of `strippedLength`
+  (decoded-body width); verbose obfuscation like `p^o^w^e^r^s^h^e^l^l`
+  → `powershell` produced a phantom tail past the real splice end that
+  swallowed subsequent sourceMap entries' recon offsets, returning the
+  wrong `sourceOffset`. Production-unused export (only `mapStrippedToSource`
+  is consumed by `src/app/app-load.js`), so never user-visible — caught
+  on first replay of the new `obfuscation/reassembly` fuzz target with
+  a multi-technique pair-concat seed. Promoted to
+  `tests/unit/obfuscation-reassembly-fuzz-regress-a7b7de6aa63cf197.test.js`.
 
 ### IOC plumbing
 - `dfc594c` — replace bespoke type literals with `IOC.*` constants
