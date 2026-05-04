@@ -1250,6 +1250,70 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
 
+    // ── PowerShell -EncodedCommand / -enc / -ec with $variable argument ──
+    //
+    // Phase B: the literal-argument branch above covers `powershell -enc
+    // <b64>` only; real droppers often store the base64 in a $var first
+    // (`$b = 'ZgBvAG8='; powershell -enc $b`). We mirror the literal
+    // branch but first consult the ps-mini symbol table (built once per
+    // scan in `_buildPsSymbolTable`) to resolve the $var.
+    const encCmdVarRe = /(?:^|[\s;|&'"])(?:-|\u2013)(?:EncodedCommand|EncodedArgument|Enc|Ec)\s+(\$\{?[A-Za-z_][\w]*\}?|\$env:[A-Za-z_][\w]*|\$\{env:[A-Za-z_][\w]*\})(?=\s|$|[;\r\n'"])/gi;
+    let encVarM;
+    while ((encVarM = encCmdVarRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const varToken = encVarM[1];
+      let b64;
+      if (typeof this._buildPsSymbolTable === 'function') {
+        const table = this._buildPsSymbolTable(text);
+        b64 = this._psResolveArgToken(varToken, table);
+      }
+      if (typeof b64 !== 'string') continue;
+      b64 = b64.replace(/\s+/g, '');
+      if (b64.length < 8 || (b64.length % 4) !== 0) continue;
+      if (!/^[A-Za-z0-9+/=]+$/.test(b64)) continue;
+      let bytes;
+      try {
+        if (typeof atob === 'function') {
+          const bin = atob(b64);
+          bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+        } else {
+          bytes = new Uint8Array(Buffer.from(b64, 'base64'));
+        }
+      } catch (_) { continue; }
+      if (!bytes || bytes.length < 4) continue;
+      let decoded = null;
+      if (typeof this._tryDecodeUTF16LE === 'function') {
+        decoded = this._tryDecodeUTF16LE(bytes);
+      }
+      if (!decoded && typeof this._tryDecodeUTF8 === 'function') {
+        decoded = this._tryDecodeUTF8(bytes);
+      }
+      if (!decoded || decoded.length < 4) continue;
+      let printable = 0;
+      for (let i = 0; i < Math.min(decoded.length, 256); i++) {
+        const cc = decoded.charCodeAt(i);
+        if ((cc >= 0x20 && cc < 0x7f) || cc === 0x09 || cc === 0x0a || cc === 0x0d) printable++;
+      }
+      const sampleLen = Math.min(decoded.length, 256);
+      if (printable / Math.max(1, sampleLen) < 0.8) continue;
+      if (!this._bruteforce && !_EXEC_INTENT_RE.test(decoded)) continue;
+      const clipped = _clipDeobfToAmpBudget(decoded, encVarM[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell -EncodedCommand (var)',
+        raw: encVarM[0],
+        offset: encVarM.index,
+        length: encVarM[0].length,
+        deobfuscated: clipped,
+        _patternIocs: [{
+          url: 'powershell.exe -EncodedCommand $var \u2014 base64 argument stored in variable (T1059.001 / T1027) variable-backed PowerShell stager',
+          severity: 'high',
+        }],
+      });
+    }
+
     // ── PowerShell [char]N + [char]N + [char]N char-array reassembly ──
     //
     // Empire / Nishang / PowerSploit stubs routinely break a keyword
@@ -1365,6 +1429,80 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
 
+    // ── [Convert]::FromBase64String($var) + Encoding.GetString ──
+    //
+    // Phase B companion to the literal-string branch above. Real samples
+    // store the base64 in a $var then thread it through the encoding
+    // wrapper:
+    //
+    //   $b = 'AAAA…'
+    //   [System.Text.Encoding]::UTF8.GetString(
+    //     [System.Convert]::FromBase64String($b))
+    //
+    // Same shape as the literal regex with the quoted arg replaced by
+    // a $-prefixed variable reference.
+    const convFromB64VarRe = /\[\s*(?:System\.)?(?:Text\.)?Encoding\s*\]\s*::\s*(UTF8|Unicode|ASCII|UTF7|BigEndianUnicode)\s*\.\s*GetString\s*\(\s*\[\s*(?:System\.)?Convert\s*\]\s*::\s*FromBase64String\s*\(\s*(\$\{?[A-Za-z_][\w]*\}?|\$env:[A-Za-z_][\w]*|\$\{env:[A-Za-z_][\w]*\})\s*\)\s*\)/gi;
+    let convVarM;
+    while ((convVarM = convFromB64VarRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const enc = (convVarM[1] || '').toLowerCase();
+      const varToken = convVarM[2];
+      let b64;
+      if (typeof this._buildPsSymbolTable === 'function') {
+        const table = this._buildPsSymbolTable(text);
+        b64 = this._psResolveArgToken(varToken, table);
+      }
+      if (typeof b64 !== 'string') continue;
+      b64 = b64.replace(/\s+/g, '');
+      if (b64.length < 8 || (b64.length % 4) !== 0) continue;
+      if (!/^[A-Za-z0-9+/=]+$/.test(b64)) continue;
+      let bytes;
+      try {
+        if (typeof atob === 'function') {
+          const bin = atob(b64);
+          bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+        } else {
+          bytes = new Uint8Array(Buffer.from(b64, 'base64'));
+        }
+      } catch (_) { continue; }
+      if (!bytes || bytes.length < 2) continue;
+      let decoded = null;
+      try {
+        if (enc === 'unicode' || enc === 'bigendianunicode') {
+          const label = enc === 'bigendianunicode' ? 'utf-16be' : 'utf-16le';
+          decoded = new TextDecoder(label, { fatal: false }).decode(bytes);
+        } else if (enc === 'utf7') {
+          decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        } else {
+          decoded = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+        }
+      } catch (_) { continue; }
+      if (!decoded || decoded.length < 3) continue;
+      let printable = 0;
+      const sampleLen = Math.min(decoded.length, 256);
+      for (let i = 0; i < sampleLen; i++) {
+        const cc = decoded.charCodeAt(i);
+        if ((cc >= 0x20 && cc < 0x7f) || cc === 0x09 || cc === 0x0a || cc === 0x0d) printable++;
+      }
+      if (printable / Math.max(1, sampleLen) < 0.8) continue;
+      if (!this._bruteforce && !_EXEC_INTENT_RE.test(decoded)) continue;
+      const clipped = _clipDeobfToAmpBudget(decoded, convVarM[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: `PowerShell [Convert]::FromBase64String + ${enc.toUpperCase()}.GetString (var)`,
+        raw: convVarM[0],
+        offset: convVarM.index,
+        length: convVarM[0].length,
+        deobfuscated: clipped,
+        _patternIocs: [{
+          url: '[Convert]::FromBase64String($var) + Encoding.GetString \u2014 variable-backed base64 decode (T1140 Deobfuscate/Decode)',
+          severity: 'high',
+        }],
+      });
+    }
+
     // ── PowerShell -bxor inline-key payload decode ──
     //
     // BloodHound / SharpHound / Cobalt Strike often embed shellcode or
@@ -1467,6 +1605,43 @@ Object.assign(EncodedContentDetector.prototype, {
         deobfuscated: clipped,
         _patternIocs: [{
           url: '[scriptblock]::Create(\u2026).Invoke() \u2014 canonical iex replacement for AMSI bypass (T1059.001)',
+          severity: 'high',
+        }],
+      });
+    }
+
+    // ── [scriptblock]::Create($var) — variable-backed scriptblock body ──
+    //
+    // Phase B: the literal branch above explicitly defers `$var`-argument
+    // resolution to ps-mini-evaluator. That defer only fires on `&(…)`
+    // invocations though, so a ScriptBlock literal like
+    //   [scriptblock]::Create($sb).Invoke()
+    // was silently missed when $sb held the real body. Mirror the literal
+    // regex with a $-prefixed argument and resolve through the shared
+    // symbol table.
+    const sbCreateVarRe = /\[\s*(?:System\.Management\.Automation\.)?[Ss]cript[Bb]lock\s*\]\s*::\s*Create\s*\(\s*(\$\{?[A-Za-z_][\w]*\}?|\$env:[A-Za-z_][\w]*|\$\{env:[A-Za-z_][\w]*\})\s*\)\s*(?:\.\s*Invoke\s*\(\s*\))?/g;
+    let sbVarM;
+    while ((sbVarM = sbCreateVarRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const varToken = sbVarM[1];
+      let body;
+      if (typeof this._buildPsSymbolTable === 'function') {
+        const table = this._buildPsSymbolTable(text);
+        body = this._psResolveArgToken(varToken, table);
+      }
+      if (typeof body !== 'string' || body.length < 3) continue;
+      if (!this._bruteforce && !_EXEC_INTENT_RE.test(body)) continue;
+      const clipped = _clipDeobfToAmpBudget(body, sbVarM[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell [scriptblock]::Create (var)',
+        raw: sbVarM[0],
+        offset: sbVarM.index,
+        length: sbVarM[0].length,
+        deobfuscated: clipped,
+        _patternIocs: [{
+          url: '[scriptblock]::Create($var).Invoke() \u2014 variable-held script body invocation (T1059.001 / T1140) variable-backed iex replacement',
           severity: 'high',
         }],
       });

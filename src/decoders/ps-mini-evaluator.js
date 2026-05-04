@@ -82,53 +82,51 @@ const KNOWN_PS_AUTO_VARS = Object.freeze({
 Object.assign(EncodedContentDetector.prototype, {
 
   /**
-   * Find PowerShell `&(<expr>) <args>` invocations whose `<expr>` resolves
-   * via a one-pass symbol table. Emits `cmd-obfuscation` candidates that
-   * `_processCommandObfuscation` promotes to findings.
+   * Build (or reuse from a single-entry cache) the PowerShell symbol
+   * table for `text`. Returns `{ vars, envVars, aliases }` Maps. Invoked
+   * lazily by `_findPsVariableResolutionCandidates` AND by cmd-obfuscation
+   * sink branches that need to resolve variable-backed arguments (Phase B
+   * — `-EncodedCommand $b64`, `[Convert]::FromBase64String($x)`,
+   * `[scriptblock]::Create($s)`).
+   *
+   * Cache key is the text pointer itself (JS strings are value-compared
+   * for the ===; the identity heuristic is safe because both callers pass
+   * the same `text` argument from the same scan). The cache holds only
+   * the latest scan's table; concurrent scans on different EncodedContent
+   * Detector instances don't share cache state (the cache lives on
+   * `this`).
    */
-  _findPsVariableResolutionCandidates(text, context) {
-    if (!text || text.length < 20) return [];
-    // Fast bail — `&(` invocation form is the only shape we care about; no
-    // point statement-tokenising scripts that don't contain it.
-    if (text.indexOf('&(') === -1 && text.indexOf('& (') === -1) return [];
+  _buildPsSymbolTable(text) {
+    if (this._psSymbolTableCache
+        && this._psSymbolTableCache.text === text) {
+      return this._psSymbolTableCache.table;
+    }
+    const vars = new Map();
+    const envVars = new Map();
+    const aliases = new Map();
+    if (!text || typeof text !== 'string' || text.length === 0) {
+      const empty = { vars, envVars, aliases };
+      this._psSymbolTableCache = { text, table: empty };
+      return empty;
+    }
 
-    const candidates = [];
     let stmts;
     try {
       stmts = this._psSplitStatements(text);
     } catch (_) {
-      return [];
+      const empty = { vars, envVars, aliases };
+      this._psSymbolTableCache = { text, table: empty };
+      return empty;
     }
-    if (!stmts || stmts.length === 0) return [];
-
-    // ── Pass 1..N: build a symbol table from the simplest assignment forms.
-    // Two namespaces:
-    //   vars      — keyed on the variable name without the `$` prefix
-    //   envVars   — keyed on the env var name (right of `$env:`)
-    //   aliases   — keyed on the alias name (literal-target sal/Set-Alias
-    //               /New-Alias assignments)
-    // Each entry is `{ kind: 'string'|'array'|'hash', value: … }`.
-    //
-    // Bounded fixed-point: on the first pass, every unresolved assignment
-    // is queued for retry. On subsequent passes, only queued entries are
-    // re-attempted. Early-exit when no new bindings resolved in a pass.
-    const vars = new Map();
-    const envVars = new Map();
-    const aliases = new Map();
+    if (!stmts || stmts.length === 0) {
+      const empty = { vars, envVars, aliases };
+      this._psSymbolTableCache = { text, table: empty };
+      return empty;
+    }
 
     const stmtCap = 200;
     const rhsCap  = 400;
-
-    // Pending assignments queue — each entry is `{ kind, name, rhs, idx }`.
-    // `kind` is 'var' | 'env' | 'alias'. `idx` is the statement index so
-    // final-pass drops don't clobber a later successful write. Filled
-    // during the trial pass so retries can skip everything that already
-    // resolved.
     let pending = [];
-    // Last-resolved statement index per (namespace:name). If a later
-    // successful write has already landed, a final-pass failure on an
-    // earlier statement must NOT call `.delete()` — that would wipe the
-    // newer value.
     const lastResolvedIdx = new Map();
     const _mark = (ns, name, idx) => lastResolvedIdx.set(ns + ':' + name, idx);
     const _lastIdx = (ns, name) => {
@@ -140,69 +138,39 @@ Object.assign(EncodedContentDetector.prototype, {
       const stmt = stmts[si].trim();
       if (!stmt) continue;
 
-      // ── alias assignment: sal / Set-Alias / New-Alias <name> <target> ──
-      //
-      // The three aliasing cmdlets (+ the `sal` built-in alias) all share
-      // the shape `<verb> <name> <target>` where target may be a literal
-      // string / a $var reference. We only accept literal-target forms
-      // here (per Phase A scope); variable-target forms fall through to
-      // the plain assignment path when they're stored as `$x = 'target';
-      // sal y $x` — which resolves $x first, then sets y to the resolved
-      // string on the alias track.
       const aliasM = /^(?:sal|Set-Alias|New-Alias)\s+(?:-Name\s+)?['"]?([A-Za-z_][\w]*)['"]?\s+(?:-Value\s+)?([\s\S]+)$/i.exec(stmt);
       if (aliasM) {
-        const aname = aliasM[1];
-        const rhs   = aliasM[2].slice(0, rhsCap);
-        pending.push({ kind: 'alias', name: aname, rhs, idx: si });
+        pending.push({ kind: 'alias', name: aliasM[1], rhs: aliasM[2].slice(0, rhsCap), idx: si });
         continue;
       }
-
-      // ── env-var assignment: $env:Y = '…'  /  ${env:Y} = '…' ──
       const envM = /^\$(?:env:|\{env:)([A-Za-z_][\w]*)\}?\s*=\s*([\s\S]+)$/i.exec(stmt);
       if (envM) {
-        const name = envM[1];
-        const rhs  = envM[2].slice(0, rhsCap);
-        pending.push({ kind: 'env', name, rhs, idx: si });
+        pending.push({ kind: 'env', name: envM[1], rhs: envM[2].slice(0, rhsCap), idx: si });
         continue;
       }
-
-      // ── plain assignment: $x = …  /  ${x} = … ──
-      //
-      // `[\s\S]+` (not `.+`) so multi-line RHS — notably here-strings
-      // like `$x = @'\n…\n'@` — is captured in full.
       const asnM = /^\$\{?([A-Za-z_][\w]*)\}?\s*=\s*([\s\S]+)$/.exec(stmt);
-      if (!asnM) continue;
-      const name = asnM[1];
-      const rhs  = asnM[2].slice(0, rhsCap);
-      pending.push({ kind: 'var', name, rhs, idx: si });
+      if (asnM) {
+        pending.push({ kind: 'var', name: asnM[1], rhs: asnM[2].slice(0, rhsCap), idx: si });
+      }
     }
 
-    // Resolve pending queue with bounded fixed-point iteration.
+    // _psAliasScratch must be set BEFORE _psParseStringLiteral fires
+    // because the resolver consults it via _psResolveVarName / _psInterpolate.
+    this._psAliasScratch = aliases;
+
     for (let pass = 0; pass < _PS_MAX_FIXED_POINT_PASSES; pass++) {
       const nextPending = [];
       let resolvedThisPass = 0;
       for (const p of pending) {
         if (p.kind === 'var') {
-          // Try, in order: hashtable → array → string.
           const hash = this._psParseHashtableLiteral(p.rhs);
           if (hash) { vars.set(p.name, { kind: 'hash', value: hash }); _mark('v', p.name, p.idx); resolvedThisPass++; continue; }
-
           const arr = this._psParseArrayLiteral(p.rhs, vars, envVars);
           if (arr) { vars.set(p.name, { kind: 'array', value: arr }); _mark('v', p.name, p.idx); resolvedThisPass++; continue; }
-
           const str = this._psParseStringLiteral(p.rhs, vars, envVars);
           if (str !== null) { vars.set(p.name, { kind: 'string', value: str }); _mark('v', p.name, p.idx); resolvedThisPass++; continue; }
-
-          // Couldn't resolve — queue for the next pass so later passes
-          // benefit from newly-resolved bindings. On the final pass we
-          // only drop the binding when THIS statement is the latest
-          // touch of the variable: otherwise a later successful write
-          // would be wiped out by an earlier unresolvable one.
-          if (pass < _PS_MAX_FIXED_POINT_PASSES - 1) {
-            nextPending.push(p);
-          } else if (_lastIdx('v', p.name) < p.idx) {
-            vars.delete(p.name);
-          }
+          if (pass < _PS_MAX_FIXED_POINT_PASSES - 1) nextPending.push(p);
+          else if (_lastIdx('v', p.name) < p.idx) vars.delete(p.name);
         } else if (p.kind === 'env') {
           const lit = this._psParseStringLiteral(p.rhs, vars, envVars);
           if (lit !== null) {
@@ -215,9 +183,6 @@ Object.assign(EncodedContentDetector.prototype, {
             envVars.delete(p.name);
           }
         } else if (p.kind === 'alias') {
-          // Literal-target aliases only. If the RHS is a bare $var it may
-          // resolve on a later pass after the upstream assignment lands;
-          // we honour that via the same fixed-point retry loop.
           const lit = this._psParseStringLiteral(p.rhs, vars, envVars);
           if (typeof lit === 'string' && lit.length > 0 && lit.length < 120) {
             aliases.set(p.name.toLowerCase(), { kind: 'string', value: lit });
@@ -229,21 +194,88 @@ Object.assign(EncodedContentDetector.prototype, {
         }
       }
       pending = nextPending;
-      // Zero-delta early exit: nothing resolved this pass and nothing
-      // was left in the queue → fixed-point reached.
       if (resolvedThisPass === 0) break;
       if (pending.length === 0) break;
     }
 
-    // Stash the resolved aliases onto the detector instance so the
-    // companion `_psResolvePrimary` (and, in Phase B, the cmd-obfuscation
-    // sink helpers) can consult them without another plumbing parameter.
-    // Namespace-keyed so the two finders don't cross-contaminate.
+    const table = { vars, envVars, aliases };
+    this._psSymbolTableCache = { text, table };
+    return table;
+  },
+
+  /**
+   * Resolve a single argument token (`$name`, `${name}`, `$env:NAME`,
+   * `${env:NAME}`, `'literal'`, `"literal"`) against a symbol table
+   * returned by `_buildPsSymbolTable`. Used by cmd-obfuscation's variable-
+   * backed sink branches (Phase B) to recover a base64 / script body
+   * argument that is stored in a $var rather than inlined.
+   *
+   * Returns a string (possibly empty) on success, or `null` when the
+   * token is a bare `$x` that isn't in the table, or when the token
+   * shape isn't something we statically recognise.
+   */
+  _psResolveArgToken(token, table) {
+    if (typeof token !== 'string') return null;
+    const t = token.trim();
+    if (!t) return null;
+    if (!table) return null;
+    const vars = table.vars || new Map();
+    const envVars = table.envVars || new Map();
+    this._psAliasScratch = table.aliases;
+    // Literal: delegate to the full resolver so quote-pair chains /
+    // interpolation / concat work uniformly.
+    if (t[0] === "'" || t[0] === '"' || t[0] === '(' || t[0] === '@') {
+      const v = this._psResolveExpression(t, vars, envVars);
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v)) return v.join('');
+      return null;
+    }
+    // $name / ${name} / $env:NAME / ${env:NAME}, possibly with accessors.
+    if (t[0] === '$') {
+      const v = this._psResolvePrimary(t, vars, envVars);
+      if (typeof v === 'string') return v;
+      if (Array.isArray(v)) return v.join('');
+      return null;
+    }
+    return null;
+  },
+
+  /**
+   * Find PowerShell `&(<expr>) <args>` invocations whose `<expr>` resolves
+   * via a one-pass symbol table. Emits `cmd-obfuscation` candidates that
+   * `_processCommandObfuscation` promotes to findings.
+   */
+  _findPsVariableResolutionCandidates(text, context) {
+    if (!text || text.length < 20) return [];
+    // Fast bail: both the `&(…)` paren form and the paren-less
+    // `& $x` / `iex $x` / `. $x` / `Invoke-Expression $x` / `Invoke-Command
+    // -ScriptBlock $sb` forms must appear for this finder to do useful
+    // work. Any occurrence of one of those markers is a cheap pre-filter.
+    const hasParenForm = text.indexOf('&(') !== -1 || text.indexOf('& (') !== -1;
+    // The paren-less filter matches the invocation keyword anywhere that
+    // is followed (possibly after a `-ScriptBlock`-style named flag) by a
+    // `$` within 40 chars. Cheap but permissive enough that Phase B
+    // variations (`Invoke-Command -ScriptBlock $sb`) don't short-circuit.
+    //
+    // Word-boundary caveat: `\.` / `&` are non-word chars, so `\b` after
+    // them fails when the next char is whitespace. Use a non-capturing
+    // `(?=\s)` lookahead for the symbol verbs and `\b` only for the
+    // alphabetic verbs that actually need it (`iex`, `Invoke-*`).
+    const hasParenlessForm = /(?:^|[\s;&|(])(?:\.(?=\s)|&(?=\s)|iex\b|Invoke-Expression\b|Invoke-Command\b)[^\r\n;|&]{0,40}\$/i.test(text);
+    if (!hasParenForm && !hasParenlessForm) return [];
+
+    const candidates = [];
+    const table = this._buildPsSymbolTable(text);
+    const { vars, envVars, aliases } = table;
+    if (!vars) return [];
+    // Make the alias scratch visible to _psResolvePrimary / _psInterpolate
+    // for this scan.
     this._psAliasScratch = aliases;
 
-    // ── Final pass: scan for `&(<expr>) <args>` invocations. ──
+    // ── Paren form: scan for `&(<expr>) <args>` invocations. ──
     // The `<expr>` runs to a balanced close-paren; `<args>` is the rest of
     // the current statement, evaluated piecewise.
+    const _RHS_CAP = 400;
     const invokeRe = /&\s*\(/g;
     let im;
     while ((im = invokeRe.exec(text)) !== null) {
@@ -252,7 +284,7 @@ Object.assign(EncodedContentDetector.prototype, {
 
       const openParen = im.index + im[0].length - 1; // position of `(`
       const closeParen = this._psFindMatchingParen(text, openParen);
-      if (closeParen < 0 || closeParen - openParen > rhsCap) continue;
+      if (closeParen < 0 || closeParen - openParen > _RHS_CAP) continue;
 
       const exprSrc = text.substring(openParen + 1, closeParen).trim();
       if (!exprSrc) continue;
@@ -301,6 +333,76 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: rawStart,
         length: rawEnd - rawStart,
         deobfuscated: clippedDeobf,
+      });
+    }
+
+    // ── Paren-less form: `& $x` / `. $x` / `iex $x` / `Invoke-Expression $x`
+    //                   / `Invoke-Command -ScriptBlock $sb` ──
+    //
+    // These are the most common variable-backed sink shapes today. The
+    // paren-form above only fires on `&($x)`; paren-less variants go
+    // through an independent regex locator that captures the invocation
+    // sink keyword + the first `$name` / `${name}` / `$env:NAME` argument.
+    //
+    // Gate: the resolved target must hit SENSITIVE_CMD_KEYWORDS OR
+    // _EXEC_INTENT_RE, to avoid firing on benign `& $build -v` style
+    // invocations. (Bruteforce mode drops the gate.)
+    const parenlessRe = /(?:^|[\s;&|(])(\.|&|iex|Invoke-Expression|Invoke-Command(?:\s+-ScriptBlock)?)\s+(\$\{?[A-Za-z_][\w]*\}?|\$env:[A-Za-z_][\w]*|\$\{env:[A-Za-z_][\w]*\})(\s+[^\r\n;|&]{0,200})?/gi;
+    let pm;
+    while ((pm = parenlessRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const verb = (pm[1] || '').trim();
+      const varToken = pm[2];
+      const argTail = (pm[3] || '').trim();
+
+      let resolvedCmd;
+      try {
+        resolvedCmd = this._psResolveArgToken(varToken, table);
+      } catch (_) { resolvedCmd = null; }
+      if (!resolvedCmd || resolvedCmd.length < 3) continue;
+
+      // Plausibility gate: the resolved target must look like an
+      // exec-intent keyword / LOLBin. Without this gate a `& $buildTool`
+      // in a benign MSBuild script fires.
+      if (!this._bruteforce
+          && !_EXEC_INTENT_RE.test(resolvedCmd)) {
+        continue;
+      }
+
+      let resolvedArgs = '';
+      if (argTail) {
+        try {
+          resolvedArgs = this._psResolveArgList(argTail, vars, envVars);
+        } catch (_) { resolvedArgs = argTail; }
+      }
+
+      // `verb` is the textual invocation keyword; we keep it in the
+      // deobfuscated output so the analyst sees exactly how the
+      // resolved target was dispatched (`& iex` vs `. iex` vs
+      // `Invoke-Expression iex`).
+      const deobf = (resolvedArgs
+        ? (verb + ' ' + resolvedCmd + ' ' + resolvedArgs)
+        : (verb + ' ' + resolvedCmd)).trim();
+      if (deobf.length < 3) continue;
+
+      // Raw span: from the verb start to the end of statement.
+      const verbStart = pm.index + pm[0].indexOf(verb);
+      const stmtEnd = this._psFindStatementEnd(text, verbStart);
+      const raw = text.substring(verbStart, stmtEnd).trim();
+      const clippedDeobf = _clipDeobfToAmpBudget(deobf, raw);
+
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell Variable Resolution (call-operator)',
+        raw,
+        offset: verbStart,
+        length: stmtEnd - verbStart,
+        deobfuscated: clippedDeobf,
+        _patternIocs: [{
+          url: 'PowerShell invocation of variable-held command name \u2014 T1059.001 (call-operator / iex / Invoke-Expression indirection)',
+          severity: 'high',
+        }],
       });
     }
 
