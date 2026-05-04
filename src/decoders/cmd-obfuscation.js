@@ -399,7 +399,7 @@ Object.assign(EncodedContentDetector.prototype, {
           const cleaned = _stripCarets(rawName).toLowerCase();
           const v = vars[cleaned];
           if (!v || typeof v.value !== 'string') continue;
-          const resolved = v.value;
+          let resolved = v.value;
           if (resolved.length < 3) continue;
           // Sensitivity gate — surface when the stored value is either
           // a known LOLBin / shell-launch token OR any executable-
@@ -409,6 +409,16 @@ Object.assign(EncodedContentDetector.prototype, {
           // hiding a program/script name across a `set` + `!…!` pair.
           const _EXE_SUFFIX = /\.(?:exe|dll|bat|cmd|vbs|ps1|hta|scr|pif|cpl)\b/i;
           if (!SENSITIVE_CMD_KEYWORDS.test(resolved) && !_EXE_SUFFIX.test(resolved)) continue;
+          // Amplification guard — same 32×-raw / 8 KiB cap the
+          // `!%X%!…!%Z%!` indirection branch above uses. A single
+          // `!abc!` reference (raw=5) to a `set abc=<long payload>`
+          // value can trivially exceed the fuzz-harness 64×-raw
+          // invariant; Jazzer found a raw=5 → deobf=507 blowup in
+          // the coverage-guided run that motivated this cap.
+          const _AMP_RATIO = 32;
+          const _ABS_CAP = 8 * 1024;
+          const _cap = Math.min(_ABS_CAP, _AMP_RATIO * Math.max(1, m[0].length));
+          if (resolved.length > _cap) resolved = resolved.slice(0, _cap);
           candidates.push({
             type: 'cmd-obfuscation',
             technique: 'CMD Delayed-Expansion Indirection',

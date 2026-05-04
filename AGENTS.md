@@ -559,6 +559,10 @@ in the same PR.**
   empty-arg format operator (`'{0}iex{1}' -f '',''`), standalone
   `%KNOWN_ENV:~N,M%` slicer, bare `%COMSPEC%` resolver, single-bang
   delayed-expansion under `setlocal enabledelayedexpansion`.
+- `<pending>` — `25f2e66` twin: the CMD single-bang `!VAR!` delayed-expansion
+  branch was missing the 32×-raw / 8 KiB amp cap its `!%X%!…!%Z%!` sibling
+  already had; Jazzer found raw=5 → deobf=507 (107×). Promoted to
+  `tests/unit/obfuscation-cmd-obfuscation-fuzz-regress-3b5994363eb12ea0.test.js`.
 - `0b37971` — BASH `${CMD:-default}` on unset var resolves to default;
   every other param-expansion op still requires populated `vars[name]`.
 - `0b37971` — BASH partial Variable Concatenation emits with placeholder
