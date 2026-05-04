@@ -1524,20 +1524,43 @@ Object.assign(EncodedContentDetector.prototype, {
     // through every element.
     const bxorArrRe = /@\s*\(\s*((?:0x[0-9a-fA-F]{1,2}|\d{1,3})(?:\s*,\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})){7,8191})\s*\)/g;
     const bxorKeyRe = /-b?xor\s*(0x[0-9a-fA-F]{1,2}|\d{1,3})/i;
+    // Variable-key form (Phase C): the key is stored in a $var —
+    // `$k = 0x42; @(…) | % { $_ -bxor $k }`. Pairs with ps-mini's
+    // _psResolveIntValue to decode the key value.
+    const bxorVarKeyRe = /-b?xor\s*(\$\{?[A-Za-z_][\w]*\}?|\$env:[A-Za-z_][\w]*|\$\{env:[A-Za-z_][\w]*\})/i;
     let bxorIterBudget = this.maxCandidatesPerType * 4; // ensure cheap scan bound even with early-continue
     while ((m = bxorArrRe.exec(text)) !== null && bxorIterBudget-- > 0) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       const arrEnd = m.index + m[0].length;
       const tailWindow = text.substring(arrEnd, Math.min(text.length, arrEnd + 200));
-      const keyM = bxorKeyRe.exec(tailWindow);
-      if (!keyM) continue;
-      const arrSrc = m[1];
-      const keySrc = keyM[1];
-      const key = keySrc.toLowerCase().startsWith('0x')
-        ? parseInt(keySrc, 16)
-        : parseInt(keySrc, 10);
+      let keyM = bxorKeyRe.exec(tailWindow);
+      let key = null;
+      let isVarKey = false;
+      if (keyM) {
+        const keySrc = keyM[1];
+        key = keySrc.toLowerCase().startsWith('0x')
+          ? parseInt(keySrc, 16)
+          : parseInt(keySrc, 10);
+      } else {
+        // Try the variable-key form; resolve through ps-mini's symbol
+        // table. Most real samples assign the key before the pipeline
+        // so the fixed-point resolve has already filled it in.
+        const varKeyM = bxorVarKeyRe.exec(tailWindow);
+        if (!varKeyM) continue;
+        keyM = varKeyM;
+        if (typeof this._buildPsSymbolTable === 'function'
+            && typeof this._psResolveIntValue === 'function') {
+          const table = this._buildPsSymbolTable(text);
+          const vars = table.vars || new Map();
+          const envVars = table.envVars || new Map();
+          this._psAliasScratch = table.aliases;
+          key = this._psResolveIntValue(varKeyM[1], vars, envVars);
+        }
+        isVarKey = true;
+      }
       if (!Number.isFinite(key) || key < 0 || key > 255) continue;
+      const arrSrc = m[1];
       const nums = arrSrc.split(/\s*,\s*/).map(t => {
         return t.toLowerCase().startsWith('0x') ? parseInt(t, 16) : parseInt(t, 10);
       });
@@ -1564,13 +1587,15 @@ Object.assign(EncodedContentDetector.prototype, {
       const clipped = _clipDeobfToAmpBudget(decoded, rawSpan);
       candidates.push({
         type: 'cmd-obfuscation',
-        technique: 'PowerShell -bxor Inline-Key Decode',
+        technique: isVarKey
+          ? 'PowerShell -bxor Inline-Key Decode (var-key)'
+          : 'PowerShell -bxor Inline-Key Decode',
         raw: rawSpan,
         offset: m.index,
         length: rawSpan.length,
         deobfuscated: clipped,
         _patternIocs: [{
-          url: `PowerShell inline XOR-decoded payload (key=0x${key.toString(16).padStart(2, '0')}, ${nums.length} bytes) \u2014 T1027.013 Encrypted/Encoded File`,
+          url: `PowerShell ${isVarKey ? 'variable-keyed' : 'inline'} XOR-decoded payload (key=0x${key.toString(16).padStart(2, '0')}, ${nums.length} bytes) \u2014 T1027.013 Encrypted/Encoded File`,
           severity: 'high',
         }],
       });

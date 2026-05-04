@@ -810,6 +810,86 @@ Object.assign(EncodedContentDetector.prototype, {
       }
     }
 
+    // ── [char](N)  /  [char](N+M)  /  [System.Char](N) ─────────────────
+    //
+    // Evaluates an integer expression (literal, bare var, or small
+    // arithmetic via _psResolveIntValue) and returns the single char.
+    // Distinct from the literal `[char]N + [char]N + …` reassembly
+    // regex in cmd-obfuscation.js — that branch only matches a flat
+    // add-chain of literal numbers, whereas this evaluates an inner
+    // expression so `[char](\$k + 1)`, `[char](0x49)`, and mixed
+    // evaluator/arithmetic forms resolve.
+    const charCastM = /^\[\s*(?:System\.)?[Cc]har\s*\]\s*\(\s*([\s\S]+?)\s*\)\s*$/.exec(src);
+    if (charCastM) {
+      const inner = charCastM[1];
+      const n = this._psResolveIntValue(inner, vars, envVars);
+      if (n !== null && n >= 0 && n <= 0x10ffff) {
+        return String.fromCodePoint(n);
+      }
+      return null;
+    }
+
+    // ── [char[]](arr)  — cast a numeric array to a char array ──────────
+    //
+    // Pairs with `-join ''` / `[string]::Join` downstream. We resolve
+    // the inner expression (which must be an int array or a range) and
+    // map every int to its char; the result is an array-kind value the
+    // caller's accessor chain / join can consume.
+    const charArrCastM = /^\[\s*(?:System\.)?[Cc]har\s*\[\s*\]\s*\]\s*\(\s*([\s\S]+?)\s*\)\s*$/.exec(src);
+    if (charArrCastM) {
+      const innerSrc = charArrCastM[1].trim();
+      // Try array-literal shape first (`N,M,P`) — the canonical form.
+      // If that fails, fall back to the general expression resolver
+      // (covers `$arr`, `(65..90)`, `[char[]]$otherVar`).
+      let inner = this._psParseArrayLiteral(innerSrc, vars, envVars);
+      if (!inner) inner = this._psResolveExpression(innerSrc, vars, envVars);
+      if (Array.isArray(inner)) {
+        const out = [];
+        for (const tok of inner) {
+          if (typeof tok !== 'string' || !/^-?\d+$/.test(tok)) return null;
+          const n = parseInt(tok, 10);
+          if (!Number.isFinite(n) || n < 0 || n > 0x10ffff) return null;
+          out.push(String.fromCodePoint(n));
+        }
+        // Return as string — the typical downstream use is
+        // `[char[]](…) -join ''`, which the join handler can consume
+        // from a plain string too. Joining here keeps the contract
+        // simple and avoids distinguishing array-kind from string-kind
+        // for this single primary.
+        return out.join('');
+      }
+      return null;
+    }
+
+    // ── [string]::Join(sep, arr)  /  [System.String]::Join(sep, arr) ───
+    //
+    // Canonical obfuscator-output shape. Two argument forms accepted:
+    //   - `[string]::Join('', $chars)` — single array argument
+    //   - `[string]::Join('', 'a','b','c')` — params-style (rare)
+    const strJoinM = /^\[\s*(?:System\.)?[Ss]tring\s*\]\s*::\s*Join\s*\(\s*([\s\S]+?)\s*\)\s*$/.exec(src);
+    if (strJoinM) {
+      const argsSrc = strJoinM[1];
+      const argParts = this._psSplitTopLevel(argsSrc, ',').map(s => s.trim());
+      if (argParts.length < 2) return null;
+      const sep = this._psResolveExpression(argParts[0], vars, envVars);
+      if (typeof sep !== 'string') return null;
+      // Single array arg — resolve and join.
+      if (argParts.length === 2) {
+        const v = this._psResolveExpression(argParts[1], vars, envVars);
+        if (Array.isArray(v)) return v.join(sep);
+        if (typeof v === 'string') return v; // degenerate: Join(sep, 'str') just returns the str
+      }
+      // Params-style: every remaining arg resolves to a string.
+      const out = [];
+      for (let i = 1; i < argParts.length; i++) {
+        const v = this._psResolveExpression(argParts[i], vars, envVars);
+        if (typeof v === 'string') out.push(v);
+        else if (Array.isArray(v)) out.push(v.join(''));
+        else return null;
+      }
+      return out.join(sep);
+    }
+
     // Verbatim here-string: @'…\n…\n'@ — no interpolation, preserves
     // everything between the opener and the line-anchored closer. The
     // opener is `@'` followed by a newline; body runs until a line whose
@@ -853,8 +933,9 @@ Object.assign(EncodedContentDetector.prototype, {
       return this._psInterpolate(inner, vars, envVars);
     }
 
-    // Integer literal.
+    // Integer literal (decimal or hex).
     if (/^-?\d+$/.test(src)) return src;
+    if (/^0x[0-9a-fA-F]+$/i.test(src)) return String(parseInt(src, 16));
 
     // ${env:Y} — braced env-var form. Must come before ${var} so the
     // `env:` prefix isn't mistaken for a regular variable name.
@@ -1041,6 +1122,134 @@ Object.assign(EncodedContentDetector.prototype, {
         // string-kind passes through unchanged.
         continue;
       }
+
+      // ── Bounded string methods on string-kind receivers (Phase C) ──
+      //
+      // Each method parses its own args tail, resolves them via
+      // _psResolveExpression / _psResolveIntValue as appropriate, and
+      // advances `rest` past the `(…)` closer. Unknown arguments or
+      // mis-shaped calls return null (the chain aborts).
+
+      // .Substring(start) / .Substring(start, length)
+      const subM = /^\.\s*Substring\s*\(\s*([\s\S]+?)\s*\)(.*)$/i.exec(rest);
+      if (subM) {
+        if (!cur || cur.kind !== 'string') return null;
+        const parts = this._psSplitTopLevel(subM[1], ',').map(s => s.trim());
+        if (parts.length < 1 || parts.length > 2) return null;
+        const start = this._psResolveIntValue(parts[0], vars, envVars);
+        if (start === null) return null;
+        let end;
+        if (parts.length === 2) {
+          const len = this._psResolveIntValue(parts[1], vars, envVars);
+          if (len === null || len < 0) return null;
+          end = start + len;
+        } else {
+          end = cur.value.length;
+        }
+        if (start < 0 || start > cur.value.length || end > cur.value.length) return null;
+        cur = { kind: 'string', value: cur.value.substring(start, end) };
+        rest = subM[2].trim();
+        continue;
+      }
+
+      // .Replace('a', 'b')  /  .Replace(find, repl)
+      const replM = /^\.\s*Replace\s*\(\s*([\s\S]+?)\s*\)(.*)$/i.exec(rest);
+      if (replM) {
+        if (!cur || cur.kind !== 'string') return null;
+        const parts = this._psSplitTopLevel(replM[1], ',').map(s => s.trim());
+        if (parts.length !== 2) return null;
+        const find = this._psResolveExpression(parts[0], vars, envVars);
+        const repl = this._psResolveExpression(parts[1], vars, envVars);
+        if (typeof find !== 'string' || (typeof repl !== 'string' && !Array.isArray(repl))) return null;
+        const replStr = Array.isArray(repl) ? repl.join('') : repl;
+        cur = { kind: 'string', value: cur.value.split(find).join(replStr) };
+        rest = replM[2].trim();
+        continue;
+      }
+
+      // .Trim() / .TrimStart() / .TrimEnd()
+      const trimM = /^\.\s*(Trim|TrimStart|TrimEnd)\s*\(\s*\)(.*)$/i.exec(rest);
+      if (trimM) {
+        if (!cur || cur.kind !== 'string') return null;
+        const which = trimM[1].toLowerCase();
+        const s = cur.value;
+        const v = which === 'trim' ? s.trim()
+                : which === 'trimstart' ? s.replace(/^\s+/, '')
+                : s.replace(/\s+$/, '');
+        cur = { kind: 'string', value: v };
+        rest = trimM[2].trim();
+        continue;
+      }
+
+      // .ToUpper() / .ToLower() — no-arg only (culture-aware overloads
+      // are opaque).
+      const caseM = /^\.\s*(ToUpper|ToLower)\s*\(\s*\)(.*)$/i.exec(rest);
+      if (caseM) {
+        if (!cur || cur.kind !== 'string') return null;
+        const v = caseM[1].toLowerCase() === 'toupper' ? cur.value.toUpperCase() : cur.value.toLowerCase();
+        cur = { kind: 'string', value: v };
+        rest = caseM[2].trim();
+        continue;
+      }
+
+      // .ToCharArray() — expose the string as an array of single chars.
+      const tcaM = /^\.\s*ToCharArray\s*\(\s*\)(.*)$/i.exec(rest);
+      if (tcaM) {
+        if (!cur || cur.kind !== 'string') return null;
+        cur = { kind: 'array', value: cur.value.split('') };
+        rest = tcaM[1].trim();
+        continue;
+      }
+
+      // .Length — return the character count (string) / element count
+      // (array). Wraps the value as a numeric string so downstream
+      // arithmetic resolvers / accessor chains see a consistent shape.
+      const lenM = /^\.\s*Length(.*)$/i.exec(rest);
+      if (lenM && !/^\(/.test(lenM[1].trim())) {
+        if (!cur) return null;
+        let n;
+        if (cur.kind === 'string') n = cur.value.length;
+        else if (cur.kind === 'array') n = cur.value.length;
+        else return null;
+        cur = { kind: 'string', value: String(n) };
+        rest = lenM[1].trim();
+        continue;
+      }
+
+      // .Insert(i, s)
+      const insM = /^\.\s*Insert\s*\(\s*([\s\S]+?)\s*\)(.*)$/i.exec(rest);
+      if (insM) {
+        if (!cur || cur.kind !== 'string') return null;
+        const parts = this._psSplitTopLevel(insM[1], ',').map(s => s.trim());
+        if (parts.length !== 2) return null;
+        const pos = this._psResolveIntValue(parts[0], vars, envVars);
+        const ins = this._psResolveExpression(parts[1], vars, envVars);
+        if (pos === null || typeof ins !== 'string') return null;
+        if (pos < 0 || pos > cur.value.length) return null;
+        cur = { kind: 'string', value: cur.value.slice(0, pos) + ins + cur.value.slice(pos) };
+        rest = insM[2].trim();
+        continue;
+      }
+
+      // .Remove(i) / .Remove(i, count)
+      const remM = /^\.\s*Remove\s*\(\s*([\s\S]+?)\s*\)(.*)$/i.exec(rest);
+      if (remM) {
+        if (!cur || cur.kind !== 'string') return null;
+        const parts = this._psSplitTopLevel(remM[1], ',').map(s => s.trim());
+        if (parts.length < 1 || parts.length > 2) return null;
+        const start = this._psResolveIntValue(parts[0], vars, envVars);
+        if (start === null || start < 0 || start > cur.value.length) return null;
+        let count = cur.value.length - start;
+        if (parts.length === 2) {
+          const n = this._psResolveIntValue(parts[1], vars, envVars);
+          if (n === null || n < 0 || start + n > cur.value.length) return null;
+          count = n;
+        }
+        cur = { kind: 'string', value: cur.value.slice(0, start) + cur.value.slice(start + count) };
+        rest = remM[2].trim();
+        continue;
+      }
+
       // .k — hashtable property lookup.
       const propM = /^\.\s*([A-Za-z_][\w]*)(.*)$/.exec(rest);
       if (propM) {
@@ -1057,6 +1266,117 @@ Object.assign(EncodedContentDetector.prototype, {
     if (!cur) return null;
     if (cur.kind === 'array') return cur.value.slice();
     return String(cur.value);
+  },
+
+  /**
+   * Resolve an integer-valued expression. Accepts:
+   *   - decimal / hex integer literal (`42`, `0x2a`)
+   *   - bare `$var` (resolved to a numeric string, parseInt'd)
+   *   - simple binary expressions: `+ - * ^ -band -bor -bxor`
+   *   - parenthesised sub-expressions
+   *
+   * Deliberately narrow — this is called from `[char](…)`, method-arg
+   * positions, and the variable-key XOR branch. Returns a JS number on
+   * success, or null if the expression is shaped in a way we don't model
+   * (function calls, comparison ops, etc.).
+   */
+  _psResolveIntValue(src, vars, envVars) {
+    if (typeof src !== 'string') return null;
+    src = src.trim();
+    if (!src || src.length > 200) return null;
+
+    // Parenthesised sub-expression.
+    if (src.startsWith('(') && src.endsWith(')')) {
+      const close = this._psFindMatchingParen(src, 0);
+      if (close === src.length - 1) {
+        return this._psResolveIntValue(src.slice(1, -1), vars, envVars);
+      }
+    }
+
+    // Simple additive: split on top-level + or - (after the first char
+    // so a leading `-` is treated as unary). Because + / - are left-
+    // associative in PS, fold left.
+    const binBreak = (src, ops) => {
+      // Return [{op: '+', rhs: ...}] or null if src doesn't have any
+      // top-level matches.
+      const parts = [];
+      let depth = 0, inSingle = false, inDouble = false, last = 0;
+      for (let i = 1; i < src.length; i++) { // skip leading sign char
+        const c = src[i];
+        if (inSingle) { if (c === "'") inSingle = false; continue; }
+        if (inDouble) { if (c === '"') inDouble = false; continue; }
+        if (c === "'") { inSingle = true; continue; }
+        if (c === '"') { inDouble = true; continue; }
+        if (c === '(' || c === '[') { depth++; continue; }
+        if (c === ')' || c === ']') { depth--; continue; }
+        if (depth === 0 && ops.indexOf(c) !== -1) {
+          parts.push({ op: c, text: src.substring(last, i) });
+          last = i + 1;
+          // record the current op for the next chunk
+          parts[parts.length - 1].nextOp = c;
+        }
+      }
+      if (parts.length === 0) return null;
+      parts.push({ text: src.substring(last) });
+      return parts;
+    };
+    const addParts = binBreak(src, ['+', '-']);
+    if (addParts && addParts.length > 1) {
+      // Evaluate left-to-right.
+      let acc = this._psResolveIntValue(addParts[0].text, vars, envVars);
+      if (acc === null) return null;
+      for (let i = 1; i < addParts.length; i++) {
+        const rhs = this._psResolveIntValue(addParts[i].text, vars, envVars);
+        if (rhs === null) return null;
+        const op = addParts[i - 1].op;
+        if (op === '+') acc = acc + rhs;
+        else if (op === '-') acc = acc - rhs;
+        else return null;
+      }
+      return acc;
+    }
+    const mulParts = binBreak(src, ['*', '^']);
+    if (mulParts && mulParts.length > 1) {
+      let acc = this._psResolveIntValue(mulParts[0].text, vars, envVars);
+      if (acc === null) return null;
+      for (let i = 1; i < mulParts.length; i++) {
+        const rhs = this._psResolveIntValue(mulParts[i].text, vars, envVars);
+        if (rhs === null) return null;
+        const op = mulParts[i - 1].op;
+        if (op === '*') acc = acc * rhs;
+        else if (op === '^') acc = acc ^ rhs; // PowerShell uses -bxor, but `^` is a common cast
+        else return null;
+      }
+      return acc;
+    }
+
+    // -band / -bor / -bxor — textual operators.
+    const bopM = /^([\s\S]+?)\s+-(band|bor|bxor)\s+([\s\S]+)$/i.exec(src);
+    if (bopM) {
+      const lhs = this._psResolveIntValue(bopM[1].trim(), vars, envVars);
+      const rhs = this._psResolveIntValue(bopM[3].trim(), vars, envVars);
+      if (lhs === null || rhs === null) return null;
+      const op = bopM[2].toLowerCase();
+      if (op === 'band') return lhs & rhs;
+      if (op === 'bor')  return lhs | rhs;
+      return lhs ^ rhs;
+    }
+
+    // Decimal / hex literal.
+    if (/^-?\d+$/.test(src)) {
+      const n = parseInt(src, 10);
+      return Number.isFinite(n) ? n : null;
+    }
+    if (/^0x[0-9a-fA-F]+$/.test(src)) {
+      const n = parseInt(src, 16);
+      return Number.isFinite(n) ? n : null;
+    }
+
+    // Variable reference — must resolve to a numeric string.
+    const v = this._psResolvePrimary(src, vars, envVars);
+    if (typeof v === 'string' && /^-?\d+$/.test(v)) return parseInt(v, 10);
+    if (typeof v === 'string' && /^0x[0-9a-fA-F]+$/.test(v)) return parseInt(v, 16);
+    return null;
   },
 
 
