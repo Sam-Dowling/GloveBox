@@ -176,3 +176,156 @@ test('_buildMispEvent reassembly branch does NOT force to_ids=0', () => {
     'MISP reassembly branch must not mutate to_ids'
   );
 });
+
+// ── _renderReassembledScriptCard: visual parity with per-finding cards ────
+//
+// The reassembled-script card must look and behave like every other
+// `.enc-finding-card` in the Deobfuscation section. Earlier iterations
+// fabricated their own CSS classes (`.enc-preview`, `.enc-chain-pills`,
+// `.enc-chain-pill`, `.enc-action-btn`, `.enc-finding-novel-iocs`,
+// `.enc-chain-count`) — none of which are defined in `src/styles/` so
+// they rendered unstyled. These pins keep the card on the canonical
+// class set.
+
+const SIDEBAR = fs.readFileSync(path.join(REPO_ROOT, 'src/app/app-sidebar.js'), 'utf8');
+
+test('_renderReassembledScriptCard uses canonical .enc-snippet (not .enc-preview)', () => {
+  const body = SIDEBAR.match(/_renderReassembledScriptCard\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
+  assert.ok(body, '_renderReassembledScriptCard body must be locatable');
+  assert.match(
+    body[0],
+    /className\s*=\s*['"]enc-snippet['"]/,
+    'preview block must use .enc-snippet — the canonical encoded-content snippet class'
+  );
+  assert.doesNotMatch(
+    body[0],
+    /['"]enc-preview['"]/,
+    '.enc-preview is undefined in core.css; must not be used'
+  );
+});
+
+test('_renderReassembledScriptCard uses canonical .enc-finding-chain + .enc-chain-hop (not .enc-chain-pills)', () => {
+  const body = SIDEBAR.match(/_renderReassembledScriptCard\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
+  assert.ok(body, '_renderReassembledScriptCard body must be locatable');
+  assert.match(
+    body[0],
+    /className\s*=\s*['"]enc-finding-chain['"]/,
+    'techniques row must wrap in .enc-finding-chain — the canonical chain-wrapper class'
+  );
+  assert.match(
+    body[0],
+    /className\s*=\s*['"]enc-chain-hop[^'"]*['"]/,
+    'each technique pill must use .enc-chain-hop — the canonical hop-pill class'
+  );
+  assert.doesNotMatch(
+    body[0],
+    /['"]enc-chain-pills['"]|['"]enc-chain-pill['"]/,
+    '.enc-chain-pills / .enc-chain-pill are undefined in core.css; must not be used'
+  );
+});
+
+test('_renderReassembledScriptCard uses canonical .enc-finding-iocs[data-clickable]', () => {
+  const body = SIDEBAR.match(/_renderReassembledScriptCard\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
+  assert.ok(body, '_renderReassembledScriptCard body must be locatable');
+  assert.match(
+    body[0],
+    /className\s*=\s*['"]enc-finding-iocs['"]/,
+    'novel-IOC line must use .enc-finding-iocs — the canonical click-to-flash footer'
+  );
+  assert.match(
+    body[0],
+    /setAttribute\s*\(\s*['"]data-clickable['"]/,
+    'the line must carry the data-clickable attribute that styles the hover affordance'
+  );
+  assert.doesNotMatch(
+    body[0],
+    /['"]enc-finding-novel-iocs['"]/,
+    '.enc-finding-novel-iocs is undefined in core.css; must not be used'
+  );
+});
+
+test('_renderReassembledScriptCard IOC line matches "IOCs: N <TYPE>" format', () => {
+  const body = SIDEBAR.match(/_renderReassembledScriptCard\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
+  assert.ok(body, '_renderReassembledScriptCard body must be locatable');
+  assert.match(
+    body[0],
+    /['"]IOCs:\s*['"]\s*\+/,
+    'IOC line text must start with "IOCs: " — matches the per-finding card footer'
+  );
+});
+
+test('_renderReassembledScriptCard drill-down button uses canonical tb-btn enc-btn-load', () => {
+  const body = SIDEBAR.match(/_renderReassembledScriptCard\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
+  assert.ok(body, '_renderReassembledScriptCard body must be locatable');
+  assert.match(
+    body[0],
+    /className\s*=\s*['"]tb-btn\s+enc-btn-load['"]/,
+    'drill-down button must use tb-btn enc-btn-load — the canonical green "Load for analysis" styling'
+  );
+  assert.match(
+    body[0],
+    /textContent\s*=\s*['"]▶\s*Load stitched script['"]/,
+    'button label must use the ▶ prefix like every other "Load for analysis" button'
+  );
+  assert.doesNotMatch(
+    body[0],
+    /['"]enc-action-btn['"]/,
+    '.enc-action-btn is undefined in core.css; must not be used'
+  );
+});
+
+test('_renderReassembledScriptCard IOC click delegates to _flashIocRows via recon._iocRows side-channel', () => {
+  const body = SIDEBAR.match(/_renderReassembledScriptCard\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
+  assert.ok(body, '_renderReassembledScriptCard body must be locatable');
+  assert.match(
+    body[0],
+    /this\._flashIocRows\s*\(\s*\{\s*_iocRows:\s*recon\._iocRows[^)]*\}\s*\)/,
+    'IOC line click must delegate to _flashIocRows with the composite recon._iocRows array'
+  );
+});
+
+// ── Sidebar IOC-table: register reassembly rows into recon._iocRows ───────
+
+test('sidebar IOC-table registers _fromReassembly <tr>s into findings.reconstructedScript._iocRows', () => {
+  // Without this registration the composite card's "IOCs: N URL" click
+  // handler has nothing to flash — `_iocRows` would be empty. The
+  // registration sits alongside the per-finding `_encodedFinding._iocRows`
+  // push so both patterns follow the same lazy-init convention.
+  assert.match(
+    SIDEBAR,
+    /ref\._fromReassembly[\s\S]{0,300}?this\.findings\.reconstructedScript\._iocRows[\s\S]{0,80}?\.push\s*\(\s*tr\s*\)/,
+    'IOC-table row builder must push reassembly-derived <tr>s into findings.reconstructedScript._iocRows'
+  );
+});
+
+test('_renderSidebar resets findings.reconstructedScript._iocRows per render pass', () => {
+  // Lifecycle parity with `ef._iocRows = []` for encoded findings: each
+  // render cycle starts with an empty array so repeat renders don't
+  // leave stale detached <tr>s in the click-target list.
+  assert.match(
+    SIDEBAR,
+    /f\.reconstructedScript[\s\S]{0,200}?f\.reconstructedScript\._iocRows\s*=\s*\[\s*\]/,
+    '_renderSidebar must null out findings.reconstructedScript._iocRows at the start of each render'
+  );
+});
+
+// ── app-sidebar-focus: verbatim-fallback short-circuit for reassembly IOCs ─
+
+const SIDEBAR_FOCUS = fs.readFileSync(path.join(REPO_ROOT, 'src/app/app-sidebar-focus.js'), 'utf8');
+
+test('_findIOCMatches short-circuits verbatim fallback when ref._fromReassembly', () => {
+  // Reassembly-derived IOCs have a `_sourceOffset` / `_sourceLength`
+  // pointing at the ENCODED source region that produced the bytes.
+  // Their `value` never appears verbatim in `_rawText` — running the
+  // substring fallback would find no match (best case) or land on an
+  // unrelated plaintext occurrence of the same literal (worst case,
+  // and what prompted the bug report).
+  const fn = SIDEBAR_FOCUS.match(/_findIOCMatches\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
+  assert.ok(fn, '_findIOCMatches body must be locatable');
+  assert.match(
+    fn[0],
+    /if\s*\(\s*ref\._fromReassembly\s*\)\s*return\s+matches/,
+    '_findIOCMatches must short-circuit after the authoritative-offset push when ref._fromReassembly is true'
+  );
+});
+

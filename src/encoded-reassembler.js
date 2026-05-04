@@ -113,14 +113,39 @@
   // this top-level span. Prefers explicit `_deobfuscatedText` (the
   // cmd-obfuscation path), then textual `decodedBytes`, then the outer
   // finding itself if nothing below it produced usable text.
+  //
+  // Synopsis stubs rejected: `python-obfuscation.js` and
+  // `php-obfuscation.js` return human-readable envelopes like
+  // `<binary 45B (likely marshal/pickle): 789c…>` as `_deobfuscatedText`
+  // when the decoded bytes are non-printable. These are analyst
+  // breadcrumbs, NOT actual script source — splicing them into the
+  // reassembled body produces nonsense on lines where a real marshal /
+  // pickle / zlib blob lived. Treat them as "no usable text" so the
+  // finding either contributes a deeper sibling's decoded text or
+  // drops out of the reassembly entirely.
+  //
+  // The regex is deliberately narrow: `^<(?:binary|marshal payload)\b[^>]*>$`
+  // matches the two known envelope types anchored start-to-end. New
+  // envelope types added by future decoders fall through (visibly
+  // wrong output rather than silently corrupt) — fail-open per the
+  // `_isClassifierHop` precedent in app-sidebar.js.
+  const _PLACEHOLDER_STUB_RE = /^<(?:binary|marshal payload)\b[^>]*>$/;
+  function _isPlaceholderStub(t) {
+    return typeof t === 'string' && _PLACEHOLDER_STUB_RE.test(t);
+  }
+
   function _pickDeepestTextNode(finding) {
     let best = null;
     let bestDepth = -1;
     const walk = (f, depth) => {
       if (!f || typeof f !== 'object') return;
-      const text = (typeof f._deobfuscatedText === 'string' && f._deobfuscatedText)
-        || _decodeAsText(f.decodedBytes);
-      if (text && depth > bestDepth) {
+      const deobf = (typeof f._deobfuscatedText === 'string' && f._deobfuscatedText)
+        ? f._deobfuscatedText
+        : null;
+      const text = (deobf && !_isPlaceholderStub(deobf))
+        ? deobf
+        : _decodeAsText(f.decodedBytes);
+      if (text && !_isPlaceholderStub(text) && depth > bestDepth) {
         best = { node: f, text, depth };
         bestDepth = depth;
       }
@@ -254,10 +279,22 @@
     // Build `text` by interleaving source slices with sentinel-wrapped
     // decoded replacements. Track `spans` with the reconstructed-text
     // offsets so the UI can navigate span boundaries without re-scanning.
+    //
+    // `sourceMap` entries also carry `strippedOffset` / `strippedLength`
+    // (the position in `stripSentinels(text)`) so `analyze()` can map
+    // IOC offsets extracted from the sentinel-stripped body back to
+    // the originating source region without rescanning. A non-splice
+    // entry has `strippedLength === length` (plain source copy-through);
+    // a splice entry's `strippedLength` is its decoded text length, but
+    // its `sourceOffset` / `sourceLength` point at the ENCODED source
+    // region (the honest mapping: the decoded IOC value never existed
+    // verbatim in the file, so we surface the encoded region that
+    // produced it instead).
     let text = '';
     const spans = [];
-    const sourceMap = [];  // array of { reconOffset, sourceOffset, length, isSplice }
+    const sourceMap = [];  // { reconOffset, sourceOffset, length, isSplice, strippedOffset, strippedLength, sourceLength? }
     let cursor = 0;  // position in source
+    let stripCursor = 0;  // position in sentinel-stripped text
     let truncated = false;
     let bytesReplaced = 0;
 
@@ -270,8 +307,11 @@
           sourceOffset: cursor,
           length: chunk.length,
           isSplice: false,
+          strippedOffset: stripCursor,
+          strippedLength: chunk.length,
         });
         text += chunk;
+        stripCursor += chunk.length;
       }
 
       // Splice the decoded text wrapped in sentinels. The sentinel pair
@@ -293,7 +333,10 @@
         length: c.length,
         isSplice: true,
         sourceLength: c.length,
+        strippedOffset: stripCursor,
+        strippedLength: inserted.length,
       });
+      stripCursor += inserted.length;
       spans.push({
         sourceOffset:   c.offset,
         sourceLength:   c.length,
@@ -332,8 +375,11 @@
           sourceOffset: cursor,
           length: chunk.length,
           isSplice: false,
+          strippedOffset: stripCursor,
+          strippedLength: chunk.length,
         });
         text += chunk;
+        stripCursor += chunk.length;
         if (chunk.length < tail.length) truncated = true;
       } else {
         truncated = true;
@@ -428,6 +474,52 @@
       }
       // next iteration
       void end;
+    }
+    return null;
+  }
+
+  /** Map a sentinel-stripped-text offset back to its originating source
+   *  region. Used by `analyze()` to stamp `_sourceOffset` /
+   *  `_sourceLength` on novel IOCs — so the sidebar's click-to-focus
+   *  handler highlights the ENCODED source region that produced the
+   *  decoded bytes, rather than blindly substring-searching `_rawText`
+   *  for a value that only ever existed after stitching.
+   *
+   *  For non-splice entries (verbatim source copy-through) the mapping
+   *  is exact: `sourceOffset + (strippedOffset - strippedOffset_entry)`.
+   *  For splice entries (decoded text) the decoded IOC value never
+   *  existed verbatim in the file; the only honest mapping is the
+   *  ENCODED span's `sourceOffset` / `sourceLength` (so the click
+   *  flashes the Base64 / char-array / CMD-obfuscation region that
+   *  produced the bytes). In that case `sourceLength` is the full
+   *  span, not a sub-range, and callers should NOT extend the
+   *  highlight beyond it.
+   *
+   *  @param {object} reconstructed  a `build()` result
+   *  @param {number} strippedOffset position in stripSentinels(text)
+   *  @returns {{sourceOffset:number,sourceLength:number,isSplice:boolean}|null}
+   */
+  function mapStrippedToSource(reconstructed, strippedOffset) {
+    if (!reconstructed || !Array.isArray(reconstructed.sourceMap)) return null;
+    if (typeof strippedOffset !== 'number' || strippedOffset < 0) return null;
+    for (const entry of reconstructed.sourceMap) {
+      if (typeof entry.strippedOffset !== 'number' || typeof entry.strippedLength !== 'number') continue;
+      const end = entry.strippedOffset + entry.strippedLength;
+      if (strippedOffset >= entry.strippedOffset && strippedOffset < end) {
+        if (entry.isSplice) {
+          return {
+            sourceOffset: entry.sourceOffset,
+            sourceLength: entry.sourceLength || entry.length || 0,
+            isSplice: true,
+          };
+        }
+        const delta = strippedOffset - entry.strippedOffset;
+        return {
+          sourceOffset: entry.sourceOffset + delta,
+          sourceLength: 1,   // caller extends via its own length field
+          isSplice: false,
+        };
+      }
     }
     return null;
   }
@@ -547,6 +639,30 @@
           // reassembly invocation.
           row._fromReassembly     = true;
           row._reconstructedHash  = hash;
+          // Map the stripped-text offset back to the originating
+          // source region so `_findIOCMatches` has an authoritative
+          // `_sourceOffset` / `_sourceLength` to anchor the click-to-
+          // focus highlight. For IOCs that fall inside a spliced
+          // (decoded) region the mapping returns the ENCODED span's
+          // offset + length — the only honest pointer, since the
+          // decoded value never existed verbatim in the source file.
+          // `_findIOCMatches` skips its verbatim-substring fallback
+          // for reassembly-derived rows (see app-sidebar-focus.js) so
+          // an out-of-file decoded value can't land on an unrelated
+          // occurrence of the same literal in plaintext.
+          if (typeof row.offset === 'number') {
+            const mapped = mapStrippedToSource(reconstructed, row.offset);
+            if (mapped) {
+              row._sourceOffset = mapped.sourceOffset;
+              // For splice entries use the encoded-span length; for
+              // verbatim regions use the row's own length (single
+              // character when unknown).
+              row._sourceLength = mapped.isSplice
+                ? mapped.sourceLength
+                : (typeof row.length === 'number' && row.length > 0 ? row.length : 1);
+            }
+          }
+          row._highlightText = row.url || row.value;
           result.novelIocs.push(row);
         }
       } catch (_extractErr) {
@@ -609,6 +725,7 @@
     build,
     analyze,
     mapReconToSource,
+    mapStrippedToSource,
     stripSentinels,
     // Exposed for unit tests and the sidebar UI layer.
     DEFAULTS,

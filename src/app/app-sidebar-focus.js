@@ -334,6 +334,15 @@ extendApp({
     // 1. Authoritative location supplied by renderer, if any.
     if (ref._sourceOffset !== undefined && ref._sourceLength) {
       push(ref._sourceOffset, ref._sourceLength, null);
+      // Reassembly-derived IOCs: the decoded value never existed
+      // verbatim in the source (it only appears in the sentinel-
+      // stripped stitched body). `EncodedReassembler.analyze()`
+      // stamps `_sourceOffset` / `_sourceLength` with the ENCODED
+      // source region that produced the bytes. Running the verbatim-
+      // substring pass below would either find nothing (best case) or
+      // — worse — land on an unrelated plaintext occurrence of the
+      // same string and flash the wrong region. Short-circuit here.
+      if (ref._fromReassembly) return matches;
     }
 
     // 2. Every occurrence of the IOC value (or SafeLink wrapper).

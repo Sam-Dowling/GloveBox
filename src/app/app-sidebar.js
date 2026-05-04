@@ -56,137 +56,152 @@ extendApp({
     card.dataset.sbReassembled = '1';
 
     // ── Header ─────────────────────────────────────────────────────────
+    // Mirrors the per-finding card's `.enc-finding-header` shape:
+    // severity badge + a title span. No bespoke count chip — the
+    // techniques row + coverage metadata below carry that information
+    // without requiring its own undefined CSS class.
     const header = document.createElement('div');
     header.className = 'enc-finding-header';
-    const title = document.createElement('strong');
-    title.textContent = '🧩 Reassembled Script';
+    const badge = document.createElement('span');
+    badge.className = `badge badge-${recon.severity || 'info'}`;
+    badge.textContent = recon.severity || 'info';
+    header.appendChild(badge);
+    const title = document.createElement('span');
+    title.className = 'enc-finding-title';
+    const pct = Math.round((recon.coverage && recon.coverage.ratio || 0) * 100);
+    title.textContent = `🧩 Reassembled script — ${recon.spans.length} spans · ${pct}% of source`;
     header.appendChild(title);
-    const count = document.createElement('span');
-    count.className = 'enc-chain-count';
-    count.style.marginLeft = '6px';
-    count.textContent = `${recon.spans.length} spans`;
-    header.appendChild(count);
     card.appendChild(header);
 
-    // ── One-line rationale ─────────────────────────────────────────────
-    const expl = document.createElement('div');
-    expl.className = 'enc-finding-expl';
-    expl.style.marginTop = '4px';
-    const techs = (recon.techniques || []).slice(0, 4).join(' · ');
-    const pct = Math.round((recon.coverage && recon.coverage.ratio || 0) * 100);
-    expl.textContent = `Stitched ${recon.spans.length} decoded spans (${pct}% of source) from ${techs || 'multiple techniques'} back into one script for end-to-end review.`;
-    card.appendChild(expl);
+    // ── Details wrapper (matches per-finding card DOM shape) ───────────
+    const details = document.createElement('div');
+    details.className = 'enc-finding-details';
 
-    // ── Techniques pill row ────────────────────────────────────────────
+    // ── Techniques row — canonical `.enc-finding-chain` wrapper ────────
+    // Techniques here are a FLAT SET (e.g. "Base64", "CMD Obfuscation",
+    // "Char Array" — three independent obfuscation layers feeding one
+    // stitched script). Unlike the per-finding chain, there's no linear
+    // ordering to preserve, so no `.enc-chain-arrow` separators. We
+    // reuse `.enc-chain-hop enc-chain-hop-encoding` pill styling for
+    // visual parity with the per-finding cards.
     if (recon.techniques && recon.techniques.length) {
-      const pills = document.createElement('div');
-      pills.className = 'enc-chain-pills';
-      pills.style.marginTop = '6px';
+      const chainWrap = document.createElement('div');
+      chainWrap.className = 'enc-finding-chain';
+      const chainLabel = document.createElement('span');
+      chainLabel.className = 'enc-chain-label';
+      chainLabel.textContent = 'Techniques:';
+      chainWrap.appendChild(chainLabel);
       for (const t of recon.techniques) {
         const pill = document.createElement('span');
-        pill.className = 'enc-chain-pill';
+        pill.className = 'enc-chain-hop enc-chain-hop-encoding';
         pill.textContent = t;
-        pills.appendChild(pill);
+        chainWrap.appendChild(pill);
       }
-      card.appendChild(pills);
+      details.appendChild(chainWrap);
     }
 
     // ── Truncation / collision notices ─────────────────────────────────
+    // `.enc-finding-note` is the canonical "warning/ℹ" line used by
+    // per-finding cards for depth-exceeded etc. (see line ~1641 below).
     if (recon.truncated) {
-      const warn = document.createElement('div');
-      warn.className = 'enc-finding-warn';
-      warn.style.marginTop = '6px';
-      warn.style.fontSize = '10px';
-      warn.style.opacity = '0.75';
-      warn.textContent = '⚠ Reconstruction truncated at output ceiling — load for analysis to see the full stitched body.';
-      card.appendChild(warn);
+      const note = document.createElement('div');
+      note.className = 'enc-finding-note';
+      note.textContent = '⚠ Reconstruction truncated at output ceiling — load for analysis to see the full stitched body.';
+      details.appendChild(note);
     }
     if (Array.isArray(recon.collisions) && recon.collisions.length) {
-      const warn = document.createElement('div');
-      warn.className = 'enc-finding-warn';
-      warn.style.marginTop = '4px';
-      warn.style.fontSize = '10px';
-      warn.style.opacity = '0.75';
-      warn.textContent = `ℹ ${recon.collisions.length} overlapping span(s) resolved by severity/length.`;
-      card.appendChild(warn);
+      const note = document.createElement('div');
+      note.className = 'enc-finding-note';
+      note.textContent = `ℹ ${recon.collisions.length} overlapping span(s) resolved by severity/length.`;
+      details.appendChild(note);
     }
 
-    // ── Preview block (sentinels stripped, clipped to 400 chars) ──────
+    // ── Preview snippet — canonical `.enc-snippet` (matches the source
+    // snippet used on every encoded-content card). The stripSentinels
+    // pass is idempotent; falls back to raw `recon.text` if the
+    // reassembler export is missing for any reason.
     const previewSrc = (window.EncodedReassembler && typeof window.EncodedReassembler.stripSentinels === 'function')
       ? window.EncodedReassembler.stripSentinels(recon.text)
       : recon.text;
     const previewMax = 400;
-    const preview = document.createElement('pre');
-    preview.className = 'enc-preview';
-    preview.style.marginTop = '8px';
-    preview.style.maxHeight = '140px';
-    preview.style.overflow = 'auto';
-    preview.textContent = previewSrc.length > previewMax
+    const snippet = document.createElement('div');
+    snippet.className = 'enc-snippet';
+    snippet.textContent = previewSrc.length > previewMax
       ? previewSrc.slice(0, previewMax) + '…'
       : previewSrc;
-    card.appendChild(preview);
+    details.appendChild(snippet);
 
-    // ── Phase 2 evidence row: decoded-payload YARA hits ────────────────
-    // Emit a compact evidence strip when the re-scan matched rules that
-    // opt in via `applies_to = "decoded-payload"`. Same shape the
-    // per-finding card uses for `_yaraHits` (rule name + severity chip).
+    // ── Decoded-payload YARA hits (canonical `.enc-finding-yara` row) ─
+    // Same DOM shape the per-finding card uses for `_yaraHits`: a bold
+    // label followed by severity-coloured badge chips. Keeps the card's
+    // visual vocabulary identical to its siblings.
     if (Array.isArray(recon.yaraHits) && recon.yaraHits.length) {
       const yaraRow = document.createElement('div');
       yaraRow.className = 'enc-finding-yara';
-      yaraRow.style.marginTop = '8px';
       const lbl = document.createElement('strong');
       lbl.textContent = '⚡ YARA on stitched script: ';
       yaraRow.appendChild(lbl);
       for (const hit of recon.yaraHits) {
         const chip = document.createElement('span');
         chip.className = `badge badge-${hit.severity || 'info'}`;
-        chip.style.marginRight = '4px';
         chip.textContent = hit.ruleName;
         if (hit.description) chip.title = hit.description;
         yaraRow.appendChild(chip);
+        yaraRow.appendChild(document.createTextNode(' '));
       }
-      card.appendChild(yaraRow);
+      details.appendChild(yaraRow);
     }
 
-    // ── Phase 2 evidence row: novel IOCs surfaced only by reassembly ─
-    // When `analyze()` extracted IOCs the individual per-finding cards
-    // never saw (URL fragments joined across spans, domain rebuilt from
-    // char-code chunks etc.), credit the reassembly pass explicitly so
-    // the analyst knows to look for them in the main Signatures & IOCs
-    // section's `_fromReassembly`-tagged rows.
+    // ── Novel-IOC line — canonical `.enc-finding-iocs[data-clickable]` ─
+    // Exact same shape as the per-finding IOC footer (line ~1623):
+    // "IOCs: N <type>, M <type>" text, clickable-to-flash-rows. The
+    // click handler uses a per-recon `_iocRows` array populated during
+    // the IOC-table build pass below (see `_renderFindingsTableSection`).
+    // Counts are folded on the human-readable coarse type (URL, IP,
+    // DOMAIN, HASH, PATH, …) derived from the IOC's `type` field
+    // uppercased — mirrors how the per-finding footer names types.
     if (Array.isArray(recon.novelIocs) && recon.novelIocs.length) {
-      const iocRow = document.createElement('div');
-      iocRow.className = 'enc-finding-novel-iocs';
-      iocRow.style.marginTop = '6px';
-      iocRow.style.fontSize = '11px';
-      const lbl = document.createElement('strong');
-      lbl.textContent = `🆕 ${recon.novelIocs.length} IOC${recon.novelIocs.length === 1 ? '' : 's'} surfaced only after stitching: `;
-      iocRow.appendChild(lbl);
-      const MAX_SHOWN = 3;
-      const shown = recon.novelIocs.slice(0, MAX_SHOWN);
-      for (let i = 0; i < shown.length; i++) {
-        const ioc = shown[i];
-        const v = ioc && (ioc.url || ioc.value);
-        if (!v) continue;
-        const span = document.createElement('code');
-        span.textContent = v.length > 48 ? v.slice(0, 47) + '…' : v;
-        iocRow.appendChild(span);
-        if (i < shown.length - 1) iocRow.appendChild(document.createTextNode(', '));
+      // Initialise the side-channel the IOC-table pass will push into.
+      // Lazy-init rather than unconditional so repeat re-renders don't
+      // accumulate stale detached <tr>s; the sidebar's main render
+      // cycle resets `findings.reconstructedScript._iocRows` at the
+      // same lifecycle point it resets `_iocRows` on each finding.
+      recon._iocRows ||= [];
+      const iocLine = document.createElement('div');
+      iocLine.className = 'enc-finding-iocs';
+      iocLine.setAttribute('data-clickable', '');
+      const counts = {};
+      for (const ioc of recon.novelIocs) {
+        const key = (ioc && ioc.type ? String(ioc.type) : 'value').toUpperCase();
+        counts[key] = (counts[key] || 0) + 1;
       }
-      if (recon.novelIocs.length > MAX_SHOWN) {
-        iocRow.appendChild(document.createTextNode(`, +${recon.novelIocs.length - MAX_SHOWN} more (see Signatures & IOCs)`));
-      }
-      card.appendChild(iocRow);
+      iocLine.textContent = 'IOCs: ' + Object.entries(counts)
+        .map(([k, v]) => `${v} ${k}`)
+        .join(', ');
+      iocLine.title = 'Click to highlight reassembly-derived IOC rows in the Signatures & IOCs section';
+      iocLine.addEventListener('click', (e) => {
+        e.stopPropagation();
+        // Delegate to the shared `_flashIocRows` helper by passing a
+        // thin finding-shaped object whose only role is to carry the
+        // `_iocRows` array the helper wants.
+        this._flashIocRows({ _iocRows: recon._iocRows || [] });
+      });
+      details.appendChild(iocLine);
     }
 
-    // ── Action row: "Load for analysis" ────────────────────────────────
+    card.appendChild(details);
+
+    // ── Action row — canonical `.enc-finding-actions` + `tb-btn enc-btn-load`
+    // Matches the per-finding card's "▶ Load for analysis" drill-down
+    // button byte-for-byte in class + chevron prefix. Tooltip describes
+    // the reassembly-specific semantics (this variant bypasses re-
+    // reassembly on the child load).
     const actions = document.createElement('div');
     actions.className = 'enc-finding-actions';
-    actions.style.marginTop = '8px';
     const btn = document.createElement('button');
-    btn.className = 'enc-action-btn';
-    btn.textContent = '📂 Load stitched script for analysis';
-    btn.title = 'Drill down into the reassembled script as a synthetic file (IOC extract + YARA scan run against the stitched body).';
+    btn.className = 'tb-btn enc-btn-load';
+    btn.textContent = '▶ Load stitched script';
+    btn.title = 'Open the reassembled script as a synthetic file — IOC extract + decoded-payload YARA scan run against the stitched body.';
     btn.addEventListener('click', () => {
       const rawText = (window.EncodedReassembler && typeof window.EncodedReassembler.stripSentinels === 'function')
         ? window.EncodedReassembler.stripSentinels(recon.text)
@@ -433,6 +448,14 @@ extendApp({
     // lifecycles symmetrical.
     if (f.encodedContent) {
       for (const ef of f.encodedContent) ef._iocRows = [];
+    }
+    // Same lifecycle reset for the composite reassembled-script card's
+    // side-channel: the IOC-table pass below (re-)populates this array
+    // with reassembly-derived <tr>s so the card's "IOCs: …" click
+    // handler can cross-flash. Without the reset, a re-render would
+    // leave stale detached <tr>s behind the new ones.
+    if (f.reconstructedScript) {
+      f.reconstructedScript._iocRows = [];
     }
 
     // 1. File Info (collapsed by default)
@@ -2413,6 +2436,17 @@ extendApp({
       // Deobfuscation card would silently do nothing on first render.
       if (ref._encodedFinding) {
         (ref._encodedFinding._iocRows ||= []).push(tr);
+      }
+
+      // Reassembly-derived rows: side-channel registration onto the
+      // composite `findings.reconstructedScript._iocRows` array so the
+      // reassembled-script card's "IOCs: N URL" click handler can
+      // flash the corresponding rows. Same lazy-init pattern — the
+      // composite card renders AFTER this table on first paint, so
+      // the array must be populated here to be ready when the card
+      // wires its click listener.
+      if (ref._fromReassembly && this.findings && this.findings.reconstructedScript) {
+        (this.findings.reconstructedScript._iocRows ||= []).push(tr);
       }
 
       tbody.appendChild(tr);

