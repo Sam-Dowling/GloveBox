@@ -583,7 +583,7 @@ in the same PR.**
   on first replay of the new `obfuscation/reassembly` fuzz target with
   a multi-technique pair-concat seed. Promoted to
   `tests/unit/obfuscation-reassembly-fuzz-regress-a7b7de6aa63cf197.test.js`.
-- `<pending>` — tightened obfuscation fuzz invariant 64× → 32× (matching the
+- `bc7d048` — tightened obfuscation fuzz invariant 64× → 32× (matching the
   CMD `_AMP_RATIO` peer branches already self-impose) surfaced five cross-shell
   amp blowups where candidate emission sites lacked the cap. Extracted a
   shared `_clipDeobfToAmpBudget(deobf, raw)` helper in `cmd-obfuscation.js`
