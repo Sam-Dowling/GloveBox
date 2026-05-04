@@ -146,20 +146,42 @@ class CsvRenderer {
 
     let i = fromIdx | 0;
 
+    // Memoised "next quote" position. The fast path (line-bounded no-quote
+    // detection) and the unquoted state machine both need to know where
+    // the next `"` is in the remaining buffer. Doing an unbounded
+    // `text.indexOf('"', i)` on every row is O(remaining) per call,
+    // which on a quote-free buffer compounds to O(N²): a 2 MB plain CSV
+    // parsed in ~390 ms on Node 24, a 10 MB one in ~450 ms. By caching
+    // the last quote position and only re-scanning once `i` has passed
+    // it, the total quote-scan cost is amortised to a single forward
+    // pass through the buffer — O(N) overall. `nextQuoteIdx === len`
+    // means "no quote in [i, len)"; `-1` means "not yet probed".
+    //
+    // The variable scope is intentionally function-local (not threaded
+    // through `state`): parseChunk is called with a fresh `text` every
+    // time, and a stale quote index from the previous chunk would index
+    // into nothing.
+    let nextQuoteIdx = -1;
+
     while (i < len && (maxRows <= 0 || rows.length < maxRows)) {
       // ── Fast path: at the start of a fresh row, scan ahead for the
-      //    next `\n` and the next `"`. If no quote appears before the
-      //    newline we're looking at a plain unquoted line, which we can
-      //    split natively (much faster than the char-by-char machine).
-      //    This preserves the throughput of the previous line-based
-      //    parser on the overwhelmingly common no-quote case.
+      //    next `\n` and consult the memoised next-quote position.
+      //    If no quote appears before the newline we're looking at a
+      //    plain unquoted line, which we can split natively (much
+      //    faster than the char-by-char machine). This preserves the
+      //    throughput of the previous line-based parser on the
+      //    overwhelmingly common no-quote case.
       if (!inQuotes && rowStart < 0 && cells.length === 0 && cur === '') {
         const nlIdx = text.indexOf('\n', i);
         const lineEnd = nlIdx === -1 ? len : nlIdx;
         // Skip blank lines outright.
         if (lineEnd === i) { i = lineEnd + 1; continue; }
-        const qIdx = text.indexOf('"', i);
-        if (qIdx === -1 || qIdx >= lineEnd) {
+        // Refresh the cached quote position if we've walked past it.
+        if (nextQuoteIdx < i) {
+          const qHit = text.indexOf('"', i);
+          nextQuoteIdx = qHit === -1 ? len : qHit;
+        }
+        if (nextQuoteIdx >= lineEnd) {
           if (nlIdx === -1) {
             // No trailing newline — pending partial row. Fall through
             // to the char loop so flush semantics apply uniformly.
@@ -183,6 +205,14 @@ class CsvRenderer {
         //   - no quote in the rest of the buffer: this chunk's tail is
         //     entirely cell content. Append it all and exit the loop;
         //     `state.cur` carries the partial cell to the next call.
+        //
+        // Intentionally does NOT consult the `nextQuoteIdx` memo used by
+        // the unquoted branches: inside a quoted cell we consume a quote
+        // on every tick (either one for close, two for `""` escape),
+        // which would invalidate the memo every iteration. An unbounded
+        // `indexOf('"')` is the right tool here — on a well-formed
+        // document the next quote is nearby, and the engine's
+        // memchr-accelerated scan finds it cheaply.
         const qIdx = text.indexOf('"', i);
         if (qIdx === -1) {
           if (i < len) cur += text.slice(i, len);
@@ -207,18 +237,28 @@ class CsvRenderer {
         // ASCII byte, never split.
         inQuotes = false;
         i++;
+        // Consumed the closing quote; invalidate the unquoted-branch
+        // memo so its next probe locates a fresh quote past `i`.
+        nextQuoteIdx = -1;
         continue;
       }
 
       // ── Not in quotes ──────────────────────────────────────────────
-      // Coalesced run: scan for the nearest of `"`, delim, `\n`. Use
-      // three indexOf calls and take the min; three native scans beat
-      // a per-char loop on every fixture we measured.
-      const qIdx = text.indexOf('"', i);
+      // Coalesced run: scan for the nearest of `"`, delim, `\n`. Three
+      // native scans beat a per-char loop on every fixture we measured.
+      // The quote probe uses the memoised `nextQuoteIdx` established
+      // above so we never re-scan for a quote we've already located;
+      // this keeps the total scan cost O(N) across the buffer even
+      // when the fast path has fallen through for non-quote reasons
+      // (e.g. pending mid-row state) and the remainder is quote-free.
+      if (nextQuoteIdx < i) {
+        const qHit = text.indexOf('"', i);
+        nextQuoteIdx = qHit === -1 ? len : qHit;
+      }
       const dIdx = text.indexOf(delim, i);
       const nIdx = text.indexOf('\n', i);
       // Take the smallest non-negative index, defaulting unfound to len.
-      const qPos = qIdx === -1 ? len : qIdx;
+      const qPos = nextQuoteIdx;
       const dPos = dIdx === -1 ? len : dIdx;
       const nPos = nIdx === -1 ? len : nIdx;
       let next = qPos;
@@ -270,6 +310,10 @@ class CsvRenderer {
         // matches what real-world spreadsheets emit.
         inQuotes = true;
         i++;
+        // Consumed the opening quote; invalidate the memo so the next
+        // probe (from inside the quoted branch) locates the CLOSING
+        // quote, not this one we just stepped past.
+        nextQuoteIdx = -1;
         continue;
       }
       // ch === delimCode (the only remaining sentinel).

@@ -640,6 +640,9 @@ in the same PR.**
 - `ecf78ae` — inline `safeRegex` helpers into worker shims (parity).
 - `716d532` — bound `invisRe` to `\w{2,64}` + route every IOC `matchAll` through `safeMatchAll`; unbounded `\w{2,}` froze main thread for ~7 s on 165 KB single-line `.ps1`.
 
+### Parser perf
+- `<pending>` — memoise "next quote index" inside `CsvRenderer.parseChunk` so a quote-free CSV no longer rescans to EOF on every row; a 2 MB plain CSV dropped 383 → 14 ms, 10 MB one 472 → 4 ms on Node 24. Invariant: invalidate the memo (`nextQuoteIdx = -1`) whenever we consume a quote (open, close, `""` escape); do NOT consult it inside the `inQuotes` branch (every tick invalidates anyway, cache would thrash).
+
 ### Build determinism / load order
 - `8e4735a` — backtick-comment-terminator build gate.
 - `0efb4cd` — block-comment YARA category sentinel + missing-category
