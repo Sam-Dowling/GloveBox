@@ -5,20 +5,29 @@
 // by statement, maintains a symbol table of literal assignments, and resolves
 // the simplest expression shapes that show up in real-world obfuscated
 // samples. Anything outside the supported shapes is treated as opaque and
-// drops the symbol from the table — fixed-point iteration is intentionally
-// avoided to keep the wall-clock cost bounded.
+// drops the symbol from the table.
+//
+// Fixed-point iteration: bounded (max 3 passes) — just enough to resolve
+// multi-hop chains like `$a='I'; $b='EX'; $c=$a+$b; &($c)` without
+// degenerating into a full interpreter. Each pass only re-runs on RHS
+// values that couldn't resolve in the previous pass, and we early-exit on
+// zero-delta.
 //
 // Supported constructs (everything else is opaque):
 //
-//   $x = 'literal' / "literal"        (string literal; "$y" interpolation only)
+//   $x = 'literal' / "literal"        (string literal; "$y" / "${y}" interp)
 //   $x = 1,2,3                        (integer array)
 //   $x = @{ k='v'; k2='v2' }           (flat hashtable, literal keys only)
+//   $x = @"…"@ / @'…'@                 (here-string literal; verbatim for @')
 //   $env:Y = 'literal'                (env namespace assignment)
-//   $x[i]                             (integer-indexed array access)
+//   sal/Set-Alias/New-Alias name 'lit'(literal-target alias assignment)
+//   $x[i] / ${x}                      (integer-indexed array access; braces)
 //   $x.k                              (hashtable property access)
-//   $env:Y                            (env namespace lookup)
+//   $env:Y / ${env:Y}                 (env namespace lookup; braces)
 //   $x + $y / $x + 'lit'              (string concatenation)
+//   'a'+''+'b' / "a"+""+"b"           (quote-pair collapse)
 //   $x -split 'sep' / $x -join 'sep'  (array <-> string)
+//   N..M                              (range operator, bounded to 1024 elts)
 //   &(<expr>) <args>                  (invocation form — emits cmd-obfuscation
 //                                      candidate with technique
 //                                      'PowerShell Variable Resolution')
@@ -31,6 +40,18 @@
 // …)` so the candidates flow through `_processCommandObfuscation` (which
 // already handles severity, IOC extraction, and dangerous-keyword scoring).
 // ════════════════════════════════════════════════════════════════════════════
+
+// Bounded fixed-point iteration cap. 3 passes is enough to resolve the
+// common multi-hop chains (`$a='I'; $b='EX'; $c=$a+$b; $d='-Expression';
+// $e=$c+$d; &($e)`) without degenerating. Each pass re-tries only the
+// previously-unresolved RHS values — convergence is O(deps × passes)
+// in the worst case, but the stmtCap + rhsCap guards dominate.
+const _PS_MAX_FIXED_POINT_PASSES = 3;
+
+// Range operator `N..M` output cap. Stops `0..65535 -join ''` from
+// producing a 60 KB string; most real obfuscators use `65..90` / `32..126`
+// / `-1..-$s.Length` which are comfortably under the cap.
+const _PS_RANGE_MAX_ELEMENTS = 1024;
 
 // Default values of well-known PowerShell *automatic* variables — the
 // engine-managed `$Foo` symbols that exist before any user assignment.
@@ -80,54 +101,147 @@ Object.assign(EncodedContentDetector.prototype, {
     }
     if (!stmts || stmts.length === 0) return [];
 
-    // ── Pass 1: build a symbol table from the simplest assignment forms.
+    // ── Pass 1..N: build a symbol table from the simplest assignment forms.
     // Two namespaces:
     //   vars      — keyed on the variable name without the `$` prefix
     //   envVars   — keyed on the env var name (right of `$env:`)
+    //   aliases   — keyed on the alias name (literal-target sal/Set-Alias
+    //               /New-Alias assignments)
     // Each entry is `{ kind: 'string'|'array'|'hash', value: … }`.
+    //
+    // Bounded fixed-point: on the first pass, every unresolved assignment
+    // is queued for retry. On subsequent passes, only queued entries are
+    // re-attempted. Early-exit when no new bindings resolved in a pass.
     const vars = new Map();
     const envVars = new Map();
+    const aliases = new Map();
 
     const stmtCap = 200;
     const rhsCap  = 400;
+
+    // Pending assignments queue — each entry is `{ kind, name, rhs, idx }`.
+    // `kind` is 'var' | 'env' | 'alias'. `idx` is the statement index so
+    // final-pass drops don't clobber a later successful write. Filled
+    // during the trial pass so retries can skip everything that already
+    // resolved.
+    let pending = [];
+    // Last-resolved statement index per (namespace:name). If a later
+    // successful write has already landed, a final-pass failure on an
+    // earlier statement must NOT call `.delete()` — that would wipe the
+    // newer value.
+    const lastResolvedIdx = new Map();
+    const _mark = (ns, name, idx) => lastResolvedIdx.set(ns + ':' + name, idx);
+    const _lastIdx = (ns, name) => {
+      const v = lastResolvedIdx.get(ns + ':' + name);
+      return (typeof v === 'number') ? v : -1;
+    };
 
     for (let si = 0; si < stmts.length && si < stmtCap; si++) {
       const stmt = stmts[si].trim();
       if (!stmt) continue;
 
-      // ── env-var assignment: $env:Y = '…' ──
-      const envM = /^\$env:([A-Za-z_][\w]*)\s*=\s*(.+)$/i.exec(stmt);
-      if (envM) {
-        const name = envM[1];
-        const rhs  = envM[2].slice(0, rhsCap);
-        const lit  = this._psParseStringLiteral(rhs, vars, envVars);
-        if (lit !== null) envVars.set(name, { kind: 'string', value: lit });
-        else envVars.delete(name);
+      // ── alias assignment: sal / Set-Alias / New-Alias <name> <target> ──
+      //
+      // The three aliasing cmdlets (+ the `sal` built-in alias) all share
+      // the shape `<verb> <name> <target>` where target may be a literal
+      // string / a $var reference. We only accept literal-target forms
+      // here (per Phase A scope); variable-target forms fall through to
+      // the plain assignment path when they're stored as `$x = 'target';
+      // sal y $x` — which resolves $x first, then sets y to the resolved
+      // string on the alias track.
+      const aliasM = /^(?:sal|Set-Alias|New-Alias)\s+(?:-Name\s+)?['"]?([A-Za-z_][\w]*)['"]?\s+(?:-Value\s+)?([\s\S]+)$/i.exec(stmt);
+      if (aliasM) {
+        const aname = aliasM[1];
+        const rhs   = aliasM[2].slice(0, rhsCap);
+        pending.push({ kind: 'alias', name: aname, rhs, idx: si });
         continue;
       }
 
-      // ── plain assignment: $x = … ──
-      const asnM = /^\$([A-Za-z_][\w]*)\s*=\s*(.+)$/.exec(stmt);
+      // ── env-var assignment: $env:Y = '…'  /  ${env:Y} = '…' ──
+      const envM = /^\$(?:env:|\{env:)([A-Za-z_][\w]*)\}?\s*=\s*([\s\S]+)$/i.exec(stmt);
+      if (envM) {
+        const name = envM[1];
+        const rhs  = envM[2].slice(0, rhsCap);
+        pending.push({ kind: 'env', name, rhs, idx: si });
+        continue;
+      }
+
+      // ── plain assignment: $x = …  /  ${x} = … ──
+      //
+      // `[\s\S]+` (not `.+`) so multi-line RHS — notably here-strings
+      // like `$x = @'\n…\n'@` — is captured in full.
+      const asnM = /^\$\{?([A-Za-z_][\w]*)\}?\s*=\s*([\s\S]+)$/.exec(stmt);
       if (!asnM) continue;
       const name = asnM[1];
       const rhs  = asnM[2].slice(0, rhsCap);
-
-      // Try, in order: hashtable → array → string.
-      const hash = this._psParseHashtableLiteral(rhs);
-      if (hash) { vars.set(name, { kind: 'hash', value: hash }); continue; }
-
-      const arr = this._psParseArrayLiteral(rhs, vars, envVars);
-      if (arr) { vars.set(name, { kind: 'array', value: arr }); continue; }
-
-      const str = this._psParseStringLiteral(rhs, vars, envVars);
-      if (str !== null) { vars.set(name, { kind: 'string', value: str }); continue; }
-
-      // RHS we can't resolve — drop any prior binding so a later
-      // `$x.subkey` access can't pick up a stale value.
-      vars.delete(name);
+      pending.push({ kind: 'var', name, rhs, idx: si });
     }
 
-    // ── Pass 2: scan for `&(<expr>) <args>` invocations. ──
+    // Resolve pending queue with bounded fixed-point iteration.
+    for (let pass = 0; pass < _PS_MAX_FIXED_POINT_PASSES; pass++) {
+      const nextPending = [];
+      let resolvedThisPass = 0;
+      for (const p of pending) {
+        if (p.kind === 'var') {
+          // Try, in order: hashtable → array → string.
+          const hash = this._psParseHashtableLiteral(p.rhs);
+          if (hash) { vars.set(p.name, { kind: 'hash', value: hash }); _mark('v', p.name, p.idx); resolvedThisPass++; continue; }
+
+          const arr = this._psParseArrayLiteral(p.rhs, vars, envVars);
+          if (arr) { vars.set(p.name, { kind: 'array', value: arr }); _mark('v', p.name, p.idx); resolvedThisPass++; continue; }
+
+          const str = this._psParseStringLiteral(p.rhs, vars, envVars);
+          if (str !== null) { vars.set(p.name, { kind: 'string', value: str }); _mark('v', p.name, p.idx); resolvedThisPass++; continue; }
+
+          // Couldn't resolve — queue for the next pass so later passes
+          // benefit from newly-resolved bindings. On the final pass we
+          // only drop the binding when THIS statement is the latest
+          // touch of the variable: otherwise a later successful write
+          // would be wiped out by an earlier unresolvable one.
+          if (pass < _PS_MAX_FIXED_POINT_PASSES - 1) {
+            nextPending.push(p);
+          } else if (_lastIdx('v', p.name) < p.idx) {
+            vars.delete(p.name);
+          }
+        } else if (p.kind === 'env') {
+          const lit = this._psParseStringLiteral(p.rhs, vars, envVars);
+          if (lit !== null) {
+            envVars.set(p.name, { kind: 'string', value: lit });
+            _mark('e', p.name, p.idx);
+            resolvedThisPass++;
+          } else if (pass < _PS_MAX_FIXED_POINT_PASSES - 1) {
+            nextPending.push(p);
+          } else if (_lastIdx('e', p.name) < p.idx) {
+            envVars.delete(p.name);
+          }
+        } else if (p.kind === 'alias') {
+          // Literal-target aliases only. If the RHS is a bare $var it may
+          // resolve on a later pass after the upstream assignment lands;
+          // we honour that via the same fixed-point retry loop.
+          const lit = this._psParseStringLiteral(p.rhs, vars, envVars);
+          if (typeof lit === 'string' && lit.length > 0 && lit.length < 120) {
+            aliases.set(p.name.toLowerCase(), { kind: 'string', value: lit });
+            _mark('a', p.name.toLowerCase(), p.idx);
+            resolvedThisPass++;
+          } else if (pass < _PS_MAX_FIXED_POINT_PASSES - 1) {
+            nextPending.push(p);
+          }
+        }
+      }
+      pending = nextPending;
+      // Zero-delta early exit: nothing resolved this pass and nothing
+      // was left in the queue → fixed-point reached.
+      if (resolvedThisPass === 0) break;
+      if (pending.length === 0) break;
+    }
+
+    // Stash the resolved aliases onto the detector instance so the
+    // companion `_psResolvePrimary` (and, in Phase B, the cmd-obfuscation
+    // sink helpers) can consult them without another plumbing parameter.
+    // Namespace-keyed so the two finders don't cross-contaminate.
+    this._psAliasScratch = aliases;
+
+    // ── Final pass: scan for `&(<expr>) <args>` invocations. ──
     // The `<expr>` runs to a balanced close-paren; `<args>` is the rest of
     // the current statement, evaluated piecewise.
     const invokeRe = /&\s*\(/g;
@@ -195,18 +309,40 @@ Object.assign(EncodedContentDetector.prototype, {
 
   /**
    * Tokenise a script into top-level statements on `;` and newline. Quoted
-   * literals (single, double) and `@{ … }` / `@( … )` blocks are treated as
-   * opaque so an embedded `;` inside a string or hashtable doesn't break a
-   * statement in two.
+   * literals (single, double), here-strings (`@"…\n"@` / `@'…\n'@`), and
+   * `@{ … }` / `@( … )` blocks are treated as opaque so an embedded `;`
+   * inside a string or hashtable doesn't break a statement in two.
+   *
+   * Here-string recognition: `@"` or `@'` followed immediately by `\n`
+   * opens a here-string that runs until a line starting with `"@` / `'@`.
+   * Terminators MUST appear at the beginning of a line (optionally
+   * preceded by whitespace — PowerShell 5+ relaxed this, though strict
+   * 2.0 required no leading whitespace). The lexer skips the entire
+   * body so embedded `;` / newlines don't split statements.
    */
   _psSplitStatements(text) {
     const out = [];
     let depth = 0;            // (/) and {/} nesting
     let inSingle = false;     // ' … '
     let inDouble = false;     // " … "
+    let hereKind = null;      // null | '"' | "'"
     let start = 0;
     for (let i = 0; i < text.length; i++) {
       const c = text[i];
+      // Here-string: runs until `\n"@` or `\n'@` at the start of a line.
+      if (hereKind !== null) {
+        if (c === '\n') {
+          // Scan the next line's leading whitespace to see if it closes.
+          let j = i + 1;
+          while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j++;
+          if (j + 1 < text.length && text[j] === hereKind && text[j + 1] === '@') {
+            // Consume up through the closing marker.
+            i = j + 1;
+            hereKind = null;
+          }
+        }
+        continue;
+      }
       if (inSingle) {
         if (c === "'") inSingle = false;
         continue;
@@ -214,6 +350,14 @@ Object.assign(EncodedContentDetector.prototype, {
       if (inDouble) {
         if (c === '"') inDouble = false;
         else if (c === '`' && i + 1 < text.length) i++; // PS escape
+        continue;
+      }
+      // Here-string opener: `@"` / `@'` immediately followed by newline.
+      if (c === '@' && i + 2 < text.length
+          && (text[i + 1] === '"' || text[i + 1] === "'")
+          && (text[i + 2] === '\n' || text[i + 2] === '\r')) {
+        hereKind = text[i + 1];
+        i += 2;
         continue;
       }
       if (c === "'") { inSingle = true; continue; }
@@ -233,18 +377,38 @@ Object.assign(EncodedContentDetector.prototype, {
   /**
    * Walk forward from an open paren and return the index of the matching
    * close paren (or -1 if unbalanced before EOF / hitting the 1024-char
-   * pathological-length cap).
+   * pathological-length cap). Honours here-string openers so a `;` / `)`
+   * inside a here-string body can't unbalance the counter.
    */
   _psFindMatchingParen(text, openIdx) {
     let depth = 1;
     let inSingle = false, inDouble = false;
+    let hereKind = null;
     const cap = Math.min(text.length, openIdx + 1024);
     for (let i = openIdx + 1; i < cap; i++) {
       const c = text[i];
+      if (hereKind !== null) {
+        if (c === '\n') {
+          let j = i + 1;
+          while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j++;
+          if (j + 1 < text.length && text[j] === hereKind && text[j + 1] === '@') {
+            i = j + 1;
+            hereKind = null;
+          }
+        }
+        continue;
+      }
       if (inSingle) { if (c === "'") inSingle = false; continue; }
       if (inDouble) {
         if (c === '"') inDouble = false;
         else if (c === '`' && i + 1 < text.length) i++;
+        continue;
+      }
+      if (c === '@' && i + 2 < text.length
+          && (text[i + 1] === '"' || text[i + 1] === "'")
+          && (text[i + 2] === '\n' || text[i + 2] === '\r')) {
+        hereKind = text[i + 1];
+        i += 2;
         continue;
       }
       if (c === "'") { inSingle = true; continue; }
@@ -260,18 +424,37 @@ Object.assign(EncodedContentDetector.prototype, {
 
   /**
    * Find the end of a statement starting at `from` — first top-level `;`,
-   * `\n`, or EOF. Quoted literals are honoured.
+   * `\n`, or EOF. Quoted literals and here-strings are honoured.
    */
   _psFindStatementEnd(text, from) {
     let inSingle = false, inDouble = false;
+    let hereKind = null;
     let depth = 0;
     const cap = Math.min(text.length, from + 1024);
     for (let i = from; i < cap; i++) {
       const c = text[i];
+      if (hereKind !== null) {
+        if (c === '\n') {
+          let j = i + 1;
+          while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j++;
+          if (j + 1 < text.length && text[j] === hereKind && text[j + 1] === '@') {
+            i = j + 1;
+            hereKind = null;
+          }
+        }
+        continue;
+      }
       if (inSingle) { if (c === "'") inSingle = false; continue; }
       if (inDouble) {
         if (c === '"') inDouble = false;
         else if (c === '`' && i + 1 < text.length) i++;
+        continue;
+      }
+      if (c === '@' && i + 2 < text.length
+          && (text[i + 1] === '"' || text[i + 1] === "'")
+          && (text[i + 2] === '\n' || text[i + 2] === '\r')) {
+        hereKind = text[i + 1];
+        i += 2;
         continue;
       }
       if (c === "'") { inSingle = true; continue; }
@@ -389,10 +572,13 @@ Object.assign(EncodedContentDetector.prototype, {
   /**
    * Resolve a single PowerShell *string-shaped* expression. Supports:
    *   'literal'   "literal" (with `$var` interpolation)
+   *   @"…"@       @'…'@     (here-strings — verbatim for @', interp for @")
    *   $var, $env:Y, $var.k, $var[i]
-   *   <expr> + <expr>          (string concat)
+   *   ${var}, ${env:Y}                (braced form)
+   *   <expr> + <expr>          (string concat; '' and "" operands collapsed)
    *   <expr> -split 'sep'      (returns array; caller can index)
    *   <expr> -join 'sep'       (array → string)
+   *   N..M                     (range operator; bounded to 1024 elements)
    *
    * Returns the resolved string, or `null` if any sub-expression can't be
    * resolved against the supplied symbol tables.
@@ -408,13 +594,14 @@ Object.assign(EncodedContentDetector.prototype, {
   /**
    * Recursive expression resolver — returns `string | string[]` or `null`.
    * Handles `+` concat (left-associative), `-split` / `-join` operators
-   * (split before join when both appear left-to-right, mirroring PS), and
-   * primary terms (literal, `$var`, `$env:Y`, `$var[i]`, `$var.k`).
+   * (split before join when both appear left-to-right, mirroring PS),
+   * range operator `N..M`, and primary terms (literal, `$var`, `$env:Y`,
+   * `${var}`, here-strings, `$var[i]`, `$var.k`).
    *
    * The implementation is a tiny recursive-descent walker — operator
-   * precedence is fixed at: primary → split → join → concat. PowerShell's
-   * actual precedence is more elaborate, but the obfuscation patterns we
-   * target only ever use these in left-to-right combinations.
+   * precedence is fixed at: primary → split → join → range → concat.
+   * PowerShell's actual precedence is more elaborate, but the obfuscation
+   * patterns we target only ever use these in left-to-right combinations.
    */
   _psResolveExpression(src, vars, envVars) {
     src = src.trim();
@@ -426,7 +613,12 @@ Object.assign(EncodedContentDetector.prototype, {
     if (concatParts.length > 1) {
       const out = [];
       for (const p of concatParts) {
-        const v = this._psResolveExpression(p.trim(), vars, envVars);
+        const trimmed = p.trim();
+        // Empty-operand short-circuit: `'a' + '' + 'b'` would otherwise
+        // recurse on a 0-char literal and return null. Treat empty
+        // literals as empty strings explicitly.
+        if (trimmed === "''" || trimmed === '""') { out.push(''); continue; }
+        const v = this._psResolveExpression(trimmed, vars, envVars);
         if (v === null) return null;
         if (Array.isArray(v)) out.push(v.join(''));
         else out.push(String(v));
@@ -465,13 +657,44 @@ Object.assign(EncodedContentDetector.prototype, {
       return parts;
     }
 
+    // ── range: N..M  /  $var..$var  (integer endpoints only) ──
+    //
+    // Emits a numeric string-array so downstream `-join ''` / `[char[]]`
+    // / `[i,j,k]` accessors pick it up uniformly. Capped at
+    // _PS_RANGE_MAX_ELEMENTS elements to stop `0..65535 -join ''`-style
+    // amp blowups. Negative ranges decrement (`-1..-5` = -1,-2,-3,-4,-5).
+    const rangeM = /^([\s\S]+?)\s*\.\.\s*([\s\S]+)$/.exec(src);
+    if (rangeM) {
+      const lo = this._psResolveExpression(rangeM[1].trim(), vars, envVars);
+      const hi = this._psResolveExpression(rangeM[2].trim(), vars, envVars);
+      if (lo !== null && hi !== null
+          && !Array.isArray(lo) && !Array.isArray(hi)) {
+        const ls = String(lo);
+        const hs = String(hi);
+        if (/^-?\d+$/.test(ls) && /^-?\d+$/.test(hs)) {
+          const n = parseInt(ls, 10);
+          const m = parseInt(hs, 10);
+          const span = Math.abs(m - n) + 1;
+          if (span <= _PS_RANGE_MAX_ELEMENTS) {
+            const arr = [];
+            if (n <= m) for (let k = n; k <= m; k++) arr.push(String(k));
+            else        for (let k = n; k >= m; k--) arr.push(String(k));
+            return arr;
+          }
+          return null; // range too wide — refuse rather than blow budget
+        }
+      }
+    }
+
     // ── primary terms ──
     return this._psResolvePrimary(src, vars, envVars);
   },
 
   /**
-   * Resolve a primary term: literal, parenthesised sub-expression, or
-   * variable reference (with optional `[i]` / `.k` accessor).
+   * Resolve a primary term: literal, here-string, parenthesised
+   * sub-expression, or variable reference (with optional `[i]` / `.k`
+   * accessor). Supports both plain (`$var`, `$env:Y`) and braced
+   * (`${var}`, `${env:Y}`) variable syntax.
    */
   _psResolvePrimary(src, vars, envVars) {
     src = src.trim();
@@ -485,6 +708,32 @@ Object.assign(EncodedContentDetector.prototype, {
       }
     }
 
+    // Verbatim here-string: @'…\n…\n'@ — no interpolation, preserves
+    // everything between the opener and the line-anchored closer. The
+    // opener is `@'` followed by a newline; body runs until a line whose
+    // leading non-whitespace is `'@`.
+    if (src.startsWith("@'") && (src[2] === '\n' || src[2] === '\r')) {
+      const end = src.indexOf("\n'@");
+      if (end > 0) {
+        // Body starts after `@'\n` (skip leading \r if CRLF).
+        let bodyStart = 3;
+        if (src[2] === '\r' && src[3] === '\n') bodyStart = 4;
+        // Everything between bodyStart and the newline before `'@`.
+        return src.substring(bodyStart, end);
+      }
+    }
+
+    // Expandable here-string: @"…\n…\n"@ — $var and ${var} interp only.
+    if (src.startsWith('@"') && (src[2] === '\n' || src[2] === '\r')) {
+      const end = src.indexOf('\n"@');
+      if (end > 0) {
+        let bodyStart = 3;
+        if (src[2] === '\r' && src[3] === '\n') bodyStart = 4;
+        const inner = src.substring(bodyStart, end);
+        return this._psInterpolate(inner, vars, envVars);
+      }
+    }
+
     // Single-quoted literal — verbatim, no interpolation.
     if (src.startsWith("'") && src.endsWith("'") && src.length >= 2) {
       // Reject if an unescaped `'` lives inside (would mean two adjacent
@@ -494,32 +743,35 @@ Object.assign(EncodedContentDetector.prototype, {
       return inner;
     }
 
-    // Double-quoted literal — handle `$var` / `$env:Y` interpolation,
-    // ignore subexpressions / casts.
+    // Double-quoted literal — handle `$var` / `${var}` / `$env:Y` /
+    // `${env:Y}` interpolation, ignore subexpressions / casts.
     if (src.startsWith('"') && src.endsWith('"') && src.length >= 2) {
       const inner = src.slice(1, -1);
       if (/\$\(/.test(inner)) return null; // subexpressions unsupported
-      // Replace `$env:Y` first (longer form), then `$var`. PowerShell
-      // variable names are letters/digits/underscore.
-      let out = inner.replace(/\$env:([A-Za-z_][\w]*)/gi, (_full, name) => {
-        const v = envVars.get(name);
-        return v ? String(v.value) : '';
-      });
-      out = out.replace(/\$([A-Za-z_][\w]*)/g, (_full, name) => {
-        const v = vars.get(name);
-        if (!v) return '';
-        if (v.kind === 'string') return String(v.value);
-        if (v.kind === 'array')  return v.value.join(' ');
-        return '';
-      });
-      // Strip PS backtick escapes (`n → newline, `t → tab, … — for the
-      // obfuscation use case we just drop the backtick).
-      out = out.replace(/`([\s\S])/g, '$1');
-      return out;
+      return this._psInterpolate(inner, vars, envVars);
     }
 
     // Integer literal.
     if (/^-?\d+$/.test(src)) return src;
+
+    // ${env:Y} — braced env-var form. Must come before ${var} so the
+    // `env:` prefix isn't mistaken for a regular variable name.
+    const envBraceM = /^\$\{env:([A-Za-z_][\w]*)\}\s*(.*)$/i.exec(src);
+    if (envBraceM) {
+      const name = envBraceM[1];
+      const tail = envBraceM[2];
+      const v = envVars.get(name);
+      if (!v) return null;
+      return this._psApplyAccessors(v, tail, vars, envVars);
+    }
+
+    // ${var} — braced var form.
+    const varBraceM = /^\$\{([A-Za-z_][\w]*)\}\s*(.*)$/.exec(src);
+    if (varBraceM) {
+      const name = varBraceM[1];
+      const tail = varBraceM[2];
+      return this._psResolveVarName(name, tail, vars, envVars);
+    }
 
     // $env:Y reference — possibly with [i] / .k accessor (rare for env).
     const envM = /^\$env:([A-Za-z_][\w]*)\s*(.*)$/i.exec(src);
@@ -534,24 +786,83 @@ Object.assign(EncodedContentDetector.prototype, {
     // $var reference — possibly with [i] / .k accessor.
     const varM = /^\$([A-Za-z_][\w]*)\s*(.*)$/.exec(src);
     if (varM) {
-      const name = varM[1];
-      const tail = varM[2];
-      let v = vars.get(name);
-      if (!v) {
-        // Fall back to PowerShell's well-known automatic variables. The
-        // value is exposed as a string-kind entry so `[i]`, `[i,j,k]`,
-        // and `.toString()` chains all work uniformly.
-        const auto = KNOWN_PS_AUTO_VARS[name.toLowerCase()];
-        if (typeof auto === 'string' && auto.length > 0) {
-          v = { kind: 'string', value: auto };
-        } else {
-          return null;
-        }
-      }
-      return this._psApplyAccessors(v, tail, vars, envVars);
+      return this._psResolveVarName(varM[1], varM[2], vars, envVars);
+    }
+
+    // Bare alias reference (no `$`) — if a literal-target alias with
+    // this name was registered by `sal`/`Set-Alias`/`New-Alias`, return
+    // its string value. This is deliberately narrow: only matches a
+    // standalone identifier with no accessor tail, so a random word
+    // in a log line can't accidentally resolve.
+    const aliasBareM = /^([A-Za-z_][\w]*)$/.exec(src);
+    if (aliasBareM && this._psAliasScratch) {
+      const hit = this._psAliasScratch.get(aliasBareM[1].toLowerCase());
+      if (hit) return String(hit.value);
     }
 
     return null;
+  },
+
+  /**
+   * Resolve a bare variable name (`$x` / `${x}`), falling back through
+   * the vars table → automatic-variable defaults → registered alias
+   * table → null. Applies any accessor tail uniformly.
+   */
+  _psResolveVarName(name, tail, vars, envVars) {
+    let v = vars.get(name);
+    if (!v) {
+      // Fall back to PowerShell's well-known automatic variables.
+      const auto = KNOWN_PS_AUTO_VARS[name.toLowerCase()];
+      if (typeof auto === 'string' && auto.length > 0) {
+        v = { kind: 'string', value: auto };
+      } else if (this._psAliasScratch) {
+        // Finally, alias lookup — `sal x iex; &($x)` resolves through
+        // the alias table. Aliases are always string-kind.
+        const hit = this._psAliasScratch.get(name.toLowerCase());
+        if (hit) v = { kind: 'string', value: hit.value };
+      }
+      if (!v) return null;
+    }
+    return this._psApplyAccessors(v, tail, vars, envVars);
+  },
+
+  /**
+   * Interpolate `$var`, `${var}`, `$env:Y`, `${env:Y}` inside a
+   * double-quoted string body. Also strips PS backtick escapes.
+   * Returns a plain string (possibly empty).
+   */
+  _psInterpolate(inner, vars, envVars) {
+    // Handle the four variable shapes in priority order so `${env:X}`
+    // isn't mistakenly consumed by the `${…}` or `$env:…` handlers.
+    let out = inner.replace(/\$\{env:([A-Za-z_][\w]*)\}/gi, (_full, name) => {
+      const v = envVars.get(name);
+      return v ? String(v.value) : '';
+    });
+    out = out.replace(/\$env:([A-Za-z_][\w]*)/gi, (_full, name) => {
+      const v = envVars.get(name);
+      return v ? String(v.value) : '';
+    });
+    const lookupVar = (name) => {
+      const v = vars.get(name);
+      if (v) {
+        if (v.kind === 'string') return String(v.value);
+        if (v.kind === 'array')  return v.value.join(' ');
+        return '';
+      }
+      const auto = KNOWN_PS_AUTO_VARS[name.toLowerCase()];
+      if (typeof auto === 'string') return auto;
+      if (this._psAliasScratch) {
+        const hit = this._psAliasScratch.get(name.toLowerCase());
+        if (hit) return String(hit.value);
+      }
+      return '';
+    };
+    out = out.replace(/\$\{([A-Za-z_][\w]*)\}/g, (_full, name) => lookupVar(name));
+    out = out.replace(/\$([A-Za-z_][\w]*)/g, (_full, name) => lookupVar(name));
+    // Strip PS backtick escapes (`n → newline, `t → tab, … — for the
+    // obfuscation use case we just drop the backtick).
+    out = out.replace(/`([\s\S])/g, '$1');
+    return out;
   },
 
 
