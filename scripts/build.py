@@ -813,6 +813,22 @@ APP_JS_FILES = [
     # filter calls). The host site is `src/app/app-load.js`'s post-encoded
     # block; see the call site there for the integration shape.
     'src/decoded-yara-filter.js',
+    # encoded-reassembler.js — whole-file reconstruction of scripts whose
+    # obfuscation is spread across MULTIPLE parallel techniques (Phase 1
+    # of the parallel-obfuscation UX improvement). Pure helper that takes
+    # the detector's `encodedFindings` tree + the file's analysisText
+    # and splices each deepest-decoded span back into the source at its
+    # byte offset. Exposes `window.EncodedReassembler.build()` for the
+    # host-side caller in `app-load.js`, and `mapReconToSource` /
+    # `stripSentinels` helpers for the sidebar composite card.
+    #
+    # Must load AFTER `_DETECTOR_FILES` (needs the detector's finding
+    # shape documented via `_pickDeepestTextNode`) and AFTER
+    # `decoded-yara-filter.js` (same phase ordering — yara-gate runs
+    # first so reassembly sees the YARA-retained subset) and BEFORE
+    # `src/app/app-load.js` (the host integration site). No worker
+    # bundle duplication — reassembly is main-thread only (Phase 1).
+    'src/encoded-reassembler.js',
     'src/qr-decoder.js',
 
     'src/docx-parser.js',

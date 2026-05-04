@@ -23,6 +23,151 @@ extendApp({
     });
   },
 
+  // ── Reassembled-script composite card ───────────────────────────────────
+  // Paints a single "stitched-script" card at the top of the Deobfuscation
+  // section when `EncodedReassembler.build()` produced a reconstructed
+  // view (two or more decoded spans spliced back into the source).
+  //
+  // The card is PURE DERIVATION from `findings.reconstructedScript`; no
+  // state is re-computed here. Contract:
+  //
+  //   recon = {
+  //     text,               // stitched source, sentinels included
+  //     spans[],            // { sourceOffset, sourceLength, textStart, textEnd, chain, encoding, severity, deobfuscatedText, ... }
+  //     coverage: { ratio, bytesReplaced, sourceBytes, findingsUsed },
+  //     collisions[],       // overlaps resolved during build (informational)
+  //     techniques[],       // unique encoding labels across spans
+  //     reconstructedHash,  // 16-char FNV-1a over the stitched text
+  //     severity,           // max across contributing spans
+  //     mode,               // 'auto' | 'aggressive' | 'bruteforce'
+  //     truncated,          // true when output-byte ceiling clipped the tail
+  //   }
+  //
+  // Drill-down path: "Load for analysis" wraps the sentinel-stripped text
+  // in a synthetic File named `${orig}.reassembled.{hash}.{ext}` and
+  // routes through `_drillDownToSynthetic`. The child load is flagged
+  // `_isReassemblyChild = true` by `app-load.js` so `EncodedReassembler`
+  // does not recursively re-reassemble the composite itself (would
+  // infinite-loop on scripts whose reconstruction is itself a stitched
+  // payload).
+  _renderReassembledScriptCard(body, recon, fileName) {
+    const card = document.createElement('div');
+    card.className = `enc-finding-card enc-sev-${recon.severity || 'info'} enc-finding-card-reassembled`;
+    card.dataset.sbReassembled = '1';
+
+    // ── Header ─────────────────────────────────────────────────────────
+    const header = document.createElement('div');
+    header.className = 'enc-finding-header';
+    const title = document.createElement('strong');
+    title.textContent = '🧩 Reassembled Script';
+    header.appendChild(title);
+    const count = document.createElement('span');
+    count.className = 'enc-chain-count';
+    count.style.marginLeft = '6px';
+    count.textContent = `${recon.spans.length} spans`;
+    header.appendChild(count);
+    card.appendChild(header);
+
+    // ── One-line rationale ─────────────────────────────────────────────
+    const expl = document.createElement('div');
+    expl.className = 'enc-finding-expl';
+    expl.style.marginTop = '4px';
+    const techs = (recon.techniques || []).slice(0, 4).join(' · ');
+    const pct = Math.round((recon.coverage && recon.coverage.ratio || 0) * 100);
+    expl.textContent = `Stitched ${recon.spans.length} decoded spans (${pct}% of source) from ${techs || 'multiple techniques'} back into one script for end-to-end review.`;
+    card.appendChild(expl);
+
+    // ── Techniques pill row ────────────────────────────────────────────
+    if (recon.techniques && recon.techniques.length) {
+      const pills = document.createElement('div');
+      pills.className = 'enc-chain-pills';
+      pills.style.marginTop = '6px';
+      for (const t of recon.techniques) {
+        const pill = document.createElement('span');
+        pill.className = 'enc-chain-pill';
+        pill.textContent = t;
+        pills.appendChild(pill);
+      }
+      card.appendChild(pills);
+    }
+
+    // ── Truncation / collision notices ─────────────────────────────────
+    if (recon.truncated) {
+      const warn = document.createElement('div');
+      warn.className = 'enc-finding-warn';
+      warn.style.marginTop = '6px';
+      warn.style.fontSize = '10px';
+      warn.style.opacity = '0.75';
+      warn.textContent = '⚠ Reconstruction truncated at output ceiling — load for analysis to see the full stitched body.';
+      card.appendChild(warn);
+    }
+    if (Array.isArray(recon.collisions) && recon.collisions.length) {
+      const warn = document.createElement('div');
+      warn.className = 'enc-finding-warn';
+      warn.style.marginTop = '4px';
+      warn.style.fontSize = '10px';
+      warn.style.opacity = '0.75';
+      warn.textContent = `ℹ ${recon.collisions.length} overlapping span(s) resolved by severity/length.`;
+      card.appendChild(warn);
+    }
+
+    // ── Preview block (sentinels stripped, clipped to 400 chars) ──────
+    const previewSrc = (window.EncodedReassembler && typeof window.EncodedReassembler.stripSentinels === 'function')
+      ? window.EncodedReassembler.stripSentinels(recon.text)
+      : recon.text;
+    const previewMax = 400;
+    const preview = document.createElement('pre');
+    preview.className = 'enc-preview';
+    preview.style.marginTop = '8px';
+    preview.style.maxHeight = '140px';
+    preview.style.overflow = 'auto';
+    preview.textContent = previewSrc.length > previewMax
+      ? previewSrc.slice(0, previewMax) + '…'
+      : previewSrc;
+    card.appendChild(preview);
+
+    // ── Action row: "Load for analysis" ────────────────────────────────
+    const actions = document.createElement('div');
+    actions.className = 'enc-finding-actions';
+    actions.style.marginTop = '8px';
+    const btn = document.createElement('button');
+    btn.className = 'enc-action-btn';
+    btn.textContent = '📂 Load stitched script for analysis';
+    btn.title = 'Drill down into the reassembled script as a synthetic file (IOC extract + YARA scan run against the stitched body).';
+    btn.addEventListener('click', () => {
+      const rawText = (window.EncodedReassembler && typeof window.EncodedReassembler.stripSentinels === 'function')
+        ? window.EncodedReassembler.stripSentinels(recon.text)
+        : recon.text;
+      // Extension heuristic for the virtual filename. The parent file
+      // extension is preserved when recognisable; otherwise default to
+      // `.txt` so the plaintext renderer handles it. The reconstructedHash
+      // scopes the virtual name so repeated drill-downs on the same
+      // reconstruction dedupe in the nav stack.
+      const origExt = (() => {
+        const m = /\.([A-Za-z0-9]{1,8})$/.exec(fileName || '');
+        return m ? m[1].toLowerCase() : 'txt';
+      })();
+      const synName = `${(fileName || 'file').replace(/\.[^.]+$/, '')}.reassembled.${recon.reconstructedHash || 'noh'}.${origExt}`;
+      const bytes = new TextEncoder().encode(rawText);
+      // Dispatch via `openInnerFile` directly rather than
+      // `_drillDownToSynthetic` — the reassembly-child flag is specific
+      // to this call site and needs to thread into `openInnerFile`'s
+      // `opts._isReassemblyChild` channel (consumed in `app-load.js`
+      // to skip re-reassembly on the child load).
+      const blob = new Blob([bytes], { type: 'text/plain' });
+      const syntheticFile = new File([blob], synName, { type: 'text/plain' });
+      this.openInnerFile(syntheticFile, null, {
+        parentName: fileName,
+        returnFocus: { section: 'deobfuscation' },
+        _isReassemblyChild: true,
+      });
+    });
+    actions.appendChild(btn);
+    card.appendChild(actions);
+
+    body.appendChild(card);
+  },
+
 
   // Truncate a string shown inside a match toast to keep the notification
   // compact. IOCs extracted from decoded blobs can be kilobytes long.
@@ -689,6 +834,20 @@ extendApp({
 
     const body = document.createElement('div');
     body.className = 'sb-details-body';
+
+    // ── Reconstructed-script composite card (Phase 1) ───────────────────
+    // When `EncodedReassembler.build()` stitched two or more decoded spans
+    // back into the source, paint a single composite card at the top of
+    // the Deobfuscation section. This is the "one stitched script" view
+    // an analyst is after when a dropper's `iex "$a $b $c"` line is
+    // spread across three findings — the per-finding cards below retain
+    // their provenance detail, but this card gives them somewhere to
+    // start. Phase 2 will attach IOC-diff + decoded-payload YARA results
+    // here; Phase 1 ships the card + "Load for analysis" drill-down only.
+    const _recon = this.findings && this.findings.reconstructedScript;
+    if (_recon && _recon.text && Array.isArray(_recon.spans) && _recon.spans.length >= 2) {
+      this._renderReassembledScriptCard(body, _recon, fileName);
+    }
 
     // ── Filter state ──────────────────────────────────────────────────────
     const activeSeverities = new Set();

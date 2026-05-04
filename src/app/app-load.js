@@ -477,6 +477,14 @@ extendApp({
         this._pendingBruteforceDecode = false;
         const maxRecursionDepth = this._pendingMaxRecursionDepth || undefined;
         this._pendingMaxRecursionDepth = undefined;
+        // Single-shot: reassembly-child loads must not recurse through
+        // `EncodedReassembler.build()` below (see the guard in the
+        // reassembly block). Consume the pending flag into a local here
+        // so it behaves identically to the aggressive / bruteforce
+        // flags even if the reassembly block early-returns before
+        // reaching its own reference.
+        this._isReassemblyChild = !!this._pendingIsReassemblyChild;
+        this._pendingIsReassemblyChild = false;
         try {
           const out = await WorkerManager.runEncoded(
             buffer.slice(0),
@@ -554,6 +562,50 @@ extendApp({
         }
 
         this.findings.encodedContent = encodedFindings;
+
+        // ── Phase 1 (cont.) — whole-file reassembly ─────────────────────
+        // When a script uses obfuscation techniques IN PARALLEL (Base64
+        // at offset 100, char-array at offset 500, cmd-obfuscation at
+        // offset 900 — all feeding one `iex` line), the per-finding
+        // cards that follow are a fragmented view of what's really one
+        // payload. `EncodedReassembler.build()` splices each deepest
+        // decoded span back into the source at its byte offset,
+        // producing a single stitched reconstruction the sidebar paints
+        // as a composite card above the per-finding cards.
+        //
+        // This is a PURE derivation from `encodedFindings` +
+        // `analysisText`; no re-scan yet (Phase 2 adds IOC-diff + YARA
+        // decoded-payload re-scan). Additive-only: on any failure the
+        // field is left unset and the sidebar path already skips it.
+        //
+        // Skipped on reassembly-child loads (see `openInnerFile` with
+        // the `_isReassemblyChild` flag) to prevent self-recursion when
+        // an analyst clicks "Load for analysis" on the composite card
+        // itself.
+        this.findings.reconstructedScript = null;
+        if (!this._isReassemblyChild
+            && window.EncodedReassembler
+            && typeof window.EncodedReassembler.build === 'function'
+            && encodedFindings.length > 0) {
+          try {
+            const reassemblyMode = bruteforce ? 'bruteforce' : (aggressive ? 'aggressive' : 'auto');
+            const recon = window.EncodedReassembler.build(
+              analysisText,
+              encodedFindings,
+              { mode: reassemblyMode },
+            );
+            // Only attach the field when we actually have something
+            // stitched to show. `skipReason` results (too-few-findings,
+            // below-coverage, no-source) produce a null so the sidebar
+            // can short-circuit cheaply.
+            if (recon && recon.text && Array.isArray(recon.spans) && recon.spans.length >= 2) {
+              this.findings.reconstructedScript = recon;
+            }
+          } catch (reassemblyErr) {
+            this._reportNonFatal('encoded-reassembler', reassemblyErr, { silent: true });
+          }
+        }
+
         // Store raw bytes reference on compressed findings for lazy decompression
         for (const ef of encodedFindings) {
           if (ef.needsDecompression) ef._rawBytes = new Uint8Array(buffer);
@@ -1476,6 +1528,17 @@ extendApp({
     // lifetime as the aggressive / bruteforce flags.
     if (typeof opts._maxRecursionDepth === 'number') {
       this._pendingMaxRecursionDepth = opts._maxRecursionDepth;
+    }
+    // Reassembly-child flag — set by the Deobfuscation section's
+    // "Load stitched script for analysis" button (see `_renderReassembledScriptCard`
+    // in app-sidebar.js). Consumed by the encoded-content block in
+    // `_loadFile` to skip `EncodedReassembler.build()` on this child
+    // load; otherwise a reconstructed script whose own findings overlap
+    // its sentinel-stripped text would recursively reassemble itself
+    // on every drill-down. Single-shot lifetime identical to the
+    // aggressive / bruteforce flags above.
+    if (opts._isReassemblyChild) {
+      this._pendingIsReassemblyChild = true;
     }
     // Track the fire-and-forget load so `_testApiWaitForIdle` can drain
     // it before calling `_navJumpTo`. Without this, `waitForIdle` exits

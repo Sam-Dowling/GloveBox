@@ -128,6 +128,33 @@ const PARSER_LIMITS = Object.freeze({
   FINDER_MAX_INPUT_BYTES: 4 * 1024 * 1024,
   FINDER_BUDGET_MS:       2_500,
 
+  // ── Whole-file reassembly budgets ────────────────────────
+  // `EncodedReassembler.build` stitches N decoded spans back into the
+  // original source text to produce a single "reconstructed script"
+  // view for scripts whose obfuscation is spread across parallel
+  // techniques (Base64 here, char-array there, cmd-obfuscation
+  // somewhere else). These numbers bound the stitching + re-analysis
+  // cost regardless of how many findings a file produced.
+  //
+  //   REASSEMBLY_MAX_FINDINGS       — hard cap on spans considered per file
+  //   REASSEMBLY_MAX_OUTPUT_BYTES   — ceiling on reconstructed text length
+  //   REASSEMBLY_MIN_COVERAGE       — ratio of source replaced below which
+  //                                   no composite card is emitted (the
+  //                                   per-finding cards already tell the
+  //                                   whole story).
+  //   REASSEMBLY_MIN_FINDINGS_USED  — reconstruction below this finding
+  //                                   count is skipped (2 = anything that
+  //                                   would materially differ from a
+  //                                   single per-finding card).
+  //
+  // The EncodedReassembler module carries its own DEFAULTS with the same
+  // numeric values for test isolation; these are the canonical ones that
+  // the host caller threads in.
+  REASSEMBLY_MAX_FINDINGS:       64,
+  REASSEMBLY_MAX_OUTPUT_BYTES:   4 * 1024 * 1024,
+  REASSEMBLY_MIN_COVERAGE:       0.05,
+  REASSEMBLY_MIN_FINDINGS_USED:  2,
+
   WORKER_TIMEOUT_MS:    300_000,             // 5 min — preemptive deadline on
 
                                              // any `WorkerManager.run*` job
