@@ -111,14 +111,57 @@ test('cmd-obfuscation: PowerShell string concatenation joins quoted parts', () =
 
 test('cmd-obfuscation: PowerShell backtick escape recovers `pow`er`shell`', () => {
   // PowerShell `` ` `` is the line-continuation / escape character; the
-  // backtick regex requires ≥2 internal backticks AND the cleaned form
-  // must hit the suspiciousKeywords list (cmd-obfuscation.js:769).
+  // backtick regex now requires ≥1 internal backtick (relaxed from ≥2
+  // — the real gate is the suspiciousKeywords whitelist) AND the
+  // cleaned form must hit that whitelist.
   // `pow`er`shell` cleans to "powershell" which is in the list.
   const text = '$x = pow`er`shell -Command $payload';
   const candidates = d._findCommandObfuscationCandidates(text, {});
   const ticks = pick(candidates, c => /Backtick/.test(c.technique));
   assert.ok(ticks.length >= 1, `expected backtick candidate; got: ${JSON.stringify(host(candidates))}`);
   assert.equal(ticks[0].deobfuscated.toLowerCase(), 'powershell');
+});
+
+test('cmd-obfuscation: single-backtick LOLBin — `pow`ershell` recovers "powershell"', () => {
+  // Single-tick obfuscation of a whitelisted LOLBin. Pre-fix the ≥2
+  // gate rejected this; post-fix the suspiciousKeywords whitelist is
+  // the only real gate.
+  const text = '$x = pow`ershell -Command $payload';
+  const candidates = d._findCommandObfuscationCandidates(text, {});
+  const ticks = pick(candidates, c => /Backtick/.test(c.technique));
+  assert.ok(ticks.length >= 1, `expected single-tick backtick candidate; got: ${JSON.stringify(host(candidates))}`);
+  assert.equal(ticks[0].deobfuscated.toLowerCase(), 'powershell');
+});
+
+test('cmd-obfuscation: single-backtick in hyphenated name — `Invoke`-Expression`', () => {
+  // One tick, positioned adjacent to the hyphen. The backtick regex
+  // allows `` ` `` on either side of the hyphen via `` `?-`? ``.
+  const text = '& Invoke`-Expression $cmd';
+  const candidates = d._findCommandObfuscationCandidates(text, {});
+  const ticks = pick(candidates, c => /Backtick/.test(c.technique));
+  assert.ok(ticks.length >= 1, `expected single-tick backtick candidate; got: ${JSON.stringify(host(candidates))}`);
+  assert.equal(ticks[0].deobfuscated.toLowerCase(), 'invoke-expression');
+});
+
+test('cmd-obfuscation: single-backtick alias `i`ex` recovers "iex"', () => {
+  // `iex` is the canonical PS alias for Invoke-Expression. With the
+  // whitelist now containing `iex`, a single-tick `i`ex` form is
+  // recovered. Raw length 4 chars (≥ regex 3-char minimum).
+  const text = '$payload | i`ex';
+  const candidates = d._findCommandObfuscationCandidates(text, {});
+  const ticks = pick(candidates, c => /Backtick/.test(c.technique));
+  assert.ok(ticks.length >= 1, `expected i\`ex candidate; got: ${JSON.stringify(host(candidates))}`);
+  assert.equal(ticks[0].deobfuscated.toLowerCase(), 'iex');
+});
+
+test('cmd-obfuscation: non-LOLBin single-backtick token is NOT emitted', () => {
+  // English-contraction-rendered-with-backtick (`won`t`, `don`t`,
+  // `c`est`) must be dropped by the suspiciousKeywords whitelist —
+  // this is the FP-defence proof for relaxing the count floor.
+  const text = `I won\`t run this and c\`est la vie`;
+  const candidates = d._findCommandObfuscationCandidates(text, {});
+  const ticks = pick(candidates, c => /Backtick/.test(c.technique));
+  assert.equal(ticks.length, 0, `non-LOLBin cleaned form must be filtered by whitelist; got: ${JSON.stringify(host(ticks))}`);
 });
 
 // ── Post-processor: `for /f … do call %X` mirror ────────────────────────────

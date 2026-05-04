@@ -167,7 +167,29 @@ function genBacktickEscape() {
     // Partial injection — every 2nd char
     const partial = kw.split('').map((c, i) => (i > 0 && i % 2 === 0) ? '`' + c : c).join('');
     out.push(makeSeed(`& ${partial}`, kw));
+    // Single-tick variants — one backtick at each valid interior
+    // position. Skip positions directly adjacent to `-` because the
+    // regex handles the hyphen flank separately (the `` `?-`? `` group)
+    // and we generate those shapes explicitly below.
+    for (let i = 1; i < kw.length; i++) {
+      if (kw[i] === '-' || kw[i - 1] === '-') continue;
+      out.push(makeSeed(`& ${kw.slice(0, i)}\`${kw.slice(i)}`, kw));
+    }
+    // Hyphen-flank single ticks: `X`-Y` and `X-`Y` when the keyword
+    // has a hyphen. Cover both flanks so the regex's hyphen group
+    // gets exercised with exactly one tick.
+    const hyphenIdx = kw.indexOf('-');
+    if (hyphenIdx >= 0) {
+      out.push(makeSeed(`& ${kw.slice(0, hyphenIdx)}\`${kw.slice(hyphenIdx)}`, kw));
+      out.push(makeSeed(`& ${kw.slice(0, hyphenIdx + 1)}\`${kw.slice(hyphenIdx + 1)}`, kw));
+    }
   }
+  // Aliases covered by the whitelist broadening. `iex` (3 chars) is
+  // the shortest real LOLBin — the backtick regex has a 3-char
+  // minimum on the head group, so `i`ex` (1 tick, 4 raw chars) is
+  // the minimum-size single-tick shape we can detect.
+  out.push(makeSeed('$payload | i`ex', 'iex'));
+  out.push(makeSeed('pow`ershell_ise -Command $p', 'powershell_ise'));
   return out;
 }
 

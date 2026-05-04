@@ -1034,7 +1034,7 @@ Object.assign(EncodedContentDetector.prototype, {
       if (result.length < 3 || result === original) continue;
       // Post-strip: require a suspicious PowerShell LOLBin keyword.
       // Matches the keyword set used by the backtick branch above.
-      const psKeywords = /^(invoke-expression|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-process|new-object|set-executionpolicy|invoke-command|get-credential|convertto-securestring|frombase64string|encodedcommand|invoke-mimikatz|invoke-shellcode|powershell|cmd|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|finger|tftp|ssh|curl|winrs|installutil|msbuild|pip|iex)$/i;
+      const psKeywords = /^(invoke-expression|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-process|new-object|set-executionpolicy|invoke-command|get-credential|convertto-securestring|frombase64string|encodedcommand|invoke-mimikatz|invoke-shellcode|powershell|powershell_ise|cmd|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|finger|tftp|ssh|curl|winrs|installutil|msbuild|pip|iex)$/i;
       if (!this._bruteforce && !psKeywords.test(result)) continue;
       candidates.push({
         type: 'cmd-obfuscation',
@@ -1059,28 +1059,32 @@ Object.assign(EncodedContentDetector.prototype, {
     //   (a) compact:   I`nv`o`ke-`E`xp`ression     (multi-char segs)
     //   (b) full-char: i`n`v`o`k`e`-`e`x`p`r`e`s`s`i`o`n  (every char)
     //   (c) digit-tail: r`u`n`d`l`l`3`2 / re`gs`vr`32     (rundll32)
+    //   (d) single:    pow`ershell / Invoke`-Expression     (one tick)
     //
-    // We unify all three by allowing: word-chars + optional escaped-or-
+    // We unify all four by allowing: word-chars + optional escaped-or-
     // literal hyphen + word-chars, with backticks permitted between
     // ANY two characters. The tightening that keeps ReDoS bounded is
     // the outer `\b…\b` anchors, bounded repetition counts, and the
-    // post-match sanity test `(raw.match(/`/g).length >= 2)` — the
-    // real decision is still made by `suspiciousKeywords`, not the
-    // shape of the token itself.
+    // post-match sanity test `(raw.match(/`/g).length >= 1)` — which
+    // is just a cheap pre-filter to drop zero-tick tokens; the real
+    // decision is made by `suspiciousKeywords`, not tick count.
     const backtickRe = /\b[a-zA-Z][a-zA-Z0-9`]{2,200}(?:`?-`?[a-zA-Z0-9`]{1,200})?\b/g;
     while ((m = backtickRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       const raw = m[0];
       if (raw.length > 200) continue; // pathological-length guard
-      if ((raw.match(/`/g) || []).length < 2) continue;
+      if ((raw.match(/`/g) || []).length < 1) continue;
 
       const cleaned = raw.replace(/`/g, '');
       // Must resolve to a known suspicious keyword. LOLBAS additions
       // kept in sync with SENSITIVE_CMD_KEYWORDS above — tftp / curl /
       // ssh are also valid PowerShell aliases, so backtick-escape
-      // variants like `t``ftp` show up in real droppers.
-      const suspiciousKeywords = /^(invoke-expression|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-process|new-object|set-executionpolicy|invoke-command|get-credential|convertto-securestring|frombase64string|encodedcommand|invoke-mimikatz|invoke-shellcode|powershell|cmd|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|finger|tftp|ssh|curl|winrs|installutil|msbuild|pip)$/i;
+      // variants like `t``ftp` show up in real droppers. `iex` is the
+      // canonical PS alias for Invoke-Expression and shows up in
+      // single-tick `i`ex` shapes; `powershell_ise` covers the ISE
+      // variant.
+      const suspiciousKeywords = /^(invoke-expression|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-process|new-object|set-executionpolicy|invoke-command|get-credential|convertto-securestring|frombase64string|encodedcommand|invoke-mimikatz|invoke-shellcode|powershell|powershell_ise|cmd|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|finger|tftp|ssh|curl|winrs|installutil|msbuild|pip|iex)$/i;
       if (!suspiciousKeywords.test(cleaned)) continue;
       candidates.push({
         type: 'cmd-obfuscation',
