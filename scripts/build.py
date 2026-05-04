@@ -153,6 +153,7 @@ YARA_FILES = [
     'src/rules/wasm-threats.yar',
     'src/rules/pcap-threats.yar',
     'src/rules/discovery-threats.yar',
+    'src/rules/reassembled-payloads.yar',
 ]
 
 YARA_CATEGORIES = {
@@ -180,6 +181,7 @@ YARA_CATEGORIES = {
     'src/rules/wasm-threats.yar': 'WebAssembly',
     'src/rules/pcap-threats.yar': 'Packet Capture',
     'src/rules/discovery-threats.yar': 'Discovery',
+    'src/rules/reassembled-payloads.yar': 'Reassembled Payloads',
 }
 
 # ── File-level `applies_to` injection ──────────────────────────────────────
