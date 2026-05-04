@@ -597,7 +597,7 @@ in the same PR.**
   `Variable Concatenation (partial)` (`${A}${B}${C}` joined against long
   values). Promoted to
   `tests/unit/obfuscation-{bash-obfuscation-fuzz-regress-780839c3269f6761,powershell-obfuscation-fuzz-regress-7ca34fabcbfc7172,cmd-obfuscation-fuzz-regress-3eccbcdc9620bc84,cmd-obfuscation-fuzz-regress-07c717a024bff004,bash-obfuscation-fuzz-regress-dafcdf82fa0849ca}.test.js`.
-- `<pending>` — Phase 1 CMD/PS decoder fill: 8 new branches (PS `-EncodedCommand` / `[char]N` reassembly / `[Convert]::FromBase64String` / `-bxor` inline-key / `[scriptblock]::Create` / AMSI-bypass; CMD `set /a` ASCII + `call :label` indirection) all gated on `_EXEC_INTENT_RE` or `SENSITIVE_*_KEYWORDS` (no "≥N printable" fallback — flagged benign base64'd version strings); `call :label` body extraction must walk to the next non-empty line (multi-line `.bat` labels are the norm, inline bodies are the exception); all paths route through `_clipDeobfToAmpBudget`.
+- `e8a64d7` — Phase 1 CMD/PS decoder fill: 8 new branches (PS `-EncodedCommand` / `[char]N` reassembly / `[Convert]::FromBase64String` / `-bxor` inline-key / `[scriptblock]::Create` / AMSI-bypass; CMD `set /a` ASCII + `call :label` indirection) all gated on `_EXEC_INTENT_RE` or `SENSITIVE_*_KEYWORDS` (no "≥N printable" fallback — flagged benign base64'd version strings); `call :label` body extraction must walk to the next non-empty line (multi-line `.bat` labels are the norm, inline bodies are the exception); all paths route through `_clipDeobfToAmpBudget`.
 
 ### IOC plumbing
 - `dfc594c` — replace bespoke type literals with `IOC.*` constants
