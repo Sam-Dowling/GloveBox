@@ -239,6 +239,7 @@ Full skeleton details live in `CONTRIBUTING.md § Renderer Contract` (detection 
 - `<pending>` — bash/python/php/JS deobfuscators route through `_processCommandObfuscation`; min decoded length is 2.
 - `25f2e66` — cap CMD deobfuscated expansion at 32× raw / 8 KiB.
 - `25f2e66` — PS backtick regex must bridge around hyphens and digits.
+- `4372f30` — PS backtick-escape tick-count floor relaxed 2→1; whitelist is the real gate (recovers `pow\`ershell`, `Invoke\`-Expression`, `i\`ex`).
 - `25f2e66` — added PS sentinel-strip, empty-arg format, env slicer, `%COMSPEC%`, single-bang expansion.
 - `<pending>` — CMD single-bang `!VAR!` branch also needs the 32× / 8 KiB amp cap.
 - `0b37971` — BASH `${CMD:-default}` resolves default only when var is unset.
