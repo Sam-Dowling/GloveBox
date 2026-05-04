@@ -283,13 +283,22 @@ Object.assign(EncodedContentDetector.prototype, {
       // standalone expansion is a full command name — the per-character
       // shred shape is handled by the line-level resolver below.
       if (!SENSITIVE_BASH_KEYWORDS.test(resolved) && !this._bruteforce) continue;
+      // Clip resolved output to the shared amp budget. `${V:offset}`
+      // with no length (`_resolveParamExpansion` `:off` branch) returns
+      // `value.slice(off)` — the full remainder of `value`. A short
+      // `raw = "${V:1}"` (6 chars) against a 300-char assignment can
+      // produce a 47× amp that violates the peer-branch 32× raw / 8 KiB
+      // contract (defined in cmd-obfuscation.js). Clipping preserves
+      // the SENSITIVE_BASH_KEYWORDS-matching prefix (the detection
+      // signal) while bounding sidebar payload size.
+      const clippedResolved = _clipDeobfToAmpBudget(resolved, m[0]);
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'Bash Variable Expansion (single)',
         raw: m[0],
         offset: m.index,
         length: m[0].length,
-        deobfuscated: resolved,
+        deobfuscated: clippedResolved,
       });
     }
 
@@ -683,6 +692,15 @@ Object.assign(EncodedContentDetector.prototype, {
         ? (resolved >= 2)
         : SENSITIVE_BASH_KEYWORDS.test(joined);
       if (!passesGate && !this._bruteforce) continue;
+      // Clip concatenated payload to the shared amp budget. `joined`
+      // is `${A}${B}${C}…` with each `${X}` resolved to an arbitrarily
+      // long assignment — a short `raw = "$A$B$C"` (6 chars) against
+      // three 80-byte assignments easily produces a 38× amp that
+      // violates the peer-branch 32× raw / 8 KiB contract. Clipping
+      // preserves the SENSITIVE_BASH_KEYWORDS hit (the keyword sits
+      // near the head of `joined` and the gate above already fired
+      // against the pre-clip value) while bounding sidebar size.
+      const clippedJoined = _clipDeobfToAmpBudget(joined, raw);
       candidates.push({
         type: 'cmd-obfuscation',
         technique: unresolved === 0
@@ -691,7 +709,7 @@ Object.assign(EncodedContentDetector.prototype, {
         raw,
         offset: m.index,
         length: raw.length,
-        deobfuscated: joined,
+        deobfuscated: clippedJoined,
       });
     }
 

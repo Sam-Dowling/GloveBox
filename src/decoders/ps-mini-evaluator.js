@@ -170,13 +170,23 @@ Object.assign(EncodedContentDetector.prototype, {
       const rawEnd   = stmtEnd;
       const raw      = text.substring(rawStart, rawEnd).trim();
 
+      // Clip resolved output to the shared amp budget. The resolver
+      // expands every `$var` / array / hash reference in the argument
+      // tail; an input like `$a='…(long)…'; &(...) $a $a $a $a …` can
+      // grow `deobf` to 30× the short `raw` statement span, violating
+      // the peer-branch `32× raw / 8 KiB` contract (defined in
+      // cmd-obfuscation.js). Clipping preserves the leading detection
+      // signal (SENSITIVE_CMD_KEYWORDS survive — they live at the head
+      // of resolvedCmd) while bounding sidebar payload size.
+      const clippedDeobf = _clipDeobfToAmpBudget(deobf, raw);
+
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'PowerShell Variable Resolution',
         raw,
         offset: rawStart,
         length: rawEnd - rawStart,
-        deobfuscated: deobf,
+        deobfuscated: clippedDeobf,
       });
     }
 

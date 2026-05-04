@@ -102,12 +102,15 @@ const fuzz = defineFuzzTarget({
       if (typeof c.raw !== 'string' || c.raw.length === 0) {
         throw new Error('invariant: candidate.raw empty/missing');
       }
-      // Decode-blowup guard (Phase 4a). 64× headroom is generous — the
-      // real decoders rarely exceed 2–4× raw length. A bug that produces
-      // unbounded output (self-reference / infinite recursion in a
-      // substitution) trips this.
+      // Decode-blowup guard. Tightened to 32× to match the explicit
+      // `_AMP_RATIO = 32` / `_ABS_CAP = 8 * 1024` cap in
+      // `src/decoders/cmd-obfuscation.js`'s four branches (variable-
+      // concat, delayed-expansion, `for /f`, single-bang). Any candidate
+      // that exceeds 32× raw is a branch missing its peer cap — which
+      // is the exact bug class the fuzzer is designed to find
+      // (see AGENTS.md: `25f2e66` + twin pain-point entries).
       if (typeof c.deobfuscated === 'string'
-          && c.deobfuscated.length > 64 * Math.max(1, c.raw.length)) {
+          && c.deobfuscated.length > 32 * Math.max(1, c.raw.length)) {
         throw new Error(
           `invariant: decode blowup — technique=${JSON.stringify(c.technique)} `
           + `raw=${c.raw.length} deobf=${c.deobfuscated.length}`,

@@ -71,7 +71,7 @@ const fuzz = defineFuzzTarget({
       }
       if (typeof c.deobfuscated === 'string'
           && typeof c.raw === 'string'
-          && c.deobfuscated.length > 64 * Math.max(1, c.raw.length)) {
+          && c.deobfuscated.length > 32 * Math.max(1, c.raw.length)) {
         throw new Error(
           `invariant: decode blowup — technique=${JSON.stringify(c.technique)} `
           + `raw=${c.raw.length} deobf=${c.deobfuscated.length}`,

@@ -102,6 +102,45 @@ function _stripCarets(s) {
 }
 
 /**
+ * Clip a `deobfuscated` payload to the shared per-candidate amp budget:
+ * `min(8 KiB, 32 × raw.length)`. Matches the `_AMP_RATIO = 32` /
+ * `_ABS_CAP = 8 * 1024` cap the four in-file CMD branches enforce at
+ * their input-capture point, applied instead at the output-emit point
+ * so peer decoders (bash, ps-mini-evaluator, ClickFix wrapper) that
+ * don't collect their output from a bounded input window can still
+ * honour the same contract.
+ *
+ * A `candidate.deobfuscated.length > 32 × candidate.raw.length`
+ * invariant violation is what the obfuscation fuzz targets assert on
+ * (under `tests/fuzz`). Clipping preserves the detection signal (all
+ * truncation markers still match the SENSITIVE_CMD_KEYWORDS /
+ * SENSITIVE_BASH_KEYWORDS gates because the keywords live near the
+ * head of the decoded payload) while bounding sidebar payload size
+ * and matching the peer-branch contract.
+ *
+ * The trailing marker is a single `…` + literal `[truncated]` so the
+ * UI highlight remains stable (no mid-token marker) and analysts see
+ * when the decoded output has been clipped.
+ */
+const _DEOBF_AMP_RATIO = 32;
+const _DEOBF_ABS_CAP   = 8 * 1024;
+const _DEOBF_TRUNC_MARK = '… [truncated]';
+function _clipDeobfToAmpBudget(deobf, raw) {
+  if (typeof deobf !== 'string' || deobf.length === 0) return deobf;
+  const rawLen = (typeof raw === 'string') ? raw.length : 0;
+  const cap = Math.min(_DEOBF_ABS_CAP, _DEOBF_AMP_RATIO * Math.max(1, rawLen));
+  if (deobf.length <= cap) return deobf;
+  // Reserve room for the truncation marker so the returned string
+  // (body + marker) stays ≤ cap. If the cap itself is smaller than
+  // the marker length (pathological `raw.length = 0` edge case
+  // already handled by `Math.max(1, rawLen)`), fall back to a hard
+  // truncate without marker.
+  const bodyLen = Math.max(0, cap - _DEOBF_TRUNC_MARK.length);
+  if (bodyLen === 0) return deobf.slice(0, cap);
+  return deobf.slice(0, bodyLen) + _DEOBF_TRUNC_MARK;
+}
+
+/**
  * Sensitive-keyword regex used to gate the inline single-token
  * substring finder. We only surface a candidate from a single
  * `%VAR:~N,M%` in the middle of a word when the resolved word spells
@@ -469,13 +508,23 @@ Object.assign(EncodedContentDetector.prototype, {
 
       if (!SENSITIVE_CMD_KEYWORDS.test(wordResolved)) continue;
 
+      // Clip inline substring expansion to the shared amp budget.
+      // `sliced` comes from an arbitrarily long env var value — a
+      // short `wordRaw = "%X:~0%tail"` (13 chars) against a 500-char
+      // `set X=…` assignment can produce a 52× amp violating the
+      // peer-branch 32× raw / 8 KiB contract. The SENSITIVE_CMD_KEYWORDS
+      // hit survives clipping because keywords live near the head of
+      // `wordResolved` (the gate above already fired against the
+      // pre-clip value).
+      const clippedWordResolved = _clipDeobfToAmpBudget(wordResolved, wordRaw);
+
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'CMD Env Var Substring (inline)',
         raw: wordRaw,
         offset: lo,
         length: hi - lo,
-        deobfuscated: wordResolved,
+        deobfuscated: clippedWordResolved,
       });
     }
 
@@ -856,13 +905,23 @@ Object.assign(EncodedContentDetector.prototype, {
             trailMatch.index + trailMatch[0].length
           ));
           const rawSpan = text.substring(start, Math.min(end, start + 400));
+          // Clip the pulled-in payload to the shared amp budget — the
+          // ClickFix branch sources `payload` from a sibling candidate's
+          // `deobfuscated`, which may legitimately be up to 8 KiB even
+          // when our detection window (cueMatch..trailMatch) is tiny.
+          // Without this clip a sibling with large output + a narrow
+          // ClickFix window would emit a candidate whose
+          // `deobfuscated.length / raw.length` ratio exceeds the 32×
+          // peer-branch contract (fuzz target invariant violation —
+          // the SAFETY invariant, not a detection regression).
+          const clippedPayload = _clipDeobfToAmpBudget(payload, rawSpan);
           candidates.push({
             type: 'cmd-obfuscation',
             technique: 'CMD ClickFix Wrapper',
             raw: rawSpan,
             offset: start,
             length: rawSpan.length,
-            deobfuscated: payload,
+            deobfuscated: clippedPayload,
             _clickfix: true,
             _patternIocs: [{
               url: 'ClickFix run-dialog payload \u2014 instructs user to paste malicious command (T1204.001)',

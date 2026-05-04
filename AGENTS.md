@@ -583,6 +583,20 @@ in the same PR.**
   on first replay of the new `obfuscation/reassembly` fuzz target with
   a multi-technique pair-concat seed. Promoted to
   `tests/unit/obfuscation-reassembly-fuzz-regress-a7b7de6aa63cf197.test.js`.
+- `<pending>` — tightened obfuscation fuzz invariant 64× → 32× (matching the
+  CMD `_AMP_RATIO` peer branches already self-impose) surfaced five cross-shell
+  amp blowups where candidate emission sites lacked the cap. Extracted a
+  shared `_clipDeobfToAmpBudget(deobf, raw)` helper in `cmd-obfuscation.js`
+  (32× raw / 8 KiB, with `… [truncated]` marker reserved inside the budget
+  so clipped output never itself trips the invariant) and applied it at
+  five sites: CMD `ClickFix Wrapper` (payload pulled from sibling
+  candidate), CMD `Env Var Substring (inline)` (sliced substring of long
+  `set X=…` value), PS `Variable Resolution` (`resolvedCmd + ' ' +
+  resolvedArgs` against long `$a=…` tables), Bash `Variable Expansion
+  (single)` (`${V:off}` slicing remainder of long assignment), and Bash
+  `Variable Concatenation (partial)` (`${A}${B}${C}` joined against long
+  values). Promoted to
+  `tests/unit/obfuscation-{bash-obfuscation-fuzz-regress-780839c3269f6761,powershell-obfuscation-fuzz-regress-7ca34fabcbfc7172,cmd-obfuscation-fuzz-regress-3eccbcdc9620bc84,cmd-obfuscation-fuzz-regress-07c717a024bff004,bash-obfuscation-fuzz-regress-dafcdf82fa0849ca}.test.js`.
 
 ### IOC plumbing
 - `dfc594c` — replace bespoke type literals with `IOC.*` constants
