@@ -307,6 +307,44 @@ test('mapReconToSource() maps offsets inside spliced spans back to the source', 
   assert.equal(mapReconToSource(out, 10_000_000), null);
 });
 
+// ── 11b. mapReconToSource() phantom-tail regression ──────────────────────
+//
+// First-replay find of the obfuscation/reassembly fuzz target: when a
+// span's decoded body is SHORTER than its encoded source (verbose
+// obfuscation is the norm — `p^o^w^e^r^s^h^e^l^l` → `powershell`), the
+// splice-region upper bound was computed from `sourceLength` (encoded
+// width) instead of `strippedLength` (decoded-body width). The excess
+// "phantom tail" then swallowed recon offsets that actually belong to
+// subsequent sourceMap entries, returning the wrong `sourceOffset`.
+// This probe exercises both directions: probe inside the later span's
+// splice must resolve to THAT span's offset, not the first span's.
+
+test('mapReconToSource() does not leak into later entries when decoded body is shorter than encoded span', () => {
+  // f1 encodes 40 source bytes → decodes to 2 chars ('r1'). Without
+  // the fix, f1's splice claims recon [0, 0 + 4 + 40 + 4) = [0, 48),
+  // swallowing f2's replaceStart which lands below 48.
+  const src = 'A'.repeat(40) + 'gap' + 'B'.repeat(40);   // 83 chars
+  const f1 = mkFinding({ offset: 0,  length: 40, severity: 'high', encoding: 'Base64', decodedBytes: bytes('r1'),    iocs: [{ type: 'url', url: 'http://a' }] });
+  const f2 = mkFinding({ offset: 43, length: 40, severity: 'high', encoding: 'Base64', decodedBytes: bytes('REPL2'), iocs: [{ type: 'url', url: 'http://b' }] });
+  const out = build(src, [f1, f2], { mode: 'auto', limits: { MIN_FINDINGS_USED: 2, MIN_COVERAGE: 0, MAX_FINDINGS: 64, MAX_OUTPUT_BYTES: 1 << 20, MAX_DECODE_PREVIEW: 32 << 10 } });
+  assert.ok(out && out.spans && out.spans.length === 2, 'both spans survive');
+
+  // Probe inside f2's decoded body must map to f2.offset (43), NOT f1.offset (0).
+  const s2 = out.spans[1];
+  const inSplice2 = s2.textStart + 1;
+  assert.equal(mapReconToSource(out, inSplice2), f2.offset,
+    'f2 splice probe must not be swallowed by f1 phantom tail');
+
+  // Probe on the very first byte of f2's opening sentinel — the left
+  // edge of the splice region — must also map to f2.offset.
+  assert.equal(mapReconToSource(out, s2.replaceStart), f2.offset);
+
+  // Literal "gap" chunk between the two splices still resolves to the
+  // correct source byte.
+  const gapReconOffset = out.spans[0].replaceEnd + 1; // recon offset of 'a' in "gap"
+  assert.equal(mapReconToSource(out, gapReconOffset), 40 + 1);
+});
+
 // ── 12. stripSentinels() idempotent ───────────────────────────────────────
 
 test('stripSentinels() removes every sentinel and is idempotent', () => {

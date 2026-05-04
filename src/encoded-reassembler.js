@@ -458,12 +458,22 @@
   function mapReconToSource(reconstructed, reconOffset) {
     if (!reconstructed || !Array.isArray(reconstructed.sourceMap)) return null;
     for (const entry of reconstructed.sourceMap) {
-      const end = entry.reconOffset + entry.length
-        + (entry.isSplice ? (SENTINEL_OPEN.length + SENTINEL_CLOSE.length + (entry.sourceLength || 0)) : 0);
       // For splice entries `length` is the SOURCE-side length; the
-      // reconstructed span width includes the sentinels + decoded text.
+      // reconstructed span width is SENTINEL_OPEN + decoded-body +
+      // SENTINEL_CLOSE, where decoded-body = `strippedLength` (the
+      // inserted-text length written at build() time, line 337). Using
+      // `sourceLength` here is a correctness bug: when a span's decoded
+      // body is shorter than its encoded source (the common case for
+      // verbose obfuscation like `p^o^w^e^r^s^h^e^l^l` → `powershell`),
+      // `sourceLength` describes a phantom tail past the real splice end
+      // that then swallows subsequent sourceMap entries' recon offsets,
+      // returning the wrong `sourceOffset`. Symmetrically, when decoded
+      // body is wider than encoded (hex byte-array → string, base64
+      // expanding to plaintext), `sourceLength` truncates the splice
+      // before its actual recon end, leaking legit probe offsets onto
+      // the next entry. `strippedLength` is the single correct width.
       if (entry.isSplice) {
-        const spliceReconEnd = entry.reconOffset + SENTINEL_OPEN.length + (entry.sourceLength || 0) + SENTINEL_CLOSE.length;
+        const spliceReconEnd = entry.reconOffset + SENTINEL_OPEN.length + (entry.strippedLength || 0) + SENTINEL_CLOSE.length;
         if (reconOffset >= entry.reconOffset && reconOffset < spliceReconEnd) {
           return entry.sourceOffset;
         }
@@ -472,8 +482,6 @@
           return entry.sourceOffset + (reconOffset - entry.reconOffset);
         }
       }
-      // next iteration
-      void end;
     }
     return null;
   }
