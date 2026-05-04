@@ -126,6 +126,59 @@ extendApp({
       : previewSrc;
     card.appendChild(preview);
 
+    // ── Phase 2 evidence row: decoded-payload YARA hits ────────────────
+    // Emit a compact evidence strip when the re-scan matched rules that
+    // opt in via `applies_to = "decoded-payload"`. Same shape the
+    // per-finding card uses for `_yaraHits` (rule name + severity chip).
+    if (Array.isArray(recon.yaraHits) && recon.yaraHits.length) {
+      const yaraRow = document.createElement('div');
+      yaraRow.className = 'enc-finding-yara';
+      yaraRow.style.marginTop = '8px';
+      const lbl = document.createElement('strong');
+      lbl.textContent = '⚡ YARA on stitched script: ';
+      yaraRow.appendChild(lbl);
+      for (const hit of recon.yaraHits) {
+        const chip = document.createElement('span');
+        chip.className = `badge badge-${hit.severity || 'info'}`;
+        chip.style.marginRight = '4px';
+        chip.textContent = hit.ruleName;
+        if (hit.description) chip.title = hit.description;
+        yaraRow.appendChild(chip);
+      }
+      card.appendChild(yaraRow);
+    }
+
+    // ── Phase 2 evidence row: novel IOCs surfaced only by reassembly ─
+    // When `analyze()` extracted IOCs the individual per-finding cards
+    // never saw (URL fragments joined across spans, domain rebuilt from
+    // char-code chunks etc.), credit the reassembly pass explicitly so
+    // the analyst knows to look for them in the main Signatures & IOCs
+    // section's `_fromReassembly`-tagged rows.
+    if (Array.isArray(recon.novelIocs) && recon.novelIocs.length) {
+      const iocRow = document.createElement('div');
+      iocRow.className = 'enc-finding-novel-iocs';
+      iocRow.style.marginTop = '6px';
+      iocRow.style.fontSize = '11px';
+      const lbl = document.createElement('strong');
+      lbl.textContent = `🆕 ${recon.novelIocs.length} IOC${recon.novelIocs.length === 1 ? '' : 's'} surfaced only after stitching: `;
+      iocRow.appendChild(lbl);
+      const MAX_SHOWN = 3;
+      const shown = recon.novelIocs.slice(0, MAX_SHOWN);
+      for (let i = 0; i < shown.length; i++) {
+        const ioc = shown[i];
+        const v = ioc && (ioc.url || ioc.value);
+        if (!v) continue;
+        const span = document.createElement('code');
+        span.textContent = v.length > 48 ? v.slice(0, 47) + '…' : v;
+        iocRow.appendChild(span);
+        if (i < shown.length - 1) iocRow.appendChild(document.createTextNode(', '));
+      }
+      if (recon.novelIocs.length > MAX_SHOWN) {
+        iocRow.appendChild(document.createTextNode(`, +${recon.novelIocs.length - MAX_SHOWN} more (see Signatures & IOCs)`));
+      }
+      card.appendChild(iocRow);
+    }
+
     // ── Action row: "Load for analysis" ────────────────────────────────
     const actions = document.createElement('div');
     actions.className = 'enc-finding-actions';

@@ -354,3 +354,185 @@ test('DEFAULTS surface matches the documented contract', () => {
   assert.equal(SENTINEL_OPEN, '\u2063\u2063\u2063\u2063');
   assert.equal(SENTINEL_CLOSE, '\u2063\u2063\u2063\u2063');
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// Phase 2 — analyze() re-scan of the reconstructed text
+// ══════════════════════════════════════════════════════════════════════════
+//
+// `analyze()` runs the IOC regex sweep + decoded-payload YARA over the
+// sentinel-stripped stitched body. Both sub-dispatches are injected:
+//   • `extractInterestingStringsCore` — test passes a stub that returns
+//     a fixed findings array.
+//   • `workerManager` — test passes a fake with `runDecodedYara` +
+//     `workersAvailable`.
+// The module under test never imports either, so the tests stay pure.
+
+const { analyze } = EncodedReassembler;
+
+/** Build a minimal fake worker manager for `analyze()`'s YARA dispatch.
+ *  Mirrors the `fakeWorkerManager` helper in decoded-yara-filter.test.js.
+ */
+function fakeWM({ hits = [], available = true, reject = false } = {}) {
+  const calls = [];
+  return {
+    workersAvailable: () => available,
+    runDecodedYara: (payloads, source, opts) => {
+      calls.push({ payloadCount: payloads.length, source, opts });
+      if (reject) return Promise.reject(new Error('worker-bounce'));
+      return Promise.resolve({ hits, parseMs: 1, scanMs: 1, payloadCount: payloads.length, ruleCount: 1 });
+    },
+    _calls: calls,
+  };
+}
+
+/** Minimal stub for the IOC extract core. Mirrors the shape
+ *  `extractInterestingStringsCore` returns (findings[] + side-channel
+ *  maps the caller re-attaches).
+ */
+function stubExtract(rows) {
+  return (_text, _opts) => ({ findings: rows.slice(), droppedByType: {}, totalSeenByType: {} });
+}
+
+// Canned reconstructed object used by the analyze() tests.
+const RECON = {
+  text: `${SENTINEL_OPEN}iex payload${SENTINEL_CLOSE} normal text ${SENTINEL_OPEN}http://evil/a${SENTINEL_CLOSE}`,
+  spans: [{}, {}],
+  reconstructedHash: 'deadbeefcafebabe',
+  coverage: { ratio: 0.3, bytesReplaced: 10, sourceBytes: 33, findingsUsed: 2 },
+};
+
+test('analyze() returns empty result for empty reconstruction', async () => {
+  const out = await analyze(null);
+  assert.equal(out.novelIocs.length, 0);
+  assert.equal(out.yaraHits.length, 0);
+  assert.equal(out.skipped.extract, 'no-reconstruction');
+  assert.equal(out.skipped.yara, 'no-reconstruction');
+});
+
+test('analyze() returns empty result when reconstructed.text is empty', async () => {
+  const out = await analyze({ text: '', spans: [] });
+  assert.equal(out.skipped.extract, 'no-reconstruction');
+});
+
+test('analyze() diffs IOCs against existingIocs.allValues — already-known values are NOT flagged novel', async () => {
+  const rows = [
+    { url: 'http://evil/a', type: 'url' },        // will be flagged novel
+    { url: 'http://already-known/b', type: 'url' }, // in existing set, suppressed
+  ];
+  const existingIocs = { allValues: new Set(['http://already-known/b']) };
+  const out = await analyze(RECON, {
+    extractInterestingStringsCore: stubExtract(rows),
+    existingIocs,
+    workerManager: fakeWM(),
+    yaraSource: 'rule X { condition: false }',
+  });
+  assert.equal(out.novelIocs.length, 1);
+  assert.equal(out.novelIocs[0].url, 'http://evil/a');
+  assert.equal(out.novelIocs[0]._fromReassembly, true);
+  assert.equal(out.novelIocs[0]._reconstructedHash, 'deadbeefcafebabe');
+});
+
+test('analyze() records skipped.extract when no extract fn is injected', async () => {
+  const out = await analyze(RECON, {
+    workerManager: fakeWM(),
+    yaraSource: 'rule Y { condition: false }',
+  });
+  assert.equal(out.skipped.extract, 'no-extract-fn');
+});
+
+test('analyze() surfaces decoded-payload YARA hits (rule name, severity, tags, description)', async () => {
+  const hits = [
+    { id: 0, results: [
+      { ruleName: 'Reassembled_IEX_Chain', tags: 'reassembled,powershell',
+        meta: { severity: 'high', description: 'iex joined across reassembly spans' } },
+      { ruleName: 'DownloadExec', tags: 'reassembled',
+        meta: { severity: 'critical' } },
+    ] },
+  ];
+  const out = await analyze(RECON, {
+    extractInterestingStringsCore: stubExtract([]),
+    workerManager: fakeWM({ hits }),
+    yaraSource: 'rule R { condition: true }',
+  });
+  assert.equal(out.yaraHits.length, 2);
+  assert.equal(out.yaraHits[0].ruleName, 'Reassembled_IEX_Chain');
+  assert.equal(out.yaraHits[0].severity, 'high');
+  assert.equal(out.yaraHits[0].description, 'iex joined across reassembly spans');
+  assert.equal(out.yaraHits[1].severity, 'critical');
+});
+
+test('analyze() dedupes YARA hits by ruleName within a single scan', async () => {
+  const hits = [
+    { id: 0, results: [
+      { ruleName: 'DupRule', tags: '', meta: { severity: 'high' } },
+      { ruleName: 'DupRule', tags: '', meta: { severity: 'high' } },
+      { ruleName: 'UniqueRule', tags: '', meta: { severity: 'medium' } },
+    ] },
+  ];
+  const out = await analyze(RECON, {
+    extractInterestingStringsCore: stubExtract([]),
+    workerManager: fakeWM({ hits }),
+    yaraSource: 'rule R { condition: true }',
+  });
+  assert.equal(out.yaraHits.length, 2);
+});
+
+test('analyze() records skipped.yara on workers-unavailable', async () => {
+  const out = await analyze(RECON, {
+    extractInterestingStringsCore: stubExtract([]),
+    workerManager: fakeWM({ available: false }),
+    yaraSource: 'rule R { condition: true }',
+  });
+  assert.equal(out.skipped.yara, 'workers-unavailable');
+  assert.equal(out.yaraHits.length, 0);
+});
+
+test('analyze() records skipped.yara on empty yaraSource', async () => {
+  const out = await analyze(RECON, {
+    extractInterestingStringsCore: stubExtract([]),
+    workerManager: fakeWM(),
+    yaraSource: '',
+  });
+  assert.equal(out.skipped.yara, 'no-yara-source');
+});
+
+test('analyze() records skipped.yara on no workerManager', async () => {
+  const out = await analyze(RECON, {
+    extractInterestingStringsCore: stubExtract([]),
+    yaraSource: 'rule R { condition: true }',
+  });
+  assert.equal(out.skipped.yara, 'no-worker-manager');
+});
+
+test('analyze() is silent-no-op on runDecodedYara rejection', async () => {
+  const out = await analyze(RECON, {
+    extractInterestingStringsCore: stubExtract([{ url: 'http://a', type: 'url' }]),
+    workerManager: fakeWM({ reject: true }),
+    yaraSource: 'rule R { condition: true }',
+  });
+  // IOC extract still worked; only YARA collapsed into a skip reason.
+  assert.equal(out.skipped.yara, 'yara-threw');
+  assert.equal(out.novelIocs.length, 1);
+});
+
+test('analyze() populates scannedBytes = stripSentinels length', async () => {
+  const out = await analyze(RECON, {
+    extractInterestingStringsCore: stubExtract([]),
+    workerManager: fakeWM(),
+    yaraSource: 'rule R { condition: true }',
+  });
+  const stripped = stripSentinels(RECON.text);
+  assert.equal(out.scannedBytes, stripped.length);
+});
+
+test('analyze() passes formatTag=decoded-payload to the worker', async () => {
+  const wm = fakeWM();
+  await analyze(RECON, {
+    extractInterestingStringsCore: stubExtract([]),
+    workerManager: wm,
+    yaraSource: 'rule R { condition: true }',
+  });
+  assert.equal(wm._calls.length, 1);
+  assert.equal(wm._calls[0].opts.formatTag, 'decoded-payload');
+  assert.equal(wm._calls[0].payloadCount, 1);
+});

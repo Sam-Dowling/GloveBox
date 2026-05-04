@@ -660,6 +660,96 @@ extendApp({
        }
       }
 
+      // ── Phase 2 — Re-analyse the reconstructed script ────────────────
+      // `analyze()` runs the IOC regex sweep and decoded-payload YARA
+      // scan over the sentinel-stripped stitched body. Novel IOCs
+      // (those NOT already in `findings.interestingStrings` or
+      // `externalRefs`) are pushed with `_fromReassembly = true` so the
+      // sidebar, Summary, STIX and MISP exporters can label them. YARA
+      // rule hits are attached to `reconstructedScript.yaraHits` for
+      // the composite card to render.
+      //
+      // This whole block is best-effort: any rejection / exception
+      // collapses into a `skipped` reason in the analyze result, the
+      // reconstructedScript field stays valid, and the card still
+      // paints (just without the Phase-2 evidence row). Guarded by the
+      // same `_isReassemblyChild` flag — we don't re-scan a stitched
+      // body's own reassembled drill-down.
+      if (!this._isReassemblyChild
+          && this.findings
+          && this.findings.reconstructedScript
+          && window.EncodedReassembler
+          && typeof window.EncodedReassembler.analyze === 'function') {
+        try {
+          // Collect the set of IOC values already surfaced by the
+          // renderer + encoded-content merge above, so `analyze()`
+          // can diff the reassembly's regex sweep against them. Using
+          // a Set<string> keyed on the canonical `url` / `value`
+          // keeps the diff O(N) and matches how the encoded-content
+          // merge above dedupes.
+          const allValues = new Set();
+          for (const r of (this.findings.interestingStrings || [])) {
+            if (r && (r.url || r.value)) allValues.add(r.url || r.value);
+          }
+          for (const r of (this.findings.externalRefs || [])) {
+            if (r && (r.url || r.value)) allValues.add(r.url || r.value);
+          }
+          const yaraSource = (typeof this._getAllYaraSource === 'function')
+            ? this._getAllYaraSource()
+            : '';
+          const vbaModuleSources = (this.findings.modules || []).map(m => m.source || '');
+          const analysis = await window.EncodedReassembler.analyze(
+            this.findings.reconstructedScript,
+            {
+              existingIocs: { allValues },
+              extractInterestingStringsCore: (typeof extractInterestingStringsCore === 'function')
+                ? extractInterestingStringsCore
+                : null,
+              workerManager: window.WorkerManager,
+              yaraSource,
+              vbaModuleSources,
+            },
+          );
+          // Stamp the analysis onto the reconstructedScript so the
+          // sidebar composite card can render it without a side-channel
+          // lookup. Always attach — even a skipped/empty analysis is
+          // useful context for the card.
+          this.findings.reconstructedScript.yaraHits     = analysis.yaraHits || [];
+          this.findings.reconstructedScript.novelIocs    = analysis.novelIocs || [];
+          this.findings.reconstructedScript.analyzeStats = {
+            scannedBytes: analysis.scannedBytes || 0,
+            extractMs:    analysis.extractMs    || 0,
+            yaraMs:       analysis.yaraMs       || 0,
+            skipped:      analysis.skipped      || {},
+          };
+
+          // Merge every novel IOC into `findings.interestingStrings`
+          // with provenance — the reconstructed hash scopes the
+          // "where did this come from" back-pointer, and the
+          // `_fromReassembly` flag is already set by `analyze()`.
+          // Escalate `externalRefs` parity: the analyser's post-pipeline
+          // `escalateRisk` run reads from `externalRefs`, and novel IOCs
+          // surfaced only by reassembly are NOT evidence of a harder
+          // verdict — they're additional pivots on the same payload.
+          // So we push into `interestingStrings` (pivot bucket) rather
+          // than `externalRefs` (evidence bucket) to avoid double-
+          // counting the same payload across the risk calculation.
+          for (const ioc of analysis.novelIocs || []) {
+            if (!ioc) continue;
+            const v = ioc.url || ioc.value;
+            if (!v) continue;
+            // Final paranoid dedupe: `analyze()` already skipped values
+            // in `allValues`, but nothing prevents two novel IOCs from
+            // sharing a URL across the batch.
+            if (this.findings.interestingStrings.some(r => (r.url || r.value) === v)) continue;
+            ioc._reassemblySpans = this.findings.reconstructedScript.spans.length;
+            this.findings.interestingStrings.push(ioc);
+          }
+        } catch (analyzeErr) {
+          this._reportNonFatal('encoded-reassembler-analyze', analyzeErr, { silent: true });
+        }
+      }
+
       // Bump overall risk if encoded content findings have high severity
       this._updateRiskFromEncodedContent();
 

