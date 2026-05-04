@@ -815,30 +815,39 @@ class EvtxRenderer {
       if (n.attr === 'ThreadID' && n.elem === 'Execution') continue;
     }
 
-    // Pair Data.Name attributes with their following Data text values
-    const usedTextIndices = new Set();
+    // Pair Data.Name attributes with their following Data text values.
+    //
+    // Both `dataNames` and `dataTexts` were populated in template-order,
+    // so each is sorted ascending by `.index`. Previous impl walked
+    // `dataTexts` from the start for every `dataName`, giving O(N × M)
+    // — quadratic on EventData blobs with many Data fields. Since each
+    // text pairs with at most one name and a name only pairs with a
+    // text at a higher template index, a single monotonic forward
+    // cursor over `dataTexts` suffices: when we pair `dataNames[i]`
+    // with `dataTexts[ti]`, the next `dataNames[i+1]` (with
+    // `index > dataNames[i].index`) must consume
+    // `dataTexts[≥ ti+1]`. O(N + M) overall; behaviour identical to
+    // the previous "find next" semantics.
+    const used = new Uint8Array(dataTexts.length);
     const unpairedNames = [];
-    for (const dn of dataNames) {
-      // Find the next Data text entry that comes after this Name entry
-      let paired = false;
-      for (const dt of dataTexts) {
-        if (dt.index > dn.index && !usedTextIndices.has(dt.index)) {
-          const label = dn.nameVal || '';
-          eventDataParts.push(label ? label + '=' + dt.textVal : dt.textVal);
-          usedTextIndices.add(dt.index);
-          paired = true;
-          break;
-        }
-      }
-      if (!paired && dn.nameVal) {
+    let ti = 0;
+    for (let dni = 0; dni < dataNames.length; dni++) {
+      const dn = dataNames[dni];
+      // Skip past any dataTexts whose index does not strictly follow dn.
+      while (ti < dataTexts.length && dataTexts[ti].index <= dn.index) ti++;
+      if (ti < dataTexts.length) {
+        const dt = dataTexts[ti];
+        const label = dn.nameVal || '';
+        eventDataParts.push(label ? label + '=' + dt.textVal : dt.textVal);
+        used[ti] = 1;
+        ti++;
+      } else if (dn.nameVal) {
         unpairedNames.push(dn.nameVal);
       }
     }
-    // Collect any unpaired Data text values
-    for (const dt of dataTexts) {
-      if (!usedTextIndices.has(dt.index)) {
-        eventDataParts.push(dt.textVal);
-      }
+    // Collect any unpaired Data text values, preserving template order.
+    for (let k = 0; k < dataTexts.length; k++) {
+      if (!used[k]) eventDataParts.push(dataTexts[k].textVal);
     }
     // Return unpaired field names (for zipping with nested BinXml values)
     return unpairedNames;
@@ -898,49 +907,62 @@ class EvtxRenderer {
         pos = vStart + descs[i].size;
       }
 
-      // Build name=value pairs from template mappings
-      // Pass 1: Find Data.Name attributes and pair with their text content values
+      // Build name=value pairs from template mappings.
+      //
+      // Previous impl used a nested loop per Data.Name entry (Pass 1),
+      // scanning forward for the next Data text and breaking on another
+      // Data.Name — O(N²) on Sysmon-style events with many Data fields.
+      // Semantics: each Data.Name attribute pairs with the first
+      // following Data text (no attr), unless another Data.Name intervenes
+      // first (in which case the previous Data.Name had no text).
+      // Pass 2 then collected any Data text not consumed by Pass 1.
+      //
+      // Equivalent single forward pass: keep a `pending` Data.Name; when
+      // a Data-text is seen, consume pending (emit pair) or buffer the
+      // text for Pass 2 emission if no pending; when another Data.Name
+      // is seen while pending is set, the previous Data.Name is dropped
+      // (matching the old break-without-push behaviour). Preserve
+      // output order by emitting paired entries during the walk and
+      // buffered unpaired-text entries after — identical to the old
+      // Pass 1 → Pass 2 ordering.
       const usedIndices = new Set();
+      const pendingTexts = [];        // unpaired Data-text values, in order
+      let pendingName = null;         // { i, nameVal } or null
       for (let i = 0; i < templateNames.length; i++) {
         const n = templateNames[i];
         if (n.attr === 'Name' && n.elem === 'Data') {
-          // Handle both literal Data.Name (e.g., Sysmon hardcoded field names)
-          // and substitution-based Data.Name attributes
+          // Handle both literal Data.Name (e.g., Sysmon hardcoded field
+          // names) and substitution-based Data.Name attributes.
           const nameVal = (n.literal !== undefined) ? n.literal :
             (n.idx >= 0 && n.idx < values.length) ? values[n.idx] : '';
-          // Find the next Data text content entry (same element, no attr)
-          for (let j = i + 1; j < templateNames.length; j++) {
-            const m = templateNames[j];
-            if (m.elem === 'Data' && !m.attr && m.literal === undefined) {
-              const textVal = (m.idx >= 0 && m.idx < values.length) ? values[m.idx] : '';
-              if (nameVal) {
-                parts.push(nameVal + '=' + textVal);
-              } else if (textVal) {
-                parts.push(textVal);
-              }
-              usedIndices.add(i);
-              usedIndices.add(j);
-              break;
-            }
-            // Hit another Data.Name before finding text — previous Data has no text
-            if (m.attr === 'Name' && m.elem === 'Data') break;
+          // Previous pending Data.Name had no text — drop it (matches
+          // old behaviour of `break` on consecutive Data.Name without
+          // adding the earlier Name's index to usedIndices or parts).
+          pendingName = { i, nameVal };
+          continue;
+        }
+        if (n.elem === 'Data' && !n.attr && n.literal === undefined) {
+          const textVal = (n.idx >= 0 && n.idx < values.length) ? values[n.idx] : '';
+          if (pendingName) {
+            if (pendingName.nameVal) parts.push(pendingName.nameVal + '=' + textVal);
+            else if (textVal) parts.push(textVal);
+            usedIndices.add(pendingName.i);
+            usedIndices.add(i);
+            pendingName = null;
+          } else {
+            // Will be emitted as an unpaired text after Pass-1 pairing,
+            // matching the previous Pass-2 output position.
+            if (textVal) pendingTexts.push(textVal);
+            usedIndices.add(i);
           }
+          continue;
         }
       }
+      // Emit unpaired Data-text values (old Pass 2).
+      for (let k = 0; k < pendingTexts.length; k++) parts.push(pendingTexts[k]);
 
-      // Pass 2: Collect any unpaired Data text values
-      for (let i = 0; i < templateNames.length; i++) {
-        if (usedIndices.has(i)) continue;
-        const n = templateNames[i];
-        if (n.literal !== undefined) continue;
-        if (n.elem === 'Data' && !n.attr) {
-          const val = (n.idx >= 0 && n.idx < values.length) ? values[n.idx] : '';
-          if (val) parts.push(val);
-          usedIndices.add(i);
-        }
-      }
-
-      // Pass 3: Collect non-System, non-Data element values (UserData custom elements)
+      // Pass 3: Collect non-System, non-Data element values (UserData
+      // custom elements). Unchanged.
       const systemElems = new Set(['EventID', 'Level', 'Channel', 'Computer', 'Provider', 'Task',
         'Opcode', 'Execution', 'TimeCreated', 'Correlation', 'Security', 'EventRecordID',
         'Keywords', 'Version', 'System', 'EventData', 'UserData', 'Event']);
