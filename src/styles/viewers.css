@@ -3804,9 +3804,9 @@ body.dark .yara-toggle-reasons-btn:hover {
      2. `.yara-sidebar-desc`    — muted italic rule description
      3. `.yara-sidebar-strings` — compact list of value + hit count
    Clicking the ➕ toggle button in the title row adds `.yara-expanded`
-   to the parent `.ext-val` cell, revealing EVERY match's
-   `.yara-sidebar-reason` sub-row at once (matched `$var`, rule condition
-   with matched identifiers bolded); clicking ➖ collapses them again.
+   to the parent `.ext-val` cell, revealing the `.yara-sidebar-strings` 
+   list containing EVERY match and their reason sub-rows; clicking ➖ 
+   collapses them again.
    The 📐 "view rule" button lives in the same title row and is always
    visible — once per rule.
    The aim is to replace the previous one-line "desc — N string(s)
@@ -3855,11 +3855,16 @@ body.dark .yara-sidebar-desc {
 }
 
 .yara-sidebar-strings {
+  display: none;
   list-style: none;
   margin: 4px 0 0;
   padding: 0;
   border-top: 1px dashed rgba(0, 0, 0, .08);
   padding-top: 4px;
+}
+
+.ext-val.yara-expanded .yara-sidebar-strings {
+  display: block;
 }
 
 body.dark .yara-sidebar-strings {
@@ -3940,7 +3945,7 @@ body.dark .yara-sidebar-hits {
    detection"), and the 📐 "view rule" affordance. Mirrors the YARA
    dialog's `.yara-match-reason` look so the two surfaces stay coherent. */
 .yara-sidebar-reason {
-  display: none;
+  display: flex;
   width: 100%;
   align-items: center;
   flex-wrap: wrap;
@@ -3955,14 +3960,7 @@ body.dark .yara-sidebar-hits {
   line-height: 1.45;
 }
 
-/* Reveal every match's reason sub-row when the user has clicked the ➕
-   toggle button in the title row (which flips `.yara-expanded` on the
-   parent `.ext-val` cell). Replaces the previous hover-reveal so the
-   expanded rows are sticky — analysts can read and copy from them
-   without having to keep the mouse hovering on the card. */
-.ext-val.yara-expanded .yara-sidebar-reason {
-  display: flex;
-}
+
 
 
 .yara-sidebar-reason strong {
