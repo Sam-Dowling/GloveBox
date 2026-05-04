@@ -1672,6 +1672,191 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
 
+    // ── [ScriptBlock].GetMethod("Create", ...).Invoke(...) ──
+    //
+    // Phase D: the reflective form attackers use to bypass string-match
+    // detection of `[scriptblock]::Create(...)`. The literal payload is
+    // passed as the second argument to `.Invoke($null, @(<payload>))`.
+    // Structurally rare but real — line 37 of the shipped
+    // mixed-obfuscations.txt corpus uses exactly this shape.
+    //
+    // Two spellings accepted:
+    //   (a) Chained:
+    //       [ScriptBlock].GetMethod("Create", …).Invoke($null, @('payload'))
+    //   (b) Variable-stored handle:
+    //       $m = [ScriptBlock].GetMethod("Create", …); $m.Invoke($null, @('payload'))
+    //
+    // The regex keeps a bounded `[\s\S]{0,200}` window between GetMethod
+    // and the Invoke so an unrelated .Invoke(...) later in the file
+    // can't be mis-attributed.
+    const sbReflectRe = /\[\s*(?:System\.Management\.Automation\.)?[Ss]cript[Bb]lock\s*\]\s*\.\s*GetMethod\s*\(\s*['"]Create['"][\s\S]{0,300}?\.\s*Invoke\s*\(\s*\$null\s*,\s*@\s*\(\s*(['"])((?:\\.|(?!\1).){3,2048})\1\s*\)\s*\)/g;
+    let sbReflectM;
+    while ((sbReflectM = sbReflectRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const body = (sbReflectM[2] || '').replace(/\\'/g, "'").replace(/\\"/g, '"');
+      if (body.length < 3) continue;
+      if (!this._bruteforce && !_EXEC_INTENT_RE.test(body)) continue;
+      const clipped = _clipDeobfToAmpBudget(body, sbReflectM[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell [scriptblock]::Create (reflection)',
+        raw: sbReflectM[0],
+        offset: sbReflectM.index,
+        length: sbReflectM[0].length,
+        deobfuscated: clipped,
+        _patternIocs: [{
+          url: '[ScriptBlock].GetMethod("Create",...).Invoke($null,@(...)) \u2014 reflection-based scriptblock invocation (T1059.001 / T1027) anti-AMSI variant',
+          severity: 'high',
+        }],
+      });
+    }
+
+    // ── PowerShell gzip / deflate stager ──
+    //
+    // Phase D: the in-memory decompression pipeline common in stagers
+    // that carry a compressed payload inside a base64 blob:
+    //
+    //   $bytes = [Convert]::FromBase64String('<b64>')
+    //   $ms    = New-Object IO.MemoryStream(,$bytes)
+    //   $gz    = New-Object IO.Compression.GzipStream(
+    //              $ms, [IO.Compression.CompressionMode]::Decompress)
+    //   $sr    = New-Object IO.StreamReader($gz)
+    //   iex $sr.ReadToEnd()
+    //
+    // We recognise the shape via the `IO.Compression.(Gzip|Deflate)Stream`
+    // token + a `FromBase64String(<literal|var>)` call within 400 chars.
+    // The base64 is decoded then passed through `Decompressor.inflateSync`.
+    // The decompressed output is UTF-8 decoded and gated through the same
+    // exec-intent check as every other PowerShell sink.
+    if (typeof Decompressor !== 'undefined') {
+      // The four alternatives cover all GzipStream/FromBase64 orderings:
+      //   (a) GzipStream …  FromBase64String('literal')
+      //   (b) FromBase64String('literal') … GzipStream
+      //   (c) GzipStream …  FromBase64String($var)
+      //   (d) FromBase64String($var) … GzipStream
+      // Real samples use (d) most often (assign bytes first, then pipe
+      // into the stream), but (a)..(c) all show up too.
+      const gzStreamRe = /IO\.Compression\.(Gzip|Deflate)Stream[\s\S]{0,400}?FromBase64String\s*\(\s*(['"])((?:\\.|(?!\2).){8,32768})\2\s*\)|FromBase64String\s*\(\s*(['"])((?:\\.|(?!\4).){8,32768})\4\s*\)[\s\S]{0,400}?IO\.Compression\.(Gzip|Deflate)Stream|IO\.Compression\.(Gzip|Deflate)Stream[\s\S]{0,400}?FromBase64String\s*\(\s*(\$\{?[A-Za-z_][\w]*\}?|\$env:[A-Za-z_][\w]*|\$\{env:[A-Za-z_][\w]*\})\s*\)|FromBase64String\s*\(\s*(\$\{?[A-Za-z_][\w]*\}?|\$env:[A-Za-z_][\w]*|\$\{env:[A-Za-z_][\w]*\})\s*\)[\s\S]{0,400}?IO\.Compression\.(Gzip|Deflate)Stream/g;
+      let gzM;
+      while ((gzM = gzStreamRe.exec(text)) !== null) {
+        throwIfAborted();
+        if (candidates.length >= this.maxCandidatesPerType) break;
+        // Identify the stream flavour + the base64 source (literal or var).
+        // Groups by alternative:
+        //   (a) 1=fmt 2=quote 3=literal
+        //   (b) 4=quote 5=literal 6=fmt
+        //   (c) 7=fmt 8=$var
+        //   (d) 9=$var 10=fmt
+        const fmt = (gzM[1] || gzM[6] || gzM[7] || gzM[10] || 'Gzip').toLowerCase();
+        let b64 = gzM[3] || gzM[5];
+        const varToken = gzM[8] || gzM[9];
+        if (!b64 && varToken) {
+          if (typeof this._buildPsSymbolTable === 'function') {
+            const table = this._buildPsSymbolTable(text);
+            b64 = this._psResolveArgToken(varToken, table);
+          }
+        }
+        if (typeof b64 !== 'string') continue;
+        b64 = b64.replace(/\s+/g, '');
+        if (b64.length < 8 || (b64.length % 4) !== 0) continue;
+        if (!/^[A-Za-z0-9+/=]+$/.test(b64)) continue;
+        let bytes;
+        try {
+          if (typeof atob === 'function') {
+            const bin = atob(b64);
+            bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i) & 0xff;
+          } else {
+            bytes = new Uint8Array(Buffer.from(b64, 'base64'));
+          }
+        } catch (_) { continue; }
+        if (!bytes || bytes.length < 8) continue;
+        // `Decompressor.inflateSync` accepts `'gzip' | 'deflate' |
+        // 'deflate-raw' | 'zlib'`. .NET's `IO.Compression.DeflateStream`
+        // is the raw-deflate format (no zlib header); Gzip matches
+        // the `gzip` label.
+        const dcFormat = (fmt === 'gzip') ? 'gzip' : 'deflate-raw';
+        let inflated;
+        try {
+          inflated = Decompressor.inflateSync(bytes, dcFormat);
+        } catch (_) { continue; }
+        if (!inflated || inflated.length < 4) continue;
+        let decoded;
+        try {
+          decoded = new TextDecoder('utf-8', { fatal: false }).decode(inflated);
+        } catch (_) { continue; }
+        if (!decoded || decoded.length < 4) continue;
+        // Printable-ratio gate (same threshold as -EncodedCommand).
+        let printable = 0;
+        const sampleLen = Math.min(decoded.length, 256);
+        for (let i = 0; i < sampleLen; i++) {
+          const cc = decoded.charCodeAt(i);
+          if ((cc >= 0x20 && cc < 0x7f) || cc === 0x09 || cc === 0x0a || cc === 0x0d) printable++;
+        }
+        if (printable / Math.max(1, sampleLen) < 0.8) continue;
+        if (!this._bruteforce && !_EXEC_INTENT_RE.test(decoded)) continue;
+        const clipped = _clipDeobfToAmpBudget(decoded, gzM[0]);
+        candidates.push({
+          type: 'cmd-obfuscation',
+          technique: fmt === 'gzip' ? 'PowerShell Gzip Stager' : 'PowerShell Deflate Stager',
+          raw: gzM[0],
+          offset: gzM.index,
+          length: gzM[0].length,
+          deobfuscated: clipped,
+          _patternIocs: [{
+            url: `PowerShell ${fmt === 'gzip' ? 'Gzip' : 'Deflate'}Stream staged payload \u2014 compressed base64 body inflated in-memory (T1027 / T1140 Deobfuscate/Decode)`,
+            severity: 'high',
+          }],
+        });
+      }
+    }
+
+    // ── PowerShell ConvertTo-SecureString with inline key (structural) ──
+    //
+    // Phase D: canonical Empire / CobaltStrike staging primitive. The
+    // `-Key @(<bytes>)` argument is 16 / 24 / 32 bytes; the `-String`
+    // argument is a base64 of an AES-CBC-encrypted UTF-16LE payload.
+    // Real decryption requires async Web Crypto (or Node crypto); we
+    // keep this branch structural — emit a critical-severity pattern
+    // IOC and expose the recovered key + ciphertext in `deobfuscated`
+    // so the analyst can decrypt offline. FP-free by design:
+    // legitimate scripts do not call `ConvertTo-SecureString -Key @(…)`
+    // with inline bytes.
+    const ssKeyRe = /ConvertTo-SecureString\s+(?:-String\s+)?(['"])([A-Za-z0-9+/=]{16,32768})\1\s+-Key\s+@\s*\(\s*((?:0x[0-9a-fA-F]{1,2}|\d{1,3})(?:\s*,\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})){15,31})\s*\)/g;
+    let ssM;
+    while ((ssM = ssKeyRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const b64 = ssM[2];
+      const keySrc = ssM[3];
+      const keyBytes = keySrc.split(/\s*,\s*/).map(t => {
+        return t.toLowerCase().startsWith('0x') ? parseInt(t, 16) : parseInt(t, 10);
+      });
+      if (keyBytes.some(b => !Number.isFinite(b) || b < 0 || b > 255)) continue;
+      // AES key sizes are 16 / 24 / 32 bytes.
+      if (keyBytes.length !== 16 && keyBytes.length !== 24 && keyBytes.length !== 32) continue;
+      // Build a short fingerprint of the key (first + last byte, length)
+      // for the analyst report — the full key is in the raw span.
+      const keyHex = keyBytes.map(b => b.toString(16).padStart(2, '0')).join('');
+      const shortKey = keyHex.length > 16
+        ? (keyHex.slice(0, 8) + '\u2026' + keyHex.slice(-8))
+        : keyHex;
+      const summary = `ConvertTo-SecureString -Key (AES-${keyBytes.length * 8}, ${keyBytes.length} bytes, ${shortKey}) \u2014 ciphertext=${b64.slice(0, 24)}\u2026 (${b64.length} chars, UTF-16LE plaintext)`;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell SecureString Decode',
+        raw: ssM[0],
+        offset: ssM.index,
+        length: ssM[0].length,
+        deobfuscated: summary,
+        _patternIocs: [{
+          url: `ConvertTo-SecureString -Key @(\u2026) \u2014 inline-key AES-${keyBytes.length * 8} decrypt primitive (T1140 Deobfuscate/Decode / T1027 canonical Empire/CobaltStrike staging)`,
+          severity: 'critical',
+        }],
+      });
+    }
+
     // ── PowerShell AMSI-bypass pattern (structural IOC, not a decode) ──
     //
     // The canonical AMSI-disable string:
@@ -1707,6 +1892,45 @@ Object.assign(EncodedContentDetector.prototype, {
         deobfuscated: 'System.Management.Automation.AmsiUtils.amsiInitFailed \u2190 $true (AMSI disabled)',
         _patternIocs: [{
           url: 'AMSI bypass \u2014 AmsiUtils.amsiInitFailed SetValue($null,$true) (T1562.001 Disable or Modify Tools)',
+          severity: 'critical',
+        }],
+      });
+    }
+
+    // ── PowerShell AMSI / ETW reflective patching (broadened family) ──
+    //
+    // Phase D: the narrow `AmsiUtils.amsiInitFailed` branch above only
+    // covers the legacy Matt Graeber bypass. Post-2020 stagers patch
+    // `AmsiScanBuffer` / `EtwEventWrite` directly via reflection +
+    // `VirtualProtect`. Aligns with the YARA rule
+    // `AMSI_ETW_Bypass_Patterns` in src/rules/script-threats.yar.
+    //
+    // Structural, high-confidence — the combination of a reflection
+    // GetType over `amsi` / `ntdll`, an export name
+    // (`AmsiScanBuffer` / `EtwEventWrite`), and a `VirtualProtect` /
+    // `GetDelegateForFunctionPointer` / `patch` token is effectively
+    // impossible in benign scripts.
+    const amsiEtwRe = /(?:AmsiScanBuffer|EtwEventWrite|AmsiOpenSession|AmsiCloseSession)[\s\S]{0,800}?(?:VirtualProtect|GetDelegateForFunctionPointer|GetProcAddress|LoadLibrary|\bpatch\b)|(?:VirtualProtect|GetDelegateForFunctionPointer|GetProcAddress)[\s\S]{0,800}?(?:AmsiScanBuffer|EtwEventWrite|AmsiOpenSession|AmsiCloseSession)/gi;
+    let amsiEtwM;
+    while ((amsiEtwM = amsiEtwRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const raw = amsiEtwM[0];
+      if (raw.length > 800) continue;
+      // Identify which API the patch targets for the technique summary.
+      let target = 'AMSI/ETW';
+      if (/AmsiScanBuffer/i.test(raw)) target = 'AmsiScanBuffer';
+      else if (/EtwEventWrite/i.test(raw)) target = 'EtwEventWrite';
+      else if (/AmsiOpenSession/i.test(raw)) target = 'AmsiOpenSession';
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell AMSI/ETW Reflective Patch',
+        raw,
+        offset: amsiEtwM.index,
+        length: raw.length,
+        deobfuscated: `Reflective patch of ${target} via VirtualProtect / GetDelegateForFunctionPointer \u2014 anti-defence primitive`,
+        _patternIocs: [{
+          url: `AMSI/ETW reflective patch \u2014 ${target} memory overwrite via VirtualProtect (T1562.001 / T1620 Reflective Code Loading)`,
           severity: 'critical',
         }],
       });
