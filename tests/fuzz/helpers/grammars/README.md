@@ -71,3 +71,61 @@ be bit-identical across runs so coverage deltas are meaningful.
    `dist/fuzz-coverage/summary.md § Obfuscation technique coverage`
    after running with `--coverage`, and that the per-module footnotes
    stay free of surprising `empty-miss` / `__unknown__` signal.
+
+## multi-technique-grammar.js (reassembly target)
+
+`multi-technique-grammar.js` is the odd grammar out. The per-shell
+grammars each target one decoder branch per seed and use a string-level
+`_expectedSubstring` probe; `multi-technique-grammar.js` exists to feed
+`obfuscation/reassembly.fuzz.js`, whose unit under test is
+`src/encoded-reassembler.js` — the module that stitches ≥2 independent
+findings from different byte offsets into one composite script.
+
+Two consequences for seed shape:
+
+- Seeds must be **multi-technique**. Each seed contains at least two
+  top-level encoded spans (possibly different shells, definitely
+  different finder branches) because `EncodedReassembler.build()`
+  returns `{ skipReason: 'findings-below-min' }` on fewer than 2.
+- The soft roundtrip signal is **`_expectedIocs`**, not
+  `_expectedSubstring`. Each element is `{ type, value }` where `type`
+  is an `IOC.*` enum value and `value` is the exact string the atom
+  should materialise as once reassembled + re-extracted through
+  `ioc-extract.js`. The target records a technique `miss` entry for
+  every atom missing from both the sentinel-stripped stitched body and
+  the novel-IOC re-extract tally. Seeds can still carry
+  `_expectedSubstring` on top for the structural build-did-something
+  probe.
+
+Seeds come from two composers that feed the same array:
+
+- **Curated** — ten hand-rolled classic droppers (PS
+  `IEX(DownloadString)` + `frombase64string`, `cmd /c for /f`-chain with
+  caret+`%COMSPEC:~N,M%`, `<script language="VBScript">` HTA mix, bash
+  `eval` + `\x..` `printf` concat, Python `exec` + `chr-join`, PHP
+  `eval(base64_decode)` + chr-dot chain, etc.). Each has a handcrafted
+  `_expectedIocs` array.
+- **Pair-concat** — `pairConcat()` takes one seed from each of two
+  different per-shell grammars (e.g. one from
+  `cmd-grammar.generateCmdSeeds()`, one from
+  `powershell-grammar.generatePowershellSeeds()`), joins them with a
+  random neutral separator, and plants two fresh RFC-5737 doc IPs
+  (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) or attacker-shaped
+  FQDNs as the `_expectedIocs`. Pair-concat composes freshly each run —
+  the joined text is **not** guaranteed to carry the parents'
+  `_expectedSubstring`, so the pair-concat seeds set only
+  `_expectedIocs`.
+
+The catalog describes reassembly **outcomes** — `build-empty`,
+`build-skip-findings-below-min`, `build-skip-below-coverage`,
+`build-truncated`, `build-overlap-collision`, `build-succeeded`,
+`analyze-no-worker-manager`, `analyze-no-novel-iocs`,
+`analyze-yielded-novel-ioc`, `expected-ioc-missed` — not decoder
+techniques. This is deliberate: the per-shell grammars already cover
+decoder branches; the reassembly target's job is to surface structural
+build results and the whole-file-stitching win-condition.
+
+IOC atoms use RFC-5737 doc-range IPs and fake but attacker-shaped
+FQDNs (`evil-c2.example.org`, `dropper.invalid`) so they do not collide
+with the `src/nicelist.js` whitelist and unambiguously attribute to the
+seed rather than the host page or another finder.

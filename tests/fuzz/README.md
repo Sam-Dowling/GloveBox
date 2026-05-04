@@ -129,7 +129,10 @@ tests/fuzz/targets/
 │   │                                    + _findPsVariableResolutionCandidates
 │   ├── bash-obfuscation.fuzz.js       ← _findBashObfuscationCandidates (B1–B6 + /dev/tcp)
 │   ├── python-obfuscation.fuzz.js     ← _findPythonObfuscationCandidates
-│   └── php-obfuscation.fuzz.js        ← _findPhpObfuscationCandidates
+│   ├── php-obfuscation.fuzz.js        ← _findPhpObfuscationCandidates
+│   └── reassembly.fuzz.js             ← EncodedReassembler.{build,analyze} over
+│                                        EncodedContentDetector.scan() output
+│                                        on multi-technique / multi-line scripts
 └── yara/
     ├── parse-rules.fuzz.js      ← YaraEngine.parseRules (grammar parser)
     └── scan.fuzz.js             ← YaraEngine.scan (rule execution engine)
@@ -159,6 +162,30 @@ decoders in isolation; the latter loads the full `_DETECTOR_FILES`
 mixin chain and drives the public `scan(text, rawBytes, ctx)` entry
 point, catching orchestration bugs where finder output meets decoder
 dispatch.
+
+`obfuscation/reassembly` is the one fuzz target that exercises the
+**whole-file reassembly** path (`src/encoded-reassembler.js`). The
+per-shell obfuscation targets drive one decoder branch per iteration;
+they catch single-atom decode regressions but cannot catch orchestration
+bugs in `EncodedReassembler.build()` — the module that stitches N
+independent spans from different byte offsets into one composite script
+the sidebar paints as a single "stitched" card. This target loads the
+full `_DETECTOR_FILES` chain + `src/ioc-extract.js` +
+`src/encoded-reassembler.js`, feeds `EncodedContentDetector.scan()` with
+multi-technique composite seeds from
+`tests/fuzz/helpers/grammars/multi-technique-grammar.js`, runs
+`build()` in both `'auto'` and `'bruteforce'` modes, and drives the
+IOC-extract phase of `analyze()` with `workerManager: null` (taking the
+documented `skipped.yara = 'no-worker-manager'` branch — YARA-on-stitched
+is covered by Playwright fixture tests). Grammar seeds carry a non-
+enumerable `_expectedIocs` array; atoms missed from BOTH the sentinel-
+stripped stitched body AND the novel-IOC re-extract tally as soft
+`reassembly: expected-ioc-missed` signals (never crashes). The
+reassembly technique catalog describes reassembly OUTCOMES (structural
+build results + analyze win-condition) rather than decoder techniques;
+together with the per-`src/` coverage table it answers "is the
+whole-file stitching pipeline actually recovering the IOCs an analyst
+would expect from a multi-technique dropper?".
 
 `text/safe-regex` exists because `safeRegex`, `safeMatchAll`,
 `safeExec`, and `safeTest` are the shared choke-point for every
@@ -572,6 +599,9 @@ not a correctness signal on its own.
 | `miss > 0` on a technique row | Candidates fired, but none preserved the expected token | Check recent changes to the branch's unwrapper |
 | `empty-miss > 0` in footnotes | `_expectedSubstring` seed triggered zero candidates | Fix the grammar seed shape or loosen the branch gate |
 | `__unknown__` > 0 / unknown samples listed | Decoder emits a `technique` string absent from the grammar catalog | Add or fix the matching `TECHNIQUE_CATALOG` entry |
+| `reassembly: expected-ioc-missed` `miss > 0` (obfuscation/reassembly) | Multi-technique seed planted an IOC atom the stitched body + novel-IOC re-extract never recovered | Inspect the specific seed; either extend the underlying decoder (atom encoding not unwrapped) or adjust the seed's `_expectedIocs` shape (IOC regex doesn't match the atom) |
+| `reassembly: below-coverage skip` `hits > 0` (obfuscation/reassembly) | Multi-technique seeds triggered ≥2 detector findings but below `MIN_COVERAGE = 5%` of source → reassembly skipped | Tune the seed so decoded spans cover ≥5% of the file, or verify the threshold is still defensible |
+| `reassembly: built ≥2 spans` `hits = 0` (obfuscation/reassembly) | Grammar never produced a source with 2+ top-level detector findings | The composer isn't emitting multi-technique output — check `generateMultiTechniqueSeeds()` output with `--replay --quick` stdout |
 
 
 ## Reproducible build interaction
