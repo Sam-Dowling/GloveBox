@@ -14,7 +14,15 @@ const PYTHON_TECHNIQUE_CATALOG = Object.freeze([
   "Python codecs.decode('rot13')",
   "Python codecs.decode('base64')",
   "Python codecs.decode('hex')",
-  "Python codecs.decode('zlib')",
+  // NOTE: `codecs.decode('zlib')` is intentionally absent. The decoder
+  // branch (python-obfuscation.js:340) requires `Decompressor.inflateSync`
+  // from `src/decompressor.js`, which this target deliberately does NOT
+  // load (see python-obfuscation.fuzz.js:12-16 — the "did we inflate?"
+  // path is covered by unit tests and the interesting fuzz surface is
+  // the pattern finder). Adding the row here would permanently show 0
+  // hits and distort the hit-rate signal. If true zlib-codec coverage
+  // becomes wanted, add `src/decompressor.js` to the target's modules
+  // list and author a seed with a real zlib-deflated-base64 payload.
   'Python chr-join Reassembly',
   'Python bytes-list Reassembly',
   'Python chr-concat Reassembly',

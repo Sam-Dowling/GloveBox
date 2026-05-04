@@ -22,19 +22,24 @@ const CMD_TECHNIQUE_CATALOG = Object.freeze([
   'CMD Caret Insertion (nested)',
   'CMD Variable Concatenation',
   'CMD Delayed-Expansion Indirection',
-  // "Env Var Substring" has four source sites in the decoder:
-  // inline (welded into a word), and line-level resolved / partial /
-  // structural (fired from the 3+-token resolver on a separate line).
+  // "Env Var Substring" has three source sites the default (non-
+  // bruteforce) fuzz path can reach:
+  //   inline   — %VAR:~N,M% welded into a word (no surrounding space)
+  //   resolved — a line with ≥3 tokens, ALL resolvable against KNOWN_ENV_VARS
+  //   partial  — a line with ≥3 tokens, at least one resolvable AND at
+  //              least one unresolvable (mixed-resolution → (partial) tier)
+  // The fourth branch (structural, zero resolved) is gated by
+  // `this._bruteforce` in cmd-obfuscation.js:754 and is unreachable
+  // from this target; intentionally absent from the catalog.
   'CMD Env Var Substring (inline)',
   'CMD Env Var Substring',
   'CMD Env Var Substring (partial)',
-  'CMD Env Var Substring (structural)',
   'CMD Env Var (argv0)',
-  // "for /f" indirect execution — the CMD-specific pattern of piping
-  // dynamic output into a callable (`for /f %i in ('…') do call %i`).
+  // "for /f" indirect execution — piping dynamic output into a callable
+  // (`for /f %i in ('…') do call %i`). Same bruteforce-gating applies
+  // to the (structural) tier in cmd-obfuscation.js:582 → omitted here.
   'CMD for /f Indirect Execution',
   'CMD for /f Indirect Execution (partial)',
-  'CMD for /f Indirect Execution (structural)',
   'CMD ClickFix Wrapper',
 ]);
 
@@ -167,6 +172,23 @@ function genEnvVarSubstring() {
     'set f=%COMSPEC:~20,3%%COMSPEC:~22,1%',
     'cmdd',
   ));
+  // Inline: %VAR:~N,M% welded into a surrounding word — no whitespace
+  // on either side. cmd-obfuscation.js:434 requires the post-resolution
+  // word to match SENSITIVE_CMD_KEYWORDS. "cmd.exe" qualifies; welding
+  // "cmd" slice into a ".exe" literal produces `cmd.exe` in one word.
+  out.push(makeSeed(
+    'set p=pre%COMSPEC:~20,3%.exe',
+    'cmd.exe',
+  ));
+  // Mixed-resolution line: 3 tokens, two COMSPEC slices (resolvable) +
+  // one bogus-name token (unresolvable) → triggers the (partial) tier
+  // in cmd-obfuscation.js:752 where resolvedCount > 0 && unresolvedCount > 0.
+  // The decoded line keeps `cmd` and `d` verbatim and replaces the third
+  // token with `⟨DOESNOTEXIST:~0,3⟩`; the expected substring is preserved.
+  out.push(makeSeed(
+    '%COMSPEC:~20,3% %COMSPEC:~22,1% %DOESNOTEXIST:~0,3%',
+    'cmd',
+  ));
   return out;
 }
 
@@ -238,6 +260,28 @@ function genClickFix() {
   ];
 }
 
+function genForFIndirect() {
+  // CMD `for /f` indirect execution — inner command is the real payload.
+  // Three tiers map to three decoder branches (cmd-obfuscation.js:578–582):
+  //   resolved (all inner %VAR% tokens resolvable) → "Indirect Execution"
+  //   partial  (≥1 resolvable AND ≥1 unresolvable) → "Indirect Execution (partial)"
+  //   structural (zero resolved)                   → bruteforce-only, omitted
+  return [
+    // All-resolved: inner references %COMSPEC% (KNOWN_ENV_VARS) only.
+    makeSeed(
+      'for /f "delims=" %X in (\'%COMSPEC% /c whoami\') do call %X',
+      'cmd.exe',
+    ),
+    // Partial: inner mixes %COMSPEC% (resolvable) with %UNKNOWNVAR%
+    // (unresolvable, not a single-letter for-variable so it counts).
+    makeSeed(
+      'for /f "delims=" %X in (\'%COMSPEC% /c %UNKNOWNVAR%\') do call %X',
+      'cmd.exe',
+    ),
+  ];
+}
+
+
 function generateCmdSeeds() {
   const rng = makeRng(0xC1D5EED0);
   return [
@@ -246,6 +290,7 @@ function generateCmdSeeds() {
     ...genDelayedExpansion(),
     ...genEnvVarSubstring(),
     ...genArgv0(),
+    ...genForFIndirect(),
     ...genClickFix(),
   ];
 }

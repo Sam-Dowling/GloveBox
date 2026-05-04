@@ -14,6 +14,10 @@
 const POWERSHELL_TECHNIQUE_CATALOG = Object.freeze([
   'PowerShell String Concatenation',
   'PowerShell -replace Chain',
+  // Single-call .replace(SENTINEL,'') form — emitted by the
+  // zero-replacement sentinel-strip branch in cmd-obfuscation.js
+  // (see pain-point 25f2e66). Distinct from the ≥2-chain branch above.
+  'PowerShell -replace Sentinel Strip',
   'PowerShell Backtick Escape',
   'PowerShell Format Operator (-f)',
   'PowerShell String Reversal',
