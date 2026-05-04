@@ -13,6 +13,7 @@ const PYTHON_TECHNIQUE_CATALOG = Object.freeze([
   "Python codecs.decode('rot_13')",
   "Python codecs.decode('rot13')",
   "Python codecs.decode('base64')",
+  "Python codecs.decode('b64')",
   "Python codecs.decode('hex')",
   // NOTE: `codecs.decode('zlib')` is intentionally absent. The decoder
   // branch (python-obfuscation.js:340) requires `Decompressor.inflateSync`
@@ -123,6 +124,13 @@ function genCodecsDecode() {
   // base64('os.system') = 'b3Muc3lzdGVt'
   out.push(makeSeed(
     "import codecs\ny = codecs.decode('" + b64('os.system') + "', 'base64')",
+    'os.system',
+  ));
+  // Same branch, shorthand alias `b64` (decoder normalises via the
+  // `_codec$` regex + alias table; the emitted `technique` keeps the
+  // raw spelling so `codecs.decode('b64')` is a distinct catalog row).
+  out.push(makeSeed(
+    "import codecs\ny2 = codecs.decode('" + b64('os.system') + "', 'b64')",
     'os.system',
   ));
   // hex('subprocess') = '73756270726f63657373'
@@ -299,6 +307,13 @@ function genAliasedExec() {
   out.push(makeSeed(
     `e_ = eval; e_("__import__('os').system('id')")`,
     'eval',
+  ));
+  // Aliased `compile` — same shape as exec/eval; covers the third
+  // DANGEROUS_BUILTINS branch. `compile(src, '<anon>', 'exec')` is the
+  // RCE primitive when paired with a later `exec(bytecode)` call.
+  out.push(makeSeed(
+    `c_ = compile\nc_("__import__('os').system('id')", '<anon>', 'exec')`,
+    'compile',
   ));
   // Alias name that matches a dangerous builtin → MUST be suppressed
   // (decoder rejects DANGEROUS_BUILTINS.has(alias)).
