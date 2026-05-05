@@ -261,3 +261,166 @@ test('php-obfuscation: caps at maxCandidatesPerType', () => {
   assert.ok(shells.length <= d.maxCandidatesPerType,
     `expected ≤ ${d.maxCandidatesPerType} candidates, got ${shells.length}`);
 });
+
+// ── PHP5 (5a): Superglobal Callable must extract KEY into deobfuscated ──────
+//
+// Regression guard: prior to this fix the `deobfuscated` field was just
+// the raw source match, so the analyst never saw the dispatched
+// parameter name. Now the resolved form `call $_GET['fn'] with args: …`
+// surfaces the key explicitly.
+
+test('php-obfuscation: 5a extracts superglobal + key + args into deobfuscated', () => {
+  const text = `<?php $_GET['fn']($_POST['arg']);`;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /Superglobal Callable/.test(c.technique));
+  assert.ok(hits.length >= 1, 'expected 5a candidate');
+  const d0 = hits[0].deobfuscated;
+  assert.match(d0, /\$_GET\[['"]fn['"]\]/, `key not extracted: ${d0}`);
+  assert.match(d0, /\$_POST\[['"]arg['"]\]/, `args not extracted: ${d0}`);
+  // _patternIocs mirror must carry a critical-severity T1059 pointer.
+  const mirror = (hits[0]._patternIocs || [])[0];
+  assert.ok(mirror && /user-input function dispatch/i.test(mirror.url || ''),
+    `expected T1059 mirror; got: ${JSON.stringify(hits[0]._patternIocs)}`);
+});
+
+// ── PHP5 (5b): wrapped sink-on-superglobal (user's reported miss) ───────────
+//
+// The canonical gap before this fix: literal-adjacency regexes required
+// sink and superglobal to touch, so `shell_exec(escapeshellarg(...))`
+// was invisible despite being a critical web-shell primitive. These
+// tests pin the wrapper-tolerant extraction.
+
+test('php-obfuscation: 5b shell_exec(escapeshellarg($_SERVER[...])) is flagged critical', () => {
+  const text = `<?php echo shell_exec(escapeshellarg($_SERVER['HTTP_X']));?>`;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /eval\/system on Superglobal/.test(c.technique));
+  assert.ok(hits.length >= 1,
+    `user's exact reported miss must fire; got: ${JSON.stringify(host(cands))}`);
+  const cand = hits[0];
+  // Sink + wrapper + superglobal + key all present in deobfuscated:
+  const dd = cand.deobfuscated;
+  assert.match(dd, /shell_exec/, `sink not surfaced: ${dd}`);
+  assert.match(dd, /escapeshellarg/, `wrapper not surfaced: ${dd}`);
+  assert.match(dd, /\$_SERVER/, `superglobal not surfaced: ${dd}`);
+  assert.match(dd, /HTTP_X/, `key not surfaced: ${dd}`);
+  // escapeshellarg-wrapped case must uplift to critical via _patternIocs.
+  const criticalMirror = (cand._patternIocs || []).find(
+    p => p.severity === 'critical' && /ineffective sanitiser/i.test(p.url || '')
+  );
+  assert.ok(criticalMirror,
+    `expected critical severity mirror for escapeshellarg wrapper; got: ${JSON.stringify(cand._patternIocs)}`);
+});
+
+test('php-obfuscation: 5b amplifying decoder wrapper (base64_decode) uplifts to critical', () => {
+  const text = `<?php eval(base64_decode($_POST['p'])); ?>`;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /eval\/system on Superglobal/.test(c.technique));
+  assert.ok(hits.length >= 1, 'eval(base64_decode($_POST[...])) must fire');
+  const cand = hits[0];
+  assert.match(cand.deobfuscated, /base64_decode/, 'wrapper name must be in deobfuscated');
+  const criticalMirror = (cand._patternIocs || []).find(
+    p => p.severity === 'critical' && /amplifying decoder/i.test(p.url || '')
+  );
+  assert.ok(criticalMirror,
+    `expected critical amplifying-decoder mirror; got: ${JSON.stringify(cand._patternIocs)}`);
+});
+
+test('php-obfuscation: 5b 2-level sanitiser chain system(trim(urldecode($_GET[...])))', () => {
+  const text = `<?php system(trim(urldecode($_GET['cmd']))); ?>`;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /eval\/system on Superglobal/.test(c.technique));
+  assert.ok(hits.length >= 1, '2-level wrapper must fire');
+  const dd = hits[0].deobfuscated;
+  assert.match(dd, /system/, `sink missing: ${dd}`);
+  assert.match(dd, /trim/, `outer wrapper missing: ${dd}`);
+  assert.match(dd, /urldecode/, `inner wrapper missing: ${dd}`);
+  assert.match(dd, /\$_GET\[['"]cmd['"]\]/, `superglobal access missing: ${dd}`);
+});
+
+test('php-obfuscation: 5b 3-level max-depth chain exec(htmlspecialchars(strip_tags(base64_decode($_COOKIE[...]))))', () => {
+  const text = `<?php exec(htmlspecialchars(strip_tags(base64_decode($_COOKIE['k'])))); ?>`;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /eval\/system on Superglobal/.test(c.technique));
+  assert.ok(hits.length >= 1, 'max-depth (3-level) wrapper chain must fire');
+  const cand = hits[0];
+  // base64_decode in the chain must uplift to critical.
+  const critMirror = (cand._patternIocs || []).find(p => p.severity === 'critical');
+  assert.ok(critMirror, `expected critical mirror via base64_decode wrapper`);
+});
+
+test('php-obfuscation: 5b bare eval($_REQUEST[...]) — direct form still critical', () => {
+  const text = `<?php eval($_REQUEST['c']); ?>`;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /eval\/system on Superglobal/.test(c.technique));
+  assert.ok(hits.length >= 1, 'bare eval on superglobal must fire');
+  const critMirror = (hits[0]._patternIocs || []).find(
+    p => p.severity === 'critical' && /direct eval\/assert/.test(p.url || '')
+  );
+  assert.ok(critMirror,
+    `direct-eval path must uplift to critical; got: ${JSON.stringify(hits[0]._patternIocs)}`);
+});
+
+test('php-obfuscation: 5b negative — getenv without superglobal must not fire', () => {
+  const text = `<?php shell_exec(strtolower(getenv('HTTP_X'))); ?>`;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /eval\/system on Superglobal/.test(c.technique));
+  assert.equal(hits.length, 0,
+    `getenv is not a superglobal; must not fire; got: ${JSON.stringify(host(cands))}`);
+});
+
+test('php-obfuscation: 5b negative — escapeshellarg on literal must not fire', () => {
+  const text = `<?php shell_exec(escapeshellarg('static-value')); ?>`;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /eval\/system on Superglobal/.test(c.technique));
+  assert.equal(hits.length, 0,
+    `no superglobal in escapeshellarg(); must not fire; got: ${JSON.stringify(host(cands))}`);
+});
+
+// ── PHP5 (5c): local-var taint flow (Layer-2) ───────────────────────────────
+
+test('php-obfuscation: 5c $c = $_GET[...]; shell_exec($c); two-pass taint flow', () => {
+  const text = `<?php
+    $c = $_GET['x'];
+    shell_exec($c);
+  `;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /Superglobal Taint/.test(c.technique));
+  assert.ok(hits.length >= 1,
+    `expected 5c local-var taint candidate; got: ${JSON.stringify(host(cands))}`);
+  const dd = hits[0].deobfuscated;
+  assert.match(dd, /shell_exec\(\$c\)/, `sink-call not surfaced: ${dd}`);
+  assert.match(dd, /\$_GET\[['"]x['"]\]/, `assignment source not surfaced: ${dd}`);
+});
+
+test('php-obfuscation: 5c respects 2 KiB bridging bound', () => {
+  const gap = 'x'.repeat(3000);
+  const text = `<?php
+    $c = $_SERVER['HTTP_X'];
+    ${gap}
+    shell_exec($c);
+  `;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /Superglobal Taint/.test(c.technique));
+  assert.equal(hits.length, 0,
+    `3 KiB gap must exceed bridging bound; got: ${JSON.stringify(host(cands))}`);
+});
+
+test('php-obfuscation: 5c negative — static-literal assignment does not fire', () => {
+  const text = `<?php
+    $c = 'static-value';
+    shell_exec($c);
+  `;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /Superglobal Taint/.test(c.technique));
+  assert.equal(hits.length, 0, 'no taint source; must not fire');
+});
+
+test('php-obfuscation: 5c tolerates wrapper between sink and tainted $c', () => {
+  const text = `<?php
+    $c = $_POST['cmd'];
+    shell_exec(escapeshellarg($c));
+  `;
+  const cands = d._findPhpObfuscationCandidates(text, {});
+  const hits = pick(cands, c => /Superglobal Taint/.test(c.technique));
+  assert.ok(hits.length >= 1, 'wrapper between sink and tainted $var must still fire');
+});

@@ -19,9 +19,20 @@
 //   PHP4  preg_replace('/.../e', '<code>', $subj) — the deprecated
 //         /e modifier RCE primitive (PHP < 7.0; still seen in legacy
 //         shells dropped onto outdated targets).
-//   PHP5  Superglobal eval — ${$_GET['x']}(…), $_REQUEST['cmd'](…),
-//         $_POST['c']($_POST['p']) — the canonical "single-line shell"
-//         shape (WSO-style `<?php $_GET[0]($_POST[1]);`).
+//   PHP5  Superglobal-fed sinks — three sub-branches:
+//           5a) superglobal-as-callable: ${$_GET['x']}(…), $_GET[0]($_POST[1])
+//           5b) sink-on-superglobal with up to 3 nested sanitiser /
+//               identity / amplifying-decoder wrappers:
+//                 shell_exec(escapeshellarg($_SERVER['HTTP_X']))
+//                 eval(base64_decode($_POST['p']))
+//                 system(trim(urldecode($_GET['c'])))
+//           5c) local-var taint flow (Layer-2): `$c = $_GET['x']; shell_exec($c);`
+//               two-pass; scope bounded to 2 KiB between assign & sink.
+//         Extracts the resolved sink / wrapper-chain / superglobal / key
+//         into `deobfuscated` (not raw-match). Severity uplift to
+//         `critical` when wrapper chain contains escapeshell* (false-sense
+//         sanitiser; option-injection still reachable) or amplifying
+//         decoders (b64/gz/hex2bin/rot13) which convert text into code.
 //   PHP6  data: include — include('data://text/plain;base64,…') and
 //         file_get_contents('data:text/html;base64,…') carriers.
 //
@@ -511,19 +522,46 @@ Object.assign(EncodedContentDetector.prototype, {
 
     // ── PHP5: superglobal eval ──
     //
-    //   $_GET['cmd']($_POST['p'])           ← canonical 1-line shell
+    //   $_GET['cmd']($_POST['p'])                         ← canonical 1-line shell
     //   $_REQUEST[0]($_REQUEST[1])
     //   ${$_GET['x']}('payload')
     //   eval($_REQUEST['c'])
     //   eval($_POST['cmd'])
     //   system($_GET['c'])
     //   shell_exec($_REQUEST[$_COOKIE['k']])
+    //   shell_exec(escapeshellarg($_SERVER['HTTP_X']))    ← wrapped form
+    //   eval(base64_decode($_POST['x']))                  ← amplifying wrapper
+    //   system(trim(urldecode($_GET['cmd'])))             ← 2-level sanitiser
     //
-    // The PHP5 branch is detection-only: the dangerous data flow is
-    // user-controlled-input → callable. We surface a compact
-    // breadcrumb naming the superglobal + the sink, and let the
-    // post-processor escalate via _executeOutput.
-    const phpSuperglobalCallRe = /\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[\s*[^\]]{1,80}\]\s*\(\s*[^)]{0,400}\)/g;
+    // Two candidate shapes are emitted:
+    //
+    //   (5a) `PHP Superglobal Callable` — superglobal-as-callable:
+    //        `$_GET[KEY](ARGS)`. Key + args are extracted into
+    //        `deobfuscated` so analysts see the dispatched parameter
+    //        name without re-reading the raw source.
+    //
+    //   (5b) `PHP eval/system on Superglobal` — superglobal-as-tainted-data
+    //        fed to a sink function. The regex allows up to 3 nested
+    //        inner-wrapper calls from a vetted allow-list (ineffective
+    //        sanitisers like escapeshellarg/htmlspecialchars, identity-
+    //        ish transforms like trim/urldecode, and amplifying decoders
+    //        like base64_decode/gzinflate). The wrapper-tolerant form
+    //        catches the real-world webshell shape that a literal-
+    //        adjacency regex misses entirely:
+    //
+    //          <?php echo shell_exec(escapeshellarg($_SERVER['HTTP_X'])); ?>
+    //
+    //        `escapeshellarg` is a *shell-argument* escaper that leaves
+    //        option-injection (`-oProxyCommand=…`) reachable, so the
+    //        developer's intent ("I'm safe") is still a critical RCE.
+    //        We therefore uplift severity to `critical` whenever the
+    //        wrapper chain contains `escapeshellarg` / `escapeshellcmd`,
+    //        or any amplifying decoder (b64/gz/hex2bin/rot13).
+    //
+    // Both emit extracted-key `deobfuscated` so the sidebar shows the
+    // resolved taint path, not the raw source substring.
+
+    const phpSuperglobalCallRe = /\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[\s*([^\]]{1,80})\]\s*\(\s*([^)]{0,400})\)/g;
     while ((m = phpSuperglobalCallRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
@@ -531,31 +569,203 @@ Object.assign(EncodedContentDetector.prototype, {
       // Skip benign read patterns where the call is `(int)`/`(string)`
       // (false-positive guard; cast-then-call doesn't exist in PHP).
       if (raw.length > 600) continue;
+      const sgName = m[1];
+      const rawKey = (m[2] || '').trim();
+      const rawArgs = (m[3] || '').trim();
+      // Normalise key rendering: preserve existing quotes if present,
+      // otherwise wrap identifier / numeric keys in their source form.
+      const keyDisp = rawKey.length ? rawKey : '""';
+      const argsDisp = rawArgs.length > 120 ? rawArgs.slice(0, 117) + '\u2026' : rawArgs;
+      const resolved = `call $_${sgName}[${keyDisp}] with args: (${argsDisp || ''})`;
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'PHP Superglobal Callable',
         raw,
         offset: m.index,
         length: raw.length,
-        deobfuscated: raw,
+        deobfuscated: _phpClipDeobfToAmpBudget(resolved, raw),
         _executeOutput: true,
+        _patternIocs: [{
+          url: `PHP taint-flow: $_${sgName}[${keyDisp}] used as callable \u2014 user-input function dispatch (T1059.004)`,
+          severity: 'critical',
+        }],
       });
     }
 
-    const phpEvalSuperglobalRe = /\b(?:eval|assert|system|shell_exec|exec|passthru|popen|proc_open|create_function)\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[/g;
+    // 5b: sink-on-superglobal with optional bounded wrapper chain.
+    //
+    // Allow-list of inner-wrapper identifiers. Three intent classes:
+    //   • ineffective-sanitiser  (escapeshellarg, htmlspecialchars, …)
+    //   • identity-ish-transform (trim, urldecode, strtolower, …)
+    //   • amplifying-decoder     (base64_decode, gzinflate, …)
+    //
+    // Classifying wrappers lets us uplift severity when the chain's
+    // intent is actively dangerous (decoders turn a literal superglobal
+    // read into arbitrary-code execution; escapeshell* creates a false
+    // sense of security around option-injection vectors).
+    /* safeRegex: builtin */
+    const PHP_SG_WRAPPER_RE = new RegExp(
+      '(?:escapeshellarg|escapeshellcmd|htmlspecialchars|htmlentities|filter_var|strip_tags|addslashes' +
+      '|trim|ltrim|rtrim|strtolower|strtoupper|urldecode|rawurldecode|stripslashes' +
+      '|htmlspecialchars_decode|html_entity_decode' +
+      '|base64_decode|hex2bin|gzinflate|gzuncompress|gzdecode|str_rot13|convert_uudecode)'
+    );
+    const PHP_SG_AMPLIFIERS = /^(?:base64_decode|hex2bin|gzinflate|gzuncompress|gzdecode|str_rot13|convert_uudecode)$/;
+    const PHP_SG_ESCAPESHELL = /^(?:escapeshellarg|escapeshellcmd)$/;
+    // Core regex: sink `(` then 0–3 wrapper `(` openings, then the
+    // superglobal access, then its `]` close. We do NOT try to match
+    // the trailing close-parens in regex (open/close counting is regex-
+    // hostile); we re-compute the raw span length from the open count
+    // + a bounded inner-arg window.
+    /* safeRegex: builtin */
+    const phpEvalSuperglobalRe = new RegExp(
+      '\\b(eval|assert|system|shell_exec|exec|passthru|popen|proc_open|create_function)' +
+      '\\s*\\(\\s*' +
+      '((?:' + PHP_SG_WRAPPER_RE.source + '\\s*\\(\\s*){0,3})' +
+      '\\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)\\s*\\[\\s*' +
+      "(['\"][^'\"\\r\\n]{0,80}['\"]|[^\\]\\r\\n]{0,80})" +
+      '\\s*\\]',
+      'g'
+    );
     while ((m = phpEvalSuperglobalRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
+      const sink = m[1];
+      const wrapperBlob = (m[2] || '').trim();
+      const sgName = m[3];
+      const rawKey = (m[4] || '').trim();
+      // Extract wrapper names in source order (outer-first).
+      const wrappers = [];
+      if (wrapperBlob.length) {
+        const nameRe = /([A-Za-z_][A-Za-z_0-9]{2,30})\s*\(/g;
+        let wm;
+        while ((wm = nameRe.exec(wrapperBlob)) !== null) {
+          if (wrappers.length >= 3) break;
+          wrappers.push(wm[1]);
+        }
+      }
+      // Severity classification:
+      //   high (default, via _executeOutput)
+      //   critical when any wrapper is:
+      //     • amplifying (b64/gz/hex2bin/rot13) — these turn a
+      //       literal-text sink read into RCE by design;
+      //     • escapeshellarg/escapeshellcmd   — false-sense mitigation
+      //       that still allows option-injection;
+      //   critical when bare (no wrapper) and sink is eval/assert —
+      //       the canonical webshell one-liner.
+      let critical = false;
+      const criticalReason = [];
+      for (const w of wrappers) {
+        if (PHP_SG_AMPLIFIERS.test(w)) { critical = true; criticalReason.push(`amplifying decoder ${w}`); }
+        else if (PHP_SG_ESCAPESHELL.test(w)) { critical = true; criticalReason.push(`ineffective sanitiser ${w} (option-injection reachable)`); }
+      }
+      if (!wrappers.length && (sink === 'eval' || sink === 'assert')) {
+        critical = true;
+        criticalReason.push('direct eval/assert on user-input superglobal');
+      }
+      // Build a readable resolved form reconstructing the call chain.
+      // Outer-first (as the reader sees source): sink(w1(w2(w3($_SG[KEY]))))
+      const innerAccess = `$_${sgName}[${rawKey || '""'}]`;
+      const resolved = wrappers.length
+        ? `${sink}(${wrappers.join('(')}(${innerAccess})${')'.repeat(wrappers.length + 1)}`
+        : `${sink}(${innerAccess}...)`;
       const raw = m[0];
+      const patternIocs = [];
+      patternIocs.push({
+        url: `PHP sink-on-superglobal: ${sink}() reads $_${sgName}[${rawKey || '?'}]${wrappers.length ? ' via ' + wrappers.join(' \u2192 ') : ''}`,
+        severity: critical ? 'critical' : 'high',
+      });
+      if (criticalReason.length) {
+        patternIocs.push({
+          url: `PHP webshell primitive \u2014 ${criticalReason.join('; ')}`,
+          severity: 'critical',
+        });
+      }
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'PHP eval/system on Superglobal',
         raw,
         offset: m.index,
         length: raw.length,
-        deobfuscated: raw,
+        deobfuscated: _phpClipDeobfToAmpBudget(resolved, raw),
         _executeOutput: true,
+        _patternIocs: patternIocs,
       });
+    }
+
+    // 5c: local-var taint flow (Layer-2) ─────────────────────────────
+    //
+    //   $c = $_GET['x']; shell_exec($c);
+    //   $cmd = $_SERVER['HTTP_X'];
+    //   $out = shell_exec($cmd);
+    //
+    // Two-pass best-effort: pass 1 collects `$VAR = …$_{SG}[KEY]…`
+    // assignments with their source offset; pass 2 scans sink calls
+    // of the form `sink(\s*\$VAR\b)` and emits a candidate iff:
+    //   • the assignment's offset precedes the sink call;
+    //   • the bridging distance is < 2 KiB (rule-out of cross-function
+    //     flows that need scope-aware analysis we don't do);
+    //   • the text contains a PHP context sigil (`<?`).
+    //
+    // Distinct from 5a/5b because here the sink and the superglobal
+    // NEVER appear on the same line — so regex-over-a-single-line
+    // scanners (including PHP_Eval_Superglobal YARA) miss the shape
+    // entirely. We fill the gap without trying to be a full taint
+    // tracker (that's out of scope for a single-file browser tool).
+    const hasPhpCtx = text.indexOf('<?') !== -1;
+    if (hasPhpCtx) {
+      const sgTaintAssignRe = /\$([A-Za-z_]\w{0,63})\s*=\s*([^;\r\n]{0,400}?\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[[^\]\r\n]{0,80}\][^;\r\n]{0,120})\s*;/g;
+      const taintedVars = new Map(); // name → {offset, source}
+      let assignBudget = 64;
+      while ((m = sgTaintAssignRe.exec(text)) !== null && assignBudget-- > 0) {
+        throwIfAborted();
+        const name = m[1];
+        // Skip if var name shadows a superglobal (e.g. `$_GET = …` —
+        // defence against accidental superglobal re-binding, not
+        // taint flow).
+        if (/^_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)$/.test(name)) continue;
+        taintedVars.set(name, { offset: m.index, source: m[2].trim() });
+      }
+      if (taintedVars.size) {
+        const taintNames = [...taintedVars.keys()].map(n => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+        if (taintNames.length) {
+          /* safeRegex: builtin */
+          const sinkRe = new RegExp(
+            '\\b(eval|assert|system|shell_exec|exec|passthru|popen|proc_open)\\s*\\(\\s*' +
+            '(?:(?:escapeshellarg|escapeshellcmd|trim|urldecode|rawurldecode|stripslashes|strtolower|strtoupper|base64_decode|hex2bin|gzinflate|gzdecode|str_rot13)\\s*\\(\\s*){0,3}' +
+            '\\$(' + taintNames + ')\\b',
+            'g'
+          );
+          let sm;
+          while ((sm = sinkRe.exec(text)) !== null) {
+            throwIfAborted();
+            if (candidates.length >= this.maxCandidatesPerType) break;
+            const sink = sm[1];
+            const varName = sm[2];
+            const entry = taintedVars.get(varName);
+            if (!entry) continue;
+            // Enforce temporal ordering (assignment before sink) and
+            // the 2 KiB bridging bound.
+            if (entry.offset >= sm.index) continue;
+            if (sm.index - entry.offset > 2048) continue;
+            const raw = sm[0];
+            const resolved = `${sink}($${varName})   # where $${varName} = ${entry.source}`;
+            candidates.push({
+              type: 'cmd-obfuscation',
+              technique: 'PHP Superglobal Taint (local-var flow)',
+              raw,
+              offset: sm.index,
+              length: raw.length,
+              deobfuscated: _phpClipDeobfToAmpBudget(resolved, raw),
+              _executeOutput: true,
+              _patternIocs: [{
+                url: `PHP second-order taint: $${varName} carries superglobal data into ${sink}() (assignment \u2192 sink)`,
+                severity: 'critical',
+              }],
+            });
+          }
+        }
+      }
     }
 
     // ── PHP6: data: URL include / file_get_contents ──

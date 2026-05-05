@@ -424,20 +424,42 @@ Object.assign(EncodedContentDetector.prototype, {
     // / quoted echo) we attempt to decode it; otherwise the candidate
     // is a detection-only pattern emission (severity bumped to
     // critical inside _processCommandObfuscation via _executeOutput).
+    //
+    // For the live-fetch variant the upstream URL *is* the payload —
+    // no transformation to recover. We extract the URL into `deobfuscated`
+    // and emit it as an IOC.URL via `_patternIocs`, and rely on the
+    // sibling YARA rule `Bash_Live_Fetch_Pipe_Shell` for structural
+    // detection parity. Label renamed from "Pipe-to-Shell (live fetch)"
+    // to "Pipe-to-Shell Pattern (live fetch)" to stop implying
+    // deobfuscation where none is performed.
     const pipeShellRe = /\b(?:curl|wget|fetch|invoke-webrequest|iwr|irm)\b[^\r\n|]{0,400}\|\s*(?:base64\s+-(?:d|decode)\s*\|\s*)?(?:xxd\s+-r(?:\s+-p)?\s*\|\s*)?(?:rev\s*\|\s*)?(?:ba)?sh\b/gi;
     while ((m = pipeShellRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       const raw = m[0];
       if (raw.length > 600) continue;
+      // Extract the upstream URL (first https?:// in the match) — this
+      // is the actionable artefact, not the raw command line.
+      const urlMatch = /https?:\/\/[^\s|'"`<>]{3,400}/.exec(raw);
+      const upstreamUrl = urlMatch ? urlMatch[0] : null;
+      const resolved = upstreamUrl
+        ? `pipe-to-shell upstream: ${upstreamUrl}`
+        : `pipe-to-shell (dynamic upstream)`;
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'Bash Pipe-to-Shell (live fetch)',
         raw,
         offset: m.index,
         length: raw.length,
-        deobfuscated: raw,
+        deobfuscated: resolved,
         _executeOutput: true,
+        _patternIocs: upstreamUrl ? [{
+          url: `Bash live-fetch pipe-to-shell \u2014 fetches ${upstreamUrl} and pipes response to shell (T1105)`,
+          severity: 'critical',
+        }] : [{
+          url: 'Bash live-fetch pipe-to-shell (T1105)',
+          severity: 'high',
+        }],
       });
     }
 
@@ -714,28 +736,44 @@ Object.assign(EncodedContentDetector.prototype, {
     }
 
     // ── /dev/tcp reverse shell — the canonical bash reverse-shell
-    //    primitive. Detection-only (no decode); the post-processor
-    //    bumps severity via _executeOutput + dangerousPatterns. Three
-    //    shapes we recognise:
+    //    primitive. Structural pattern detection; the regex groups
+    //    capture host:port which we extract into `deobfuscated` so the
+    //    sidebar shows the pivot target rather than the raw redirect
+    //    string. Three shapes we recognise:
     //      (1) bash -i … >& /dev/tcp/host/port        (classic)
     //      (2) /dev/tcp/host/port … 0<& | >& N        (fd redirect pair)
     //      (3) exec N<>/dev/tcp/host/port             (bi-directional
     //          bash bind — the compact form used by tiny stagers
     //          where the shell payload follows via `cat <&N`.)
+    //    Sibling YARA rule `Bash_DevTcp_Reverse_Shell` provides parity
+    //    detection for decoded-payload / file-scan paths.
     const devTcpRe = /\b(?:bash|sh)\s+-i\b[^\r\n]{0,200}>\s*&?\s*\/dev\/tcp\/[\w.\-]+\/\d{1,5}|\b\/dev\/tcp\/[\w.\-]+\/\d{1,5}\b[^\r\n]{0,200}\b(?:0<&|>&)\d|\bexec\s+\d{1,3}\s*<>\s*\/dev\/tcp\/[\w.\-]+\/\d{1,5}/gi;
     while ((m = devTcpRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
       const raw = m[0];
       if (raw.length > 500) continue;
+      // Extract host:port from the /dev/tcp/host/port atom.
+      const hpMatch = /\/dev\/tcp\/([\w.\-]+)\/(\d{1,5})/.exec(raw);
+      const host = hpMatch ? hpMatch[1] : null;
+      const port = hpMatch ? hpMatch[2] : null;
+      const resolved = host && port
+        ? `bash /dev/tcp reverse-shell \u2192 ${host}:${port}`
+        : `bash /dev/tcp reverse-shell`;
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'Bash /dev/tcp Reverse Shell',
         raw,
         offset: m.index,
         length: raw.length,
-        deobfuscated: raw,
+        deobfuscated: resolved,
         _executeOutput: true,
+        _patternIocs: [{
+          url: host && port
+            ? `Bash /dev/tcp reverse-shell \u2014 TCP connect-back to ${host}:${port} (T1059.004)`
+            : 'Bash /dev/tcp reverse-shell (T1059.004)',
+          severity: 'critical',
+        }],
       });
     }
 

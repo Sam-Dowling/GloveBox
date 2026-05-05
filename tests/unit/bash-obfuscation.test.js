@@ -352,8 +352,16 @@ test('bash-obfuscation: post-processor does NOT attach CMD `for /f` pattern to l
   const cand = cands.find(c => /Pipe-to-Shell.*live fetch/.test(c.technique));
   assert.ok(cand, `expected B4 live-fetch candidate; got: ${JSON.stringify(host(cands))}`);
   assert.equal(cand._executeOutput, true, 'pre-condition: candidate marks _executeOutput');
-  assert.equal(cand._patternIocs, undefined,
-    'bash live-fetch candidate must NOT carry _patternIocs (no per-family mirror in this PR)');
+  // Per the split-severity contract, bash-family live-fetch candidates
+  // carry a bash-specific `_patternIocs` entry (the T1105 mirror). The
+  // regression this test guards against is the *CMD* `for /f` mirror
+  // leaking into the bash finding — not the presence of any mirror.
+  const bashMirror = (cand._patternIocs || []).find(p => /pipe-to-shell/i.test(p.url || ''));
+  assert.ok(bashMirror,
+    'bash live-fetch candidate must carry its own T1105 _patternIocs entry');
+  const cmdForFLeak = (cand._patternIocs || []).find(p => /for\s*\/f/i.test(p.url || ''));
+  assert.equal(cmdForFLeak, undefined,
+    'bash live-fetch candidate must NOT carry the CMD `for /f` pattern in _patternIocs');
 
   const finding = await d._processCommandObfuscation(cand);
   assert.ok(finding, 'expected post-processor to produce a finding');

@@ -54,6 +54,7 @@
       "Bash_Base64_Execution",
       "Bash_DevTcp_Reverse_Shell",
       "Bash_IFS_Reassembly",
+      "Bash_Live_Fetch_Pipe_Shell",
       "Bash_Variable_Obfuscation",
       "Shell_Curl_Wget_Pipe_Exec"
     ],
@@ -108,13 +109,16 @@
     "examples/encoded-payloads/php-webshell-suite.php": [
       "PHP_Eval_Superglobal",
       "PHP_Preg_Replace_E_Modifier",
+      "PHP_Superglobal_Taint_LocalVar",
       "PHP_Variable_Variable_Obfuscation",
-      "PHP_Webshell_Decoder_Onion"
+      "PHP_Webshell_Decoder_Onion",
+      "PHP_Webshell_Escapeshell_Taint"
     ],
     "examples/encoded-payloads/python-obfuscation-suite.py": [
       "Info_Socket_Connection",
       "Python_Char_Construction",
       "Python_Reverse_Shell",
+      "Python_Socket_Revshell_Primitive",
       "Standalone_Script_Shell_Execution"
     ],
     "examples/images/example.jpg": [
@@ -388,9 +392,9 @@
   },
   "summary": {
     "anchorFixtures": 69,
-    "rulesFiredInCorpus": 247,
-    "rulesUnanchored": 336,
-    "totalRulesDefined": 583
+    "rulesFiredInCorpus": 251,
+    "rulesUnanchored": 342,
+    "totalRulesDefined": 593
   },
   "unanchoredRules": [
     "AD_Database_Dump",
@@ -511,8 +515,10 @@
     "Info_Webcam_Microphone_Access",
     "Info_Zero_Width_Characters",
     "Info_iOS_MobileConfig",
+    "JS_Aaencode_Kaomoji_Carrier",
     "JS_Clipboard_Paste_Lure",
     "JS_DocumentWrite_With_Obfuscation",
+    "JS_Jjencode_Symbol_Carrier",
     "JS_Location_Redirect_Obfuscated",
     "JS_WMI_Execution",
     "Java_Agent_Instrumentation",
@@ -670,6 +676,10 @@
     "RTF_ObjClass_Exploit",
     "RTF_ObjUpdate_AutoExec",
     "RTF_Package_Object",
+    "Reassembled_DownloadExec_Chain",
+    "Reassembled_IEX_Invocation",
+    "Reassembled_Reverse_Shell_Indicator",
+    "Reassembled_Staged_PowerShell_Loader",
     "Registry_Hive_Extraction",
     "Regsvr32_Remote_SCT",
     "ReverseShell_Lua_Tcl_AWK",

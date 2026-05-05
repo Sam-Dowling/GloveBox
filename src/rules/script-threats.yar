@@ -1712,7 +1712,7 @@ rule PHP_Webshell_Decoder_Onion
 rule PHP_Eval_Superglobal
 {
     meta:
-        description = "Detects PHP one-line shell — eval/system/shell_exec called with $_GET / $_POST / $_REQUEST / $_COOKIE / $_SERVER user-controlled data"
+        description = "Detects PHP one-line shell — eval/system/shell_exec called with $_GET / $_POST / $_REQUEST / $_COOKIE / $_SERVER / $_FILES user-controlled data, with up to 3 levels of sanitiser/decoder wrappers (escapeshellarg, urldecode, base64_decode, ...)"
         severity = "critical"
         category = "execution"
         mitre = "T1059"
@@ -1720,9 +1720,25 @@ rule PHP_Eval_Superglobal
     strings:
         $eval_get = /\beval\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[/ nocase
         $assert_get = /\bassert\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[/ nocase
-        $system_get = /\b(?:system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[/ nocase
+        $system_get = /\b(?:system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[/ nocase
+        $system_wrapped_sg = /\b(?:eval|assert|system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*(?:[A-Za-z_][A-Za-z_0-9]{2,30}\s*\(\s*){1,3}\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[/ nocase
         $superglobal_call = /\$_(?:GET|POST|REQUEST|COOKIE)\s*\[\s*['"]?[^\]'"\r\n]{1,40}['"]?\s*\]\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE)\s*\[/ nocase
         $callback_filter = /\b(?:array_filter|array_map|usort|preg_replace_callback)\s*\([^)]{0,200}\$_(?:GET|POST|REQUEST|COOKIE)/ nocase
+    condition:
+        any of them
+}
+
+rule PHP_Webshell_Escapeshell_Taint
+{
+    meta:
+        description = "Detects PHP webshell anti-pattern where a sink function (shell_exec / system / passthru / exec / popen / proc_open) is called with escapeshellarg() or escapeshellcmd() wrapping a superglobal — these escapers protect shell-argument tokenisation but still permit option-injection attacks (CVE-2024-4577 / ssh -oProxyCommand class), so the developer's mitigation is ineffective"
+        severity = "critical"
+        category = "execution"
+        mitre = "T1059"
+        applies_to = "php, plaintext, decoded-payload"
+    strings:
+        $esc_arg = /\b(?:system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*escapeshellarg\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[/ nocase
+        $esc_cmd = /\b(?:system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*escapeshellcmd\s*\(\s*\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[/ nocase
     condition:
         any of them
 }
@@ -1760,4 +1776,93 @@ rule PHP_Variable_Variable_Obfuscation
     condition:
         ($double_dollar_call or $brace_concat_call) and ($assign_concat or $chr_concat_dangerous or $pack_h_dangerous)
         or 2 of ($chr_concat_dangerous, $pack_h_dangerous, $double_dollar_call, $brace_concat_call)
+}
+
+rule PHP_Superglobal_Taint_LocalVar
+{
+    meta:
+        description = "Detects PHP second-order taint where a local variable is assigned from a superglobal ($_GET / $_POST / $_REQUEST / $_COOKIE / $_SERVER / $_FILES) and subsequently passed to a sink function (eval / system / shell_exec / passthru / exec / popen / proc_open) — regex-over-single-line scanners miss this assignment-then-sink shape"
+        severity = "high"
+        category = "execution"
+        mitre = "T1059"
+        applies_to = "php, plaintext, decoded-payload"
+    strings:
+        $assign_sg = /\$[A-Za-z_]\w{0,63}\s*=\s*[^;\r\n]{0,200}\$_(?:GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[[^\]\r\n]{0,80}\]/ nocase
+        $sink_var_1 = /\b(?:eval|assert|system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*\$[A-Za-z_]\w{0,63}\s*\)/ nocase
+        $sink_var_2 = /\b(?:eval|assert|system|shell_exec|passthru|exec|popen|proc_open)\s*\(\s*(?:escapeshellarg|escapeshellcmd|trim|urldecode|stripslashes|strtolower)\s*\(\s*\$[A-Za-z_]\w{0,63}\s*\)/ nocase
+    condition:
+        $assign_sg and ($sink_var_1 or $sink_var_2)
+}
+
+rule Bash_Live_Fetch_Pipe_Shell
+{
+    meta:
+        description = "Detects bash live-fetch pipe-to-shell — curl / wget / fetch output piped directly (or via base64 / xxd / rev) into sh / bash. Canonical T1105 payload-delivery primitive; the upstream URL is the actionable artefact"
+        severity = "critical"
+        category = "execution"
+        mitre = "T1105"
+        applies_to = "bash, plaintext, decoded-payload"
+    strings:
+        $curl_pipe_sh = /\bcurl\b[^\r\n|]{0,400}\|\s*(?:ba)?sh\b/ nocase
+        $wget_pipe_sh = /\bwget\b[^\r\n|]{0,400}\|\s*(?:ba)?sh\b/ nocase
+        $curl_b64_sh = /\bcurl\b[^\r\n|]{0,400}\|\s*base64\s+-(?:d|decode)\s*\|\s*(?:ba)?sh\b/ nocase
+        $wget_b64_sh = /\bwget\b[^\r\n|]{0,400}\|\s*base64\s+-(?:d|decode)\s*\|\s*(?:ba)?sh\b/ nocase
+        $curl_xxd_sh = /\bcurl\b[^\r\n|]{0,400}\|\s*xxd\s+-r(?:\s+-p)?\s*\|\s*(?:ba)?sh\b/ nocase
+        $eval_subshell_curl = /\beval\s*\$\(\s*(?:curl|wget)\b/ nocase
+        $bash_subshell_curl = /\bbash\s+<\(\s*(?:curl|wget)\b/ nocase
+        $source_subshell_curl = /\bsource\s+<\(\s*(?:curl|wget)\b/ nocase
+    condition:
+        any of them
+}
+
+rule JS_Aaencode_Kaomoji_Carrier
+{
+    meta:
+        description = "Detects Yosuke Hasegawa's aaencode JS obfuscator — encodes arbitrary JavaScript into a dense burst of kaomoji-style symbols from the Katakana / Halfwidth / Greek / Cyrillic ranges followed by signature (ﾟДﾟ) token calls. Statically opaque; recovery requires JS-engine execution in a sandbox"
+        severity = "high"
+        category = "obfuscation"
+        mitre = "T1027.010"
+        applies_to = "javascript, html, plaintext, decoded-payload"
+    strings:
+        $aa_opener_1 = "ﾟωﾟﾉ" ascii
+        $aa_opener_2 = "(ﾟДﾟ)" ascii
+        $aa_opener_3 = "ﾟΘﾟ" ascii
+        $aa_opener_4 = "ﾟｰﾟ" ascii
+        $aa_sig = /\(\s*[\x{30A0}-\x{30FF}\x{FF00}-\x{FFEF}\x{0370}-\x{03FF}\x{0400}-\x{04FF}]{2,}\s*\)/
+    condition:
+        (2 of ($aa_opener_*)) or ($aa_sig and #aa_sig > 5)
+}
+
+rule JS_Jjencode_Symbol_Carrier
+{
+    meta:
+        description = "Detects Yosuke Hasegawa's jjencode JS obfuscator — encodes arbitrary JavaScript into ASCII-only symbol soup using the alphabet [ ] { } ( ) + ! _ / $ . \\ . Opens with the canonical NAME=~[]; NAME={...} destructor assignment shape. Statically opaque; recovery requires JS-engine execution in a sandbox"
+        severity = "high"
+        category = "obfuscation"
+        mitre = "T1027.010"
+        applies_to = "javascript, html, plaintext, decoded-payload"
+    strings:
+        $jj_opener = /[A-Za-z_$][A-Za-z0-9_$]{0,40}\s*=\s*~\s*\[\s*\]\s*;\s*[A-Za-z_$][A-Za-z0-9_$]{0,40}\s*=\s*\{/
+        $jj_toString = "\"constructor\"][\"constructor\"]" ascii
+        $jj_alphabet = /[\$_]{3,}(?:\+[\$_]{1,}){8,}/
+    condition:
+        $jj_opener and ($jj_toString or $jj_alphabet)
+}
+
+rule Python_Socket_Revshell_Primitive
+{
+    meta:
+        description = "Detects Python reverse-shell primitive — socket.socket() + connect((host, port)) paired with os.dup2() / pty.spawn() / subprocess.call() within a small proximity. The canonical pentester / dropper shape for Linux-target Python stagers"
+        severity = "critical"
+        category = "execution"
+        mitre = "T1059.006"
+        applies_to = "python, plaintext, decoded-payload"
+    strings:
+        $sock_create = /socket\s*\.\s*socket\s*\(/ nocase
+        $sock_connect = /\.\s*connect\s*\(\s*\(\s*['"]?[\w.\-]{3,80}['"]?\s*,\s*\d{1,5}\s*\)/ nocase
+        $os_dup2 = /os\s*\.\s*dup2\s*\(/ nocase
+        $pty_spawn = /pty\s*\.\s*spawn\s*\(/ nocase
+        $subprocess_call = /subprocess\s*\.\s*(?:call|Popen|run)\s*\(/ nocase
+    condition:
+        $sock_create and $sock_connect and any of ($os_dup2, $pty_spawn, $subprocess_call)
 }

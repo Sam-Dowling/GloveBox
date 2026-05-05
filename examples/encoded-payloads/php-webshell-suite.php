@@ -63,4 +63,31 @@ include('php://input');
 
 // php://filter — the canonical LFI-to-RCE primitive
 $src = file_get_contents('php://filter/convert.base64-decode/resource=hello.php');
+
+// ── PHP5 (5b): sink-on-superglobal with sanitiser / decoder wrappers ────────
+// The canonical miss before wrapper-tolerance landed: a developer who
+// believed `escapeshellarg` made shell_exec safe. It doesn't — option-
+// injection (e.g. `-oProxyCommand=` for ssh; CVE-2024-4577 for php-cgi)
+// remains reachable, so this is a critical RCE primitive.
+echo shell_exec(escapeshellarg($_SERVER['HTTP_X']));
+
+// Amplifying decoder — base64-encoded payload in a superglobal executed
+// by eval: a text read becomes arbitrary code execution.
+eval(base64_decode($_POST['p']));
+
+// Two-level sanitiser chain — trim + urldecode around $_GET['cmd'].
+system(trim(urldecode($_GET['cmd'])));
+
+// Three-level max-depth chain — exercises the {0,3} upper bound.
+exec(htmlspecialchars(strip_tags(base64_decode($_COOKIE['k']))));
+
+// ── PHP5 (5c): local-var taint flow (Layer-2) ───────────────────────────────
+// Superglobal read into a local var, sink call on the local var —
+// single-line regex scanners miss this; the two-pass detector catches it.
+$c = $_GET['x'];
+shell_exec($c);
+
+// With a wrapper on the sink side (still tainted by the $_POST source).
+$cmd = $_POST['target'];
+passthru(escapeshellarg($cmd));
 ?>

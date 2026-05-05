@@ -252,6 +252,10 @@ Full skeleton details live in `CONTRIBUTING.md § Renderer Contract` (detection 
 - `dcf6bca` — Phase 2 Bash decoder fill; interpreter gates and canonical rot13 sets only.
 - `17e612c` — Phase 3 Python decoder fill; lambda regex uses `[\s\S]`; bytes prefix outside quote capture.
 - `988d53b` — Phase 4 PHP decoder fill; backticks need PHP context + shell vocab; PHP amp caps added.
+- `<pending>` — PHP5 sink-on-superglobal accepts up to 3 nested wrappers (`escapeshellarg`, `trim`/`urldecode`, `base64_decode`/`gzinflate` classes); extracts sink + wrapper-chain + key into `deobfuscated` (not raw match); severity uplift to critical on amplifying decoders or escapeshell* (option-injection reachable).
+- `<pending>` — PHP5 two-pass local-var taint: `$c = $_GET[...]; sink($c);` bounded to 2 KiB bridging distance; new `PHP Superglobal Taint (local-var flow)` technique.
+- `<pending>` — `PHP_Eval_Superglobal` YARA `$system_get` alternation now includes `SERVER|FILES` (parity with decoder); new wrapper-tolerant `$system_wrapped_sg` string; new rules `PHP_Webshell_Escapeshell_Taint`, `PHP_Superglobal_Taint_LocalVar`, `Bash_Live_Fetch_Pipe_Shell`, `JS_Aaencode_Kaomoji_Carrier`, `JS_Jjencode_Symbol_Carrier`, `Python_Socket_Revshell_Primitive`.
+- `<pending>` — Bash `/dev/tcp` revshell and `curl|sh` live-fetch branches now extract host:port / upstream URL into `deobfuscated` + emit family-specific `_patternIocs` instead of returning raw match string.
 
 ### IOC plumbing
 - `dfc594c` — replace bespoke type literals with `IOC.*` constants.

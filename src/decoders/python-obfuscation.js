@@ -622,6 +622,10 @@ Object.assign(EncodedContentDetector.prototype, {
         length: raw.length,
         deobfuscated: `socket connect ${host}:${port} \u2192 dup2/pty.spawn`,
         _executeOutput: true,
+        _patternIocs: [{
+          url: `Python reverse-shell primitive \u2014 TCP connect-back to ${host}:${port} with os.dup2 / pty.spawn / subprocess.call (T1059.006)`,
+          severity: 'critical',
+        }],
       });
     }
 
@@ -699,7 +703,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // token; the trailing `)(…)` closure confirms the IIFE shape.
     // `[\s\S]` (not `[^)]`) lets the body cross quoted substrings
     // that contain `)` — common when the payload is a quoted call.
-    const p8LambdaRe = /\(\s*lambda\b[^:\r\n]{0,80}:[\s\S]{0,500}?\b(exec|eval|compile)\s*\(/g;
+    const p8LambdaRe = /\(\s*lambda\b[^:\r\n]{0,80}:[\s\S]{0,500}?\b(exec|eval|compile)\s*\(([^)]{0,400})\)/g;
     while ((m = p8LambdaRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
@@ -709,36 +713,49 @@ Object.assign(EncodedContentDetector.prototype, {
       const window = text.slice(m.index, m.index + 1500);
       if (!/\)\s*\(/.test(window)) continue;
       const sink = m[1];
+      // Surface the inner sink-arg when it's present — even an opaque
+      // expression is better than a "..." placeholder because analysts
+      // can pivot on the variable/function names inside. Trim to keep
+      // the sidebar readable.
+      const sinkArg = (m[2] || '').trim();
+      const sinkArgDisp = sinkArg.length === 0
+        ? '\u2026'
+        : (sinkArg.length > 160 ? sinkArg.slice(0, 157) + '\u2026' : sinkArg);
       candidates.push({
         type: 'cmd-obfuscation',
         technique: `Python lambda-wrapped ${sink}`,
         raw: window.slice(0, Math.min(window.length, 400)),
         offset: m.index,
         length: Math.min(window.length, 400),
-        deobfuscated: `IIFE: lambda \u2192 ${sink}(\u2026)`,
+        deobfuscated: `IIFE: lambda \u2192 ${sink}(${sinkArgDisp})`,
         _executeOutput: true,
       });
     }
     // Shape B: `(lambda P: P(...))(sink)` — sink passed as IIFE arg,
     // body calls the lambda's parameter (self-referential alias).
-    const p8ShapeBRe = /\(\s*lambda\s+([A-Za-z_]\w{0,15})\s*:\s*\1\s*\([\s\S]{0,500}?\)\s*\)\s*\(\s*(exec|eval|compile)\s*\)/g;
+    const p8ShapeBRe = /\(\s*lambda\s+([A-Za-z_]\w{0,15})\s*:\s*\1\s*\(([\s\S]{0,500}?)\)\s*\)\s*\(\s*(exec|eval|compile)\s*\)/g;
     while ((m = p8ShapeBRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
-      const sink = m[2];
+      const sink = m[3];
+      const innerArg = (m[2] || '').trim();
+      const innerArgDisp = innerArg.length === 0
+        ? '\u2026'
+        : (innerArg.length > 160 ? innerArg.slice(0, 157) + '\u2026' : innerArg);
       candidates.push({
         type: 'cmd-obfuscation',
         technique: `Python lambda-wrapped ${sink}`,
         raw: m[0],
         offset: m.index,
         length: m[0].length,
-        deobfuscated: `IIFE alias: (lambda ${m[1]}: ${m[1]}(\u2026))(${sink})`,
+        deobfuscated: `IIFE alias: (lambda ${m[1]}: ${m[1]}(${innerArgDisp}))(${sink})`,
         _executeOutput: true,
       });
     }
     // Named-alias form: assign a builtin to a short name, then call
-    // through the alias.
-    const p8AliasRe = /\b([A-Za-z_]\w{0,15})\s*=\s*(exec|eval|compile)\s*(?:[\r\n]|;)[\s\S]{0,200}?\b\1\s*\(/g;
+    // through the alias. Capture the alias-call args so the sidebar
+    // shows the actual payload expression rather than a placeholder.
+    const p8AliasRe = /\b([A-Za-z_]\w{0,15})\s*=\s*(exec|eval|compile)\s*(?:[\r\n]|;)[\s\S]{0,200}?\b\1\s*\(([^)]{0,400})\)/g;
     while ((m = p8AliasRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
@@ -749,13 +766,17 @@ Object.assign(EncodedContentDetector.prototype, {
       // (that would be a refactoring-style re-export, not obfuscation).
       if (alias === sink) continue;
       if (DANGEROUS_BUILTINS.has(alias)) continue;
+      const callArg = (m[3] || '').trim();
+      const callArgDisp = callArg.length === 0
+        ? '\u2026'
+        : (callArg.length > 160 ? callArg.slice(0, 157) + '\u2026' : callArg);
       candidates.push({
         type: 'cmd-obfuscation',
         technique: `Python Aliased ${sink}`,
         raw: m[0],
         offset: m.index,
         length: m[0].length,
-        deobfuscated: `${alias} = ${sink}; \u2026; ${alias}(\u2026)`,
+        deobfuscated: `${alias} = ${sink}; \u2026; ${alias}(${callArgDisp})`,
         _executeOutput: true,
       });
     }
