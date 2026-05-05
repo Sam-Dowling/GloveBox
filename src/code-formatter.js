@@ -41,10 +41,20 @@
 //     adjacent pairs (outside `<!--…-->`, `<![CDATA[…]]>`, and attribute
 //     quotes) and indent by open/close-tag depth. No string/regex
 //     tokeniser — attribute quotes handled inline.
-//   • powershell / bash / dos (batch) — light indent-only pass: re-indent
-//     lines by leading-brace depth (`{` / `}`), preserving everything
-//     else. Python, Ruby, Perl and other whitespace-significant or
-//     brace-less languages fall through to a no-op (return input).
+//   • powershell / bash — structural pass: (1) split on top-level `;`
+//     (outside strings, comments, here-strings / here-docs, and
+//     `$(…)` / `` `…` `` sub-expressions) so one-line scripts like
+//     `$a=1;$b=2;Invoke-Expression $a` become three statements, and
+//     (2) re-indent lines by `{` / `}` depth. Hard-fails CLOSED on any
+//     anomaly (unterminated string, unbalanced braces, depth > 256,
+//     amp > 3×, over `MAX_INPUT_BYTES`) and returns the input verbatim
+//     — a failed format pass is indistinguishable from Format-off.
+//   • dos (batch) — light indent-only pass: re-indent lines by leading-
+//     brace depth (`{` / `}`), preserving everything else. `;` is not a
+//     standard statement separator in Batch (that's `&` / `&&` / `||`),
+//     so no splitting is attempted.
+//   • Python, Ruby, Perl and other whitespace-significant or brace-less
+//     languages fall through to a no-op (return input).
 //   • Any other language → no-op.
 //
 // If the language is unknown or no-op, the formatter returns the input
@@ -642,22 +652,667 @@ class CodeFormatter {
   // ── Indent-only formatter (PowerShell / Bash / Batch) ─────────────────
 
   /**
-   * Minimal re-indent pass for brace-delimited shell languages. Preserves
-   * line breaks and content; only rewrites leading whitespace per line.
-   * A line whose trimmed content starts with `}` decreases depth BEFORE
-   * emitting; a line that ends with `{` (outside strings / comments)
-   * increases depth AFTER emitting. Strings, comments, and here-docs
-   * aren't parsed — the walker is a whole-line heuristic, so complex
-   * embedded braces may confuse it. That's acceptable for "best
-   * efforts".
+   * Dispatcher for the three shell-family languages. PowerShell and
+   * Bash get a structural pass that splits top-level `;` statements
+   * AND re-indents by `{` / `}` depth (the common malware-paste shape
+   * is a semicolon-joined one-liner — the indent-only fallback below
+   * produced a visible no-op on those, which was a confusing UX).
+   * DOS / Batch keeps the legacy line-by-line indent-only pass because
+   * `;` is not a statement separator in Batch.
    */
-  static _formatIndentOnly(input, _lang) {
+  static _formatIndentOnly(input, lang) {
+    if (typeof input !== 'string' || input.length === 0) return input || '';
+    if (lang === 'powershell') return CodeFormatter._formatPowershellIndent(input);
+    if (lang === 'bash')       return CodeFormatter._formatBashIndent(input);
+    // DOS / anything else → legacy line-splitter indent-only.
+    return CodeFormatter._formatDosIndentLegacy(input);
+  }
+
+  /**
+   * PowerShell structural formatter. Single linear walk that tracks:
+   *
+   *   • `"…"` double-quoted strings  — `` ` `` escapes next char;
+   *     `$(…)` sub-expressions tracked as a depth counter so `;`
+   *     inside them never splits.
+   *   • `'…'` single-quoted strings  — verbatim; `''` is a literal
+   *     single-quote escape.
+   *   • `@"…"@` / `@'…'@` here-strings — emitted byte-for-byte; the
+   *     terminator is `\n"@` / `\n'@` anchored at column 0 per the PS
+   *     lexer. Malformed (unterminated) → bail out, return input.
+   *   • `<# … #>` block comments     — verbatim.
+   *   • `#` line comments            — verbatim to EOL.
+   *   • `` ` `` line continuation    — preserved as-is (walker inserts
+   *     new newlines but never rewrites existing ones).
+   *   • `{` / `}` block depth        — drives indent.
+   *   • `(` / `)` / `[` / `]` depth  — `;` inside parens/brackets is
+   *     never split (PS `for (;;)` / sub-expressions).
+   *
+   * Emit rules outside any verbatim context:
+   *   • Unquoted `;` at paren/bracket depth 0 → emit `;` + `\n` + indent.
+   *   • `{` → emit `{` + `\n` + indent; depth++. If the next non-ws
+   *     character is `}` (empty block) keep `{}` on one line.
+   *   • `}` → pre-emit `\n` + indent (if line non-empty), depth--, emit `}`.
+   *     At outer depth after `}` insert a trailing `\n`.
+   *   • Everything else: copy verbatim.
+   *
+   * Hard-fails CLOSED: any anomaly (mismatched `}`, unterminated
+   * string/comment/here-string, depth > `MAX_DEPTH`, output exceeds the
+   * amp cap) returns the original input unchanged.
+   */
+  static _formatPowershellIndent(input) {
+    const N = input.length;
+    const maxOut = N * CodeFormatter.MAX_AMP_FACTOR + CodeFormatter.MAX_AMP_OVERHEAD_BYTES;
+    const maxDepth = CodeFormatter.MAX_DEPTH;
+
+    const out = [];
+    let outLen = 0;
+    let depth = 0;         // `{` / `}` block depth (drives indent)
+    let parenDepth = 0;    // `(` / `)` / `[` / `]` combined
+    let atLineStart = true;
+
+    const push = (s) => {
+      if (!s) return true;
+      if (outLen + s.length > maxOut) return false;
+      out.push(s);
+      outLen += s.length;
+      return true;
+    };
+
+    const indent = () => CodeFormatter.INDENT.repeat(Math.min(depth, maxDepth));
+
+    const trimTrailingSpace = () => {
+      while (out.length > 0) {
+        const last = out[out.length - 1];
+        if (last === ' ' || last === '\t') { out.pop(); outLen -= last.length; continue; }
+        const trimmed = last.replace(/[ \t]+$/, '');
+        if (trimmed !== last) {
+          outLen -= (last.length - trimmed.length);
+          if (trimmed.length === 0) out.pop();
+          else out[out.length - 1] = trimmed;
+        }
+        break;
+      }
+    };
+
+    const newlineIndent = () => {
+      trimTrailingSpace();
+      if (!push('\n')) return false;
+      if (!push(indent())) return false;
+      atLineStart = true;
+      return true;
+    };
+
+    // Check whether position `i` begins a here-string. Returns the
+    // terminator sequence (`\n"@` / `\n'@`) if so, else null. Per PS
+    // lexer: `@"` / `@'` must be followed by a line terminator before
+    // any content.
+    const hereStringStart = (i) => {
+      if (i + 2 >= N) return null;
+      if (input.charAt(i) !== '@') return null;
+      const q = input.charAt(i + 1);
+      if (q !== '"' && q !== "'") return null;
+      // Walk spaces/tabs after @"/@'; must hit \n.
+      let j = i + 2;
+      while (j < N) {
+        const c = input.charCodeAt(j);
+        if (c === 0x20 || c === 0x09) { j += 1; continue; }
+        break;
+      }
+      if (j >= N) return null;
+      if (input.charCodeAt(j) !== 0x0A) return null;
+      return q === '"' ? '\n"@' : "\n'@";
+    };
+
+    let i = 0;
+    while (i < N) {
+      const ch = input.charAt(i);
+
+      // ── Existing newline in source: honour it, recompute atLineStart.
+      if (ch === '\n') {
+        if (!push('\n')) return input;
+        if (!push(indent())) return input;
+        atLineStart = true;
+        i += 1;
+        continue;
+      }
+
+      // ── Leading whitespace on a fresh line: drop (we re-indent).
+      if (atLineStart && (ch === ' ' || ch === '\t')) {
+        i += 1;
+        continue;
+      }
+
+      // ── Here-string `@"…"@` / `@'…'@`. Check BEFORE normal strings.
+      const hs = hereStringStart(i);
+      if (hs !== null) {
+        const end = input.indexOf(hs, i + 2);
+        if (end < 0) return input; // unterminated → bail closed
+        const span = input.slice(i, end + hs.length);
+        if (!push(span)) return input;
+        // After here-string, we're past a `\n"@` / `\n'@` — next char
+        // starts a fresh line logically; but we leave that to the
+        // caller (the `"@` or `'@` is not itself a newline so we're
+        // mid-line). Match PS semantics by treating post-terminator as
+        // mid-line content.
+        atLineStart = false;
+        i = end + hs.length;
+        continue;
+      }
+
+      // ── Block comment `<# … #>`.
+      if (ch === '<' && i + 1 < N && input.charAt(i + 1) === '#') {
+        const end = input.indexOf('#>', i + 2);
+        if (end < 0) return input;
+        if (!push(input.slice(i, end + 2))) return input;
+        atLineStart = false;
+        i = end + 2;
+        continue;
+      }
+
+      // ── Line comment `#…\n`.
+      if (ch === '#') {
+        let j = i;
+        while (j < N && input.charCodeAt(j) !== 0x0A) j += 1;
+        if (!push(input.slice(i, j))) return input;
+        atLineStart = false;
+        i = j;
+        continue;
+      }
+
+      // ── Double-quoted string `"…"` with `$(…)` tracking.
+      if (ch === '"') {
+        let j = i + 1;
+        let subDepth = 0;
+        while (j < N) {
+          const c = input.charAt(j);
+          if (c === '`' && j + 1 < N) { j += 2; continue; }
+          if (subDepth === 0 && c === '"') { j += 1; break; }
+          if (c === '$' && j + 1 < N && input.charAt(j + 1) === '(') {
+            subDepth += 1; j += 2; continue;
+          }
+          if (subDepth > 0 && c === '(') { subDepth += 1; j += 1; continue; }
+          if (subDepth > 0 && c === ')') { subDepth -= 1; j += 1; continue; }
+          j += 1;
+        }
+        if (j > N) return input;
+        if (!push(input.slice(i, j))) return input;
+        atLineStart = false;
+        i = j;
+        continue;
+      }
+
+      // ── Single-quoted string `'…'`. `''` is the literal escape.
+      if (ch === "'") {
+        let j = i + 1;
+        while (j < N) {
+          const c = input.charAt(j);
+          if (c === "'") {
+            if (j + 1 < N && input.charAt(j + 1) === "'") { j += 2; continue; }
+            j += 1;
+            break;
+          }
+          j += 1;
+        }
+        if (!push(input.slice(i, j))) return input;
+        atLineStart = false;
+        i = j;
+        continue;
+      }
+
+      // ── Backtick-escape of the next char (e.g. `` `; `` or `` `n ``).
+      if (ch === '`' && i + 1 < N) {
+        if (!push(input.slice(i, i + 2))) return input;
+        atLineStart = false;
+        i += 2;
+        continue;
+      }
+
+      // ── Structural brace `{` / `}`.
+      if (ch === '{') {
+        if (depth >= maxDepth) return input;
+        if (!push('{')) return input;
+        depth += 1;
+        // Empty block peek: next non-ws is `}` → keep inline.
+        let k = i + 1;
+        while (k < N) {
+          const c = input.charCodeAt(k);
+          if (c === 0x20 || c === 0x09 || c === 0x0A) { k += 1; continue; }
+          break;
+        }
+        if (k < N && input.charAt(k) === '}') {
+          // Leave `{` in place, consume whitespace, let `}` handler
+          // dedent on the same line.
+          atLineStart = false;
+          i = k;
+          continue;
+        }
+        if (!newlineIndent()) return input;
+        i += 1;
+        continue;
+      }
+
+      if (ch === '}') {
+        if (depth === 0) return input; // unbalanced → bail closed
+        depth -= 1;
+        if (!atLineStart) {
+          if (!newlineIndent()) return input;
+        } else {
+          // Rewrite the current line's indent (we already emitted the
+          // old indent based on the pre-dedent depth).
+          trimTrailingSpace();
+          if (!push(indent())) return input;
+        }
+        if (!push('}')) return input;
+        atLineStart = false;
+        i += 1;
+        // If we just closed a block at outer depth, break to a new line.
+        if (depth === 0) {
+          if (!newlineIndent()) return input;
+        }
+        continue;
+      }
+
+      // ── Paren / bracket depth tracking.
+      if (ch === '(' || ch === '[') {
+        parenDepth += 1;
+        if (!push(ch)) return input;
+        atLineStart = false;
+        i += 1;
+        continue;
+      }
+      if (ch === ')' || ch === ']') {
+        if (parenDepth > 0) parenDepth -= 1;
+        if (!push(ch)) return input;
+        atLineStart = false;
+        i += 1;
+        continue;
+      }
+
+      // ── Top-level `;` → statement split.
+      if (ch === ';' && parenDepth === 0) {
+        if (!push(';')) return input;
+        i += 1;
+        // Skip one trailing space to avoid `;  \n`.
+        while (i < N) {
+          const c = input.charCodeAt(i);
+          if (c === 0x20 || c === 0x09) { i += 1; continue; }
+          break;
+        }
+        if (!newlineIndent()) return input;
+        continue;
+      }
+
+      // ── Default: copy verbatim.
+      if (!push(ch)) return input;
+      if (ch !== ' ' && ch !== '\t') atLineStart = false;
+      i += 1;
+    }
+
+    if (depth !== 0) return input;
+
+    // Collapse any trailing blank line the `}` post-emit rule may
+    // have introduced.
+    let result = out.join('');
+    result = result.replace(/\n[ \t]+$/, '\n');
+    return result;
+  }
+
+  /**
+   * Bash structural formatter. Mirrors `_formatPowershellIndent` with
+   * bash-specific lex rules:
+   *
+   *   • `"…"` double-quoted — `\` escapes next char; `$(…)` / `` `…` ``
+   *     sub-shells tracked as counters.
+   *   • `'…'` single-quoted — verbatim, no escape.
+   *   • `` `…` `` backtick substitution — `\` escape.
+   *   • `$(…)` sub-shell — parens counted (so `;` inside never splits).
+   *   • `<<[-]EOF` / `<<'EOF'` / `<<"EOF"` here-docs — copied byte-for-
+   *     byte to the terminator line. Malformed → bail closed.
+   *   • `#` comment — only when preceded by whitespace, SOL, `;`, `&`,
+   *     `|`, `(`, or `` ` `` (bash permits `foo#bar` as an unquoted
+   *     word otherwise).
+   *   • `\` at EOL — line continuation; preserved verbatim.
+   *   • `{` / `}` block depth for indent.
+   *
+   * Hard-fails CLOSED identically to the PS variant.
+   */
+  static _formatBashIndent(input) {
+    const N = input.length;
+    const maxOut = N * CodeFormatter.MAX_AMP_FACTOR + CodeFormatter.MAX_AMP_OVERHEAD_BYTES;
+    const maxDepth = CodeFormatter.MAX_DEPTH;
+
+    const out = [];
+    let outLen = 0;
+    let depth = 0;
+    let parenDepth = 0;
+    let atLineStart = true;
+
+    const push = (s) => {
+      if (!s) return true;
+      if (outLen + s.length > maxOut) return false;
+      out.push(s);
+      outLen += s.length;
+      return true;
+    };
+
+    const indent = () => CodeFormatter.INDENT.repeat(Math.min(depth, maxDepth));
+
+    const trimTrailingSpace = () => {
+      while (out.length > 0) {
+        const last = out[out.length - 1];
+        if (last === ' ' || last === '\t') { out.pop(); outLen -= last.length; continue; }
+        const trimmed = last.replace(/[ \t]+$/, '');
+        if (trimmed !== last) {
+          outLen -= (last.length - trimmed.length);
+          if (trimmed.length === 0) out.pop();
+          else out[out.length - 1] = trimmed;
+        }
+        break;
+      }
+    };
+
+    const newlineIndent = () => {
+      trimTrailingSpace();
+      if (!push('\n')) return false;
+      if (!push(indent())) return false;
+      atLineStart = true;
+      return true;
+    };
+
+    // Previous non-whitespace char in the RAW input (to decide whether
+    // `#` starts a comment). Returns empty string at SOL.
+    const prevNonSpaceInput = (i) => {
+      let j = i - 1;
+      while (j >= 0) {
+        const c = input.charCodeAt(j);
+        if (c === 0x20 || c === 0x09) { j -= 1; continue; }
+        if (c === 0x0A) return '';
+        return input.charAt(j);
+      }
+      return '';
+    };
+
+    // Detect and consume a here-doc beginning at `<<`. Returns [end, ok]
+    // where end is the index past the terminator line, or null if this
+    // isn't a here-doc context.
+    const consumeHereDoc = (i) => {
+      // Expect `<<` then optional `-`, then terminator word (possibly
+      // quoted). We're permissive on leading whitespace after `<<`.
+      let j = i + 2;
+      if (j < N && input.charAt(j) === '-') j += 1;
+      while (j < N) {
+        const c = input.charCodeAt(j);
+        if (c === 0x20 || c === 0x09) { j += 1; continue; }
+        break;
+      }
+      if (j >= N) return null;
+      // Read the terminator word (quoted or bare).
+      let term = '';
+      const q = input.charAt(j);
+      if (q === '"' || q === "'") {
+        const end = input.indexOf(q, j + 1);
+        if (end < 0) return null;
+        term = input.slice(j + 1, end);
+        j = end + 1;
+      } else {
+        const start = j;
+        while (j < N) {
+          const c = input.charAt(j);
+          if (/[A-Za-z0-9_]/.test(c)) { j += 1; continue; }
+          break;
+        }
+        if (j === start) return null;
+        term = input.slice(start, j);
+      }
+      if (!term) return null;
+      // Scan to end-of-line, then look for `\n<optional tabs>TERM\n` or
+      // `\n<optional tabs>TERM$` as the delimiter line.
+      const nl = input.indexOf('\n', j);
+      if (nl < 0) return null;
+      let pos = nl + 1;
+      while (pos < N) {
+        // Start of a candidate line.
+        const lineStart = pos;
+        // If `<<-`, allow leading tabs to be stripped.
+        let k = lineStart;
+        while (k < N && input.charAt(k) === '\t') k += 1;
+        if (input.substr(k, term.length) === term) {
+          const after = k + term.length;
+          if (after === N || input.charCodeAt(after) === 0x0A) {
+            return after === N ? N : after + 1;
+          }
+        }
+        const nextNl = input.indexOf('\n', lineStart);
+        if (nextNl < 0) return null;
+        pos = nextNl + 1;
+      }
+      return null;
+    };
+
+    let i = 0;
+    while (i < N) {
+      const ch = input.charAt(i);
+
+      if (ch === '\n') {
+        if (!push('\n')) return input;
+        if (!push(indent())) return input;
+        atLineStart = true;
+        i += 1;
+        continue;
+      }
+
+      if (atLineStart && (ch === ' ' || ch === '\t')) {
+        i += 1;
+        continue;
+      }
+
+      // Line-continuation `\\\n` — copy verbatim.
+      if (ch === '\\' && i + 1 < N && input.charAt(i + 1) === '\n') {
+        if (!push('\\\n')) return input;
+        if (!push(indent())) return input;
+        atLineStart = true;
+        i += 2;
+        continue;
+      }
+
+      // Backslash-escape of any other char.
+      if (ch === '\\' && i + 1 < N) {
+        if (!push(input.slice(i, i + 2))) return input;
+        atLineStart = false;
+        i += 2;
+        continue;
+      }
+
+      // Here-doc (`<<EOF` / `<<-EOF` / `<<'EOF'` / `<<"EOF"`).
+      if (ch === '<' && i + 1 < N && input.charAt(i + 1) === '<'
+          && !(i + 2 < N && input.charAt(i + 2) === '<')) {
+        const end = consumeHereDoc(i);
+        if (end === null) {
+          // Not a recognisable here-doc shape — fall through to generic
+          // copy so `<<` operator in `(( x << 1 ))` still works.
+        } else {
+          if (!push(input.slice(i, end))) return input;
+          atLineStart = (end > 0 && input.charCodeAt(end - 1) === 0x0A);
+          i = end;
+          continue;
+        }
+      }
+
+      // Line comment `#…\n` (only after whitespace / SOL / shell punct).
+      if (ch === '#') {
+        const prev = prevNonSpaceInput(i);
+        const atSOL = prev === '';
+        const afterShellPunct = prev === ';' || prev === '&' || prev === '|'
+                             || prev === '(' || prev === '`';
+        if (atSOL || afterShellPunct || input.charAt(i - 1) === ' ' || input.charAt(i - 1) === '\t') {
+          let j = i;
+          while (j < N && input.charCodeAt(j) !== 0x0A) j += 1;
+          if (!push(input.slice(i, j))) return input;
+          atLineStart = false;
+          i = j;
+          continue;
+        }
+        // Else: treat `#` as a literal character in a word like `foo#bar`.
+      }
+
+      // Double-quoted string `"…"` with `$(…)` / `` `…` `` tracking.
+      if (ch === '"') {
+        let j = i + 1;
+        let subDepth = 0;
+        let btick = false;
+        while (j < N) {
+          const c = input.charAt(j);
+          if (c === '\\' && j + 1 < N) { j += 2; continue; }
+          if (btick) {
+            if (c === '`') btick = false;
+            j += 1;
+            continue;
+          }
+          if (c === '`') { btick = true; j += 1; continue; }
+          if (subDepth === 0 && c === '"') { j += 1; break; }
+          if (c === '$' && j + 1 < N && input.charAt(j + 1) === '(') {
+            subDepth += 1; j += 2; continue;
+          }
+          if (subDepth > 0 && c === '(') { subDepth += 1; j += 1; continue; }
+          if (subDepth > 0 && c === ')') { subDepth -= 1; j += 1; continue; }
+          j += 1;
+        }
+        if (!push(input.slice(i, j))) return input;
+        atLineStart = false;
+        i = j;
+        continue;
+      }
+
+      // Single-quoted string `'…'` — verbatim, no escapes.
+      if (ch === "'") {
+        const end = input.indexOf("'", i + 1);
+        if (end < 0) return input;
+        if (!push(input.slice(i, end + 1))) return input;
+        atLineStart = false;
+        i = end + 1;
+        continue;
+      }
+
+      // Backtick substitution `` `…` ``.
+      if (ch === '`') {
+        let j = i + 1;
+        while (j < N) {
+          const c = input.charAt(j);
+          if (c === '\\' && j + 1 < N) { j += 2; continue; }
+          if (c === '`') { j += 1; break; }
+          j += 1;
+        }
+        if (!push(input.slice(i, j))) return input;
+        atLineStart = false;
+        i = j;
+        continue;
+      }
+
+      // `$(…)` sub-shell — tracked as paren depth so inner `;` stays.
+      if (ch === '$' && i + 1 < N && input.charAt(i + 1) === '(') {
+        if (!push('$(')) return input;
+        parenDepth += 1;
+        atLineStart = false;
+        i += 2;
+        continue;
+      }
+
+      if (ch === '{') {
+        if (depth >= maxDepth) return input;
+        if (!push('{')) return input;
+        depth += 1;
+        let k = i + 1;
+        while (k < N) {
+          const c = input.charCodeAt(k);
+          if (c === 0x20 || c === 0x09 || c === 0x0A) { k += 1; continue; }
+          break;
+        }
+        if (k < N && input.charAt(k) === '}') {
+          atLineStart = false;
+          i = k;
+          continue;
+        }
+        if (!newlineIndent()) return input;
+        i += 1;
+        continue;
+      }
+
+      if (ch === '}') {
+        if (depth === 0) return input;
+        depth -= 1;
+        if (!atLineStart) {
+          if (!newlineIndent()) return input;
+        } else {
+          trimTrailingSpace();
+          if (!push(indent())) return input;
+        }
+        if (!push('}')) return input;
+        atLineStart = false;
+        i += 1;
+        if (depth === 0) {
+          if (!newlineIndent()) return input;
+        }
+        continue;
+      }
+
+      if (ch === '(' || ch === '[') {
+        parenDepth += 1;
+        if (!push(ch)) return input;
+        atLineStart = false;
+        i += 1;
+        continue;
+      }
+      if (ch === ')' || ch === ']') {
+        if (parenDepth > 0) parenDepth -= 1;
+        if (!push(ch)) return input;
+        atLineStart = false;
+        i += 1;
+        continue;
+      }
+
+      if (ch === ';' && parenDepth === 0) {
+        // Don't split `;;` (bash case terminator) — keep both.
+        if (i + 1 < N && input.charAt(i + 1) === ';') {
+          if (!push(';;')) return input;
+          atLineStart = false;
+          i += 2;
+          continue;
+        }
+        if (!push(';')) return input;
+        i += 1;
+        while (i < N) {
+          const c = input.charCodeAt(i);
+          if (c === 0x20 || c === 0x09) { i += 1; continue; }
+          break;
+        }
+        if (!newlineIndent()) return input;
+        continue;
+      }
+
+      if (!push(ch)) return input;
+      if (ch !== ' ' && ch !== '\t') atLineStart = false;
+      i += 1;
+    }
+
+    if (depth !== 0) return input;
+
+    let result = out.join('');
+    result = result.replace(/\n[ \t]+$/, '\n');
+    return result;
+  }
+
+  /**
+   * Legacy DOS / Batch indent-only pass. Preserved verbatim from the
+   * pre-`;`-splitting behaviour: splits input on `\n`, counts coarse
+   * `{` / `}` per line, rewrites leading whitespace by depth. No
+   * string/comment tokeniser — batch doesn't really have string
+   * escapes and `{` / `}` are rare in shipping Batch.
+   */
+  static _formatDosIndentLegacy(input) {
     const N = input.length;
     if (N === 0) return input;
     const maxOut = N * CodeFormatter.MAX_AMP_FACTOR + CodeFormatter.MAX_AMP_OVERHEAD_BYTES;
     const maxDepth = CodeFormatter.MAX_DEPTH;
-    // Normalise line endings locally (caller already LF-normalises but
-    // guard anyway).
     const lines = input.replace(/\r\n?/g, '\n').split('\n');
     const out = [];
     let outLen = 0;
@@ -666,8 +1321,6 @@ class CodeFormatter {
     for (let li = 0; li < lines.length; li++) {
       const raw = lines[li];
       const trimmed = raw.replace(/^[ \t]+/, '');
-      // Count braces on the trimmed line (coarse — treats all `{` and
-      // `}` as structural even inside strings/comments).
       let opens = 0;
       let closes = 0;
       let leadingCloses = 0;
@@ -682,14 +1335,12 @@ class CodeFormatter {
           seenNonClose = true;
         }
       }
-      // Apply leading `}` dedent BEFORE emitting this line.
       const lineDepth = Math.max(0, Math.min(depth - leadingCloses, maxDepth));
       const indent = CodeFormatter.INDENT.repeat(lineDepth);
       const line = (trimmed.length > 0 ? indent + trimmed : '');
       if (outLen + line.length + 1 > maxOut) return input;
       out.push(line);
       outLen += line.length + 1;
-      // Net depth change for next line.
       depth = Math.max(0, Math.min(depth + opens - closes, maxDepth));
     }
     return out.join('\n');

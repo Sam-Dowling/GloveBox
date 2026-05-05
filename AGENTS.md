@@ -329,6 +329,9 @@ Full skeleton details live in `CONTRIBUTING.md § Renderer Contract` (detection 
 - `<pending>` — Chromium macOS `readEntries()` EncodingError on folder drops now surfaces on `FolderFile.fromEntries`'s `walkErrors` and falls back to loose-file ingest instead of dispatching an empty tree under a misleading "truncated at 4,096" toast.
 - `<pending>` — macOS folder drops: `DataTransfer.files` carries the folder itself as a pseudo-File whose `arrayBuffer()` rejects with NotFoundError; `_filterReadableLooseFiles` (name-match + `slice(0,1).arrayBuffer()` probe) sanitises the loose-file fallback before `_loadFile` is ever called.
 
+### Plaintext / Format toggle
+- `<pending>` — `CodeFormatter._formatIndentOnly` dispatches to language-specific walkers: `_formatPowershellIndent` / `_formatBashIndent` split top-level `;` statements (outside strings, comments, here-strings / here-docs, `$(…)` / `` `…` `` sub-shells, and `for (;;)` parens) AND re-indent `{` / `}` blocks. DOS keeps the legacy line-indent-only pass (`_formatDosIndentLegacy`). Fixes the "click Format on `$a=1;$b=2;IEX $a` one-liner → nothing happens" UX; hard-fails CLOSED on unbalanced braces / unterminated strings / here-strings / depth > 256 / amp > 3×.
+
 ### State leak & cleanup
 - `eb46706` — clear copy-content cache, sidebar highlight timers, stale view refs on file-clear.
 - `0c306aa` — invalidate `rowSearchText` cache when `setRows` omits it.
