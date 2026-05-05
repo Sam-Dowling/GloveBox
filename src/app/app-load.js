@@ -815,15 +815,17 @@ extendApp({
 
     } catch (e) {
       console.error(e);
-      this._toast(`Failed to open: ${e.message}`, 'error');
+      // Toast-only failure surface (3 s auto-dismiss). A persistent
+      // `.error-box` used to be painted into `#page-container` here,
+      // but the toast already carries the full message and the large
+      // popup added no new signal — just clutter sitting flush against
+      // the drop-zone. Leaving the viewer state reset (below) means the
+      // analyst just sees the drop-zone again, ready for a retry.
+      this._toast(`Failed to open file: ${e.message}`, 'error');
       // Clear stale binary-triage state so the sidebar doesn't render
       // PE/ELF/Mach-O sections from a previous successful load.
       if (this.currentResult) this.currentResult.binary = null;
       const pc = document.getElementById('page-container'); pc.innerHTML = '';
-      const eb = document.createElement('div'); eb.className = 'error-box';
-      const h3 = document.createElement('h3'); h3.textContent = 'Failed to open file'; eb.appendChild(h3);
-      const p1 = document.createElement('p'); p1.textContent = e.message; eb.appendChild(p1);
-      pc.appendChild(eb);
     } finally { this._setLoading(false); }
   },
 
