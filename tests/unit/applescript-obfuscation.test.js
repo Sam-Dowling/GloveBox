@@ -800,6 +800,64 @@ test('applescript-obfuscation: Tier C — runtime-URL-fetch URL appears as URL I
     `expected URL IOC label; got: ${JSON.stringify(urls)}`);
 });
 
+test('applescript-obfuscation: Tier C — unescape preserves literal `\\n` / `\\t` / `\\r` in AS source (CodeQL #123 regression)', () => {
+  // The old four-step unescape chain processed `\\` in the middle of
+  // the pipeline, so an AppleScript source literal containing `\\n`
+  // (author-written: backslash-backslash-n, meaning a literal
+  // backslash followed by `n` per AS grammar) was double-unescaped to
+  // a LINEFEED, corrupting Windows paths and similar content. The
+  // single-pass alternation form fixes this. Regression test: the
+  // runtime command must preserve the literal `\n` and `\t` sequences
+  // in the `_dynamicSource.command` field, and the URL must still be
+  // extracted alongside them.
+  //
+  // In JS source, `\\\\n` === four chars (`\` `\` `\` `n`) which in an
+  // AppleScript "..." literal parses to three runtime chars: `\` `\`
+  // `n` → after AS unescape: `\` + `n`. Same shape for `\\\\t`.
+  const text =
+    `set _X to do shell script "echo C:\\\\ntuser.dat https://c2.example/\\\\tpath"`;
+  const cands = d._findAppleScriptObfuscationCandidates(text, {});
+  const dyn = pick(cands, c => c.technique === 'AppleScript Runtime URL Fetch');
+  assert.ok(dyn.length >= 1, `expected runtime-URL-fetch candidate; got: ${JSON.stringify(host(cands).map(c => c.technique))}`);
+  const cmd = dyn[0]._dynamicSource.command;
+  // Must NOT contain a literal linefeed or tab — those would be the
+  // symptom of the double-unescape bug.
+  assert.ok(!/\n/.test(cmd),
+    `command must not contain a real linefeed (double-unescape bug); got: ${JSON.stringify(cmd)}`);
+  assert.ok(!/\t/.test(cmd),
+    `command must not contain a real tab (double-unescape bug); got: ${JSON.stringify(cmd)}`);
+  // Must contain the literal backslash-n and backslash-t sequences.
+  assert.ok(cmd.includes('\\n'),
+    `command must preserve literal \\n; got: ${JSON.stringify(cmd)}`);
+  assert.ok(cmd.includes('\\t'),
+    `command must preserve literal \\t; got: ${JSON.stringify(cmd)}`);
+  // URL extraction must still work.
+  assert.ok(dyn[0]._dynamicSource.urls.some(u => u.startsWith('https://c2.example/')),
+    `URL extraction must still find the C2 URL; got: ${JSON.stringify(dyn[0]._dynamicSource.urls)}`);
+});
+
+test('applescript-obfuscation: Tier C — unescape handles the full AS escape-sequence set (\\" \\\\ \\n \\r \\t)', () => {
+  // Spec coverage for the single-pass alternation. Each escape in the
+  // source literal maps to its AS-grammar runtime character. `\r` was
+  // previously silently passed through as a literal backslash-r; the
+  // rewrite recognises it alongside `\n` and `\t`.
+  //
+  // In JS source here the doubled backslashes collapse to single
+  // backslashes inside the constructed AS-literal string, exactly as
+  // they would appear in a file on disk.
+  const text =
+    `set _X to do shell script "A\\"B\\\\C\\nD\\rE\\tF https://a.example/"`;
+  const cands = d._findAppleScriptObfuscationCandidates(text, {});
+  const dyn = pick(cands, c => c.technique === 'AppleScript Runtime URL Fetch');
+  assert.ok(dyn.length >= 1);
+  const cmd = dyn[0]._dynamicSource.command;
+  assert.ok(cmd.includes('A"B'),  `\\" must unescape to "; got: ${JSON.stringify(cmd)}`);
+  assert.ok(cmd.includes('B\\C'), `\\\\ must unescape to a single backslash; got: ${JSON.stringify(cmd)}`);
+  assert.ok(cmd.includes('C\nD'), `\\n must unescape to LF; got: ${JSON.stringify(cmd)}`);
+  assert.ok(cmd.includes('D\rE'), `\\r must unescape to CR; got: ${JSON.stringify(cmd)}`);
+  assert.ok(cmd.includes('E\tF'), `\\t must unescape to HT; got: ${JSON.stringify(cmd)}`);
+});
+
 test('applescript-obfuscation: Tier C — sink context (set X to do shell script <chain>) surfaces dynamic URL', () => {
   // When the `do shell script` argument is a char-code chain that
   // resolves to a command containing a URL, AND the statement is

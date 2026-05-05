@@ -1328,12 +1328,21 @@ Object.assign(EncodedContentDetector.prototype, {
       const varName = m[1];
       const cmdLiteral = m[2];
       // Unescape the AS string-literal body so URL-extraction sees the
-      // actual runtime-command bytes.
-      const cmd = cmdLiteral
-        .replace(/\\"/g, '"')
-        .replace(/\\\\/g, '\\')
-        .replace(/\\n/g, '\n')
-        .replace(/\\t/g, '\t');
+      // actual runtime-command bytes. Single-pass alternation — the
+      // four-step chain this replaced processed `\\` in the middle of
+      // the pipeline, which double-unescaped inputs like `\\n` (a
+      // literal backslash followed by `n` in source, common in
+      // Windows paths): the `\\` → `\` step collapsed two backslashes,
+      // then the `\n` → LF step re-consumed the freshly-produced
+      // backslash-n sequence as a linefeed. The alternation form is
+      // immune to that reordering hazard by construction and matches
+      // the precedent in `reg-renderer.js:323`. Also recognises `\r`,
+      // which AS's string-literal grammar accepts but the old chain
+      // silently passed through as literal backslash-r. Closes
+      // code-scanning alert #123 (js/double-escaping, CWE-116 / 20).
+      /* safeRegex: builtin */
+      const cmd = cmdLiteral.replace(/\\(["\\nrt])/g, (_m, c) =>
+        c === 'n' ? '\n' : c === 't' ? '\t' : c === 'r' ? '\r' : c);
       // Extract http(s) URLs from the command. Conservative regex —
       // real URLs only; skip things that merely look like a URL inside
       // a sed pattern.
