@@ -524,6 +524,62 @@ Two helpers in `src/constants.js`:
   reach the pivot list. Mirror **pivot** fields (hashes, paths, GUIDs,
   MAC, emails, cert fingerprints); **not** attribution fluff
   (`CompanyName`, `FileDescription`, `ProductName`, `SubjectName`).
+- **`dedupeHostPivots(findings)`** — collapses redundant `IOC.HOSTNAME`
+  rows that duplicate an existing URL or DOMAIN pivot for the same host
+  at equal-or-lower severity. Runs centrally at the end of
+  `App._loadFile` (after every renderer + encoded-content merge has
+  landed). `IOC.URL` and `IOC.DOMAIN` rows are never collapsed — they
+  are complementary pivots (endpoint vs registrable-domain rollup).
+  HOSTNAME rows whose severity EXCEEDS any covering URL/DOMAIN row
+  survive. Structured-source HOSTNAMEs with no URL/DOMAIN overlap (cert
+  Subject CN, EVTX machine name, LNK tracker, plist machine ID) always
+  survive.
+
+### HOSTNAME vs DOMAIN — IOC taxonomy
+
+- **`IOC.DOMAIN`** — a registrable (public-suffix + 1) pivot.
+  Auto-derived from every URL push via `emitUrlSiblings`. Also emitted
+  directly by renderers whose bare-domain extractors match public-
+  suffix TLDs (osascript, plist). The canonical type for "this file
+  references a domain worth pivoting on" — used by Summary, STIX, MISP,
+  threat-intel enrichment.
+- **`IOC.HOSTNAME`** — a host reference from structured metadata where
+  the bare host is the primary artefact, NOT a URL pivot. Canonical
+  emitters:
+  - x509 Subject CN / SAN DNS entries (non-URL forms).
+  - EVTX `System.Computer` / `UserData` machine-name fields.
+  - LNK TrackerDataBlock `machineID`.
+  - plist machine / host identity keys (non-URL).
+  When unsure, prefer `IOC.DOMAIN` — `dedupeHostPivots` will collapse
+  `IOC.HOSTNAME` rows whose values duplicate an existing URL/DOMAIN,
+  so mis-typing defaults to "eventually corrected" rather than
+  "silently duplicated in the IOC table."
+
+### Encoded-content IOC merge
+
+`App.prototype._mergeEncodedFindingIocs(ef, analysisText)` is the
+single chokepoint for merging an `encoded-content` finding's `iocs[]`
+array into the host-side `findings.externalRefs` /
+`findings.interestingStrings` buckets:
+
+- Routes detection types (`IOC.PATTERN`, `IOC.YARA`, `IOC.INFO`) to
+  `externalRefs`; everything else (URL, DOMAIN, IP, EMAIL, FILE_PATH,
+  …) to `interestingStrings`.
+- Cross-bucket dedupe by `{type, url}` — a plaintext-extracted URL and
+  a decoded-payload URL of the same value collapse into one row at the
+  escalated severity.
+- Monotonic severity escalation (`info < medium < high < critical` —
+  never downgraded).
+- Stamps a technique-scoped `note` (`Detected in <ef.technique>` or
+  `Detected via <ef.chain>`) when the existing row had no prior note.
+- Back-refs `_encodedFinding` / `_decodedFrom` stamped for normal
+  findings (for cross-flash sidebar↔card linking); skipped for
+  detection-only sentinels which have no card.
+
+New encoded-content pipelines must call this helper rather than
+hand-rolling a merge — bypassing it reintroduces the duplicate-URL /
+dropped-severity / missing-sibling regressions that motivated its
+extraction. See `src/app/app-load.js` for the canonical call site.
 
 Push checklist:
 

@@ -218,6 +218,9 @@ Full skeleton details live in `CONTRIBUTING.md § Renderer Contract` (detection 
 - Adding a dispatch id without `MAX_FILE_BYTES_BY_DISPATCH[id]` → 128 MiB `_DEFAULT` fall-through.
 - Forgetting to mirror Detections into `externalRefs` as `IOC.PATTERN` → invisible to risk calc, Summary, STIX, MISP.
 - Forgetting `_noDomainSibling: true` on a URL push that already emitted a manual domain → duplicate domain IOC.
+- Emitting `IOC.HOSTNAME` for a value that parses as a registrable domain — use `IOC.DOMAIN`. `IOC.HOSTNAME` is for structured-source host references (cert Subject CN, EVTX machine name, LNK TrackerDataBlock machineID, plist machine ID) where the bare host is the primary artefact, not a URL pivot. The `dedupeHostPivots(findings)` helper (runs at the end of `App._loadFile`) collapses HOSTNAME rows that overlap URL / DOMAIN coverage, but it's a safety net — emit the right type to start with.
+- Emitting IOCs via bare `findings.interestingStrings.push({...})` / `findings.externalRefs.push({...})` instead of `pushIOC(findings, {type, value, severity, bucket?})`. Bare pushes skip auto-sibling emission (URL → DOMAIN / punycode / abuse-suffix), skip wire-shape validation, and diverge in field naming (`url:` vs `value:`). See `PLAN-pushIOC-compliance.md` for the ongoing migration scope and the staged build gate.
+- Routing encoded-content IOCs manually instead of calling `this._mergeEncodedFindingIocs(ef, analysisText)` in `App._loadFile`. The helper owns cross-bucket dedupe, monotonic severity escalation, technique-scoped note stamping, and back-reference wiring for cross-flash UI.
 - Treating Timeline auto-extracted columns as persistent; only Regex-tab extracts persist.
 - Mutating App state outside the file-load pipeline in tests; shared-bundle pages reuse state.
 - Bumping a vendor file without rotating its SHA-256 in `VENDORED.md` in the same commit.
