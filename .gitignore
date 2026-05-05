@@ -39,8 +39,8 @@ loupe.cdx.json.sigstore
 codemap.json
 
 # Todo / Plans
-TODO.md
-PLAN.md
+TODO*.md
+PLAN*.md
 ARCHITECTURAL_REVIEW.md
 plans/
 .mcp.json
