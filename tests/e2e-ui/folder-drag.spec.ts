@@ -632,8 +632,10 @@ test.describe('folder ingest', () => {
     const toastText = await page.locator('#toast').innerText();
     expect(toastText).toContain("Couldn't read folder");
     expect(toastText).toContain('Archive');
-    // Toast points the analyst at a recoverable action.
-    expect(toastText).toMatch(/Open button|picker|drag the files/);
+    // Toast points the analyst at a recoverable action — specifically
+    // the new "📁 Open ▾ → Open Folder…" menu that the folder-handle
+    // fix introduced as the reliable escape hatch on Chromium macOS.
+    expect(toastText).toMatch(/Open Folder…|Open ▾/);
     // Pre-fix regression: never claim a 4,096-entry truncation when
     // nothing was truncated.
     expect(toastText).not.toContain('truncated at 4,096');
@@ -737,7 +739,7 @@ test.describe('folder ingest', () => {
     const toastText = await page.locator('#toast').innerText();
     expect(toastText).toContain("Couldn't read folder");
     expect(toastText).toContain('fold');
-    expect(toastText).toMatch(/Open button|picker|drag the files/);
+    expect(toastText).toMatch(/Open Folder…|Open ▾/);
     expect(toastText).not.toContain('truncated at 4,096');
   });
 
