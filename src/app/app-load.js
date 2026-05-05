@@ -428,6 +428,12 @@ extendApp({
       } else {
         const extracted = this._extractInterestingStrings(analysisText, this.findings);
         this.findings.interestingStrings = [...rendererIOCs, ...extracted];
+        // URL→sibling backfill — `extractInterestingStringsCore` runs
+        // tldts-free (worker-bundle constraint) so its URL rows arrive
+        // without the auto-derived IOC.DOMAIN / IOC.IP-literal / punycode
+        // / abuse-suffix siblings that `pushIOC` normally produces.
+        // Re-emit those here so the sync path matches the renderer path.
+        this._backfillUrlSiblings(extracted);
         // Stash per-type truncation info (attached as side-channel props on
         // the returned array in _extractInterestingStrings — array spread
         // below copies only indexed elements, so these props are lost from
@@ -2564,6 +2570,10 @@ extendApp({
           ...(this.findings.interestingStrings || []),
           ...extracted,
         ];
+        // URL→sibling backfill — see `_backfillUrlSiblings` docblock.
+        // Also fires on the worker-rejection fallback so the analyst
+        // doesn't lose domain pivots when the worker path bails.
+        this._backfillUrlSiblings(extracted);
         if (extracted._droppedByType && extracted._droppedByType.size > 0) {
           this.findings._iocTruncation = {
             droppedByType: extracted._droppedByType,
@@ -2594,6 +2604,45 @@ extendApp({
     if (idx >= 0) list.splice(idx, 1);
   },
 
+  // ── URL → Domain / IP / PATTERN sibling backfill ─────────────────────────
+  //
+  // `extractInterestingStringsCore` (src/ioc-extract.js) runs in both the
+  // main bundle AND the IOC-extract worker bundle. To keep the worker
+  // bundle self-contained it deliberately does NOT reach for `tldts` /
+  // `pushIOC`, which means URL rows it produces never get their
+  // auto-derived `IOC.DOMAIN` / `IOC.IP-literal` / `IOC.PATTERN`
+  // (punycode / abuse-suffix) siblings.
+  //
+  // `pushIOC` delegates the sibling-derivation to a shared `emitUrlSiblings`
+  // helper in `src/constants.js`; this backfill calls the same helper once
+  // per freshly-merged URL row so the sibling set is identical to what a
+  // direct `pushIOC` would have produced. `emitUrlSiblings` dedups against
+  // `findings.interestingStrings` internally, so rows that a renderer
+  // already pushed via `pushIOC` (e.g. a PE URL that duplicates one found
+  // in the binary's string dump) are not double-emitted.
+  //
+  // Call sites (all adjacent — see below):
+  //   • _extractInterestingStrings sync path (small-file / workers-unavailable)
+  //   • _patchIocFindingsFromWorker (worker success)
+  //   • _kickIocExtractWorker worker-rejection fallback
+  //
+  // No-op when `tldts` isn't loaded or `emitUrlSiblings` isn't in scope
+  // (e.g. during unit tests that load a partial bundle).
+  _backfillUrlSiblings(rows) {
+    if (!Array.isArray(rows) || rows.length === 0) return;
+    if (typeof emitUrlSiblings !== 'function') return;
+    for (const r of rows) {
+      if (!r || r.type !== IOC.URL || !r.url) continue;
+      try {
+        emitUrlSiblings(this.findings, r.url, 'interestingStrings');
+      } catch (err) {
+        // Best-effort; sibling derivation failures must never interrupt
+        // the load pipeline. Swallow with a silent breadcrumb.
+        this._reportNonFatal('backfill-url-siblings', err, { silent: true });
+      }
+    }
+  },
+
   _patchIocFindingsFromWorker(out, epoch, fileName) {
     // Render-epoch supersession guard — a newer load owns the UI, do
     // nothing. Mirrors the QrDecoder async-snapshot pattern (see
@@ -2621,6 +2670,11 @@ extendApp({
       ...(this.findings.interestingStrings || []),
       ...fresh,
     ];
+    // URL→sibling backfill — see `_backfillUrlSiblings` docblock. The
+    // worker-bundled extractor runs tldts-free so its URL rows arrive
+    // without auto-derived sibling DOMAIN / IP-literal / PATTERN rows;
+    // re-emit them here so the worker path matches the renderer path.
+    this._backfillUrlSiblings(fresh);
     if (out.droppedByType && out.droppedByType.size > 0) {
       this.findings._iocTruncation = {
         droppedByType: out.droppedByType,

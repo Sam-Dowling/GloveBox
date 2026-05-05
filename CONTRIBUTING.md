@@ -508,6 +508,16 @@ Two helpers in `src/constants.js`:
   `IOC.DOMAIN` for URL pushes via `tldts`, plus `IOC.IP` for embedded
   literals and `IOC.PATTERN` for punycode/IDN homoglyphs. Pass
   `_noDomainSibling: true` if you've already emitted a manual domain.
+- **`emitUrlSiblings(findings, url, bucket?)`** — the sibling-derivation
+  half of `pushIOC`, factored out so host-side code paths that receive
+  URL rows produced by the worker-bundled `extractInterestingStringsCore`
+  (which runs tldts-free by design) can retroactively emit the same
+  sibling set. Any new async path that merges worker-produced URL rows
+  into `findings.interestingStrings` MUST call `App._backfillUrlSiblings`
+  (or `emitUrlSiblings` directly) on the fresh rows — otherwise URL-only
+  IOCs arrive without the expected `IOC.DOMAIN` / IP-literal / punycode
+  / abuse-suffix siblings. The three existing call sites are all in
+  `src/app/app-load.js` (sync shim, worker success, worker fallback).
 - **`mirrorMetadataIOCs(findings, {metadataKey: IOC.TYPE, ...}, opts?)`**
   — the sidebar table is fed only from `externalRefs +
   interestingStrings`; values living only on `findings.metadata` never

@@ -160,3 +160,78 @@ test('ioc-extract: every finding uses an IOC.* constant for type', () => {
       `non-IOC.* type leaked into findings: ${JSON.stringify(e)}`);
   }
 });
+
+// ── Nested-URL-in-query (ClickFix redirector pattern) ────────────────────────
+//
+// Outer URL on a benign-looking host carrying a percent-encoded inner URL
+// in a query parameter. The extractor should surface BOTH URLs so the
+// analyst gets the real C2 host, not just the redirector. See
+// `processUrl::_scanNestedUrlsInQuery` in src/ioc-extract.js.
+
+test('ioc-extract: nested URL in query param is decoded and surfaced', () => {
+  const outer = 'https://example.com/a/b.php?a=https%3A%2F%2Fevil%2Ecom%2F%3Fpayload%3D98174912%26mode%3Dcaptcha';
+  const r = extractInterestingStringsCore(`Visit ${outer} for details.`);
+  const urls = valuesOfType(r.findings, IOC.URL);
+  assert.ok(urls.includes(outer),
+    `expected outer URL in findings, got: ${JSON.stringify(urls)}`);
+  const inner = 'https://evil.com/?payload=98174912&mode=captcha';
+  assert.ok(urls.includes(inner),
+    `expected inner URL '${inner}' in findings, got: ${JSON.stringify(urls)}`);
+  const innerEntry = r.findings.find(
+    e => e.type === IOC.URL && e.url === inner
+  );
+  assert.ok(innerEntry, 'inner URL entry must exist');
+  assert.equal(innerEntry.severity, 'medium',
+    `inner URL severity expected 'medium', got ${innerEntry.severity}`);
+  assert.equal(innerEntry.note, 'Nested URL (query param)',
+    `inner URL note expected 'Nested URL (query param)', got ${JSON.stringify(innerEntry.note)}`);
+});
+
+test('ioc-extract: nested-URL recursion is capped at depth 1', () => {
+  // Pathological triple-nesting: ?a=https%3A%2F%2Fb.example%2F%3Fc%3Dhttps…
+  // The outer and the first inner must both surface; any third-level URL
+  // embedded inside the inner's query is NOT required to appear (cap).
+  // This test anchors the depth invariant so fuzz-driven deeper nesting
+  // can't blow up the hot loop.
+  const innerInner = 'https://c.example/p';
+  const inner = `https://b.example/?c=${encodeURIComponent(innerInner)}`;
+  const outer = `https://a.example/?a=${encodeURIComponent(inner)}`;
+  const r = extractInterestingStringsCore(`${outer}`);
+  const urls = valuesOfType(r.findings, IOC.URL);
+  assert.ok(urls.includes(outer), `outer URL missing: ${JSON.stringify(urls)}`);
+  assert.ok(urls.includes(inner), `first-level inner URL missing: ${JSON.stringify(urls)}`);
+  // Depth cap: innerInner MUST NOT be surfaced (depth 2 blocked).
+  assert.ok(!urls.includes(innerInner),
+    `depth cap breach — innerInner should not be surfaced: ${JSON.stringify(urls)}`);
+});
+
+test('ioc-extract: plain URL with no query does NOT trigger nested scan', () => {
+  // Fast-path anchor: a URL without a `?` should not run the decode helper.
+  const r = extractInterestingStringsCore('https://clean.example.com/path/to/thing');
+  const urls = valuesOfType(r.findings, IOC.URL);
+  assert.deepEqual(urls, ['https://clean.example.com/path/to/thing']);
+});
+
+test('ioc-extract: URL with non-URL query (%20 etc) does NOT trigger nested scan', () => {
+  // Fast-path anchor: `?q=some%20search` has percent-encoding but no
+  // URL-shape marker (`%3A%2F%2F` / `hxxp`), so the nested decode should
+  // short-circuit and only the outer URL lands.
+  const r = extractInterestingStringsCore(
+    'fetch https://example.com/search?q=loupe%20security for reference.'
+  );
+  const urls = valuesOfType(r.findings, IOC.URL);
+  assert.deepEqual(urls, ['https://example.com/search?q=loupe%20security']);
+});
+
+test('ioc-extract: core stays tldts-free — no IOC.DOMAIN emitted directly', () => {
+  // Invariant: the core runs in both main and worker bundles. Emitting
+  // IOC.DOMAIN from here would require tldts in the worker bundle, which
+  // is a deliberate non-goal. The host-side `_backfillUrlSiblings` hook
+  // covers domain-sibling derivation. Anchoring this here catches any
+  // refactor that accidentally pulls tldts / pushIOC into the core.
+  const r = extractInterestingStringsCore('https://example.com/a');
+  const domains = r.findings.filter(e => e.type === IOC.DOMAIN);
+  assert.equal(domains.length, 0,
+    `core must not emit IOC.DOMAIN directly; got: ${JSON.stringify(domains)}`);
+});
+

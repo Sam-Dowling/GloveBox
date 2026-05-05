@@ -907,74 +907,98 @@ function pushIOC(findings, opts) {
   findings[bucket].push(entry);
 
   // Auto-emit host-derived sibling IOCs when a URL lands and tldts is loaded.
-  // Three siblings can fire off a single URL push:
-  //   1. IOC.DOMAIN — registrable domain for non-IP hosts (always).
-  //   2. IOC.IP     — the raw host when the URL embeds an IP literal
-  //                   (e.g. http://192.0.2.1/a). Previously dropped on the
-  //                   floor; now surfaced so sidebar pivoting works.
-  //   3. IOC.PATTERN — punycode/IDN homoglyph detection (medium sev) and
-  //                   abuse-suffix detection (DDNS / tunnelling / free-host
-  //                   surfaces used as C2 backbones; info sev). Both are
-  //                   emitted only once per unique host so a renderer that
-  //                   pushes 30 URLs for one C2 host doesn't flood the IOC
-  //                   table with 30 duplicate punycode warnings.
+  // Delegates to `emitUrlSiblings` so the same derivation logic is reusable
+  // from the host-side post-merge backfill in `App._backfillUrlSiblings`,
+  // which re-surfaces siblings for URL rows produced by the worker-bundled
+  // `extractInterestingStringsCore` (which runs tldts-free by design).
   if (opts.type === IOC.URL && !opts._noDomainSibling) {
-    const h = _parseUrlHost(opts.value);
-    if (h) {
-      if (h.domain && !h.isIp) {
-        const existing = findings[bucket].some(
-          e => e && e.type === IOC.DOMAIN && e.url === h.domain
-        );
-        if (!existing) {
-          findings[bucket].push({
-            type: IOC.DOMAIN,
-            url: h.domain,
-            severity: IOC_CANONICAL_SEVERITY[IOC.DOMAIN],
-            note: 'derived from URL',
-          });
-        }
-      }
-      if (h.isIp && h.hostname) {
-        const existing = findings[bucket].some(
-          e => e && e.type === IOC.IP && e.url === h.hostname
-        );
-        if (!existing) {
-          findings[bucket].push({
-            type: IOC.IP,
-            url: h.hostname,
-            severity: 'medium',
-            note: 'URL uses raw IP literal (no domain validation)',
-          });
-        }
-      }
-      if (h.isPunycode) {
-        const patternNote = `Punycode/IDN host: ${h.hostname} — possible homoglyph`;
-        const existing = findings[bucket].some(
-          e => e && e.type === IOC.PATTERN && e.url === patternNote
-        );
-        if (!existing) {
-          findings[bucket].push({
-            type: IOC.PATTERN,
-            url: patternNote,
-            severity: 'medium',
-            _highlightText: h.hostname,
-          });
-        }
-      }
-      if (h.isAbuseSuffix && h.domain) {
-        const note = `Disposable/abuse-prone host: ${h.hostname} (suffix: ${h.publicSuffix})`;
-        const existing = findings[bucket].some(
-          e => e && e.type === IOC.PATTERN && e.url === note
-        );
-        if (!existing) {
-          findings[bucket].push({
-            type: IOC.PATTERN,
-            url: note,
-            severity: 'info',
-            _highlightText: h.hostname,
-          });
-        }
-      }
+    emitUrlSiblings(findings, opts.value, bucket);
+  }
+}
+
+/**
+ * Emit the `IOC.DOMAIN` / `IOC.IP` / `IOC.PATTERN` siblings that go with an
+ * `IOC.URL` row. Factored out of `pushIOC` so host-side code paths that
+ * receive URL rows produced by the worker-bundled IOC extractor (which has
+ * no `tldts` access) can retroactively derive the same siblings.
+ *
+ * Three siblings can fire off a single URL:
+ *   1. IOC.DOMAIN — registrable domain for non-IP hosts (always).
+ *   2. IOC.IP     — the raw host when the URL embeds an IP literal
+ *                   (e.g. http://192.0.2.1/a). Previously dropped on the
+ *                   floor; now surfaced so sidebar pivoting works.
+ *   3. IOC.PATTERN — punycode/IDN homoglyph detection (medium sev) and
+ *                   abuse-suffix detection (DDNS / tunnelling / free-host
+ *                   surfaces used as C2 backbones; info sev). Both are
+ *                   emitted only once per unique host so a renderer that
+ *                   pushes 30 URLs for one C2 host doesn't flood the IOC
+ *                   table with 30 duplicate punycode warnings.
+ *
+ * No-op when `tldts` isn't loaded (see `_parseUrlHost`), so the helper is
+ * safe to call unconditionally from the backfill path.
+ *
+ * @param {object} findings
+ * @param {string} url       URL string to derive siblings from.
+ * @param {string} [bucket]  'externalRefs' | 'interestingStrings' (default 'interestingStrings')
+ */
+function emitUrlSiblings(findings, url, bucket) {
+  if (!findings || !url) return;
+  const tgt = bucket || 'interestingStrings';
+  if (!Array.isArray(findings[tgt])) findings[tgt] = [];
+  const h = _parseUrlHost(url);
+  if (!h) return;
+  if (h.domain && !h.isIp) {
+    const existing = findings[tgt].some(
+      e => e && e.type === IOC.DOMAIN && e.url === h.domain
+    );
+    if (!existing) {
+      findings[tgt].push({
+        type: IOC.DOMAIN,
+        url: h.domain,
+        severity: IOC_CANONICAL_SEVERITY[IOC.DOMAIN],
+        note: 'derived from URL',
+      });
+    }
+  }
+  if (h.isIp && h.hostname) {
+    const existing = findings[tgt].some(
+      e => e && e.type === IOC.IP && e.url === h.hostname
+    );
+    if (!existing) {
+      findings[tgt].push({
+        type: IOC.IP,
+        url: h.hostname,
+        severity: 'medium',
+        note: 'URL uses raw IP literal (no domain validation)',
+      });
+    }
+  }
+  if (h.isPunycode) {
+    const patternNote = `Punycode/IDN host: ${h.hostname} — possible homoglyph`;
+    const existing = findings[tgt].some(
+      e => e && e.type === IOC.PATTERN && e.url === patternNote
+    );
+    if (!existing) {
+      findings[tgt].push({
+        type: IOC.PATTERN,
+        url: patternNote,
+        severity: 'medium',
+        _highlightText: h.hostname,
+      });
+    }
+  }
+  if (h.isAbuseSuffix && h.domain) {
+    const note = `Disposable/abuse-prone host: ${h.hostname} (suffix: ${h.publicSuffix})`;
+    const existing = findings[tgt].some(
+      e => e && e.type === IOC.PATTERN && e.url === note
+    );
+    if (!existing) {
+      findings[tgt].push({
+        type: IOC.PATTERN,
+        url: note,
+        severity: 'info',
+        _highlightText: h.hostname,
+      });
     }
   }
 }

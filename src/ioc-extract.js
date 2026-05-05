@@ -203,6 +203,74 @@ function extractInterestingStringsCore(text, opts) {
     return true;
   };
 
+  // Nested-URL-in-query decoder.
+  //
+  // ClickFix / lure-page redirectors commonly embed the real payload URL as
+  // a percent-encoded query parameter on a benign-looking host, e.g.
+  //   https://benign.example.com/a/b.php?a=https%3A%2F%2Fevil%2Ecom%2F%3Fpayload%3D…
+  // The outer URL alone would land as an info-severity IOC and the analyst
+  // loses the actual C2 host. This helper percent-decodes the query portion
+  // (host/path left alone — `UrlNormalizeUtil` already handles those) and
+  // runs the canonical URL regex over the decoded form. Any inner URL is
+  // handed back to `processUrl` (at medium severity, with a 'Nested URL
+  // (query param)' note) so SafeLink / normalise / refang / domain-sibling
+  // logic all apply uniformly.
+  //
+  // Bounds:
+  //   • depth is capped at 1. Deeper nesting (?a=?b=?c=) would require a
+  //     genuine redirector chain, which is rare and fuzz-risk territory.
+  //   • decoded query length capped at MAX_QUERY_DECODE_LEN to keep the
+  //     hot loop O(short-strings).
+  //   • fast-path short-circuit when the query is empty or `%`-free.
+  const MAX_NEST_DEPTH = 1;
+  const MAX_QUERY_DECODE_LEN = 8192;
+
+  const _decodePercentBestEffort = (s) => {
+    if (typeof s !== 'string' || s.indexOf('%') < 0) return s;
+    try {
+      return decodeURIComponent(s);
+    } catch (_) {
+      // Partial-decode fallback: decode each %XX token individually so a
+      // single malformed sequence doesn't suppress the rest.
+      return s.replace(/%([0-9A-Fa-f]{2})/g, (m, hex) => {
+        try { return decodeURIComponent('%' + hex); } catch (_e) { return m; }
+      });
+    }
+  };
+
+  const _scanNestedUrlsInQuery = (outerUrl, outerOffset, outerLength, depth) => {
+    if (depth >= MAX_NEST_DEPTH) return;
+    if (typeof outerUrl !== 'string' || outerUrl.length > MAX_QUERY_DECODE_LEN) return;
+    const qIdx = outerUrl.indexOf('?');
+    if (qIdx < 0) return;
+    // Fragment-trim: `?a=…#frag` — decode only up to the fragment.
+    const hashIdx = outerUrl.indexOf('#', qIdx + 1);
+    const rawQuery = hashIdx >= 0
+      ? outerUrl.slice(qIdx + 1, hashIdx)
+      : outerUrl.slice(qIdx + 1);
+    if (!rawQuery || rawQuery.length < 8) return;
+    // Fast-path: only bother decoding when the query actually contains the
+    // markers of a URL-in-URL (`%3A%2F%2F` in either case, or `hxxp`).
+    if (!/%3[Aa]|%2[Ff]|hxxps?/i.test(rawQuery)) return;
+    const decoded = _decodePercentBestEffort(rawQuery);
+    if (decoded === rawQuery) return;
+
+    // Run the canonical URL regex over the decoded query. `safeMatchAll`
+    // bounds wall-clock + match count so a pathological decoded payload
+    // can't monopolise the thread.
+    /* safeRegex: builtin */
+    const innerRe = /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g;
+    for (const im of safeMatchAll(innerRe, decoded, 200, 32).matches) {
+      const innerRaw = im[0];
+      if (!innerRaw || innerRaw.length < 10) continue;
+      // Hand the inner URL back through `processUrl` so SafeLinks,
+      // obfuscation-normalise, and the default push all apply. The
+      // nestedFrom argument tags the recursion so the inner emit carries
+      // the right provenance note and severity bump.
+      processUrl(innerRaw, 'medium', outerOffset, outerLength, depth + 1, outerUrl);
+    }
+  };
+
   // SafeLink-aware URL processor — first strip trailing punctuation, then DER
   // tail-junk via the shared `stripDerTail`.
   //
@@ -216,28 +284,47 @@ function extractInterestingStringsCore(text, opts) {
   // enrichment kicks in. The `processUrl` helper has no `findings` ref to
   // call `pushIOC` (which is host-only and reaches into `tldts`); manual
   // sibling emission keeps the worker bundle self-contained.
-  const processUrl = (rawUrl, baseSeverity, matchOffset, matchLength) => {
+  //
+  // `depth` tracks nested-URL recursion (see `_scanNestedUrlsInQuery`). A
+  // non-zero depth means we were invoked from a query-param decode; in that
+  // case the emitted primary row carries a 'Nested URL (query param)' note
+  // so the analyst can pivot back to the outer URL via `highlightText`.
+  // `nestedFrom` is the outer URL string (used as `highlightText` for the
+  // inner row so click-to-focus lands on the visible source).
+  const processUrl = (rawUrl, baseSeverity, matchOffset, matchLength, depth, nestedFrom) => {
     const url = stripDerTail((rawUrl || '').trim().replace(/[.,;:!?)\]>]+$/, ''));
     if (!url || url.length < 6) return;
+    depth = depth | 0;
+    const isNested = depth > 0;
+    const nestedNote = isNested ? 'Nested URL (query param)' : null;
+    const nestedHighlight = isNested ? (nestedFrom || url) : null;
 
     const unwrapped = _unwrapSafeLink(url);
     if (unwrapped) {
-      add(IOC.URL, url, 'info', `${unwrapped.provider} wrapper`, {
-        offset: matchOffset,
-        length: matchLength
-      });
-      add(IOC.URL, unwrapped.originalUrl, 'high', `Extracted from ${unwrapped.provider}`, {
-        offset: matchOffset,
-        length: matchLength,
-        highlightText: url
-      });
+      add(IOC.URL, url, isNested ? 'medium' : 'info',
+        isNested
+          ? `${unwrapped.provider} wrapper (nested in query)`
+          : `${unwrapped.provider} wrapper`,
+        {
+          offset: matchOffset,
+          length: matchLength,
+          highlightText: nestedHighlight,
+        });
+      add(IOC.URL, unwrapped.originalUrl, 'high',
+        `Extracted from ${unwrapped.provider}`,
+        {
+          offset: matchOffset,
+          length: matchLength,
+          highlightText: nestedHighlight || url,
+        });
       for (const email of unwrapped.emails) {
         add(IOC.EMAIL, email, 'medium', 'Extracted from SafeLinks', {
           offset: matchOffset,
           length: matchLength,
-          highlightText: url
+          highlightText: nestedHighlight || url,
         });
       }
+      _scanNestedUrlsInQuery(url, matchOffset, matchLength, depth);
       return;
     }
 
@@ -253,16 +340,19 @@ function extractInterestingStringsCore(text, opts) {
 
     if (norm && norm.changed && norm.normalized && norm.normalized !== url) {
       // Original first, at the captured severity, annotated as obfuscated.
-      add(IOC.URL, url, baseSeverity, 'Obfuscated URL', {
-        offset: matchOffset,
-        length: matchLength
-      });
+      add(IOC.URL, url, isNested ? 'medium' : baseSeverity,
+        isNested ? 'Nested URL (query param) — Obfuscated' : 'Obfuscated URL',
+        {
+          offset: matchOffset,
+          length: matchLength,
+          highlightText: nestedHighlight,
+        });
       const noteParts = norm.transformations && norm.transformations.length
         ? norm.transformations.join(', ') : 'obfuscation';
       add(IOC.URL, norm.normalized, 'medium', `Decoded from ${noteParts}`, {
         offset: matchOffset,
         length: matchLength,
-        highlightText: url
+        highlightText: nestedHighlight || url,
       });
       // Sibling IP for the decoded host. Manual emit because this core
       // doesn't reach into pushIOC / tldts (worker-bundle constraint).
@@ -270,16 +360,19 @@ function extractInterestingStringsCore(text, opts) {
         add(IOC.IP, norm.normalizedHost, 'medium', 'Decoded from obfuscated URL', {
           offset: matchOffset,
           length: matchLength,
-          highlightText: url
+          highlightText: nestedHighlight || url,
         });
       }
+      _scanNestedUrlsInQuery(norm.normalized, matchOffset, matchLength, depth);
       return;
     }
 
-    add(IOC.URL, url, baseSeverity, null, {
+    add(IOC.URL, url, isNested ? 'medium' : baseSeverity, nestedNote, {
       offset: matchOffset,
-      length: matchLength
+      length: matchLength,
+      highlightText: nestedHighlight,
     });
+    _scanNestedUrlsInQuery(url, matchOffset, matchLength, depth);
   };
 
   // Combined scan surface = main text + every VBA module source on a fresh line.

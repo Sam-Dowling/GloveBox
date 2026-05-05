@@ -266,6 +266,8 @@ Full skeleton details live in `CONTRIBUTING.md § Renderer Contract` (detection 
 - `1a0c330` — suppress low-confidence IP IOCs and DER-artifact URLs in binary strings.
 - `986ff7a` — preserve 4-digit DNS IPs (8.8.8.8 / 1.1.1.1) in version-string filter.
 - `6c0b024` — migrate plist / osascript / x509 IOC pushes to `pushIOC()`.
+- `<pending>` — `extractInterestingStringsCore` runs tldts-free (worker bundle constraint); host backfills IOC.DOMAIN / IOC.IP-literal / PATTERN siblings via `App._backfillUrlSiblings` at every merge site (sync shim + worker success + worker fallback). Factored shared helper `emitUrlSiblings` in `src/constants.js`.
+- `<pending>` — URL-in-query redirector pattern (`?a=https%3A%2F%2Fevil.com…`): `processUrl` percent-decodes the query and re-scans for inner URLs (depth capped at 1), emits them at medium severity with note `Nested URL (query param)`.
 
 ### Native-binary FPs
 - `02b1592` — trust-tier + `binaryClass` gating to cut native-binary FPs.
