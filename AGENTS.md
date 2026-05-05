@@ -256,6 +256,10 @@ Full skeleton details live in `CONTRIBUTING.md § Renderer Contract` (detection 
 - `<pending>` — PHP5 two-pass local-var taint: `$c = $_GET[...]; sink($c);` bounded to 2 KiB bridging distance; new `PHP Superglobal Taint (local-var flow)` technique.
 - `<pending>` — `PHP_Eval_Superglobal` YARA `$system_get` alternation now includes `SERVER|FILES` (parity with decoder); new wrapper-tolerant `$system_wrapped_sg` string; new rules `PHP_Webshell_Escapeshell_Taint`, `PHP_Superglobal_Taint_LocalVar`, `Bash_Live_Fetch_Pipe_Shell`, `JS_Aaencode_Kaomoji_Carrier`, `JS_Jjencode_Symbol_Carrier`, `Python_Socket_Revshell_Primitive`.
 - `<pending>` — Bash `/dev/tcp` revshell and `curl|sh` live-fetch branches now extract host:port / upstream URL into `deobfuscated` + emit family-specific `_patternIocs` instead of returning raw match string.
+- `<pending>` — PS Get-Command wildcard resolver: `&(gcm i*x)` / `.(Get-Command i?rest*)` globs match against curated `KNOWN_PS_CMDLETS_SENSITIVE` table; emits resolved cmdlet(s) + critical-severity `_patternIocs` when glob hits an execution sink; mixed-severity matches drop to avoid tier-inflation FPs.
+- `<pending>` — PS comment injection: `I<##>nv<##>oke-Expression` strips `<#...#>` blocks before matching SENSITIVE_CMD_KEYWORDS; bounded comment body ≤ 256 chars, ≤ 8 inserts/candidate; companion `PS_Comment_Injection_Obfuscation` YARA rule (parity with `JS_Comment_Injection_Obfuscation`).
+- `<pending>` — PS quote interruption: `i''e''x` / `p""o""w""e""r""s""h""e""l""l` single-token form strips adjacent empty-quote pairs inside identifier runs; gated on post-strip keyword hit; companion `PS_Quote_Interruption_Obfuscation` YARA rule.
+- `<pending>` — ps-mini `[bool]` typecast + comparison evaluator: `_psResolveBoolValue` + `_psFlattenIfBlocks` pre-pass flatten truthy `if (<bool-expr>) { body }` blocks so body-scoped assignments become visible to the fixed-point resolver; unresolvable guards leave the block intact (conservative); negation chain bounded at 64.
 
 ### IOC plumbing
 - `dfc594c` — replace bespoke type literals with `IOC.*` constants.

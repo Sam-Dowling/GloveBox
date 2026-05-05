@@ -832,6 +832,78 @@ rule PS_Replace_Chain_Obfuscation
         any of them
 }
 
+rule PS_GetCommand_Wildcard_Obfuscation
+{
+    meta:
+        description = "PowerShell uses Get-Command (or gcm alias) with wildcards to resolve sensitive cmdlets by glob, bypassing literal-name signatures"
+        severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
+        applies_to  = "ps1, plaintext, decoded-payload"
+    strings:
+        $gcm_iex       = /[&.]\s*\(\s*gcm\s+[iI][*?]{1,8}[xX][*?]{0,8}\s*\)/ nocase
+        $gcm_invoke    = /[&.]\s*\(\s*(?:gcm|Get-Command)\s+[iI][*?]{2,32}[eE]-[rR][eEsS]/ nocase
+        $gcm_new_obj   = /[&.]\s*\(\s*(?:gcm|Get-Command)\s+[nN][*?]{2,32}-[oO][*?]{0,16}\s*\)/ nocase
+        $gcm_start_ps  = /[&.]\s*\(\s*(?:gcm|Get-Command)\s+[sS][*?]{2,32}-[pP][rR][oO][*?]{0,16}\s*\)/ nocase
+        $gcm_generic   = /[&.]\s*\(\s*(?:gcm|Get-Command)\s+[A-Za-z][A-Za-z0-9\-]{0,16}[*?][A-Za-z0-9\-*?]{2,48}\s*\)/ nocase
+        $kw_iex        = "iex" nocase
+        $kw_invoke     = "invoke" nocase
+        $kw_powershell = "powershell" nocase
+        $kw_download   = "downloadstring" nocase
+        $kw_rest       = "invoke-rest" nocase
+        $kw_webrequest = "invoke-web" nocase
+
+    condition:
+        ($gcm_iex or $gcm_invoke or $gcm_new_obj or $gcm_start_ps)
+        or ($gcm_generic and any of ($kw_*))
+}
+
+rule PS_Comment_Injection_Obfuscation
+{
+    meta:
+        description = "PowerShell embeds block comments inside identifier characters (e.g. I<##>nv<##>oke-Expression) to evade literal-name signatures"
+        severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027"
+        applies_to  = "ps1, plaintext, decoded-payload"
+    strings:
+        $ci_invoke     = /[iI]<#[^#]{0,64}#>[nN][vV]/ nocase
+        $ci_invoke2    = /[iI][nN][vV][oO][kK][eE]<#[^#]{0,64}#>-/ nocase
+        $ci_iex        = /[iI][eE][xX]<#[^#]{0,64}#>/ nocase
+        $ci_newobj     = /[nN][eE][wW]<#[^#]{0,64}#>-[oO][bB]/ nocase
+        $ci_start_proc = /[sS][tT][aA][rR][tT]<#[^#]{0,64}#>-[pP][rR][oO]/ nocase
+        $ci_power      = /[pP][oO][wW][eE][rR]<#[^#]{0,64}#>[sS][hH][eE][lL][lL]/ nocase
+        $ci_generic    = /[A-Za-z]<#[^#]{0,64}#>[A-Za-z][A-Za-z0-9_\-]{1,8}<#[^#]{0,64}#>[A-Za-z]/ nocase
+        $kw_iex        = "iex" nocase
+        $kw_invoke     = "invoke" nocase
+        $kw_power      = "powershell" nocase
+        $kw_newobj     = "new-object" nocase
+
+    condition:
+        any of ($ci_invoke, $ci_invoke2, $ci_iex, $ci_newobj, $ci_start_proc, $ci_power)
+        or ($ci_generic and any of ($kw_*))
+}
+
+rule PS_Quote_Interruption_Obfuscation
+{
+    meta:
+        description = "PowerShell wedges empty string pairs between identifier letters (e.g. i''e''x, p\"\"o\"\"w\"\"e\"\"r\"\"s\"\"h) so signature strings miss the cmdlet name"
+        severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
+        applies_to  = "ps1, plaintext, decoded-payload"
+    strings:
+        $qi_iex_sq   = /[iI](?:'')+[eE](?:'')+[xX]/ nocase
+        $qi_iex_dq   = /[iI](?:""){1,4}[eE](?:""){1,4}[xX]/ nocase
+        $qi_invoke   = /[iI](?:''|""){1,4}[nN](?:''|""){1,4}[vV](?:''|""){1,4}[oO]/ nocase
+        $qi_power    = /[pP](?:''|""){1,4}[oO](?:''|""){1,4}[wW](?:''|""){1,4}[eE]/ nocase
+        $qi_certutil = /[cC](?:''|""){1,4}[eE](?:''|""){1,4}[rR](?:''|""){1,4}[tT](?:''|""){1,4}[uU]/ nocase
+        $qi_rundll   = /[rR](?:''|""){1,4}[uU](?:''|""){1,4}[nN](?:''|""){1,4}[dD](?:''|""){1,4}[lL]/ nocase
+
+    condition:
+        any of them
+}
+
 rule VBScript_Chr_Concatenation
 {
     meta:

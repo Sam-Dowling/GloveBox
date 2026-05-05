@@ -124,6 +124,46 @@ Object.assign(EncodedContentDetector.prototype, {
       return empty;
     }
 
+    // ── Flatten `if (<bool-expr>) { <body> }` guarded blocks. ──
+    //
+    // When the guard resolves truthy under `_psResolveBoolValue`, splice
+    // the body's statements into the sequence so assignments and
+    // invocations inside the gate feed the rest of the pipeline as if
+    // they were top-level. When the guard resolves falsy, drop the
+    // body. Unresolvable guards leave the statement intact (best-effort
+    // conservative behaviour). Nested `if` blocks are handled by the
+    // recursion depth cap `_PS_IF_MAX_DEPTH`.
+    //
+    // We seed a cheap "bool scratch" from top-level `$v = [bool]<expr>` /
+    // `$v = (<int> -eq <int>)` / `$v = $true` / `$v = $false` / `$v =
+    // ![bool]…` assignments BEFORE flattening so that an earlier
+    // assignment like `$g = [bool]1254; if ($g) { … }` resolves its
+    // guard correctly. The scratch is intentionally NOT the real var
+    // table — it only stores boolean-resolvable values and is consulted
+    // exclusively by `_psResolveBoolValue` via the variable-reference
+    // tail of its resolver.
+    const _PS_IF_MAX_DEPTH = 8;
+    const boolScratch = new Map();
+    for (const rawStmt of stmts) {
+      const st = (typeof rawStmt === 'string') ? rawStmt.trim() : '';
+      if (!st) continue;
+      const bm = /^\$\{?([A-Za-z_][\w]*)\}?\s*=\s*([\s\S]+)$/.exec(st);
+      if (!bm) continue;
+      const name = bm[1];
+      const rhs  = bm[2].trim();
+      const bv = this._psResolveBoolValue(rhs, new Map(), new Map());
+      if (bv === true || bv === false) {
+        // Store in the vars-map shape expected by _psResolveVarName.
+        // A truthy bool becomes the literal string 'true' (non-empty,
+        // so _psResolveBoolValue's `$var` tail treats it as true); a
+        // falsy bool becomes the empty string (so the `$var` tail
+        // treats it as false).
+        boolScratch.set(name, { kind: 'string', value: bv ? 'true' : '' });
+      }
+    }
+    stmts = this._psFlattenIfBlocks(stmts, boolScratch, new Map(), _PS_IF_MAX_DEPTH);
+
+
     const stmtCap = 200;
     const rhsCap  = 400;
     let pending = [];
@@ -474,6 +514,195 @@ Object.assign(EncodedContentDetector.prototype, {
     }
     if (start < text.length) out.push(text.substring(start));
     return out;
+  },
+
+  /**
+   * Flatten `if (<bool>) { body } [elseif (<bool>) { body }]* [else { body }]`
+   * blocks inside a statement list. Called by `_buildPsSymbolTable` as
+   * a pre-pass so body-scoped assignments become visible to the
+   * fixed-point resolver.
+   *
+   * Only guards that resolve via `_psResolveBoolValue` under a *seeded*
+   * (possibly empty) var table are collapsed. Other `if` statements are
+   * left in place — the subsequent resolver runs will ignore them, but
+   * their presence is preserved so the surrounding source text is not
+   * mutated in unexpected ways.
+   *
+   * Recursion bound: `maxDepth` counts the nesting level of `if` blocks
+   * we will flatten. A deeply nested adversarial input stops flattening
+   * at the bound and leaves the inner `if` statements intact.
+   *
+   * Output guard: total statement count is capped at 4 × input length
+   * so a pathological `if (true) { if (true) { … } }` cannot amp the
+   * statement stream beyond the existing 1000-stmt walker guard.
+   */
+  _psFlattenIfBlocks(stmts, vars, envVars, maxDepth) {
+    if (!Array.isArray(stmts) || stmts.length === 0 || maxDepth <= 0) {
+      return stmts;
+    }
+    const out = [];
+    const cap = Math.max(stmts.length * 4, 1000);
+    for (let i = 0; i < stmts.length; i++) {
+      const stmt = stmts[i];
+      if (out.length >= cap) {
+        out.push(stmt);
+        continue;
+      }
+      const trimmed = (typeof stmt === 'string') ? stmt.trim() : '';
+      if (!trimmed.toLowerCase().startsWith('if')) {
+        out.push(stmt);
+        continue;
+      }
+      // Parse: `if (<guard>) { <body> } [ elseif (…) { … } ]* [ else { … } ]`
+      // The statement is captured whole by `_psSplitStatements` because
+      // both `(` and `{` increment depth. We walk branches left-to-
+      // right, evaluate each guard, and keep the FIRST truthy body.
+      const parsed = this._psParseIfChain(trimmed);
+      if (!parsed) {
+        out.push(stmt);
+        continue;
+      }
+      let taken = null;
+      let resolvedAny = false;
+      for (const branch of parsed.branches) {
+        if (branch.guard === null) {
+          // else — always taken if we reach it.
+          taken = branch.body;
+          resolvedAny = true;
+          break;
+        }
+        const gv = this._psResolveBoolValue(branch.guard, vars, envVars);
+        if (gv === null) {
+          // Unresolvable guard — we cannot safely flatten; preserve
+          // the original statement and move on. Once an unresolvable
+          // branch is hit, we stop trying (the truthiness of later
+          // branches is conditional on this one being false).
+          resolvedAny = false;
+          break;
+        }
+        resolvedAny = true;
+        if (gv === true) {
+          taken = branch.body;
+          break;
+        }
+      }
+      if (!resolvedAny) {
+        out.push(stmt);
+        continue;
+      }
+      if (taken === null) {
+        // All guards evaluated false — drop the whole `if` chain.
+        continue;
+      }
+      // Recurse: flatten any nested `if` in the chosen body.
+      const bodyStmts = this._psSplitStatements(taken);
+      const flat = this._psFlattenIfBlocks(bodyStmts, vars, envVars, maxDepth - 1);
+      for (const s of flat) out.push(s);
+    }
+    return out;
+  },
+
+  /**
+   * Parse an `if / elseif / else` chain. Returns
+   * `{ branches: [{ guard: string|null, body: string }, …] }` on
+   * success, or `null` when the shape isn't recognisable.
+   *
+   * We accept guard expressions wrapped in balanced parentheses and
+   * bodies wrapped in balanced braces. Whitespace is flexible;
+   * keywords are case-insensitive (PowerShell).
+   */
+  _psParseIfChain(src) {
+    if (typeof src !== 'string') return null;
+    const s = src;
+    const branches = [];
+    let i = 0;
+    const _skipWs = () => { while (i < s.length && /\s/.test(s[i])) i++; };
+    // Leading `if` keyword.
+    _skipWs();
+    if (!/^if\b/i.test(s.slice(i))) return null;
+    i += 2;
+    while (i < s.length) {
+      _skipWs();
+      // Guard.
+      if (s[i] !== '(') return null;
+      const gClose = this._psFindMatchingParen(s, i);
+      if (gClose < 0) return null;
+      const guard = s.slice(i + 1, gClose).trim();
+      i = gClose + 1;
+      _skipWs();
+      // Body.
+      if (s[i] !== '{') return null;
+      const bClose = this._psFindMatchingBrace(s, i);
+      if (bClose < 0) return null;
+      const body = s.slice(i + 1, bClose);
+      i = bClose + 1;
+      branches.push({ guard, body });
+      _skipWs();
+      // Look for `elseif` / `else`.
+      if (/^elseif\b/i.test(s.slice(i))) {
+        i += 6;
+        continue;
+      }
+      if (/^else\b/i.test(s.slice(i))) {
+        i += 4;
+        _skipWs();
+        if (s[i] !== '{') return null;
+        const eClose = this._psFindMatchingBrace(s, i);
+        if (eClose < 0) return null;
+        const body2 = s.slice(i + 1, eClose);
+        i = eClose + 1;
+        branches.push({ guard: null, body: body2 });
+      }
+      break;
+    }
+    if (branches.length === 0) return null;
+    return { branches };
+  },
+
+  /**
+   * Forward brace matcher. Mirrors `_psFindMatchingParen` for `{` / `}`
+   * so `if (…) { body { nested } }` bodies are captured whole.
+   */
+  _psFindMatchingBrace(text, openIdx) {
+    let depth = 1;
+    let inSingle = false, inDouble = false;
+    let hereKind = null;
+    const cap = Math.min(text.length, openIdx + 4096);
+    for (let i = openIdx + 1; i < cap; i++) {
+      const c = text[i];
+      if (hereKind !== null) {
+        if (c === '\n') {
+          let j = i + 1;
+          while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j++;
+          if (j + 1 < text.length && text[j] === hereKind && text[j + 1] === '@') {
+            i = j + 1;
+            hereKind = null;
+          }
+        }
+        continue;
+      }
+      if (inSingle) { if (c === "'") inSingle = false; continue; }
+      if (inDouble) {
+        if (c === '"') inDouble = false;
+        else if (c === '`' && i + 1 < cap) i++;
+        continue;
+      }
+      if (c === '@' && i + 2 < cap
+          && (text[i + 1] === '"' || text[i + 1] === "'")
+          && (text[i + 2] === '\n' || text[i + 2] === '\r')) {
+        hereKind = text[i + 1];
+        i += 2;
+        continue;
+      }
+      if (c === "'") { inSingle = true; continue; }
+      if (c === '"') { inDouble = true; continue; }
+      if (c === '{') { depth++; continue; }
+      if (c === '}') {
+        depth--;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
   },
 
   /**
@@ -1379,6 +1608,141 @@ Object.assign(EncodedContentDetector.prototype, {
     return null;
   },
 
+
+  /**
+   * Resolve a PowerShell expression to a JavaScript boolean. Honours the
+   * subset of PS truthiness semantics that matters for obfuscated-payload
+   * gating:
+   *
+   *   [bool]N             — 0 → false, non-zero → true
+   *   [bool]$null         — false
+   *   [bool]''  / ""      — false
+   *   [bool]'non-empty'   — true
+   *   [bool][T]           — true (type reference is always truthy)
+   *   [bool]@(...)        — true when the array has ≥ 1 truthy element
+   *   !<expr>             — inverted; chainable (`!!!!<expr>`)
+   *   N -eq M / -ne M / -gt M / -lt M / -ge M / -le M   — integer compare
+   *
+   * The depth of nested `!` prefixes is bounded to `_PS_BOOL_MAX_NEGATIONS`
+   * to prevent pathological inputs `!!!!…!x` from DoS-ing the evaluator.
+   *
+   * Returns `true` / `false` on success, `null` when the shape isn't one
+   * we model.
+   */
+  _psResolveBoolValue(src, vars, envVars) {
+    if (typeof src !== 'string') return null;
+    src = src.trim();
+    if (!src || src.length > 400) return null;
+
+    // ── Negation chain: `!`, `!!`, … up to a bounded depth. ──
+    const _PS_BOOL_MAX_NEGATIONS = 64;
+    let negCount = 0;
+    while (src[0] === '!' && negCount < _PS_BOOL_MAX_NEGATIONS) {
+      src = src.slice(1).trim();
+      negCount++;
+    }
+    if (!src) return null;
+    const _invert = (v) => (v === null ? null : !v);
+    const _maybeInvert = (v) => ((negCount % 2 === 1) ? _invert(v) : v);
+
+    // Parenthesised sub-expression — recurse on the interior.
+    if (src.startsWith('(') && src.endsWith(')')) {
+      const close = this._psFindMatchingParen(src, 0);
+      if (close === src.length - 1) {
+        return _maybeInvert(this._psResolveBoolValue(src.slice(1, -1), vars, envVars));
+      }
+    }
+
+    // ── `[bool] <primary>` cast ──
+    const boolCastM = /^\[\s*(?:System\.)?[bB]ool(?:ean)?\s*\]\s*([\s\S]+)$/.exec(src);
+    if (boolCastM) {
+      const inner = boolCastM[1].trim();
+      // `[bool][T]` — the inner is itself a type reference. Always true.
+      if (/^\[[^\]]{1,64}\]$/.test(inner)) return _maybeInvert(true);
+      // `[bool]$null` → false (special case, must precede the generic
+      // primary resolver because `$null` may not be in the var table).
+      if (/^\$null$/i.test(inner)) return _maybeInvert(false);
+      // `[bool]''` / `[bool]""` — empty literal → false.
+      if (inner === "''" || inner === '""') return _maybeInvert(false);
+      // `[bool]@(...)` — array truthiness: truthy iff ≥1 element and
+      // that element is itself truthy under PS rules. We treat any
+      // non-empty array as truthy (matches PS's real semantics for
+      // everything except a single-element `@(0)` / `@($null)`, which
+      // we also detect).
+      if (inner.startsWith('@(')) {
+        const close = this._psFindMatchingParen(inner, 1);
+        if (close === inner.length - 1) {
+          const body = inner.slice(2, -1).trim();
+          if (!body) return _maybeInvert(false);
+          const parts = body.split(',').map(s => s.trim()).filter(Boolean);
+          if (parts.length === 0) return _maybeInvert(false);
+          if (parts.length === 1) {
+            // Single-element array: collapses to the element's truthiness.
+            return _maybeInvert(this._psResolveBoolValue(`[bool]${parts[0]}`, vars, envVars));
+          }
+          return _maybeInvert(true);
+        }
+      }
+      // Numeric forms — 0 → false, anything else → true.
+      const n = this._psResolveIntValue(inner, vars, envVars);
+      if (n !== null) return _maybeInvert(n !== 0);
+      // String literal — empty → false, non-empty → true.
+      const s = this._psResolvePrimary(inner, vars, envVars);
+      if (typeof s === 'string') return _maybeInvert(s.length > 0);
+      if (Array.isArray(s)) return _maybeInvert(s.length > 0);
+      // Unresolvable primary (e.g. `[bool]$undef`) — treat as `null`
+      // (unresolvable) which maps to false in PS semantics.
+      return _maybeInvert(false);
+    }
+
+    // ── Integer comparison: N -eq M, N -ne M, etc. ──
+    const cmpM = /^([\s\S]+?)\s+-(eq|ne|gt|lt|ge|le)\s+([\s\S]+)$/i.exec(src);
+    if (cmpM) {
+      const lhs = this._psResolveIntValue(cmpM[1].trim(), vars, envVars);
+      const rhs = this._psResolveIntValue(cmpM[3].trim(), vars, envVars);
+      if (lhs === null || rhs === null) {
+        // String comparison fallback — only -eq / -ne are meaningful
+        // without locale-aware collation.
+        const op = cmpM[2].toLowerCase();
+        if (op === 'eq' || op === 'ne') {
+          const ls = this._psResolvePrimary(cmpM[1].trim(), vars, envVars);
+          const rs = this._psResolvePrimary(cmpM[3].trim(), vars, envVars);
+          if (typeof ls === 'string' && typeof rs === 'string') {
+            const eq = ls === rs;
+            return _maybeInvert(op === 'eq' ? eq : !eq);
+          }
+        }
+        return null;
+      }
+      const op = cmpM[2].toLowerCase();
+      let result;
+      if (op === 'eq') result = (lhs === rhs);
+      else if (op === 'ne') result = (lhs !== rhs);
+      else if (op === 'gt') result = (lhs > rhs);
+      else if (op === 'lt') result = (lhs < rhs);
+      else if (op === 'ge') result = (lhs >= rhs);
+      else result = (lhs <= rhs);
+      return _maybeInvert(result);
+    }
+
+    // ── Bare `$true` / `$false` literal (case-insensitive). ──
+    if (/^\$true$/i.test(src)) return _maybeInvert(true);
+    if (/^\$false$/i.test(src)) return _maybeInvert(false);
+
+    // ── `$var` variable reference — consult the symbol table and
+    //    re-dispatch on the stored value. ──
+    if (src[0] === '$') {
+      const v = this._psResolvePrimary(src, vars, envVars);
+      if (typeof v === 'string') return _maybeInvert(v.length > 0);
+      if (Array.isArray(v)) return _maybeInvert(v.length > 0);
+      if (typeof v === 'boolean') return _maybeInvert(v);
+      // Missing var in table — unresolvable.
+      return null;
+    }
+
+    // No model for this shape.
+    return null;
+  },
 
   /**
    * Resolve an argument list — everything from the close-paren of `&(…)`

@@ -216,3 +216,75 @@ test('ps-mini: fixed-point resolution stays within the 32x amp budget', () => {
     }
   }
 });
+
+// ── 8. [bool] typecast gate & `if` flattening ───────────────────────────────
+
+test('ps-mini [bool] gate: truthy guard ([bool]1254) flattens body', () => {
+  const text = "$g = [bool]1254\nif ($g) { $c = 'Invoke-Expression'; & $c 'whoami' }";
+  const hits = psVar(d._findPsVariableResolutionCandidates(text, {}));
+  assert.ok(hits.length >= 1, `expected a flattened candidate; got ${hits.length}`);
+  assert.match(hits[0].deobfuscated, /Invoke-Expression/);
+});
+
+test('ps-mini [bool] gate: falsy guard ([bool]0) drops body', () => {
+  const text = "$g = [bool]0\nif ($g) { $c = 'Invoke-Expression'; & $c 'whoami' }";
+  const hits = psVar(d._findPsVariableResolutionCandidates(text, {}));
+  assert.equal(hits.length, 0);
+});
+
+test('ps-mini [bool] gate: chained negation (![bool]$null) evaluates truthy', () => {
+  const text = "$g = ![bool]$null\nif ($g) { $c = 'IEX'; & $c }";
+  const hits = psVar(d._findPsVariableResolutionCandidates(text, {}));
+  assert.ok(hits.length >= 1);
+  assert.match(hits[0].deobfuscated, /IEX/);
+});
+
+test('ps-mini [bool] gate: comparison (N -eq N) truthy; (N -ne N) falsy', () => {
+  const truthy = "$g = (9999 -eq 9999)\nif ($g) { $c = 'Invoke-Expression'; & $c }";
+  const falsy  = "$g = (1 -ne 1)\nif ($g) { $c = 'Invoke-Expression'; & $c }";
+  assert.ok(psVar(d._findPsVariableResolutionCandidates(truthy, {})).length >= 1);
+  assert.equal(psVar(d._findPsVariableResolutionCandidates(falsy, {})).length, 0);
+});
+
+test('ps-mini [bool] gate: else branch taken when guard falsy', () => {
+  const text = "$g = [bool]0\nif ($g) { $x = 'Foo' } else { $c = 'IEX'; & $c }";
+  const hits = psVar(d._findPsVariableResolutionCandidates(text, {}));
+  assert.ok(hits.length >= 1);
+  assert.match(hits[0].deobfuscated, /IEX/);
+});
+
+test('ps-mini [bool] gate: elseif branch takes first truthy', () => {
+  const text = "$g = [bool]0\nif ($g) { $x = 'A' } elseif ([bool]1) { $c = 'Invoke-Expression'; & $c }";
+  const hits = psVar(d._findPsVariableResolutionCandidates(text, {}));
+  assert.ok(hits.length >= 1);
+  assert.match(hits[0].deobfuscated, /Invoke-Expression/);
+});
+
+test('ps-mini [bool] gate: unresolvable guard leaves if-block intact', () => {
+  // `$unknown` is never assigned in the source, so the guard is
+  // unresolvable. The flattener must NOT drop the body silently —
+  // it preserves the original `if` statement and the body never
+  // becomes visible. The resolver consequently sees zero candidates
+  // (the `& $c` never escapes the unresolved gate).
+  const text = "if ($unknown) { $c = 'Invoke-Expression'; & $c }";
+  const hits = psVar(d._findPsVariableResolutionCandidates(text, {}));
+  assert.equal(hits.length, 0);
+});
+
+test('ps-mini [bool] gate: single-element array [bool]@(0) evaluates falsy', () => {
+  const text = "$g = [bool]@(0)\nif ($g) { $c = 'IEX'; & $c }";
+  const hits = psVar(d._findPsVariableResolutionCandidates(text, {}));
+  assert.equal(hits.length, 0);
+});
+
+test('ps-mini [bool] gate: non-empty string literal evaluates truthy', () => {
+  const text = "$g = [bool]'nonempty'\nif ($g) { $c = 'Invoke-Expression'; & $c }";
+  const hits = psVar(d._findPsVariableResolutionCandidates(text, {}));
+  assert.ok(hits.length >= 1);
+});
+
+test('ps-mini [bool] gate: empty string [bool]\'\' evaluates falsy', () => {
+  const text = "$g = [bool]''\nif ($g) { $c = 'IEX'; & $c }";
+  const hits = psVar(d._findPsVariableResolutionCandidates(text, {}));
+  assert.equal(hits.length, 0);
+});
