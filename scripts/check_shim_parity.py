@@ -40,11 +40,26 @@ MIRRORS = [
             "_REDOS_NESTED_QUANT_RE",
             "_REDOS_DUPLICATE_GROUP_RE",
             "_KNOWN_EXT_RE",
+            # _UNRESOLVED_SENTINEL_RE — ⟨unresolved:…⟩ / ⟨VAR:~…⟩ sentinel
+            # gate regex. Consumed by `hasUnresolvedSentinel` (below) which
+            # is called from three files in `_DETECTOR_FILES`
+            # (`ioc-extract.js`, `applescript-obfuscation.js`,
+            # `cmd-obfuscation.js`). Must stay byte-equivalent with
+            # `src/constants.js` or the worker-side sentinel filter behaves
+            # differently from the host-side one.
+            "_UNRESOLVED_SENTINEL_RE",
         ],
         "fns": [
             "looksRedosProne",
             "safeRegex",
             "_trimPathExtGarbage",
+            # hasUnresolvedSentinel — IOC row-level sentinel gate. Missing
+            # from the shim caused a silent encoded-worker ReferenceError
+            # that short-circuited the entire secondary scan (the whole
+            # Deobfuscation sidebar section went blank, only a
+            # `finder-budget — hasUnresolvedSentinel is not defined` stub
+            # remained). Mirror + this parity entry prevent regression.
+            "hasUnresolvedSentinel",
         ],
         # Object-literal table parity: every IOC.* key emitted by the
         # main-thread bundle must also exist in the worker shim, with
@@ -85,12 +100,22 @@ MIRRORS = [
         "path": ROOT / "src" / "workers" / "ioc-extract-worker-shim.js",
         "consts": [
             "_KNOWN_EXT_RE",
+            # _UNRESOLVED_SENTINEL_RE — ⟨unresolved:…⟩ / ⟨VAR:~…⟩ sentinel
+            # gate regex. Consumed by `hasUnresolvedSentinel` (below),
+            # called from `extractInterestingStringsCore::add()`
+            # (src/ioc-extract.js) which runs in this worker bundle.
+            # Missing → ReferenceError → silent IOC-extract failure.
+            "_UNRESOLVED_SENTINEL_RE",
         ],
         "fns": [
             "looksLikeIpVersionString",
             "stripDerTail",
             "_trimPathExtGarbage",
             "safeMatchAll",
+            # hasUnresolvedSentinel — IOC row-level sentinel gate.
+            # Mirror parity with `src/constants.js` keeps the
+            # worker-side filter behaviour identical to the host.
+            "hasUnresolvedSentinel",
         ],
         "ioc_table": True,
     },

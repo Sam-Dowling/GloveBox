@@ -24,6 +24,17 @@ Object.assign(EncodedContentDetector.prototype, {
     const add = (type, val, sev, note) => {
       val = (val || '').trim().replace(/[.,;:!?)\]>]+$/, '');
       if (!val || val.length < 4 || val.length > 400 || seen.has(val)) return;
+      // ── Unresolved-sentinel rejection ─────────────────────────────────
+      // Partially-resolved decoder output embeds `⟨unresolved:NAME⟩` /
+      // `⟨VAR:~start,length⟩` / `⟨!cleaned!⟩` markers (U+27E8 / U+27E9).
+      // These are load-bearing in the Deobfuscation viewer but must never
+      // reach the IOC sidebar — `https://⟨unresolved:__iunw9unf⟩/` is not
+      // a real pivot. `hasUnresolvedSentinel` is the canonical gate; see
+      // `src/constants.js` for the rationale. Dropping the whole row
+      // (rather than stripping the sentinel) preserves the "partially
+      // unknown" signal — the Deobfuscation card still shows the full
+      // partial cleartext.
+      if (hasUnresolvedSentinel(val)) return;
       seen.add(val);
       const entry = { type, url: val, severity: sev };
       if (note) entry.note = note;
@@ -39,7 +50,10 @@ Object.assign(EncodedContentDetector.prototype, {
     //     to a valid dotted-quad (legitimate hex IP — not a hex-decode
     //     artefact);
     //   • bracketed IPv6 form must be properly closed.
-    for (const m of text.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g)) {
+    //   • `\u27E8` / `\u27E9` are excluded so unresolved-ref sentinels
+    //     terminate the match rather than being captured into the URL
+    //     (belt-and-braces — `add()` also rejects sentinel-bearing values).
+    for (const m of text.matchAll(/https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F\u27E8\u27E9]{6,}/g)) {
       const url = (m[0] || '').trim().replace(/[.,;:!?)\]>]+$/, '');
       // Extract hostname portion for sanity check.
       const hostMatch = url.match(/^https?:\/\/([^\/\s?#]+)/i);

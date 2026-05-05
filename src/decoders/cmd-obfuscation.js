@@ -2392,6 +2392,12 @@ Object.assign(EncodedContentDetector.prototype, {
     // dangerousPatterns scoring above.
     if (Array.isArray(candidate._patternIocs)) {
       for (const p of candidate._patternIocs) {
+        // Defensive sentinel gate — `_patternIocs` labels sometimes
+        // interpolate resolved values (e.g. `Get-Command wildcard —
+        // "<glob>" resolves to <resolved>`). Drop labels that leaked a
+        // `⟨unresolved:…⟩` / `⟨VAR:~start,len⟩` sentinel rather than
+        // surface a non-pivotable string in the sidebar.
+        if (p && hasUnresolvedSentinel(p.url)) continue;
         iocs.push({
           type: IOC.PATTERN,
           url: p.url,

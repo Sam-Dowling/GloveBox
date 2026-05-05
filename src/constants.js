@@ -823,6 +823,40 @@ function lfNormalize(s) {
   return typeof s === 'string' ? s.replace(/\r\n?/g, '\n') : '';
 }
 
+// ── Unresolved-reference sentinel helpers ─────────────────────────────────────
+// Several obfuscation decoders (applescript-obfuscation.js, cmd-obfuscation.js,
+// bash-obfuscation.js) emit partially-resolved cleartext where unknown
+// operands are replaced by a placeholder wrapped in U+27E8 / U+27E9
+// (mathematical angle brackets), e.g.:
+//
+//   • AppleScript:   `https://⟨unresolved:_Runtime⟩/path`
+//   • CMD / batch:   `⟨VAR:~0,3⟩`, `⟨!cleaned!⟩`
+//   • Bash:          `powerwer⟨…⟩`
+//
+// These sentinels are load-bearing in the Deobfuscation / Reassembly viewer —
+// they communicate "static prefix known, runtime tail unknown" to analysts.
+// They MUST NOT, however, leak into IOC extraction: a URL like
+// `https://⟨unresolved:__iunw9unf⟩/` pushed as IOC.URL pollutes the sidebar,
+// misleads STIX/MISP exports, and has no operational value (the unknown span
+// is, by definition, not fetch-reachable).
+//
+// `hasUnresolvedSentinel(s)` is the canonical gate. Call it before any
+// IOC.URL / DOMAIN / IP / FILE_PATH / EMAIL / PATTERN-label emission whose
+// string is derived from decoder-resolved output. The bracket-character-class
+// approach (excluding U+27E8/9 from URL-capture regexes) is a useful first
+// line of defence but isn't sufficient on its own — future sentinel shapes
+// that use other delimiters would bypass it. This helper is the belt.
+//
+// The inner character class forbids nested brackets so a malformed / runaway
+// sentinel can't backtrack across the whole string; the {0,256} bound caps
+// match length at the sentinel payload budget used by the decoders.
+/* safeRegex: builtin */
+const _UNRESOLVED_SENTINEL_RE = /\u27E8[^\u27E8\u27E9]{0,256}\u27E9/;
+
+function hasUnresolvedSentinel(s) {
+  return typeof s === 'string' && _UNRESOLVED_SENTINEL_RE.test(s);
+}
+
 // ── Renderer cancellation poll ────────────────────────────────────────────────
 // Long-running renderer loops (PE / ELF / Mach-O section walks, EVTX chunk
 // decode, encoded-content candidate scan, …) call `throwIfAborted()` between
@@ -886,6 +920,33 @@ function throwIfAborted() {
  */
 function pushIOC(findings, opts) {
   if (!findings || !opts || !opts.type || !opts.value) return;
+  // ── Unresolved-sentinel rejection ───────────────────────────────────
+  // Obfuscation decoders emit partial-resolution sentinels (U+27E8 /
+  // U+27E9 — `⟨unresolved:NAME⟩`, `⟨VAR:~start,len⟩`, `⟨…⟩`) inside
+  // `_deobfuscatedText`. These are load-bearing in the Deobfuscation
+  // viewer (they communicate "static prefix known, runtime tail unknown"
+  // to the analyst) but must never reach the IOC sidebar —
+  // `https://⟨unresolved:_X⟩/` is not a real pivot, the unresolved
+  // span is by definition not fetch-reachable.
+  //
+  // This is the canonical single-chokepoint gate per `AGENTS.md`
+  // invariant #4 ("`pushIOC()` only"). It covers every caller — each
+  // renderer's raw URL / IP / path regex (`osascript-renderer.js`,
+  // `plist-renderer.js`, …), the decoder post-processors, the
+  // reassembler's novelIocs loop, the `_mergeEncodedFindingIocs`
+  // chokepoint, and any future addition. The leak path that prompted
+  // this gate: `OsascriptRenderer::analyzeForSecurity` scans
+  // `analysisText` for URLs — a reassembled-script drill-down
+  // (`.reassembled.<hash>.<ext>` synthetic file via
+  // `app-sidebar.js::Load stitched script` button) routes the
+  // sentinel-bearing decoded text back through the osascript URL
+  // regex which has no sentinel filter of its own.
+  //
+  // No-op on clean data — the regex is cheap and the vast majority of
+  // `pushIOC` calls pass sentinel-free strings. `hasUnresolvedSentinel`
+  // is defined in this same file above; no worker shim impact because
+  // `pushIOC` is main-thread-only (timeline worker has a no-op stub).
+  if (hasUnresolvedSentinel(opts.value)) return;
   const bucket = opts.bucket || 'interestingStrings';
   if (!Array.isArray(findings[bucket])) findings[bucket] = [];
   const sev = opts.severity || IOC_CANONICAL_SEVERITY[opts.type] || 'info';
@@ -1001,6 +1062,124 @@ function emitUrlSiblings(findings, url, bucket) {
       });
     }
   }
+}
+
+/**
+ * Push a bare-domain string as an `IOC.DOMAIN` row after validating via
+ * tldts. Mirrors the punycode / abuse-suffix PATTERN sibling emission
+ * shape of `emitUrlSiblings` so bare-domain pushes get the same flags
+ * that URL-derived domain pushes do.
+ *
+ * Intended for the osascript / plist bare-domain extractors. Replaces
+ * hand-maintained TLD whitelist regexes (`com|net|org|io|xyz|info|…`)
+ * that silently dropped legitimate but less-common public TLDs
+ * (`.pro`, `.lol`, `.app`, `.dev`, `.shop`, etc.) that are heavily used
+ * in malicious AppleScript / plist payloads. tldts already knows every
+ * public suffix; no reason to shadow its data with a hand-crafted list.
+ *
+ * Rejects:
+ *   • non-string / empty input
+ *   • sentinel-bearing values (`⟨unresolved:…⟩`, U+27E8 / U+27E9)
+ *   • values tldts can't resolve to a registrable ICANN domain
+ *     (`isIcann === false`, `domain === null`, or `isIp === true`)
+ *   • values already present in the target bucket (dedupe by domain)
+ *
+ * Returns true on successful domain push, false otherwise (caller can
+ * use this for cap tracking). Punycode / abuse-suffix PATTERN rows
+ * don't count toward the return value — they're secondary derivations.
+ *
+ * No-op when tldts isn't loaded (falls back to `_parseUrlHost` returning
+ * null). Matches the `emitUrlSiblings` posture — host-side code calls
+ * this unconditionally without a tldts-available guard.
+ *
+ * @param {object} findings
+ * @param {string} value     bare domain string (no protocol / path).
+ * @param {object} [opts]
+ * @param {string} [opts.severity]       defaults to IOC_CANONICAL_SEVERITY[IOC.DOMAIN].
+ * @param {string} [opts.highlightText]  click-to-focus needle (defaults to value).
+ * @param {string} [opts.bucket]         'externalRefs' | 'interestingStrings' (default 'interestingStrings').
+ * @param {number} [opts.sourceOffset]   byte/char offset into `_rawText`.
+ * @param {number} [opts.sourceLength]   length at sourceOffset.
+ * @returns {boolean} true when a new IOC.DOMAIN row was pushed.
+ */
+function pushBareDomain(findings, value, opts) {
+  if (!findings || typeof value !== 'string' || !value) return false;
+  if (hasUnresolvedSentinel(value)) return false;
+  // tldts parses hostnames most reliably when handed a URL. The
+  // `http://` prefix is synthetic — we don't emit it anywhere, it just
+  // steers tldts down its URL parse path instead of the bare-host path
+  // (the bare-host path's publicSuffix detection is less forgiving on
+  // single-dot inputs like `example.pro`).
+  const h = _parseUrlHost('http://' + value);
+  if (!h || !h.domain || h.isIp || !h.isIcann) return false;
+  const tgt = (opts && opts.bucket) || 'interestingStrings';
+  if (!Array.isArray(findings[tgt])) findings[tgt] = [];
+  let pushed = false;
+  const alreadyDomain = findings[tgt].some(
+    e => e && e.type === IOC.DOMAIN && e.url === h.domain
+  );
+  if (!alreadyDomain) {
+    const row = {
+      type: IOC.DOMAIN,
+      url: h.domain,
+      severity: (opts && opts.severity) || IOC_CANONICAL_SEVERITY[IOC.DOMAIN] || 'info',
+    };
+    if (opts && opts.highlightText) row._highlightText = String(opts.highlightText);
+    if (opts
+        && typeof opts.sourceOffset === 'number'
+        && typeof opts.sourceLength === 'number') {
+      row._sourceOffset = opts.sourceOffset;
+      row._sourceLength = opts.sourceLength;
+    }
+    findings[tgt].push(row);
+    pushed = true;
+  }
+  // Mirror `emitUrlSiblings` punycode + abuse-suffix PATTERN flagging.
+  // Existing rows with the same pattern text are skipped so repeated
+  // calls (e.g. scanning a list with five ngrok.io subdomains) don't
+  // spam the sidebar with duplicate rows.
+  if (h.isPunycode) {
+    const patternNote = `Punycode/IDN host: ${h.hostname} — possible homoglyph`;
+    const existing = findings[tgt].some(
+      e => e && e.type === IOC.PATTERN && e.url === patternNote
+    );
+    if (!existing) {
+      findings[tgt].push({
+        type: IOC.PATTERN,
+        url: patternNote,
+        severity: 'medium',
+        _highlightText: h.hostname,
+      });
+    }
+  }
+  // Abuse-suffix detection. `_parseUrlHost` runs tldts in ICANN-only
+  // mode so `h.publicSuffix` collapses private-suffix hosts like
+  // `foo.ngrok.io` down to `"io"` — which would miss the `ngrok.io`
+  // entry in `_ABUSE_SUFFIXES`. Scan the hostname's suffix chain
+  // against the set directly so `duckdns.org`, `github.io`,
+  // `trycloudflare.com`, etc. are caught regardless of tldts mode.
+  const hostname = h.hostname || '';
+  const parts = hostname.split('.');
+  let abuseSuffix = null;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const candidate = parts.slice(i).join('.');
+    if (_ABUSE_SUFFIXES.has(candidate)) { abuseSuffix = candidate; break; }
+  }
+  if (abuseSuffix) {
+    const note = `Disposable/abuse-prone host: ${hostname} (suffix: ${abuseSuffix})`;
+    const existing = findings[tgt].some(
+      e => e && e.type === IOC.PATTERN && e.url === note
+    );
+    if (!existing) {
+      findings[tgt].push({
+        type: IOC.PATTERN,
+        url: note,
+        severity: 'info',
+        _highlightText: hostname,
+      });
+    }
+  }
+  return pushed;
 }
 
 /**

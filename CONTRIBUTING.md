@@ -534,15 +534,41 @@ Two helpers in `src/constants.js`:
   survive. Structured-source HOSTNAMEs with no URL/DOMAIN overlap (cert
   Subject CN, EVTX machine name, LNK tracker, plist machine ID) always
   survive.
+- **`hasUnresolvedSentinel(value)`** — gate for partially-resolved
+  decoder cleartext. AppleScript / cmd / bash obfuscation decoders
+  embed `⟨unresolved:NAME⟩`, `⟨VAR:~start,length⟩`, and `⟨…⟩`
+  placeholders (U+27E8 / U+27E9 — mathematical angle brackets) for
+  operands the resolver couldn't fill. These markers are load-bearing
+  in the Deobfuscation viewer — they communicate "static prefix known,
+  runtime tail unknown" to the analyst — but must never land in the
+  IOC sidebar. A URL like `https://⟨unresolved:__iunw9unf⟩/` is not a
+  real pivot: the unresolved span, by definition, isn't
+  fetch-reachable. Drop the whole row (rather than stripping the
+  sentinel) so the uncertainty signal is preserved where it belongs
+  (on the Deobfuscation card). Canonical gate sites:
+  `src/decoders/ioc-extract.js::_extractIOCsFromDecoded` (inside the
+  `add()` helper),
+  `src/app/app-load.js::_mergeEncodedFindingIocs` (final chokepoint
+  before host-side buckets), and every decoder-local site that
+  interpolates a resolved value into a `_patternIocs` / PATTERN-label
+  string (see `src/decoders/cmd-obfuscation.js::_processCommandObfuscation`,
+  `src/decoders/applescript-obfuscation.js` `dynamicFetchUrls` loop).
 
 ### HOSTNAME vs DOMAIN — IOC taxonomy
 
 - **`IOC.DOMAIN`** — a registrable (public-suffix + 1) pivot.
   Auto-derived from every URL push via `emitUrlSiblings`. Also emitted
-  directly by renderers whose bare-domain extractors match public-
-  suffix TLDs (osascript, plist). The canonical type for "this file
-  references a domain worth pivoting on" — used by Summary, STIX, MISP,
-  threat-intel enrichment.
+  directly by renderers whose bare-domain extractors scan for dotted
+  identifiers and hand them to `pushBareDomain` for tldts-backed
+  validation (osascript, plist). `pushBareDomain` replaced the earlier
+  hardcoded TLD whitelist regex (`com|net|org|io|xyz|info|biz|ru|cn|tk|
+  top|cc|pw`) that silently dropped `.pro`, `.lol`, `.app`, `.dev`,
+  `.shop`, `.online`, country TLDs, and every other legitimate public
+  suffix; tldts knows them all. The helper mirrors `emitUrlSiblings`'
+  punycode + abuse-suffix PATTERN flagging so bare-domain pushes get
+  the same sidebar signals as URL-derived ones. The canonical type for
+  "this file references a domain worth pivoting on" — used by Summary,
+  STIX, MISP, threat-intel enrichment.
 - **`IOC.HOSTNAME`** — a host reference from structured metadata where
   the bare host is the primary artefact, NOT a URL pivot. Canonical
   emitters:

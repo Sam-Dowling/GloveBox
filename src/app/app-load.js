@@ -722,6 +722,16 @@ extendApp({
             if (!ioc) continue;
             const v = ioc.url || ioc.value;
             if (!v) continue;
+            // ── Unresolved-sentinel rejection (defence in depth) ────────
+            // `extractInterestingStringsCore::add()` already gates
+            // sentinel-bearing values at the extractor boundary, but the
+            // reassembler's novelIocs path funnels directly into
+            // `pushIOC` here (bypassing `_mergeEncodedFindingIocs` which
+            // has its own gate). Guarding at every pushIOC call on
+            // decoder-derived text is the only way to guarantee no
+            // `https://⟨unresolved:…⟩/` row reaches the sidebar. See
+            // `src/constants.js::hasUnresolvedSentinel`.
+            if (hasUnresolvedSentinel(v)) continue;
             // Final paranoid dedupe: `analyze()` already skipped values
             // in `allValues`, but nothing prevents two novel IOCs from
             // sharing a URL across the batch.
@@ -942,6 +952,18 @@ extendApp({
           : null);
     for (const ioc of ef.iocs) {
       if (!ioc || !ioc.type || !ioc.url) continue;
+      // ── Unresolved-sentinel rejection ───────────────────────────────
+      // Final gate before any encoded-finding IOC lands in the host-side
+      // buckets. Partially-resolved decoder output (AppleScript
+      // char-code chains with unresolved refs, CMD `⟨VAR:~start,len⟩`
+      // substring placeholders, bash `⟨…⟩`) embeds U+27E8 / U+27E9
+      // markers into cleartext; the per-decoder emitters already filter
+      // these, but `_mergeEncodedFindingIocs` is the last chokepoint
+      // where a future decoder that forgets to filter would otherwise
+      // leak. Dropping the row (rather than stripping) preserves the
+      // "uncertain pivot" signal — the Deobfuscation card still
+      // displays the full partial cleartext for the analyst.
+      if (hasUnresolvedSentinel(ioc.url)) continue;
       const bucket = _DETECTION_TYPES.has(ioc.type) ? 'externalRefs' : 'interestingStrings';
       // Cross-bucket dedupe by {type, url} — a plaintext-extracted URL
       // and a decoded-payload URL of the same value must collapse into

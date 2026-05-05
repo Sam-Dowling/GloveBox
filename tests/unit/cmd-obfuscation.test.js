@@ -418,3 +418,68 @@ test('cmd-obfuscation: _processCommandObfuscation returns a normal encoded-conte
   assert.equal(result.hint, undefined,
     'tautological hint === encoding must not be set');
 });
+
+// ── Unresolved-sentinel rejection ──────────────────────────────────────────
+//
+// CMD / batch reassembly uses `⟨VAR:~start,length⟩` and `⟨!cleaned!⟩`
+// structural placeholders for unresolved substring operations; bash
+// uses `⟨…⟩` for elided fragments; AppleScript uses
+// `⟨unresolved:NAME⟩`. All three sentinel families share U+27E8 /
+// U+27E9 delimiters. These must never reach IOC buckets — see
+// `src/constants.js::hasUnresolvedSentinel` for the canonical gate.
+// This test covers two gates in the cmd-obfuscation pipeline:
+//   1. `_extractIOCsFromDecoded` rejects sentinel-bearing URLs.
+//   2. `_processCommandObfuscation`'s `_patternIocs` mirror loop
+//      skips labels that leaked a sentinel via string interpolation.
+
+test('cmd-obfuscation: _extractIOCsFromDecoded rejects URLs carrying ⟨VAR:~start,len⟩ sentinels', () => {
+  // Bytes that simulate a partially-resolved CMD reassembly output —
+  // the host portion is a substring-op placeholder the resolver
+  // couldn't fill. The URL regex would match the whole string (the
+  // default excludes exclude ASCII `<>()` but not U+27E8/9); the
+  // belt-and-braces `add()` gate and the hardened regex character
+  // class both drop the value before it lands in `iocs`.
+  const payload = 'start http://\u27E8VAR:~0,3\u27E9.example/stage2 && '
+                + 'start http://real.example/\u27E8VAR:~5,10\u27E9/path';
+  const bytes = new TextEncoder().encode(payload);
+  const iocs = d._extractIOCsFromDecoded(bytes);
+  for (const i of iocs) {
+    assert.ok(!/\u27E8|\u27E9/.test(i.url || ''),
+      `no sentinel may reach IOC buckets; leaked: ${JSON.stringify(i)}`);
+  }
+});
+
+test('cmd-obfuscation: _processCommandObfuscation drops _patternIocs labels containing sentinels', async () => {
+  // Synthetic candidate whose `_patternIocs` label interpolated a
+  // resolved value that still carries a sentinel (e.g.
+  // `Get-Command wildcard — "<glob>" resolves to ⟨VAR:~0,5⟩`). The
+  // post-processor's mirror loop must reject this row rather than
+  // surface a non-pivotable string in the sidebar.
+  const candidate = {
+    type: 'cmd-obfuscation',
+    technique: 'Synthetic Sentinel Leak',
+    raw: 'echo hi',
+    offset: 0,
+    length: 7,
+    // Peel differs from raw so we take the normal `encoded-content`
+    // branch (not the `_detectionOnly` sentinel branch). The peel
+    // itself stays clean so the canonical URL extractor doesn't
+    // contribute any sentinel-bearing IOC of its own.
+    deobfuscated: 'echo clean',
+    _patternIocs: [
+      { url: 'Clean pattern label \u2014 keep', severity: 'medium' },
+      { url: 'Get-Command wildcard \u2014 resolves to \u27E8VAR:~0,5\u27E9 (T1027)', severity: 'high' },
+      { url: 'AppleScript partial \u2014 https://\u27E8unresolved:_X\u27E9/', severity: 'high' },
+    ],
+  };
+  const result = await d._processCommandObfuscation(candidate);
+  assert.ok(result, 'expected finding from normal peel branch');
+  const patternRows = (result.iocs || []).filter(i => i.type === IOC.PATTERN);
+  // Clean label survived.
+  assert.ok(patternRows.some(r => /Clean pattern label/.test(r.url || '')),
+    `clean label must pass the gate; got: ${JSON.stringify(host(patternRows))}`);
+  // No sentinel-bearing label leaked.
+  const leaky = patternRows.filter(r => /\u27E8|\u27E9/.test(r.url || ''));
+  assert.equal(leaky.length, 0,
+    `no _patternIocs row may carry a sentinel; leaked: ${JSON.stringify(host(leaky))}`);
+});

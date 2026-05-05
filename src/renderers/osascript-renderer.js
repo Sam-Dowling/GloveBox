@@ -737,24 +737,34 @@ class OsascriptRenderer {
             }
             if (findings.externalRefs.length >= 200) { emitTruncation('file-path cap reached'); break; }
         }
-        /* Bare domains — loose heuristic. Emit as DOMAIN (registrable
-         * pivot) since the regex whitelist only matches public-suffix
-         * TLDs. `IOC.HOSTNAME` is reserved for structured-source host
-         * references (cert CN, EVTX machine, LNK tracker) where the
-         * value is not a registrable domain — see
-         * CONTRIBUTING.md § IOC Taxonomy. */
-        const domRe = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|xyz|info|biz|ru|cn|tk|top|cc|pw)\b/gi;
+        /* Bare domains — emit as IOC.DOMAIN (registrable pivot) via
+         * `pushBareDomain`, which validates each candidate against
+         * tldts's public-suffix list. `IOC.HOSTNAME` is reserved for
+         * structured-source host references (cert CN, EVTX machine,
+         * LNK tracker) where the value is not a registrable domain —
+         * see CONTRIBUTING.md § IOC Taxonomy.
+         *
+         * The regex is deliberately loose (any multi-label dotted
+         * identifier, 2–6 labels, each RFC 1035-valid). tldts does the
+         * real filtering inside `pushBareDomain`: `isIcann === true`
+         * accepts every public TLD (.pro, .lol, .app, .dev, .shop,
+         * .online, …) without a hardcoded whitelist, and rejects
+         * filenames / version strings / invalid-TLD noise (`main.py`,
+         * `build.1.2.3`, `foo.xyzzy`). Catches domains hidden in
+         * AppleScript list literals (`{"9sxgrev.pro", "axj0tw9.lol"}`)
+         * that the old whitelist-based regex missed. */
+        /* safeRegex: builtin */
+        const domRe = /\b[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?){1,5}\b/gi;
         const seenDomains = new Set();
         while ((um = domRe.exec(analysisText)) !== null) {
             const d = um[0].toLowerCase();
-            if (!seenDomains.has(d)) {
-                seenDomains.add(d);
-                pushIOC(findings, {
-                    type: IOC.DOMAIN, value: d, severity: 'info',
-                    highlightText: um[0],
-                    bucket: 'externalRefs',
-                });
-            }
+            if (seenDomains.has(d)) continue;
+            seenDomains.add(d);
+            pushBareDomain(findings, d, {
+                severity: 'info',
+                highlightText: um[0],
+                bucket: 'externalRefs',
+            });
             if (findings.externalRefs.length >= 250) { emitTruncation('domain cap reached'); break; }
         }
 

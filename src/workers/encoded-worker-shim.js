@@ -111,6 +111,30 @@ function _trimPathExtGarbage(path) {
 // "finder-budget — throwIfAborted is not defined" Info row.
 function throwIfAborted() { /* no-op in worker */ }
 
+// ── hasUnresolvedSentinel (mirrors src/constants.js) ────────────────────────
+//
+// Gate called from `_extractIOCsFromDecoded` (src/decoders/ioc-extract.js),
+// `_processCommandObfuscation` (src/decoders/cmd-obfuscation.js), and the
+// AppleScript Tier C / literal-URL extractors
+// (src/decoders/applescript-obfuscation.js) to reject IOC rows whose values
+// still carry a ⟨unresolved:NAME⟩ / ⟨VAR:~start,len⟩ / ⟨!cleaned!⟩ / ⟨…⟩
+// sentinel (U+27E8 / U+27E9). All three files live in `_DETECTOR_FILES`
+// (see `scripts/build.py`) and therefore execute inside this worker bundle,
+// so the helper MUST be visible at worker-global scope — otherwise every
+// sentinel-gate call throws `ReferenceError`, the encoded-content
+// `_runFinder` wrapper short-circuits the whole secondary scan, and the
+// Deobfuscation section blanks out with a "finder-budget — … is not
+// defined" stub (the same failure mode the `throwIfAborted` block above
+// was added to prevent).
+//
+// Keep the regex body byte-equivalent with `src/constants.js`;
+// `scripts/check_shim_parity.py` diffs it at build time.
+/* safeRegex: builtin */
+const _UNRESOLVED_SENTINEL_RE = /\u27E8[^\u27E8\u27E9]{0,256}\u27E9/;
+function hasUnresolvedSentinel(s) {
+  return typeof s === 'string' && _UNRESOLVED_SENTINEL_RE.test(s);
+}
+
 // ── safeRegex helpers (mirror src/constants.js) ─────────────────────────────
 //
 // Workers don't share globals with the host bundle, so the safeRegex /

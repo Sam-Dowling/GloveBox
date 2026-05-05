@@ -1351,6 +1351,11 @@ Object.assign(EncodedContentDetector.prototype, {
       const urls = [];
       let um;
       while ((um = urlRe.exec(cmd)) !== null) {
+        // Defensive sentinel gate — `cmd` here is usually a literal AS
+        // string (sentinels are a resolved-value artefact, not a source
+        // construct) but the downstream `_patternIocs` consumer has no
+        // URL-sanity filter, so guard at the emission site too.
+        if (hasUnresolvedSentinel(um[0])) continue;
         urls.push(um[0]);
         if (urls.length >= 8) break;
       }
@@ -1615,6 +1620,13 @@ Object.assign(EncodedContentDetector.prototype, {
           const urlRe = /\bhttps?:\/\/[^\s'"`<>\\()]{3,1024}/gi;
           let um;
           while ((um = urlRe.exec(resolved.value)) !== null) {
+            // Skip partially-resolved URLs that still contain an
+            // `⟨unresolved:…⟩` sentinel — emitting them as IOC.PATTERN
+            // labels (`Dynamic C2 discovery via … — https://⟨unresolved:X⟩/`)
+            // pollutes the sidebar with non-pivotable strings. The
+            // Deobfuscation card still shows the full partial cleartext,
+            // so the uncertainty signal is preserved where it belongs.
+            if (hasUnresolvedSentinel(um[0])) continue;
             dynamicFetchUrls.push(um[0]);
             if (dynamicFetchUrls.length >= 8) break;
           }

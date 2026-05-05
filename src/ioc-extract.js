@@ -184,6 +184,18 @@ function extractInterestingStringsCore(text, opts) {
   const add = (type, val, sev, note, sourceInfo) => {
     val = (val || '').trim().replace(/[.,;:!?)\]>]+$/, '');
     if (!val || val.length < 4 || val.length > 400 || seen.has(val)) return false;
+    // ── Unresolved-sentinel rejection ─────────────────────────────────
+    // Partially-resolved decoder output (AppleScript / cmd / bash
+    // obfuscation reassembly) embeds ⟨unresolved:NAME⟩ / ⟨VAR:~start,len⟩ /
+    // ⟨!cleaned!⟩ markers (U+27E8 / U+27E9). These are load-bearing in
+    // the Deobfuscation viewer but must never reach the IOC sidebar —
+    // `https://⟨unresolved:_X⟩/` is not a real pivot. The leak path
+    // for this extractor is `EncodedReassembler.analyze` →
+    // `extractInterestingStringsCore` over the stitched reconstructed
+    // text, which contains partial decoder output verbatim.
+    // `hasUnresolvedSentinel` (constants.js / worker shim mirror) is
+    // the canonical gate; see `src/constants.js` for the rationale.
+    if (hasUnresolvedSentinel(val)) return false;
     seen.add(val);
     const accepted = typeCounts.get(type) || 0;
     totalSeenByType.set(type, (totalSeenByType.get(type) || 0) + 1);
@@ -259,7 +271,7 @@ function extractInterestingStringsCore(text, opts) {
     // bounds wall-clock + match count so a pathological decoded payload
     // can't monopolise the thread.
     /* safeRegex: builtin */
-    const innerRe = /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g;
+    const innerRe = /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F\u27E8\u27E9]{6,}/g;
     for (const im of safeMatchAll(innerRe, decoded, 200, 32).matches) {
       const innerRaw = im[0];
       if (!innerRaw || innerRaw.length < 10) continue;
@@ -395,7 +407,7 @@ function extractInterestingStringsCore(text, opts) {
   // ── URL extraction ─────────────────────────────────────────────────────
   const urlSpans = [];
   /* safeRegex: builtin */
-  for (const m of _matchAll(full, /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F]{6,}/g)) {
+  for (const m of _matchAll(full, /https?:\/\/[^\s"'<>()\[\]{}\u0000-\u001F\u27E8\u27E9]{6,}/g)) {
     urlSpans.push([m.index, m.index + m[0].length]);
     processUrl(m[0], 'info', m.index, m[0].length);
   }
@@ -666,7 +678,7 @@ function extractInterestingStringsCore(text, opts) {
   // relative to `full` and will work for highlighting in combined view.
   for (const src of vbaModuleSources) {
     /* safeRegex: builtin */
-    for (const m of _matchAll((src || ''), /https?:\/\/[^\s"']{6,}/g)) {
+    for (const m of _matchAll((src || ''), /https?:\/\/[^\s"'\u27E8\u27E9]{6,}/g)) {
       const v = m[0].replace(/[.,;:!?)\]>]+$/, '');
       if (!seen.has(v)) {
         const unwrapped = _unwrapSafeLink(v);

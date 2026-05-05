@@ -306,3 +306,46 @@ test('_mergeEncodedFindingIocs: does NOT overwrite existing _sourceOffset on mer
   assert.equal(row._sourceOffset, 5, 'must not overwrite existing _sourceOffset');
   assert.equal(row._highlightText, 'existing marker');
 });
+
+// ── Unresolved-sentinel rejection ──────────────────────────────────────────
+//
+// Partially-resolved decoder output (AppleScript char-code chain with an
+// unresolved ref, CMD `⟨VAR:~0,3⟩` substring placeholder, bash
+// `⟨…⟩` elision) carries U+27E8 / U+27E9 sentinels that must never reach
+// the IOC sidebar. A URL like `https://⟨unresolved:__iunw9unf⟩/` is not
+// a real pivot — the unresolved span, by definition, isn't
+// fetch-reachable. `_mergeEncodedFindingIocs` is the final chokepoint
+// before host-side buckets and drops any sentinel-bearing row outright.
+
+test('_mergeEncodedFindingIocs: rejects IOC rows containing ⟨unresolved:…⟩ sentinels', () => {
+  const { methods, ctx } = loadMergeHelper();
+  const findings = newFindings();
+  const app = { findings };
+  const ef = {
+    type: 'encoded-content',
+    technique: 'AppleScript Reassembled Shell Command',
+    offset: 0, length: 100,
+    iocs: [
+      // Partially-resolved URL with AppleScript-style unresolved-ref sentinel.
+      { type: ctx.IOC.URL,     url: 'https://\u27E8unresolved:__iunw9unf\u27E9/', severity: 'high' },
+      // PATTERN label interpolating a resolved value that still carries a sentinel.
+      { type: ctx.IOC.PATTERN, url: 'Dynamic C2 \u2014 https://\u27E8unresolved:_Runtime\u27E9/beacon', severity: 'high' },
+      // CMD-style substring-op placeholder.
+      { type: ctx.IOC.URL,     url: 'http://\u27E8VAR:~0,3\u27E9.example/', severity: 'medium' },
+      // Bash-style ellipsis sentinel.
+      { type: ctx.IOC.URL,     url: 'https://partial.example/\u27E8\u2026\u27E9', severity: 'medium' },
+      // Clean URL — must still land.
+      { type: ctx.IOC.URL,     url: 'https://clean.example/path', severity: 'high' },
+    ],
+  };
+  methods._mergeEncodedFindingIocs.call(app, ef, 'x');
+  const allRows = [...findings.interestingStrings, ...findings.externalRefs];
+  for (const r of allRows) {
+    assert.ok(!/\u27E8|\u27E9/.test(r.url),
+      `no IOC row may carry \u27E8 / \u27E9 sentinel chars; leaked: ${JSON.stringify(r)}`);
+  }
+  // The clean URL must still have landed (and its DOMAIN sibling, if
+  // tldts is loaded — which it isn't in unit-test context, so just the URL).
+  const cleanHit = allRows.find(r => r.url === 'https://clean.example/path');
+  assert.ok(cleanHit, `clean URL must pass the sentinel gate; got rows: ${JSON.stringify(allRows)}`);
+});
