@@ -612,46 +612,24 @@ extendApp({
           }
         }
 
-        // Store raw bytes reference on compressed findings for lazy decompression
+        // Store raw bytes reference on compressed findings for lazy
+        // decompression, then merge each finding's `iocs[]` into the
+        // top-level host-side IOC buckets via the shared helper.
         for (const ef of encodedFindings) {
           if (ef.needsDecompression) ef._rawBytes = new Uint8Array(buffer);
-          // Merge IOCs from decoded content into main findings.
-          // Attach source location metadata so clicking an IOC from a nested
-          // decoded layer will smooth-scroll and highlight the *encoded blob*
-          // in the original document from which this IOC was extracted.
-          if (ef.iocs && ef.iocs.length) {
-            const existingUrls = new Set((this.findings.interestingStrings || []).map(r => r.url));
-            for (const ioc of ef.iocs) {
-              if (!existingUrls.has(ioc.url)) {
-                // Point back to the parent encoded blob's location in the source text
-                if (ef.offset !== undefined && ef.length) {
-                  ioc._sourceOffset = ef.offset;
-                  ioc._sourceLength = ef.length;
-                  ioc._highlightText = ef.snippet || (analysisText ? analysisText.substring(ef.offset, ef.offset + Math.min(ef.length, 200)) : '');
-                }
-                // Note which decode chain produced this IOC
-                if (ef.chain && ef.chain.length) {
-                  ioc._decodedFrom = ef.chain.join(' → ');
-                }
-                // Back-reference to parent encoded finding for cross-flash linking
-                ioc._encodedFinding = ef;
-                this.findings.interestingStrings.push(ioc);
-                existingUrls.add(ioc.url);
-              } else {
-                // IOC already exists from plaintext extraction — set back-reference
-                // on the existing entry so cross-flash linking from Encoded Content
-                // "IOCs" badge scrolls to the correct Signatures & IOCs row
-                const existing = this.findings.interestingStrings.find(r => r.url === ioc.url);
-                if (existing && !existing._encodedFinding) {
-                  existing._encodedFinding = ef;
-                  if (ef.chain && ef.chain.length) {
-                    existing._decodedFrom = ef.chain.join(' → ');
-                  }
-                }
-              }
-            }
-          }
+          this._mergeEncodedFindingIocs(ef, analysisText);
         }
+        // Drop detection-only sentinels (emitted by
+        // `_processCommandObfuscation` when `deobfuscated === raw`) from
+        // the encoded-content list so the sidebar's Deobfuscation section
+        // and `_updateRiskFromEncodedContent` never see them. Their IOCs
+        // already landed in `externalRefs` / `interestingStrings` via the
+        // helper above; risk escalation for these candidates is owned by
+        // the evidence-based `externalRefs` tier, not the encoded-content
+        // severity channel.
+        this.findings.encodedContent = this.findings.encodedContent.filter(
+          ef => ef && !ef._detectionOnly
+        );
       } catch (encErr) {
         // Supersession is not an error — a newer load is already in
         // flight and owns `this.findings.encodedContent`. Leaving the
@@ -749,7 +727,26 @@ extendApp({
             // sharing a URL across the batch.
             if (this.findings.interestingStrings.some(r => (r.url || r.value) === v)) continue;
             ioc._reassemblySpans = this.findings.reconstructedScript.spans.length;
-            this.findings.interestingStrings.push(ioc);
+            // The analyser emits bare `{ type, url|value, severity, ... }`
+            // rows with no auto-sibling emission (it runs tldts-free by
+            // design). Funnel through pushIOC so the wire shape is
+            // validated and URL→DOMAIN siblings fire.
+            pushIOC(this.findings, {
+              type: ioc.type,
+              value: v,
+              severity: ioc.severity,
+              note: ioc.note || null,
+              highlightText: ioc._highlightText || null,
+            });
+            // `pushIOC` doesn't carry the reassembly-span marker — it's a
+            // host-side provenance flag, not a wire-shape field. Stamp it
+            // on the just-pushed entry.
+            const just = this.findings.interestingStrings[
+              this.findings.interestingStrings.length - 1];
+            if (just && (just.url === v)) {
+              just._reassemblySpans = ioc._reassemblySpans;
+              if (ioc._fromReassembly) just._fromReassembly = true;
+            }
           }
         } catch (analyzeErr) {
           this._reportNonFatal('encoded-reassembler-analyze', analyzeErr, { silent: true });
@@ -758,6 +755,16 @@ extendApp({
 
       // Bump overall risk if encoded content findings have high severity
       this._updateRiskFromEncodedContent();
+
+      // Collapse redundant URL / DOMAIN / HOSTNAME pivot rows so the
+      // sidebar IOC table shows each host exactly once at its highest-
+      // evidence severity. Runs AFTER every renderer + encoded-content
+      // merge has landed its IOCs; idempotent so re-running after a
+      // reassembly-phase patch is safe. See `dedupeHostPivots` in
+      // `src/constants.js` for the full dedupe rules.
+      if (typeof dedupeHostPivots === 'function') {
+        dedupeHostPivots(this.findings);
+      }
 
       const pc = document.getElementById('page-container');
       pc.innerHTML = ''; pc.appendChild(docEl);
@@ -871,6 +878,134 @@ extendApp({
   //     `{ detail: { sections: [...] } }` for any external listeners
   //     (copy-analysis cache, future inspector overlay, etc.) and
   //     schedules a microtask-coalesced sidebar re-render.
+
+  // ── Encoded-content IOC merge helper ───────────────────────────────────
+  //
+  // Merges the `iocs[]` array of a single encoded-content finding (or a
+  // detection-only sentinel) into the host-side `findings.externalRefs` /
+  // `findings.interestingStrings` buckets with canonical routing, cross-
+  // bucket deduplication, monotonic severity escalation, and back-reference
+  // stamping for cross-flash UI links.
+  //
+  // Routing
+  // -------
+  // Detection types (`IOC.PATTERN`, `IOC.YARA`, `IOC.INFO`) land in
+  // `externalRefs` — the evidence-based risk calc
+  // (CONTRIBUTING.md § Risk) only reads that bucket. Everything else
+  // (URL, DOMAIN, IP, EMAIL, FILE_PATH, HASH, …) lands in
+  // `interestingStrings`, per `IOC_CANONICAL_SEVERITY` in constants.js.
+  //
+  // Dedupe + escalation
+  // -------------------
+  // An existing row with the same `{type, url}` in EITHER bucket wins —
+  // the decoded-payload emission does not produce a duplicate row.
+  // Instead its severity is merged MONOTONICALLY into the existing row
+  // (`info < medium < high < critical` — never downgraded). A
+  // technique-scoped note (`Detected in <ef.technique>` or
+  // `Detected via <ef.chain>`) is stamped on the existing row when it
+  // had no prior note, so the analyst can see WHY the row escalated.
+  //
+  // Back-references
+  // ---------------
+  // Normal encoded-content findings (with a sidebar card) stamp
+  // `_encodedFinding` + `_decodedFrom` on both new and existing rows so
+  // clicking the IOC row flashes the originating Deobfuscation card
+  // (and vice-versa). Detection-only sentinels carry
+  // `_detectionOnly: true`; they're filtered out of
+  // `findings.encodedContent` downstream, so stamping `_encodedFinding`
+  // on those IOC rows would point at a card that never renders — we
+  // deliberately skip the back-ref for sentinels.
+  //
+  // Source-offset stamp
+  // -------------------
+  // `_sourceOffset` / `_sourceLength` / `_highlightText` are set from
+  // the encoded finding's offset into the analysisText so click-to-
+  // focus (sidebar → viewer) scrolls to the originating blob. Only
+  // stamped when the row doesn't already carry its own — plaintext
+  // extractor has its own source metadata and MUST NOT be overwritten.
+  _mergeEncodedFindingIocs(ef, analysisText) {
+    if (!ef || !Array.isArray(ef.iocs) || ef.iocs.length === 0) return;
+    const _SEV_RANK = { info: 1, low: 1, medium: 2, high: 3, critical: 4 };
+    const _DETECTION_TYPES = new Set([IOC.PATTERN, IOC.YARA, IOC.INFO]);
+    if (!Array.isArray(this.findings.interestingStrings)) this.findings.interestingStrings = [];
+    if (!Array.isArray(this.findings.externalRefs))       this.findings.externalRefs       = [];
+    const intStr  = this.findings.interestingStrings;
+    const extRefs = this.findings.externalRefs;
+    // Build a composite note explaining why this IOC was surfaced —
+    // `ef.technique` (detection-only sentinels) takes precedence since
+    // it's technique-scoped; fall back to `ef.chain` (multi-hop
+    // decoded findings) which reads like `Base64 → gzip → PowerShell`.
+    const chainNote = ef.technique
+      ? `Detected in ${ef.technique}`
+      : (Array.isArray(ef.chain) && ef.chain.length
+          ? `Detected via ${ef.chain.join(' → ')}`
+          : null);
+    for (const ioc of ef.iocs) {
+      if (!ioc || !ioc.type || !ioc.url) continue;
+      const bucket = _DETECTION_TYPES.has(ioc.type) ? 'externalRefs' : 'interestingStrings';
+      // Cross-bucket dedupe by {type, url} — a plaintext-extracted URL
+      // and a decoded-payload URL of the same value must collapse into
+      // one row at the escalated severity.
+      const findExisting = (arr) =>
+        arr.find(r => r && r.type === ioc.type && r.url === ioc.url);
+      const existing = findExisting(extRefs) || findExisting(intStr);
+      if (existing) {
+        const newRank = _SEV_RANK[ioc.severity] || 0;
+        const oldRank = _SEV_RANK[existing.severity] || 0;
+        if (newRank > oldRank) existing.severity = ioc.severity;
+        if (chainNote && !existing.note) existing.note = chainNote;
+        if (!ef._detectionOnly) {
+          if (!existing._encodedFinding) existing._encodedFinding = ef;
+          if (Array.isArray(ef.chain) && ef.chain.length && !existing._decodedFrom) {
+            existing._decodedFrom = ef.chain.join(' → ');
+          }
+        }
+        if (ef.offset !== undefined && ef.length
+            && typeof existing._sourceOffset !== 'number') {
+          existing._sourceOffset = ef.offset;
+          existing._sourceLength = ef.length;
+          if (!existing._highlightText) {
+            existing._highlightText = ef.snippet
+              || (analysisText
+                   ? analysisText.substring(ef.offset, ef.offset + Math.min(ef.length, 200))
+                   : '');
+          }
+        }
+        continue;
+      }
+      // Not present anywhere — push to the canonical bucket via
+      // `pushIOC()` so the wire shape is validated and URL→DOMAIN
+      // siblings auto-emit. We intentionally DO want the sibling for
+      // decoded-payload URLs (same as plaintext URLs).
+      const highlightText = ef.snippet
+        || (ef.offset !== undefined && ef.length && analysisText
+             ? analysisText.substring(ef.offset, ef.offset + Math.min(ef.length, 200))
+             : null);
+      pushIOC(this.findings, {
+        type: ioc.type,
+        value: ioc.url,
+        severity: ioc.severity,
+        note: ioc.note || chainNote || null,
+        highlightText,
+        sourceOffset: (ef.offset !== undefined) ? ef.offset : undefined,
+        sourceLength: ef.length,
+        bucket,
+      });
+      // `pushIOC` doesn't carry cross-flash back-refs (those are a
+      // host-side concern, not part of the wire shape). Stamp them on
+      // the just-pushed entry for normal (non-sentinel) findings.
+      if (!ef._detectionOnly) {
+        const just = this.findings[bucket][this.findings[bucket].length - 1];
+        if (just && just.url === ioc.url) {
+          just._encodedFinding = ef;
+          if (Array.isArray(ef.chain) && ef.chain.length) {
+            just._decodedFrom = ef.chain.join(' → ');
+          }
+        }
+      }
+    }
+  },
+
   updateFindings(patch, opts) {
     if (!this.findings || !patch) return;
     if (opts && opts.token !== undefined && opts.token !== this._loadToken) {

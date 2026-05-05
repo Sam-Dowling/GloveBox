@@ -1004,6 +1004,135 @@ function emitUrlSiblings(findings, url, bucket) {
 }
 
 /**
+ * Collapse redundant HOSTNAME pivot rows so the sidebar IOC table
+ * shows each host exactly once, at its highest-evidence severity.
+ *
+ * Motivation
+ * ----------
+ * Three IOC types can describe the same host:
+ *
+ *   • `IOC.URL`      — full network endpoint (scheme + host + path);
+ *   • `IOC.DOMAIN`   — registrable (public-suffix + 1) pivot derived
+ *                       from a URL via tldts; or pushed directly by a
+ *                       renderer that extracted a bare FQDN;
+ *   • `IOC.HOSTNAME` — host reference from structured metadata (cert
+ *                       Subject CN, EVTX machine name, LNK tracker,
+ *                       plist machine ID) where the bare host is the
+ *                       primary artefact rather than a URL pivot.
+ *
+ * `URL` and `DOMAIN` are complementary pivots an analyst values
+ * independently: the URL is the endpoint; the DOMAIN is the
+ * registrable-domain rollup used for C2 clustering. They are NOT
+ * redundant with each other and are never collapsed.
+ *
+ * `HOSTNAME` is the type that over-surfaces: historically some
+ * renderers emitted `IOC.HOSTNAME` for values that are literally
+ * registrable domains (see the osascript / plist bare-domain
+ * extractors). When a URL or DOMAIN row covers the same host, the
+ * HOSTNAME row becomes a third duplicate of the same pivot. This
+ * helper collapses only those HOSTNAME duplicates — DOMAIN and URL
+ * rows are always preserved.
+ *
+ * Rules
+ * -----
+ *   1. Drop `IOC.HOSTNAME` row when a URL row covers the same
+ *      hostname OR the same registrable domain, at equal-or-higher
+ *      severity.
+ *   2. Drop `IOC.HOSTNAME` row when a DOMAIN row matches its value at
+ *      equal-or-higher severity.
+ *   3. Structured-source HOSTNAME rows that do NOT overlap any URL or
+ *      DOMAIN row (e.g. a cert CN with no associated URL in the
+ *      corpus, EVTX machine name, LNK TrackerDataBlock machine ID)
+ *      stay untouched — HOSTNAME is their canonical type.
+ *   4. HOSTNAME rows whose severity EXCEEDS every covering URL /
+ *      DOMAIN row survive — the escalated severity is the signal
+ *      worth keeping.
+ *
+ * The helper mutates both `findings.interestingStrings` and
+ * `findings.externalRefs` in place. Idempotent: calling twice produces
+ * the same output.
+ *
+ * No-op when tldts isn't loaded (URL → registrable-domain derivation
+ * falls back to string equality only, which is conservative — the
+ * helper won't drop rows it can't prove are duplicates).
+ *
+ * @param {object} findings
+ */
+function dedupeHostPivots(findings) {
+  if (!findings) return;
+  const rank = _RISK_RANK;
+  const _rank = (sev) => rank[sev] != null ? rank[sev] : 0;
+  const ints  = Array.isArray(findings.interestingStrings) ? findings.interestingStrings : [];
+  const exts  = Array.isArray(findings.externalRefs)       ? findings.externalRefs       : [];
+
+  // Collect URL coverage: for every URL row, record {host, registrable
+  // domain, severity}. We consult this table when pruning HOSTNAME
+  // rows.
+  const urlCoverage = []; // { host, domain, severity }
+  for (const arr of [ints, exts]) {
+    for (const r of arr) {
+      if (!r || r.type !== IOC.URL) continue;
+      const h = _parseUrlHost(r.url);
+      if (h && h.hostname) {
+        urlCoverage.push({
+          host: h.hostname.toLowerCase(),
+          domain: (h.domain || '').toLowerCase(),
+          severity: r.severity,
+        });
+      } else if (r.url) {
+        // tldts unavailable — conservative fallback: bare URL string.
+        urlCoverage.push({ host: String(r.url).toLowerCase(), domain: '', severity: r.severity });
+      }
+    }
+  }
+
+  // DOMAIN coverage — HOSTNAME rows are pruned against bare DOMAIN
+  // pivots that don't necessarily come with a URL.
+  const domainCoverage = []; // { domain, severity }
+  for (const arr of [ints, exts]) {
+    for (const r of arr) {
+      if (!r || r.type !== IOC.DOMAIN) continue;
+      domainCoverage.push({
+        domain: String(r.url || '').toLowerCase(),
+        severity: r.severity,
+      });
+    }
+  }
+
+  const _filter = (arr) => {
+    if (!arr) return arr;
+    const kept = [];
+    for (const r of arr) {
+      if (!r || !r.type) { kept.push(r); continue; }
+      // Only HOSTNAME rows are subject to collapse — URL and DOMAIN
+      // always survive.
+      if (r.type === IOC.HOSTNAME) {
+        const h = String(r.url || '').toLowerCase();
+        const coveringUrl = urlCoverage.find(u => u.host === h || u.domain === h);
+        if (coveringUrl && _rank(r.severity) <= _rank(coveringUrl.severity)) {
+          continue;
+        }
+        const coveringDom = domainCoverage.find(d => d.domain === h);
+        if (coveringDom && _rank(r.severity) <= _rank(coveringDom.severity)) {
+          continue;
+        }
+        kept.push(r);
+        continue;
+      }
+      kept.push(r);
+    }
+    return kept;
+  };
+
+  if (Array.isArray(findings.interestingStrings)) {
+    findings.interestingStrings = _filter(findings.interestingStrings);
+  }
+  if (Array.isArray(findings.externalRefs)) {
+    findings.externalRefs = _filter(findings.externalRefs);
+  }
+}
+
+/**
  * Mirror selected `findings.metadata` entries into `findings.interestingStrings`
  * so they appear in the sidebar's IOC table (which is fed *only* from
  * externalRefs + interestingStrings — metadata alone never reaches it).

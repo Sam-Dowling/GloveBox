@@ -737,7 +737,12 @@ class OsascriptRenderer {
             }
             if (findings.externalRefs.length >= 200) { emitTruncation('file-path cap reached'); break; }
         }
-        /* Bare domains — loose heuristic. Emit as HOSTNAME (no scheme). */
+        /* Bare domains — loose heuristic. Emit as DOMAIN (registrable
+         * pivot) since the regex whitelist only matches public-suffix
+         * TLDs. `IOC.HOSTNAME` is reserved for structured-source host
+         * references (cert CN, EVTX machine, LNK tracker) where the
+         * value is not a registrable domain — see
+         * CONTRIBUTING.md § IOC Taxonomy. */
         const domRe = /\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|net|org|io|xyz|info|biz|ru|cn|tk|top|cc|pw)\b/gi;
         const seenDomains = new Set();
         while ((um = domRe.exec(analysisText)) !== null) {
@@ -745,12 +750,12 @@ class OsascriptRenderer {
             if (!seenDomains.has(d)) {
                 seenDomains.add(d);
                 pushIOC(findings, {
-                    type: IOC.HOSTNAME, value: d, severity: 'info',
+                    type: IOC.DOMAIN, value: d, severity: 'info',
                     highlightText: um[0],
                     bucket: 'externalRefs',
                 });
             }
-            if (findings.externalRefs.length >= 250) { emitTruncation('hostname cap reached'); break; }
+            if (findings.externalRefs.length >= 250) { emitTruncation('domain cap reached'); break; }
         }
 
         /* Mirror auto-exec triggers. Each entry is {label, hit} — thread `hit`
