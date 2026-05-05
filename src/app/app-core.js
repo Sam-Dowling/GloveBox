@@ -948,8 +948,21 @@ class App {
         // files` list if the drop also carried files — at least the
         // analyst sees something. If there's nothing to fall back to,
         // surface an actionable toast pointing them at the Open button.
-        const loose = Array.isArray(looseFiles) ? looseFiles
+        //
+        // CRITICAL: on Chromium macOS, `DataTransfer.files` for a folder
+        // drop carries the folder itself as a synthesised "pseudo-File"
+        // whose `.arrayBuffer()` rejects with
+        //   NotFoundError: A requested file or directory could not be found...
+        // Dispatching that pseudo-File straight into `_loadFile` below
+        // would throw uncaught (the historical regression the filter
+        // guards against). `_filterReadableLooseFiles` probes each
+        // candidate with `slice(0, 1).arrayBuffer()` and correlates
+        // against the failing `fsEntries` directory-kind names, so only
+        // genuinely readable loose files reach the dispatch.
+        const rawLoose = Array.isArray(looseFiles) ? looseFiles
           : (looseFiles ? Array.from(looseFiles) : []);
+        const loose =
+          await this._filterReadableLooseFiles(rawLoose, fsEntries);
         const firstErr = walkErrors.find(w => w && w.kind === 'dir') || {};
         const errTag = firstErr.name
           ? `${firstErr.name}: ${firstErr.message || ''}`.trim()
@@ -1063,6 +1076,133 @@ class App {
     } finally {
       this._setLoading(false);
     }
+  }
+
+  // ── Loose-file readability probe for folder-walk fallback ──────────
+  //
+  // When `_ingestFolderFromEntries` falls back to `DataTransfer.files`
+  // because the directory walker refused (Chromium macOS `EncodingError`
+  // on `readEntries()`), the fallback list is NOT necessarily a list of
+  // readable leaves. On Chromium macOS, dropping a folder populates
+  // `DataTransfer.files` with the **folder itself** as a synthesised
+  // pseudo-File: it quacks like a `File` (has `name`, `size`, `type`,
+  // `lastModified`), passes `instanceof File`, but `.arrayBuffer()` —
+  // and any slice's `.arrayBuffer()` — rejects with
+  //   NotFoundError: A requested file or directory could not be found...
+  // Dispatching that pseudo-File into `_loadFile` would throw uncaught
+  // (`_loadFile` awaits `file.arrayBuffer()` inside `ParserWatchdog.run`
+  // without a try/catch that distinguishes "file gone" from "parse
+  // failed"). This is exactly the regression surfaced by the
+  // `_ingestFolderFromEntries` fallback path.
+  //
+  // Strategy — two independent filters, both applied:
+  //
+  //   1. **Name correlation.** Any `File` whose `name` matches an
+  //      `fsEntries` item with `isDirectory === true` is assumed to be
+  //      the folder pseudo-File and is dropped. This catches the common
+  //      single-folder-drop case cheaply without any I/O.
+  //
+  //   2. **Slice probe.** For every surviving candidate we issue a
+  //      `file.slice(0, 1).arrayBuffer()` in parallel and drop anything
+  //      that rejects. The probe reads at most 1 byte and runs under
+  //      `Promise.allSettled` so one slow probe can't stall the others.
+  //      This catches edge cases where name-correlation misses —
+  //      symlinked folders, bundles Chromium surfaces as pseudo-Files,
+  //      future browser quirks — and also legitimately-removed files
+  //      (analyst moved / deleted the file between drag-start and drop).
+  //
+  // Rejected entries are logged via `_reportNonFatal` with `silent:true`
+  // so devs get a breadcrumb without the analyst seeing a duplicate
+  // toast on top of the "Couldn't read folder…" one already surfaced by
+  // the caller.
+  //
+  // @param {Array<File>|FileList} looseFiles  Raw `DataTransfer.files`
+  //                                           threaded through from the
+  //                                           drop handler.
+  // @param {Array<FileSystemEntry>} fsEntries The `webkitGetAsEntry()`
+  //                                           results from the same
+  //                                           drop. Used for name-based
+  //                                           pseudo-File detection.
+  // @returns {Promise<Array<File>>}  The subset of `looseFiles` that
+  //                                  passed both filters. Preserves the
+  //                                  input order.
+  async _filterReadableLooseFiles(looseFiles, fsEntries) {
+    const raw = Array.isArray(looseFiles) ? looseFiles.slice()
+      : (looseFiles ? Array.from(looseFiles) : []);
+    if (!raw.length) return [];
+
+    // Filter 1 — drop by name correlation with directory-kind fsEntries.
+    const dirNames = new Set();
+    const entries = Array.isArray(fsEntries) ? fsEntries : [];
+    for (const ent of entries) {
+      if (ent && ent.isDirectory && typeof ent.name === 'string' && ent.name) {
+        dirNames.add(ent.name);
+      }
+    }
+    const afterNameFilter = [];
+    const nameRejected = [];
+    for (const f of raw) {
+      if (f && typeof f.name === 'string' && dirNames.has(f.name)) {
+        nameRejected.push({ name: f.name, reason: 'name-matches-directory-entry' });
+        continue;
+      }
+      afterNameFilter.push(f);
+    }
+
+    // Filter 2 — probe `slice(0, 1).arrayBuffer()` in parallel. Anything
+    // that rejects (NotFoundError / NotReadableError / SecurityError / …)
+    // is filtered out. Non-`File` shapes without `.slice` are treated as
+    // un-probeable and filtered out defensively — the load pipeline
+    // expects a real `File`-like with readable bytes.
+    const probes = afterNameFilter.map(async (f) => {
+      try {
+        if (!f || typeof f.slice !== 'function'
+            || typeof f.arrayBuffer !== 'function') {
+          return { file: f, ok: false, err: new Error('not-file-shaped') };
+        }
+        // Zero-byte files legitimately exist; `slice(0, 1)` on them
+        // yields a zero-byte blob whose `arrayBuffer()` resolves to an
+        // empty buffer. That's still a successful probe.
+        const sliced = f.slice(0, 1);
+        await sliced.arrayBuffer();
+        return { file: f, ok: true };
+      } catch (err) {
+        return { file: f, ok: false, err };
+      }
+    });
+    const probeResults = await Promise.all(probes);
+    const filtered = [];
+    const probeRejected = [];
+    for (const r of probeResults) {
+      if (r.ok) {
+        filtered.push(r.file);
+      } else {
+        probeRejected.push({
+          name: (r.file && r.file.name) || '<unnamed>',
+          reason: (r.err && r.err.name) ? r.err.name : 'probe-failed',
+          message: (r.err && r.err.message) ? r.err.message : String(r.err),
+        });
+      }
+    }
+
+    // Dev-only breadcrumb. Silent so the analyst-facing toast from the
+    // caller ("Couldn't read folder…") remains the single source of
+    // truth. `_reportNonFatal` is mixed in by app-load.js; guard for
+    // load-order paranoia even though it's required in the build graph.
+    const totalRejected = nameRejected.length + probeRejected.length;
+    if (totalRejected > 0 && typeof this._reportNonFatal === 'function') {
+      this._reportNonFatal(
+        'loose-fallback-filter',
+        new Error(
+          `Filtered ${totalRejected.toLocaleString()} non-readable entr` +
+          `${totalRejected === 1 ? 'y' : 'ies'} from folder-walk fallback ` +
+          `(${nameRejected.length} by name, ${probeRejected.length} by probe).`
+        ),
+        { silent: true },
+      );
+    }
+
+    return filtered;
   }
 
   // ── Folder ingress: loose multi-file drop / multi-select picker ────

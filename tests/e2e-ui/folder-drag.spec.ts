@@ -639,6 +639,108 @@ test.describe('folder ingest', () => {
     expect(toastText).not.toContain('truncated at 4,096');
   });
 
+  // ── Chromium macOS folder pseudo-File regression ──────────────────
+  // User report (day after the EncodingError fallback landed): dragging
+  // a folder containing a single `file.txt` from macOS Finder threw
+  //   NotFoundError: A requested file or directory could not be found at
+  //   the time an operation was processed.
+  // from inside `_loadFile`. Root cause: on Chromium macOS,
+  // `DataTransfer.files` for a folder drop contains the **folder itself**
+  // as a synthesised File whose `arrayBuffer()` / `slice().arrayBuffer()`
+  // rejects with NotFoundError. The EncodingError fallback then called
+  // `_loadFile(pseudoFolderFile)` → uncaught rejection.
+  //
+  // Post-fix contract: `_filterReadableLooseFiles` drops entries that
+  // either (a) share a name with a directory-kind fsEntry, or (b) fail
+  // a `slice(0,1).arrayBuffer()` probe. A folder-only drop whose
+  // readEntries fails AND whose DataTransfer.files is the folder pseudo-
+  // File must fall through to the actionable "use the Open button" toast
+  // — no NotFoundError, no empty-tree dispatch.
+  test('Chromium macOS folder pseudo-File in DataTransfer.files is filtered before _loadFile', async ({ page }) => {
+    // Capture any uncaught page errors so a regression (NotFoundError
+    // escaping `_loadFile`) is a hard test failure, not a silent pass.
+    const pageErrors: string[] = [];
+    page.on('pageerror', (e) => { pageErrors.push(String(e.message || e)); });
+
+    const result = await page.evaluate(async () => {
+      const w = window as unknown as {
+        app: {
+          _handleFiles(files: unknown, opts: { fsEntries: unknown[] }): void;
+          _testApiWaitForIdle(opts?: { timeoutMs?: number }): Promise<void>;
+          currentResult: { dispatchId?: string } | null;
+          _fileMeta: { name?: string } | null;
+        };
+      };
+      const failingRoot = {
+        isFile: false,
+        isDirectory: true,
+        name: 'fold',
+        fullPath: '/fold',
+        createReader() {
+          return {
+            readEntries(_ok: (e: unknown[]) => void, err: (e: Error) => void) {
+              setTimeout(() => err(Object.assign(
+                new Error('malformed URI'), { name: 'EncodingError' })), 0);
+            },
+          };
+        },
+      };
+      // Fabricate the Chromium macOS "folder pseudo-File" shape:
+      // `name` matches the directory entry; `slice(...).arrayBuffer()`
+      // rejects with NotFoundError (Node's File/Blob don't do this by
+      // default, so we mint a plain object that quacks like File). The
+      // `_filterReadableLooseFiles` probe should catch it via EITHER
+      // the name-correlation filter OR the probe rejection.
+      const pseudoFolder: unknown = {
+        name: 'fold',
+        size: 0,
+        type: '',
+        lastModified: Date.now(),
+        slice() {
+          return {
+            async arrayBuffer() {
+              throw Object.assign(
+                new Error('A requested file or directory could not be found at ' +
+                          'the time an operation was processed.'),
+                { name: 'NotFoundError' });
+            },
+          };
+        },
+        async arrayBuffer() {
+          throw Object.assign(
+            new Error('A requested file or directory could not be found at ' +
+                      'the time an operation was processed.'),
+            { name: 'NotFoundError' });
+        },
+      };
+      // Pre-condition: no file is currently loaded.
+      w.app._handleFiles([pseudoFolder], { fsEntries: [failingRoot] });
+      // The ingest resolves synchronously on the error path; give any
+      // microtask queue a tick before sampling state.
+      await new Promise(r => setTimeout(r, 250));
+      return {
+        afterDispatchId: w.app.currentResult
+          ? w.app.currentResult.dispatchId || null
+          : null,
+        afterFileMetaName: w.app._fileMeta && w.app._fileMeta.name,
+      };
+    });
+
+    // No NotFoundError escaped `_loadFile`. The pre-fix regression would
+    // surface here as a synchronous pageerror fired from inside the
+    // fallback's `await this._loadFile(loose[0])` call.
+    expect(pageErrors.filter(m => /NotFoundError/i.test(m))).toEqual([]);
+    // No empty-tree dispatch — the filter removed the pseudo-File before
+    // the fallback tried to dispatch it.
+    expect(result.afterDispatchId).toBeNull();
+
+    const toastText = await page.locator('#toast').innerText();
+    expect(toastText).toContain("Couldn't read folder");
+    expect(toastText).toContain('fold');
+    expect(toastText).toMatch(/Open button|picker|drag the files/);
+    expect(toastText).not.toContain('truncated at 4,096');
+  });
+
   // ── Auto-expand threshold honoured by ArchiveTree.render('auto') ──
   // The `'auto'` mode used by every real archive renderer expands iff
   // `entries.length <= AUTO_EXPAND_MAX_ENTRIES` (256). Verify the

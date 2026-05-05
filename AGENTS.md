@@ -325,12 +325,14 @@ Full skeleton details live in `CONTRIBUTING.md § Renderer Contract` (detection 
 - `e76ba0e` — defer vendor compile, add early drag-drop bootstrap, idle-init `BgCanvas`.
 - `3b4aa78` — hosted-mode privacy bar; external-file drag gating.
 - `<pending>` — Chromium macOS `readEntries()` EncodingError on folder drops now surfaces on `FolderFile.fromEntries`'s `walkErrors` and falls back to loose-file ingest instead of dispatching an empty tree under a misleading "truncated at 4,096" toast.
+- `<pending>` — macOS folder drops: `DataTransfer.files` carries the folder itself as a pseudo-File whose `arrayBuffer()` rejects with NotFoundError; `_filterReadableLooseFiles` (name-match + `slice(0,1).arrayBuffer()` probe) sanitises the loose-file fallback before `_loadFile` is ever called.
 
 ### State leak & cleanup
 - `eb46706` — clear copy-content cache, sidebar highlight timers, stale view refs on file-clear.
 - `0c306aa` — invalidate `rowSearchText` cache when `setRows` omits it.
 - `f030863` — clipboard + undo + drawer search + theming bug-fixes.
 - `1c1d0ad` — snapshot clipboard `DataTransfer` on paste before invalidation.
+- `<pending>` — `_loadFile` outer-catch drops the persistent `.error-box` popup; failure surfaces only as a 3 s toast. `#page-container` is still emptied so stale content doesn't linger.
 
 ### Worker-manager / lifecycle
 - `2536d00` — `_reportNonFatal` helper + silent-catch gate; pdf.worker lifecycle.
