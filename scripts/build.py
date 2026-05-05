@@ -514,6 +514,18 @@ _DETECTOR_FILES = [
     # Decompressor.inflateSync (deflate-raw / zlib / gzip) to unwrap
     # gzinflate / gzuncompress / gzdecode chains.
     'src/decoders/php-obfuscation.js',
+    # applescript-obfuscation.js — AppleScript / JXA char-code reassembly:
+    # `(ASCII character N)`, `(character id N)`, `(string id {N,N,…})`
+    # concatenated with `&` and interleaved with literal string fragments
+    # to hide the `curl -H "User-Agent: …" -d "…" https://C2` payload of
+    # a `do shell script` invocation. Emits `cmd-obfuscation` candidates
+    # so the `_processCommandObfuscation` pipeline is reused unchanged.
+    # Must load AFTER cmd-obfuscation.js (consumes _processCommandObfuscation).
+    # No cross-decoder state — independent of bash / python / php
+    # decoder load order. Downstream: a candidate that decodes to a
+    # `curl …` / `/bin/sh -c …` string is re-mined for URL / host /
+    # User-Agent by bash-obfuscation.js at sidebar "Load for analysis".
+    'src/decoders/applescript-obfuscation.js',
     # interleaved-separator.js — finds + decodes interleaved-separator
     # obfuscation (`$\x00W\x00C\x00=\x00…` → `$WC=…`). Two-pass finder:
     # (1) single-character separator at strides 2/3/4 (e.g. `a.b.c.d`),

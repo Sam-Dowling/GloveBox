@@ -388,6 +388,18 @@ class EncodedContentDetector {
     const phpObfCandidates        = (typeof this._findPhpObfuscationCandidates === 'function')
       ? _runFinder(this._findPhpObfuscationCandidates)
       : [];
+    // AppleScript / JXA char-code reassembly finder. Emits the same
+    // `cmd-obfuscation` candidate shape as the rest of the decoder
+    // family (two branches: AS1 `&`-concatenation chain of
+    // `(ASCII character N)` / `(character id N)` / `(string id {…})` /
+    // "literal" operands; AS2 standalone `string id {…}` literal array).
+    // Downstream `_processCommandObfuscation` handles severity and IOC
+    // extraction; a reassembled `curl … https://C2` payload then flows
+    // into bash-obfuscation.js on sidebar "Load for analysis".
+    // Defensively guarded against mixin-order regressions.
+    const appleScriptObfCandidates = (typeof this._findAppleScriptObfuscationCandidates === 'function')
+      ? _runFinder(this._findAppleScriptObfuscationCandidates)
+      : [];
     // JS additional obfuscator shapes — packer.js (Dean Edwards),
     // aaencode/jjencode (Hasegawa pure-symbol encoders), and
     // Function-wrapper carriers (Function(atob('...'))(),
@@ -536,6 +548,10 @@ class EncodedContentDetector {
       if (result) findings.push(result);
     }
     for (const cand of phpObfCandidates) {
+      const result = await this._processCommandObfuscation(cand);
+      if (result) findings.push(result);
+    }
+    for (const cand of appleScriptObfCandidates) {
       const result = await this._processCommandObfuscation(cand);
       if (result) findings.push(result);
     }

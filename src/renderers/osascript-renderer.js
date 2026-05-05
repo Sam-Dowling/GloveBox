@@ -35,6 +35,8 @@ class OsascriptRenderer {
         { re: /use\s+framework\s+"Foundation"/gi,                label: 'Foundation Framework Import',  desc: 'Imports Foundation framework — enables ObjC bridge in AppleScript', mitre: 'T1059.002', sev: 'medium' },
         { re: /current\s+application'?s\s+NSTask/gi,            label: 'NSTask Process Execution',     desc: 'Creates subprocess via NSTask from AppleScript-ObjC', mitre: 'T1059', sev: 'high' },
         { re: /ASCII\s+character\s+\d/gi,                        label: 'Character Code Obfuscation',   desc: 'Builds strings from ASCII codes — obfuscation technique', mitre: 'T1027', sev: 'medium' },
+        { re: /\bcharacter\s+id\s+\d/gi,                         label: 'Unicode Codepoint Obfuscation',desc: 'Builds strings from Unicode codepoints via `character id` — obfuscation technique', mitre: 'T1027', sev: 'medium' },
+        { re: /\bstring\s+id\s+\{\s*\d/gi,                       label: 'Codepoint Array Obfuscation',  desc: 'Builds strings from literal codepoint arrays via `string id {…}` — obfuscation technique rarely seen in benign AppleScript', mitre: 'T1027', sev: 'high' },
         { re: /folder\s+"?Startup\s+Items/gi,                   label: 'Startup Items Persistence',    desc: 'References legacy Startup Items folder', mitre: 'T1547', sev: 'high' },
         { re: /crontab/gi,                                       label: 'Cron Persistence',             desc: 'Installs cron job for scheduled persistence', mitre: 'T1053.003', sev: 'high' },
         { re: /defaults\s+write/gi,                              label: 'Defaults Write',               desc: 'Modifies macOS user/system defaults — may alter security settings', mitre: 'T1562', sev: 'medium' },
@@ -751,26 +753,6 @@ class OsascriptRenderer {
             if (findings.externalRefs.length >= 250) { emitTruncation('hostname cap reached'); break; }
         }
 
-        /* Mirror signatureMatches into externalRefs as IOC.PATTERN so the
-         * Summary sidebar and Share view see every detection the viewer
-         * surfaces (Detection → IOC parity).
-         *
-         * Thread `_firstMatch` through as `highlightText` so clicking the
-         * Pattern row in the sidebar locates the concrete offending substring
-         * in the Source viewer. Without it the mirrored "Label — description"
-         * string never literally appears in the rendered source and the
-         * click would silently no-op (see plist-renderer.js for the same
-         * pattern with the same explanation). */
-        for (const sm of findings.signatureMatches) {
-            pushIOC(findings, {
-                type: IOC.PATTERN,
-                value: `${sm.label} — ${sm.description}`,
-                severity: sm.severity || 'medium',
-                highlightText: sm._firstMatch || undefined,
-                bucket: 'externalRefs',
-            });
-        }
-
         /* Mirror auto-exec triggers. Each entry is {label, hit} — thread `hit`
          * through as highlightText so clicking the sidebar row scrolls the
          * Source viewer to the actual trigger token. */
@@ -799,13 +781,105 @@ class OsascriptRenderer {
             mediumCount++;
         }
 
+        /* ── Char-code / property-binding reassembly → Detection Patterns
+         *
+         * Historical context: this pass used to append its output
+         * (`-- Binding: _X -> "…"` / `-- Reassembled: do shell script
+         * "…"` lines under a `=== DEOBFUSCATED APPLESCRIPT LAYERS ===`
+         * sentinel) into `augmentedBuffer` so two YARA rules
+         * (`osascript_property_reassembled_shell_sink`,
+         * `osascript_property_char_code_dropper`) could match on the
+         * synthetic cleartext. That approach broke click-to-scroll:
+         * YARA-match offsets pointed into the synthetic suffix, which
+         * doesn't exist in the Source viewer, so sidebar click was a
+         * silent no-op. It also coupled YARA to Loupe's internal
+         * decoder output shape.
+         *
+         * The two rules were deleted (`src/rules/osascript-threats.yar`).
+         * Equivalent detections are emitted here as Detection
+         * Patterns with `_firstMatch` / source-offset anchors pointing
+         * at the REAL `property _X :` declaration or `do shell script`
+         * sink in raw source — so click-to-scroll lands on the actual
+         * offending line.
+         *
+         * The three remaining YARA rules
+         * (`osascript_char_code_obfuscation`,
+         * `osascript_char_code_admin_shell_reassembly`,
+         * `osascript_randomised_property_names`) all match on raw
+         * source bytes and continue to fire with correct offsets.
+         */
+        const bindingTable = OsascriptRenderer._reassembleBindingTable(analysisText);
+        if (bindingTable.sinks.length > 0) {
+            const first = bindingTable.sinks[0];
+            const firstMatch = analysisText.substring(first.sourceOffset, first.sourceOffset + first.sourceLength);
+            findings.signatureMatches.push({
+                label: 'AppleScript Reassembled Shell Sink',
+                description: `do shell script argument reassembled from property bindings — cleartext: "${first.resolved.length > 160 ? first.resolved.slice(0, 157) + '…' : first.resolved}"`,
+                mitre: first.isAdmin ? 'T1548.004' : 'T1027.013',
+                severity: 'critical',
+                count: bindingTable.sinks.length,
+                sample: first.resolved.substring(0, 120),
+                _firstMatch: firstMatch,
+                _sourceOffset: first.sourceOffset,
+                _sourceLength: first.sourceLength,
+            });
+            criticalCount++;
+        }
+        if (bindingTable.bindings.length >= 3) {
+            const first = bindingTable.bindings[0];
+            const firstMatch = analysisText.substring(first.sourceOffset, first.sourceOffset + first.sourceLength);
+            findings.signatureMatches.push({
+                label: 'AppleScript Property Char-Code Dropper',
+                description: `${bindingTable.bindings.length} property bindings reassembled from char-code chains — obfuscated dropper shape`,
+                mitre: 'T1027.013',
+                severity: 'high',
+                count: bindingTable.bindings.length,
+                sample: `${first.name} -> "${first.resolved.substring(0, 80)}"`,
+                _firstMatch: firstMatch,
+                _sourceOffset: first.sourceOffset,
+                _sourceLength: first.sourceLength,
+            });
+            highCount++;
+        }
+
+        /* Mirror signatureMatches into externalRefs as IOC.PATTERN so the
+         * Summary sidebar and Share view see every detection the viewer
+         * surfaces (Detection → IOC parity). Runs LAST so every
+         * signatureMatch pushed above this line — including the reassembled
+         * char-code / binding-table detections — is surfaced in the sidebar.
+         *
+         * Thread `_firstMatch` through as `highlightText` so clicking the
+         * Pattern row in the sidebar locates the concrete offending substring
+         * in the Source viewer. Without it the mirrored "Label — description"
+         * string never literally appears in the rendered source and the
+         * click would silently no-op (see plist-renderer.js for the same
+         * pattern with the same explanation). */
+        for (const sm of findings.signatureMatches) {
+            pushIOC(findings, {
+                type: IOC.PATTERN,
+                value: `${sm.label} — ${sm.description}`,
+                severity: sm.severity || 'medium',
+                highlightText: sm._firstMatch || undefined,
+                bucket: 'externalRefs',
+            });
+        }
+
         /* ── Risk assessment ─────────────────────────────────────── */
         if (criticalCount >= 1) escalateRisk(findings, 'critical');
         else if (highCount >= 2 || (highCount >= 1 && mediumCount >= 2)) escalateRisk(findings, 'high');
         else if (highCount >= 1 || mediumCount >= 3) escalateRisk(findings, 'medium');
         else if (mediumCount >= 1 || findings.signatureMatches.length > 0) escalateRisk(findings, 'low');
 
-        /* ── Augmented buffer for YARA scanning ──────────────────── */
+        /* ── Augmented buffer for YARA scanning ──────────────────────
+         *
+         * The augmented buffer is raw source + extracted-IOC appendix
+         * ONLY. Do not inject synthesised reassembly output here —
+         * YARA-match offsets must land inside bytes that exist in the
+         * Source viewer so sidebar click-to-scroll works. Reassembled
+         * cleartext is surfaced as Detection Patterns (above) with
+         * `_sourceOffset` / `_sourceLength` anchors pointing at the
+         * real declaration / sink expression in raw source.
+         */
         let augmented = analysisText;
         if (findings.externalRefs.length > 0) {
             augmented += '\n=== EXTRACTED OSASCRIPT IOCS ===\n';
@@ -813,9 +887,767 @@ class OsascriptRenderer {
                 augmented += ref.url + '\n';
             }
         }
+
         const augBytes = new TextEncoder().encode(augmented);
         findings.augmentedBuffer = augBytes.buffer;
 
         return findings;
+    }
+
+    /**
+     * Synchronous, side-effect-free AppleScript char-code reassembly.
+     * Walks every `&`-concatenated chain of codepoint-primitives and
+     * emits the resolved cleartext strings. Mirrors the two branches
+     * (AS1 `&` chain, AS2 standalone `string id {…}`) of
+     * `src/decoders/applescript-obfuscation.js::_findAppleScriptObfuscationCandidates`
+     * but WITHOUT the post-decode sensitive-keyword gate and WITHOUT
+     * building candidate objects — we only care about the cleartext, so
+     * we can feed it to YARA. The decoder still emits findings for the
+     * Detections / Deobfuscated Layers sidebar.
+     *
+     * Cap: 512 emitted strings to bound the YARA-buffer growth on
+     * pathological inputs. Returns an array of plain strings; empty
+     * array when no chains are present.
+     *
+     * Static-method so the e2e test harness can exercise it directly
+     * without constructing a renderer instance.
+     */
+    static _reassembleCharCodeChains(text) {
+        if (!text || text.length < 12) return [];
+        if (!/\b(?:ASCII\s+character|character\s+id|string\s+id\s*\{)/i.test(text)) return [];
+        const MAX_CHAINS = 512;
+        const MAX_RESOLVED_LEN = 8 * 1024;
+        const MAX_STRID_CODES = 4096;
+        const MAX_CHAIN_NODES = 2048;
+
+        const out = [];
+        const seen = new Set();
+        const push = (s) => {
+            if (!s || s.length < 3) return;
+            if (s.length > MAX_RESOLVED_LEN) s = s.slice(0, MAX_RESOLVED_LEN);
+            if (seen.has(s)) return;
+            seen.add(s);
+            out.push(s);
+        };
+
+        const safeCodepoint = (n) => Number.isFinite(n) && n >= 0 && n <= 0x10FFFF;
+        const parseCodeList = (body) => {
+            const parts = body.split(',');
+            if (parts.length < 1 || parts.length > MAX_STRID_CODES) return null;
+            const arr = [];
+            for (const p of parts) {
+                const t = p.trim();
+                if (!/^\d{1,6}$/.test(t)) return null;
+                const n = parseInt(t, 10);
+                if (!safeCodepoint(n)) return null;
+                arr.push(n);
+            }
+            return arr;
+        };
+        const dequote = (s) => {
+            if (s.length < 2 || s[0] !== '"' || s[s.length - 1] !== '"') return null;
+            const body = s.slice(1, -1);
+            let r = '';
+            for (let i = 0; i < body.length; i++) {
+                const ch = body[i];
+                if (ch !== '\\') { r += ch; continue; }
+                if (i + 1 >= body.length) { r += '\\'; break; }
+                const nx = body[i + 1];
+                if (nx === 'n') { r += '\n'; i++; continue; }
+                if (nx === 'r') { r += '\r'; i++; continue; }
+                if (nx === 't') { r += '\t'; i++; continue; }
+                r += nx; i++;
+            }
+            return r;
+        };
+
+        // AS1: &-concatenation chain.
+        /* safeRegex: builtin */
+        const chainRe = new RegExp(
+            '(?:'
+              + '\\(\\s*ASCII\\s+character\\s+\\d{1,6}\\s*\\)'
+            + '|'
+              + '\\(\\s*character\\s+id\\s+\\d{1,6}\\s*\\)'
+            + '|'
+              + '\\(?\\s*string\\s+id\\s*\\{[^}]{1,32768}\\}\\s*\\)?'
+            + '|'
+              + '"(?:[^"\\\\\\r\\n]|\\\\.){0,512}"'
+            + ')'
+            + '(?:\\s*&\\s*'
+            + '(?:'
+              + '\\(\\s*ASCII\\s+character\\s+\\d{1,6}\\s*\\)'
+            + '|'
+              + '\\(\\s*character\\s+id\\s+\\d{1,6}\\s*\\)'
+            + '|'
+              + '\\(?\\s*string\\s+id\\s*\\{[^}]{1,32768}\\}\\s*\\)?'
+            + '|'
+              + '"(?:[^"\\\\\\r\\n]|\\\\.){0,512}"'
+            + ')'
+            + '){1,' + MAX_CHAIN_NODES + '}',
+            'gi'
+        );
+        let m;
+        while ((m = chainRe.exec(text)) !== null) {
+            if (out.length >= MAX_CHAINS) break;
+            // Resolve the chain via the same operand walk the decoder uses.
+            const raw = m[0];
+            // Only emit when at least one codepoint primitive is present —
+            // pure string-concat isn't an obfuscation layer worth writing
+            // to the YARA buffer (would just duplicate what's already in
+            // analysisText).
+            if (!/\b(?:ASCII\s+character|character\s+id|string\s+id)\b/i.test(raw)) continue;
+            // Inline operand walk (kept in-sync with
+            // `_asResolveChain` in applescript-obfuscation.js).
+            let i = 0;
+            let resolved = '';
+            let ok = true;
+            while (i < raw.length && ok) {
+                while (i < raw.length && (raw[i] === ' ' || raw[i] === '\t' || raw[i] === '\r' || raw[i] === '\n' || raw[i] === '&')) i++;
+                if (i >= raw.length) break;
+                const start = i;
+                if (raw[i] === '"') {
+                    i++;
+                    while (i < raw.length) {
+                        if (raw[i] === '\\' && i + 1 < raw.length) { i += 2; continue; }
+                        if (raw[i] === '"') { i++; break; }
+                        i++;
+                    }
+                    const s = dequote(raw.slice(start, i));
+                    if (s === null) { ok = false; break; }
+                    resolved += s;
+                } else if (raw[i] === '(' || raw[i] === '{') {
+                    const openers = { '(': ')', '{': '}' };
+                    const stack = [openers[raw[i]]];
+                    i++;
+                    while (i < raw.length && stack.length > 0) {
+                        const c = raw[i];
+                        if (c === '"') {
+                            i++;
+                            while (i < raw.length) {
+                                if (raw[i] === '\\' && i + 1 < raw.length) { i += 2; continue; }
+                                if (raw[i] === '"') { i++; break; }
+                                i++;
+                            }
+                            continue;
+                        }
+                        if (c === '(' || c === '{') stack.push(openers[c]);
+                        else if (c === stack[stack.length - 1]) stack.pop();
+                        i++;
+                    }
+                    if (stack.length !== 0) { ok = false; break; }
+                    let body = raw.slice(start, i);
+                    if (body[0] === '(' && body[body.length - 1] === ')') body = body.slice(1, -1).trim();
+                    let mm;
+                    if ((mm = /^ASCII\s+character\s+(\d{1,6})$/i.exec(body))) {
+                        const n = parseInt(mm[1], 10);
+                        if (!safeCodepoint(n)) { ok = false; break; }
+                        try { resolved += String.fromCodePoint(n); } catch (_) { ok = false; break; }
+                    } else if ((mm = /^character\s+id\s+(\d{1,6})$/i.exec(body))) {
+                        const n = parseInt(mm[1], 10);
+                        if (!safeCodepoint(n)) { ok = false; break; }
+                        try { resolved += String.fromCodePoint(n); } catch (_) { ok = false; break; }
+                    } else if ((mm = /^string\s+id\s*\{([^}]{1,32768})\}$/i.exec(body))) {
+                        const codes = parseCodeList(mm[1]);
+                        if (!codes) { ok = false; break; }
+                        try { resolved += String.fromCodePoint(...codes); } catch (_) { ok = false; break; }
+                    } else {
+                        // Unknown primitive — skip this operand.
+                    }
+                } else if (/[a-zA-Z]/.test(raw[i])) {
+                    const slice = raw.slice(i);
+                    const stridMatch = /^string\s+id\s*\{([^}]{1,32768})\}/i.exec(slice);
+                    if (stridMatch) {
+                        const codes = parseCodeList(stridMatch[1]);
+                        if (!codes) { ok = false; break; }
+                        try { resolved += String.fromCodePoint(...codes); } catch (_) { ok = false; break; }
+                        i += stridMatch[0].length;
+                    } else {
+                        ok = false; break;
+                    }
+                } else {
+                    ok = false; break;
+                }
+                if (resolved.length > MAX_RESOLVED_LEN) break;
+            }
+            if (ok) push(resolved);
+        }
+
+        // AS2: standalone `string id {…}` — dedup against the chain hits
+        // the Set already holds.
+        /* safeRegex: builtin */
+        const stridRe = /\bstring\s+id\s*\{([^}]{1,32768})\}/gi;
+        while ((m = stridRe.exec(text)) !== null) {
+            if (out.length >= MAX_CHAINS) break;
+            const codes = parseCodeList(m[1]);
+            if (!codes || codes.length < 3) continue;
+            let resolved;
+            try { resolved = String.fromCodePoint(...codes); }
+            catch (_) { continue; }
+            push(resolved);
+        }
+
+        return out;
+    }
+
+    /**
+     * Produce a structured binding-resolution table for the
+     * renderer's Detection-Pattern emission.
+     *
+     * Scans the file for `property <name> : <rhs>` / `set <name> to
+     * <rhs>` / `global <name> : <rhs>` / `local <name> : <rhs>`
+     * declarations, resolves their RHS expressions (including cross-
+     * references via fixed-point iteration), and walks every
+     * `do shell script <expr>` sink substituting resolved bindings.
+     *
+     * Returns `{ lines, bindings, sinks }`:
+     *   • `lines`    — legacy text-view array (`-- Binding: …`,
+     *     `-- Reassembled: …`) retained for unit-test shape coverage;
+     *     no longer injected into `augmentedBuffer`.
+     *   • `bindings` — `Array<{name, kind, resolved, sourceOffset,
+     *     sourceLength}>` where offsets anchor at the `property _X :`
+     *     / `set _X to` declaration in raw source. Used by
+     *     `render()` to emit the `AppleScript Property Char-Code
+     *     Dropper` signatureMatch with click-to-scroll.
+     *   • `sinks`    — `Array<{resolved, isAdmin, sourceOffset,
+     *     sourceLength}>` where offsets anchor at the `do shell
+     *     script` keyword in raw source. Used to emit the
+     *     `AppleScript Reassembled Shell Sink` signatureMatch.
+     *
+     * Historical note: this helper used to inject its output into
+     * `findings.augmentedBuffer` so YARA rules could match on the
+     * synthetic `-- Reassembled: …` / `-- Binding: …` markers. That
+     * approach broke click-to-scroll (the markers don't exist in the
+     * Source viewer) and coupled YARA to Loupe's decoder output. The
+     * two rules (`osascript_property_reassembled_shell_sink` and
+     * `osascript_property_char_code_dropper`) were deleted and
+     * replaced with in-renderer signatureMatch emitters that anchor
+     * to real source offsets.
+     *
+     * Mirrors the logic of
+     * `EncodedContentDetector._findAppleScriptObfuscationCandidates`
+     * but runs synchronously and without building findings — we only
+     * need the resolved values + source anchors surfaced. The decoder
+     * path covers per-binding sidebar emission.
+     *
+     * Caps mirror the decoder: 512 bindings, 8 KiB per resolved value,
+     * 1 MiB aggregate, 8 resolution rounds, 64 shell sinks.
+     */
+    static _reassembleBindingTable(text) {
+        if (!text || text.length < 16) return { lines: [], bindings: [], sinks: [] };
+        if (!/\b(?:property\s+_|\bset\s+_|\bdo\s+shell\s+script\b)/i.test(text)) return { lines: [], bindings: [], sinks: [] };
+
+        const MAX_BINDINGS = 512;
+        const MAX_RESOLVED_LEN = 8 * 1024;
+        const MAX_AGGREGATE = 1024 * 1024;
+        const MAX_ROUNDS = 8;
+        const MAX_SINKS = 64;
+        const MAX_CHAIN_NODES = 2048;
+        const MAX_STRID_CODES = 4096;
+
+        const safeCp = (n) => Number.isFinite(n) && n >= 0 && n <= 0x10FFFF;
+        const parseCodeList = (body) => {
+            const parts = body.split(',');
+            if (parts.length < 1 || parts.length > MAX_STRID_CODES) return null;
+            const arr = [];
+            for (const p of parts) {
+                const t = p.trim();
+                if (!/^\d{1,6}$/.test(t)) return null;
+                const n = parseInt(t, 10);
+                if (!safeCp(n)) return null;
+                arr.push(n);
+            }
+            return arr;
+        };
+        const dequote = (s) => {
+            if (typeof s !== 'string' || s.length < 2) return null;
+            if (s[0] !== '"' || s[s.length - 1] !== '"') return null;
+            const body = s.slice(1, -1);
+            let r = '';
+            for (let i = 0; i < body.length; i++) {
+                const ch = body[i];
+                if (ch !== '\\') { r += ch; continue; }
+                if (i + 1 >= body.length) { r += '\\'; break; }
+                const nx = body[i + 1];
+                if (nx === 'n') { r += '\n'; i++; continue; }
+                if (nx === 'r') { r += '\r'; i++; continue; }
+                if (nx === 't') { r += '\t'; i++; continue; }
+                r += nx; i++;
+            }
+            return r;
+        };
+
+        // Classify a `(…)` or `{…}` body as a primitive, or signal
+        // that it needs recursive expression tokenisation.
+        const classifyBody = (raw) => {
+            if (typeof raw !== 'string' || raw.length < 2) return null;
+            if (raw[0] === '{' && raw[raw.length - 1] === '}') {
+                const codes = parseCodeList(raw.slice(1, -1));
+                if (!codes) return null;
+                try { return { kind: 'primitive', value: String.fromCodePoint(...codes) }; }
+                catch (_) { return null; }
+            }
+            if (raw[0] !== '(' || raw[raw.length - 1] !== ')') return null;
+            const inner = raw.slice(1, -1).trim();
+            let mm;
+            if ((mm = /^ASCII\s+character\s+(\d{1,6})$/i.exec(inner))) {
+                const n = parseInt(mm[1], 10);
+                if (!safeCp(n)) return null;
+                try { return { kind: 'primitive', value: String.fromCodePoint(n) }; }
+                catch (_) { return null; }
+            }
+            if ((mm = /^character\s+id\s+(\d{1,6})$/i.exec(inner))) {
+                const n = parseInt(mm[1], 10);
+                if (!safeCp(n)) return null;
+                try { return { kind: 'primitive', value: String.fromCodePoint(n) }; }
+                catch (_) { return null; }
+            }
+            if ((mm = /^string\s+id\s*\{([^}]{1,32768})\}$/i.exec(inner))) {
+                const codes = parseCodeList(mm[1]);
+                if (!codes) return null;
+                try { return { kind: 'primitive', value: String.fromCodePoint(...codes) }; }
+                catch (_) { return null; }
+            }
+            return { kind: 'expression' };
+        };
+
+        const keywordBlocklist = /^(?:of|to|in|with|without|the|a|an|and|or|not|as|if|then|else|return|set|get|tell|end|on|property|global|local|true|false|it|me|my|where|whose|from|into|ref|through|thru|considering|ignoring|until|while|repeat)$/i;
+
+        const tokenise = (raw) => {
+            if (typeof raw !== 'string') return null;
+            const operands = [];
+            let i = 0;
+            const len = raw.length;
+            while (i < len) {
+                while (i < len && (raw[i] === ' ' || raw[i] === '\t' || raw[i] === '\r' || raw[i] === '\n' || raw[i] === '&')) i++;
+                if (i >= len) break;
+                if (operands.length >= MAX_CHAIN_NODES) return null;
+                const start = i;
+                if (raw[i] === '"') {
+                    i++;
+                    while (i < len) {
+                        if (raw[i] === '\\' && i + 1 < len) { i += 2; continue; }
+                        if (raw[i] === '"') { i++; break; }
+                        i++;
+                    }
+                    const tok = raw.slice(start, i);
+                    const val = dequote(tok);
+                    if (val === null) return null;
+                    operands.push({ kind: 'literal', value: val });
+                    continue;
+                }
+                if (raw[i] === '(' || raw[i] === '{') {
+                    const openers = { '(': ')', '{': '}' };
+                    const stack = [openers[raw[i]]];
+                    i++;
+                    while (i < len && stack.length > 0) {
+                        const c = raw[i];
+                        if (c === '"') {
+                            i++;
+                            while (i < len) {
+                                if (raw[i] === '\\' && i + 1 < len) { i += 2; continue; }
+                                if (raw[i] === '"') { i++; break; }
+                                i++;
+                            }
+                            continue;
+                        }
+                        if (c === '(' || c === '{') stack.push(openers[c]);
+                        else if (c === stack[stack.length - 1]) stack.pop();
+                        i++;
+                    }
+                    if (stack.length !== 0) return null;
+                    const tok = raw.slice(start, i);
+                    const inner = classifyBody(tok);
+                    if (inner && inner.kind === 'primitive') {
+                        operands.push({ kind: 'primitive', value: inner.value });
+                    } else if (inner && inner.kind === 'expression') {
+                        const nested = tokenise(tok.slice(1, -1));
+                        if (nested === null) return null;
+                        for (const op of nested) {
+                            if (operands.length >= MAX_CHAIN_NODES) return null;
+                            operands.push(op);
+                        }
+                    } else {
+                        operands.push({ kind: 'unknown' });
+                    }
+                    continue;
+                }
+                if (/[A-Za-z_]/.test(raw[i])) {
+                    const slice = raw.slice(i);
+                    // Multi-token `quoted form of <primary>` unary operator —
+                    // POSIX-quotes the operand for shell use. See decoder
+                    // for the design rationale; duplicated here so the YARA
+                    // buffer sees shell-quoted args instead of three
+                    // unresolved-placeholder spans.
+                    const qfm = /^quoted\s+form\s+of\s+/i.exec(slice);
+                    if (qfm) {
+                        const afterKw = i + qfm[0].length;
+                        let j = afterKw;
+                        let operand = null;
+                        if (j < len && (raw[j] === '(' || raw[j] === '{')) {
+                            const openers2 = { '(': ')', '{': '}' };
+                            const st2 = [openers2[raw[j]]];
+                            const opStart = j;
+                            j++;
+                            while (j < len && st2.length > 0) {
+                                const c = raw[j];
+                                if (c === '"') {
+                                    j++;
+                                    while (j < len) {
+                                        if (raw[j] === '\\' && j + 1 < len) { j += 2; continue; }
+                                        if (raw[j] === '"') { j++; break; }
+                                        j++;
+                                    }
+                                    continue;
+                                }
+                                if (c === '(' || c === '{') st2.push(openers2[c]);
+                                else if (c === st2[st2.length - 1]) st2.pop();
+                                j++;
+                            }
+                            if (st2.length !== 0) return null;
+                            const tok = raw.slice(opStart, j);
+                            const inner2 = classifyBody(tok);
+                            if (inner2 && inner2.kind === 'primitive') {
+                                operand = { kind: 'primitive', value: inner2.value };
+                            } else if (inner2 && inner2.kind === 'expression') {
+                                const nested2 = tokenise(tok.slice(1, -1));
+                                if (nested2 === null) return null;
+                                operand = { kind: 'group', operands: nested2 };
+                            } else {
+                                operand = { kind: 'unknown' };
+                            }
+                        } else if (j < len && raw[j] === '"') {
+                            const strStart = j;
+                            j++;
+                            while (j < len) {
+                                if (raw[j] === '\\' && j + 1 < len) { j += 2; continue; }
+                                if (raw[j] === '"') { j++; break; }
+                                j++;
+                            }
+                            const tok = raw.slice(strStart, j);
+                            const val = dequote(tok);
+                            if (val === null) return null;
+                            operand = { kind: 'literal', value: val };
+                        } else if (j < len && /[A-Za-z_]/.test(raw[j])) {
+                            const idMatch2 = /^[_A-Za-z][A-Za-z0-9_]{0,63}/.exec(raw.slice(j));
+                            if (idMatch2) {
+                                operand = { kind: 'ref', name: idMatch2[0] };
+                                j += idMatch2[0].length;
+                            }
+                        }
+                        if (operand) {
+                            operands.push({ kind: 'quoted_form_of', operand });
+                            i = j;
+                            continue;
+                        }
+                    }
+                    let mm;
+                    if ((mm = /^string\s+id\s*\{[^}]{1,32768}\}/i.exec(slice))) {
+                        const body = /\{([^}]{1,32768})\}/.exec(mm[0])[1];
+                        const codes = parseCodeList(body);
+                        if (!codes) return null;
+                        try { operands.push({ kind: 'primitive', value: String.fromCodePoint(...codes) }); }
+                        catch (_) { return null; }
+                        i += mm[0].length;
+                        continue;
+                    }
+                    if ((mm = /^ASCII\s+character\s+\d{1,6}/i.exec(slice))) {
+                        const n = parseInt(/\d{1,6}/.exec(mm[0])[0], 10);
+                        if (!safeCp(n)) return null;
+                        try { operands.push({ kind: 'primitive', value: String.fromCodePoint(n) }); }
+                        catch (_) { return null; }
+                        i += mm[0].length;
+                        continue;
+                    }
+                    if ((mm = /^character\s+id\s+\d{1,6}/i.exec(slice))) {
+                        const n = parseInt(/\d{1,6}/.exec(mm[0])[0], 10);
+                        if (!safeCp(n)) return null;
+                        try { operands.push({ kind: 'primitive', value: String.fromCodePoint(n) }); }
+                        catch (_) { return null; }
+                        i += mm[0].length;
+                        continue;
+                    }
+                    const idMatch = /^[_A-Za-z][A-Za-z0-9_]{0,63}/.exec(slice);
+                    if (idMatch) {
+                        const name = idMatch[0];
+                        if (keywordBlocklist.test(name)) operands.push({ kind: 'unknown' });
+                        else operands.push({ kind: 'ref', name });
+                        i += name.length;
+                        continue;
+                    }
+                    let j = i;
+                    while (j < len && raw[j] !== '&' && raw[j] !== ' ' && raw[j] !== '\t' && raw[j] !== '\r' && raw[j] !== '\n' && raw[j] !== '(' && raw[j] !== '{' && raw[j] !== '"') j++;
+                    operands.push({ kind: 'unknown' });
+                    i = j;
+                    continue;
+                }
+                return null;
+            }
+            return operands;
+        };
+
+        const posixQuote = (s) => {
+            if (typeof s !== 'string' || s.length === 0) return "''";
+            return "'" + s.replace(/'/g, "'\\''") + "'";
+        };
+
+        const resolveOps = (operands, bindings, stack) => {
+            if (!Array.isArray(operands)) return null;
+            let value = '';
+            let fully = true;
+            for (const op of operands) {
+                let piece;
+                if (op.kind === 'literal' || op.kind === 'primitive') {
+                    piece = op.value;
+                } else if (op.kind === 'ref') {
+                    if (stack.indexOf(op.name) !== -1) {
+                        piece = '\u27E8circular:' + op.name + '\u27E9';
+                        fully = false;
+                    } else {
+                        const t = bindings.get(op.name);
+                        if (t && typeof t.value === 'string') {
+                            // Accept partially-resolved ref targets —
+                            // a value like `"https://⟨unresolved:X⟩/"`
+                            // carries the static prefix/suffix which
+                            // is useful. Propagate fully=false so the
+                            // outer signal still reflects that
+                            // resolution is incomplete. Mirror of the
+                            // same logic in the decoder's
+                            // `_asResolveOperands`.
+                            piece = t.value;
+                            if (!t.fullyResolved) fully = false;
+                        } else {
+                            piece = '\u27E8unresolved:' + op.name + '\u27E9';
+                            fully = false;
+                        }
+                    }
+                } else if (op.kind === 'quoted_form_of') {
+                    const inner = resolveOps([op.operand], bindings, stack);
+                    if (inner === null) return null;
+                    if (inner.fully) {
+                        piece = posixQuote(inner.value);
+                    } else {
+                        piece = 'quoted form of ' + inner.value;
+                        fully = false;
+                    }
+                } else if (op.kind === 'group') {
+                    const inner = resolveOps(op.operands, bindings, stack);
+                    if (inner === null) return null;
+                    piece = inner.value;
+                    if (!inner.fully) fully = false;
+                } else {
+                    piece = '\u27E8unknown\u27E9';
+                    fully = false;
+                }
+                value += piece;
+                if (value.length > MAX_RESOLVED_LEN) return null;
+            }
+            return { value, fully };
+        };
+
+        // Collect bindings.
+        const norm = text.replace(/[\u00AC\\][ \t]*\r?\n[ \t]*/g, ' ');
+
+        // Handler-range detection — mirror of decoder's scope classifier.
+        // Bindings inside `on NAME() … end NAME` are genuine runtime
+        // assignments and must not be treated as file-scope values
+        // (see applescript-obfuscation.js for the full rationale).
+        const handlerRanges = [];
+        {
+            /* safeRegex: builtin */
+            const onRe = /^[ \t]*on\s+([A-Za-z_][A-Za-z0-9_]{0,63})\b[^\r\n]*$/gim;
+            let om;
+            while ((om = onRe.exec(norm)) !== null) {
+                const hName = om[1];
+                if (hName.toLowerCase() === 'error') continue;
+                const startOff = om.index + om[0].length;
+                /* safeRegex: builtin */
+                const endRe = new RegExp(
+                    '^[ \\t]*end\\s+' + hName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&') + '\\b[^\\r\\n]*$',
+                    'im'
+                );
+                const endM = endRe.exec(norm.slice(startOff));
+                if (endM) {
+                    const endOff = startOff + endM.index + endM[0].length;
+                    handlerRanges.push([om.index, endOff]);
+                    onRe.lastIndex = endOff;
+                }
+            }
+        }
+        const insideHandler = (off) => {
+            for (const [a, b] of handlerRanges) {
+                if (off >= a && off < b) return true;
+            }
+            return false;
+        };
+
+        const bindings = new Map();
+        // Runtime-accessor gate — parallel to decoder's
+        // `_AS_RUNTIME_ACCESSOR_RE`. Handler-local `set`s whose RHS
+        // contains these keywords are refused because the value
+        // depends on handler-argument or loop-iterator state we can't
+        // know statically.
+        const RUNTIME_ACCESSOR_RE =
+            /\b(?:contents\s+of|count\s+of|item\s+\d+\s+of|first\s+\w+\s+of|last\s+\w+\s+of|every\s+\w+\s+of|value\s+of|result|return\s+value\s+of|call\s+method|current\s+application|system\s+info|POSIX\s+file|do\s+shell\s+script)\b/i;
+        const record = (name, kind, offset, length, rhs) => {
+            if (bindings.size >= MAX_BINDINGS) return;
+            // Handler-local bindings: admit if RHS is self-contained
+            // (no runtime accessors) — parity with decoder path. File-
+            // scope bindings (property / global / local + top-level
+            // set) admit unconditionally. Records carry a
+            // `handlerScoped` flag so the structured output can
+            // discriminate if any future consumer needs it.
+            const handlerScoped = insideHandler(offset);
+            if (handlerScoped && RUNTIME_ACCESSOR_RE.test(rhs)) return;
+            if (/^\s*do\s+shell\s+script\b/i.test(rhs)) return;
+            const ops = tokenise(rhs.trim());
+            if (ops === null) return;
+            let hasPrim = false;
+            const refs = new Set();
+            let isPureEmpty = false;
+            for (const op of ops) {
+                if (op.kind === 'primitive') hasPrim = true;
+                else if (op.kind === 'quoted_form_of') hasPrim = true;
+                else if (op.kind === 'group') hasPrim = true;
+                else if (op.kind === 'ref') refs.add(op.name);
+            }
+            if (ops.length === 1 && ops[0].kind === 'literal' && ops[0].value === '') {
+                isPureEmpty = true;
+            }
+            // First-seen-wins with empty-property override. Handler-
+            // local bindings never override — mirror of decoder.
+            if (bindings.has(name)) {
+                const existing = bindings.get(name);
+                const existingIsPureEmpty =
+                    existing.operands &&
+                    existing.operands.length === 1 &&
+                    existing.operands[0].kind === 'literal' &&
+                    existing.operands[0].value === '';
+                if (!existingIsPureEmpty) return;
+                if (isPureEmpty) return;
+                if (handlerScoped) return;
+            }
+            bindings.set(name, {
+                name, kind, operands: ops,
+                value: null, fullyResolved: false,
+                refs, hasPrimitive: hasPrim,
+                sourceOffset: offset, sourceLength: length,
+                handlerScoped,
+            });
+        };
+        /* safeRegex: builtin */
+        const propRe = /^[ \t]*(property|global|local)\s+([_A-Za-z][A-Za-z0-9_]{0,63})\s*:\s*(.{1,8192})$/gim;
+        /* safeRegex: builtin */
+        const setRe = /^[ \t]*set\s+([_A-Za-z][A-Za-z0-9_]{0,63})\s+to\s+(.{1,8192})$/gim;
+        let m;
+        while ((m = propRe.exec(norm)) !== null) {
+            record(m[2], m[1].toLowerCase(), m.index, m[0].length, m[3]);
+            if (bindings.size >= MAX_BINDINGS) break;
+        }
+        while ((m = setRe.exec(norm)) !== null) {
+            record(m[1], 'set', m.index, m[0].length, m[2]);
+            if (bindings.size >= MAX_BINDINGS) break;
+        }
+
+        // Resolve: bootstrap + fixed-point.
+        for (const rec of bindings.values()) {
+            if (!rec.operands) continue;
+            if (rec.refs.size !== 0) continue;
+            const r = resolveOps(rec.operands, bindings, [rec.name]);
+            if (r === null) continue;
+            rec.value = r.value;
+            rec.fullyResolved = r.fully;
+        }
+        for (let round = 0; round < MAX_ROUNDS; round++) {
+            let changed = false;
+            for (const rec of bindings.values()) {
+                if (!rec.operands) continue;
+                if (rec.fullyResolved) continue;
+                const r = resolveOps(rec.operands, bindings, [rec.name]);
+                if (r === null) continue;
+                const prev = rec.value;
+                rec.value = r.value;
+                rec.fullyResolved = r.fully;
+                if (prev !== r.value) changed = true;
+            }
+            if (!changed) break;
+        }
+
+        // Emit table lines.
+        //
+        // Return shape is `{ lines, bindings, sinks }`:
+        //   • `lines` — legacy text view (kept for unit-test coverage of
+        //     the reassembly format; no longer injected into
+        //     augmentedBuffer since the YARA rules that keyed on these
+        //     markers were migrated to Detection Patterns).
+        //   • `bindings` — structured array of resolved bindings with
+        //     their original source-offset anchors so the caller can
+        //     emit a `signatureMatch` with click-to-scroll wiring.
+        //   • `sinks` — structured array of resolved `do shell script`
+        //     expressions with source-offset anchors pointing at the
+        //     `do shell script` keyword in the raw file.
+        const lines = [];
+        const bindingOut = [];
+        const sinkOut = [];
+        let aggregate = 0;
+        for (const rec of bindings.values()) {
+            if (typeof rec.value !== 'string') continue;
+            if (rec.value.length < 3) continue;
+            if (!rec.hasPrimitive && rec.refs.size === 0) continue;
+            aggregate += rec.value.length;
+            if (aggregate > MAX_AGGREGATE) break;
+            const clipped = rec.value.length > MAX_RESOLVED_LEN
+                ? rec.value.slice(0, MAX_RESOLVED_LEN) + '…'
+                : rec.value;
+            // Newlines in resolved values would break YARA rules that
+            // match on whole lines — strip them for the table emission.
+            const flat = clipped.replace(/[\r\n]+/g, ' ');
+            lines.push('-- Binding: ' + rec.name + ' (' + rec.kind + ') -> "' + flat + '"');
+            bindingOut.push({
+                name: rec.name,
+                kind: rec.kind,
+                resolved: flat,
+                sourceOffset: rec.sourceOffset,
+                sourceLength: rec.sourceLength,
+                handlerScoped: !!rec.handlerScoped,
+            });
+        }
+
+        // Walk `do shell script <expr>` sinks.
+        /* safeRegex: builtin */
+        const sinkRe = /\bdo\s+shell\s+script\s+(.{1,4096}?)(?:\s+(?=with\s+administrator\s+privileges\b|password\b|as\s+\w+|without\b|returning\b)|(?=[\r\n])|$)/gi;
+        let sinks = 0;
+        while ((m = sinkRe.exec(text)) !== null) {
+            if (sinks++ >= MAX_SINKS) break;
+            let expr = m[1].trim();
+            if (expr.length >= 2 && expr[0] === '(' && expr[expr.length - 1] === ')') {
+                expr = expr.slice(1, -1).trim();
+            }
+            const ops = tokenise(expr);
+            if (!ops || ops.length === 0) continue;
+            const hasPrim = ops.some(op => op.kind === 'primitive');
+            const hasRef = ops.some(op => op.kind === 'ref');
+            const hasQf = ops.some(op => op.kind === 'quoted_form_of');
+            const hasGroup = ops.some(op => op.kind === 'group');
+            if (!hasPrim && !hasRef && !hasQf && !hasGroup) continue;
+            const r = resolveOps(ops, bindings, ['__sink']);
+            if (!r) continue;
+            if (r.value.length < 3) continue;
+            const tailStart = m.index + m[0].length;
+            const tail = text.substring(tailStart, tailStart + 120);
+            const isAdmin = /^\s*with\s+administrator\s+privileges\b/i.test(tail);
+            const flat = r.value.replace(/[\r\n]+/g, ' ').slice(0, MAX_RESOLVED_LEN);
+            lines.push('-- Reassembled: do shell script "' + flat + '"' + (isAdmin ? ' with administrator privileges' : ''));
+            sinkOut.push({
+                resolved: flat,
+                isAdmin,
+                // Anchor at the `do shell script` keyword — that's what
+                // an analyst wants to scroll to, not the resolved
+                // cleartext which only exists in the sidebar.
+                sourceOffset: m.index,
+                sourceLength: m[0].length,
+            });
+        }
+
+        return { lines, bindings: bindingOut, sinks: sinkOut };
     }
 }

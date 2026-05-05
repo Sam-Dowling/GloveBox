@@ -313,3 +313,57 @@ rule osascript_multi_technique_attack
     condition:
         $shell and 1 of ($dialog, $admin) and 1 of ($persist1, $persist2, $persist3) and (1 of ($cred1, $cred2) or 1 of ($dl1, $dl2))
 }
+
+rule osascript_char_code_obfuscation
+{
+    meta:
+        description = "AppleScript obfuscates strings via ASCII character / character id / string id codepoint chains — shell argument reassembled at runtime"
+        severity    = "high"
+        category    = "defense-evasion"
+        mitre       = "T1027"
+        applies_to  = "scpt"
+    strings:
+        $ascii  = /\(\s*ASCII\s+character\s+\d{1,6}\s*\)/ nocase
+        $charid = /\(\s*character\s+id\s+\d{1,6}\s*\)/ nocase
+        $strid  = /string\s+id\s*\{\s*\d/ nocase
+        $shell  = "do shell script" ascii nocase
+        $qform  = "quoted form of" ascii nocase
+    condition:
+        (#ascii >= 8 or #charid >= 8) or
+        ($strid and ($shell or $qform)) or
+        (#ascii >= 3 and #charid >= 3 and ($shell or $qform))
+}
+
+rule osascript_char_code_admin_shell_reassembly
+{
+    meta:
+        description = "AppleScript reassembles a `do shell script` admin invocation from codepoint chains — high-confidence dropper shape"
+        severity    = "critical"
+        category    = "execution"
+        mitre       = "T1548.004"
+        applies_to  = "scpt"
+    strings:
+        $shell = "do shell script" ascii nocase
+        $admin = "administrator privileges" ascii nocase
+        $ascii = /\(\s*ASCII\s+character\s+\d{1,6}\s*\)/ nocase
+        $strid = /string\s+id\s*\{\s*\d/ nocase
+    condition:
+        $shell and $admin and (#ascii >= 5 or $strid)
+}
+
+rule osascript_randomised_property_names
+{
+    meta:
+        description = "AppleScript file declares multiple randomised `property _XXXXXX` bindings combined with char-code primitives — obfuscated stager shape"
+        severity    = "medium"
+        category    = "defense-evasion"
+        mitre       = "T1027.013"
+        applies_to  = "scpt"
+    strings:
+        $prop   = /\bproperty\s+_[A-Za-z0-9]{6,}\s*:/ nocase
+        $ascii  = "(ASCII character " ascii nocase
+        $charid = "(character id " ascii nocase
+        $strid  = "string id {" ascii nocase
+    condition:
+        #prop >= 3 and 1 of ($ascii, $charid, $strid)
+}

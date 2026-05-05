@@ -1076,6 +1076,25 @@ class RendererRegistry {
    * AppleScript / JXA text heuristic. Kept here because several renderers
    * want the same decision. Score-based so a lone "tell me" in prose
    * doesn't get hijacked.
+   *
+   * Cutoff is 4 (not 5) so an obfuscated AppleScript that builds its
+   * `do shell script` argument via `(ASCII character N) & (character id
+   * N) & "literal" & …` still claims the file even when pasted (without
+   * an `.applescript` extension the magic + extension passes both miss,
+   * so this sniff is the only dispatch route to `OsascriptRenderer`).
+   *
+   * The three char-code-reassembly signals are weighted heavily because
+   * they're *themselves* obfuscation tells — benign AppleScript rarely
+   * uses `ASCII character N` / `character id N` / `string id {N,N,N}` for
+   * printable ASCII (developers just write the string literal). An Apache
+   * `access_log` or similar plain-text log shares none of them.
+   *
+   * Negative signal: an Apache / Nginx CLF line pattern (`host - - [date]
+   * "GET …"`) pushes the score deep into negative territory so the two
+   * weakest positive signals (`set X to`, `property X :`) can't
+   * accidentally promote a log file to AppleScript. This closes the
+   * specific FP class where pasted AppleScript was *also* being routed
+   * to hljs auto-detect's "Apache" grammar — symmetry with that risk.
    */
   static _sniffAppleScript(ctx) {
     const head4k = ctx.head4k;
@@ -1084,16 +1103,38 @@ class RendererRegistry {
     if (nonPrintable / Math.max(head4k.length, 1) >= 0.01) return false;
     let score = 0;
     if (/\btell\s+application\s+"/i.test(head4k)) score += 3;
+    // `do shell script "literal"` — classic unobfuscated form.
     if (/\bdo\s+shell\s+script\s+"/i.test(head4k)) score += 3;
+    // `do shell script` with a non-quoted argument (i.e. a concatenated
+    // string expression like `do shell script ((ASCII character 99) & …)`).
+    // This is the obfuscated-dropper shape — the word is still present
+    // as plain text even though the argument is reassembled at runtime.
+    // Weighted separately so an AppleScript that only uses the obfuscated
+    // form still clears the cutoff.
+    else if (/\bdo\s+shell\s+script\b/i.test(head4k)) score += 3;
     if (/\bend\s+tell\b/i.test(head4k)) score += 2;
     if (/\bon\s+run\b|\bon\s+open\b|\bon\s+idle\b/i.test(head4k)) score += 2;
     if (/\bset\s+\w[\w ]*\s+to\s+/i.test(head4k)) score += 1;
     if (/\bwith\s+administrator\s+privileges\b/i.test(head4k)) score += 2;
     if (/\bthe\s+clipboard\b/i.test(head4k)) score += 1;
     if (/\bproperty\s+\w+\s*:/i.test(head4k)) score += 1;
+    // Char-code reassembly signals — obfuscation tells in their own right.
+    // `(ASCII character 97)` — 8-bit AppleScript built-in.
+    if (/\bASCII\s+character\s+\d/i.test(head4k)) score += 3;
+    // `(character id 104)` — Unicode codepoint AppleScript built-in.
+    if (/\bcharacter\s+id\s+\d/i.test(head4k)) score += 2;
+    // `(string id {104, 116, 116, 112, 115})` — literal codepoint array.
+    if (/\bstring\s+id\s+\{\s*\d/i.test(head4k)) score += 2;
+    // `quoted form of` — the shell-quote primitive; near-universally paired
+    // with `do shell script` in real-world droppers.
+    if (/\bquoted\s+form\s+of\b/i.test(head4k)) score += 2;
     if (/\bActiveXObject\b/.test(head4k)) score -= 3; // JScript, not JXA
     if (/^\s*#!/m.test(head4k) && !/osascript/i.test(head4k)) score -= 2;
-    return score >= 5;
+    // Apache / Nginx CLF access-log shape: `host - - [date] "GET …"`.
+    // One matching line is enough to veto the AppleScript claim — the
+    // score drops below the cutoff regardless of any positive matches.
+    if (/^\S+\s+\S+\s+\S+\s+\[[^\]]+\]\s+"(?:GET|POST|HEAD|PUT|DELETE|OPTIONS|PATCH|CONNECT|TRACE)\s/m.test(head4k)) score -= 8;
+    return score >= 4;
   }
 
   /**

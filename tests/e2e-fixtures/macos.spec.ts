@@ -45,6 +45,32 @@ test.describe('macOS scripts (osascript / JXA / scpt)', () => {
     const rules = ruleNames(findings);
     expect(rules.some(r => r.startsWith('osascript_'))).toBe(true);
   });
+
+  test('property-dropper reassembles char-code bindings to cleartext shell command', async () => {
+    const findings = await loadFixture(ctx.page, 'examples/macos-scripts/property-dropper.applescript');
+    expect(isRiskAtLeast(findings.risk, 'critical')).toBe(true);
+    const rules = ruleNames(findings);
+    // Raw-source char-code rules must still fire — these key on real
+    // source bytes (`(ASCII character N)` primitives, `property _X :`
+    // declarations, `do shell script` + `administrator privileges`
+    // tokens) so their YARA offsets anchor click-to-scroll correctly.
+    expect(rules).toContain('osascript_char_code_obfuscation');
+    expect(rules).toContain('osascript_randomised_property_names');
+    // Admin-shell reassembly triggers T1548.004.
+    expect(rules).toContain('osascript_char_code_admin_shell_reassembly');
+    // Two former YARA rules (`osascript_property_char_code_dropper`,
+    // `osascript_property_reassembled_shell_sink`) were migrated to
+    // Detection Patterns because their old implementation matched on
+    // Loupe-synthesised `augmentedBuffer` sentinels (broke
+    // click-to-scroll). They now surface as Pattern IOCs anchored at
+    // the real `property _X :` declaration / `do shell script` sink.
+    const patternIocs = (findings.iocs || []).filter((i: { type?: string }) => i.type === 'Pattern');
+    const patternValues = patternIocs.map((i: { value: string }) => i.value);
+    expect(patternValues.some((v: string) => /AppleScript Reassembled Shell Sink/.test(v))).toBe(true);
+    expect(patternValues.some((v: string) => /AppleScript Property Char-Code Dropper/.test(v))).toBe(true);
+    // Reassembled URL should produce a URL IOC.
+    expect(findings.iocTypes).toContain('URL');
+  });
 });
 
 test.describe('macOS system fixtures', () => {
