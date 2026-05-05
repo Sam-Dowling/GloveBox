@@ -869,6 +869,32 @@ extendApp({
   _renderHelpTab(body) {
     const version = typeof LOUPE_VERSION !== 'undefined' ? LOUPE_VERSION : 'dev';
     body.innerHTML = `
+      <h3>Start here</h3>
+      <p><strong>What Loupe is.</strong> A 100% offline static-analysis tool for
+      suspicious files. Loupe never uploads, phones home, or executes anything
+      — it opens the file, parses its structure, extracts indicators (URLs, IPs,
+      hashes, emails, crypto addresses), decodes obfuscated scripts, and runs
+      YARA rules, all inside your browser tab.</p>
+
+      <p><strong>How to load a file</strong></p>
+      <ul>
+        <li><strong>Drag &amp; drop</strong> — a single file, multiple files, or a whole folder</li>
+        <li>Click <strong>📁 Open File</strong> in the toolbar</li>
+        <li>Paste with <kbd class="help-kbd">Ctrl+V</kbd> — great for ClickFix / pasted PowerShell one-liners</li>
+      </ul>
+
+      <p><strong>What you get back</strong></p>
+      <ul>
+        <li><strong>Viewer</strong> — format-aware rendering (PDFs as pages, EVTX as a timeline, archives as a tree, …)</li>
+        <li><strong>🛡 Security sidebar</strong> (<kbd class="help-kbd">S</kbd>) — risk verdict, YARA hits, IOCs, MITRE ATT&amp;CK pivots</li>
+        <li><strong>⚡ Summarize</strong> — one-click SOC-ready summary to clipboard</li>
+        <li><strong>📤 Export</strong> — STIX 2.1 / MISP / IOC list / JSON / Markdown</li>
+      </ul>
+
+      <p><strong>Try it.</strong> No sample file? Grab one from the
+      <code>examples/</code> folder in the repo, or paste any suspicious
+      script you have laying around.</p>
+
       <h3>Keyboard Shortcuts</h3>
       <table class="help-kbd-table">
         <tr><td><kbd class="help-kbd">S</kbd></td><td>Toggle security sidebar</td></tr>

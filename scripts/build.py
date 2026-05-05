@@ -2056,7 +2056,7 @@ HTML = f"""<!DOCTYPE html>
       <div id="drop-zone">
         <span class="dz-icon">📄</span>
         <div class="dz-text">Drop a file here to analyse</div>
-        <div class="dz-sub">Office · PDFs · executables · emails · archives · certificates · scripts · binaries · Java · SVG · and 60+ formats · 100% offline</div>
+        <div class="dz-sub">Extracts IOCs, decodes obfuscated payloads, runs 500+ YARA rules, and renders 60+ formats — 100% offline in your browser.</div>
       </div>
       <div id="page-container"></div>
     </div>
