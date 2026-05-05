@@ -55,8 +55,7 @@
       "Bash_DevTcp_Reverse_Shell",
       "Bash_IFS_Reassembly",
       "Bash_Live_Fetch_Pipe_Shell",
-      "Bash_Variable_Obfuscation",
-      "Shell_Curl_Wget_Pipe_Exec"
+      "Bash_Variable_Obfuscation"
     ],
     "examples/encoded-payloads/encoded-base64-pe.txt": [
       "Encoded_Base64_PE_Header"
@@ -158,6 +157,11 @@
       "jxa_objc_network_operations",
       "jxa_objc_process_execution",
       "osascript_screen_capture"
+    ],
+    "examples/macos-scripts/property-dropper.applescript": [
+      "osascript_char_code_admin_shell_reassembly",
+      "osascript_char_code_obfuscation",
+      "osascript_randomised_property_names"
     ],
     "examples/macos-system/example-binary.plist": [
       "plist_curl_wget_download",
@@ -391,10 +395,10 @@
     ]
   },
   "summary": {
-    "anchorFixtures": 69,
-    "rulesFiredInCorpus": 251,
-    "rulesUnanchored": 342,
-    "totalRulesDefined": 593
+    "anchorFixtures": 70,
+    "rulesFiredInCorpus": 253,
+    "rulesUnanchored": 345,
+    "totalRulesDefined": 598
   },
   "unanchoredRules": [
     "AD_Database_Dump",
@@ -659,6 +663,9 @@
     "PE_Suspicious_Strings_CnC",
     "PE_Themida_Packed",
     "PE_VMProtect_Packed",
+    "PS_Comment_Injection_Obfuscation",
+    "PS_GetCommand_Wildcard_Obfuscation",
+    "PS_Quote_Interruption_Obfuscation",
     "PasswordManager_DB_Reference",
     "PostEx_Tool_Reference",
     "PowerShell_TCPClient_RevShell",
