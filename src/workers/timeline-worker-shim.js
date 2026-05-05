@@ -1121,6 +1121,114 @@ function _tlMakeApacheErrorTokenizer() {
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
 
+// ── Generic space-delimited access-log mirror ──
+// Canonical implementation lives in
+// `src/app/timeline/timeline-helpers.js::_tlMakeAccessLogTokenizer`.
+// Cross-realm parity is enforced by
+// `tests/unit/timeline-access-log.test.js`.
+const _TL_ACCESS_LOG_TS_RE =
+  /^(?:-?\d{10}|-?\d{13}|\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?|\d{4}-\d{2}-\d{2}--\d{2}-\d{2}-\d{2}|\d{4}\/\d{2}\/\d{2}[ T]\d{2}:\d{2}:\d{2})(?=\s)/;
+const _TL_ACCESS_LOG_TLS_PROTO_RE = /^(?:TLSv1(?:\.[0-3])?|SSLv[23])$/;
+const _TL_ACCESS_LOG_TLS_COLS = [
+  'time', 'ip', 'tls_version', 'tls_cipher', 'request',
+  'bytes', 'referer', 'user_agent',
+];
+function _tlAccessLogTimestampOk(s) {
+  if (typeof s !== 'string' || !s) return false;
+  if (/^-?\d{10}$/.test(s) || /^-?\d{13}$/.test(s)) return true;
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(s)
+      || /^\d{4}\/\d{2}\/\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(s)) {
+    const norm = s.replace(' ', 'T').replace(/\//g, '-');
+    return Number.isFinite(Date.parse(norm));
+  }
+  const m = /^(\d{4})-(\d{2})-(\d{2})--(\d{2})-(\d{2})-(\d{2})$/.exec(s);
+  if (m) {
+    const mo = +m[2], d = +m[3], hh = +m[4], mm = +m[5], ss = +m[6];
+    return (mo >= 1 && mo <= 12 && d >= 1 && d <= 31
+            && hh < 24 && mm < 60 && ss < 60);
+  }
+  return false;
+}
+function _tlReadAccessLogField(line, i) {
+  const len = line.length;
+  if (i >= len) return null;
+  if (line.charCodeAt(i) === 0x22) {
+    i++;
+    let result = '';
+    let runStart = i;
+    while (i < len) {
+      const c = line.charCodeAt(i);
+      if (c === 0x5C && i + 1 < len) {
+        const next = line.charCodeAt(i + 1);
+        if (next === 0x22 || next === 0x5C) {
+          if (i > runStart) result += line.slice(runStart, i);
+          result += String.fromCharCode(next);
+          i += 2;
+          runStart = i;
+          continue;
+        }
+        i += 2;
+        continue;
+      }
+      if (c === 0x22) {
+        if (i > runStart) result += line.slice(runStart, i);
+        i++;
+        while (i < len && line.charCodeAt(i) === 0x20) i++;
+        return { token: result, next: i };
+      }
+      i++;
+    }
+    return null;
+  }
+  const start = i;
+  while (i < len && line.charCodeAt(i) !== 0x20) i++;
+  const token = line.slice(start, i);
+  while (i < len && line.charCodeAt(i) === 0x20) i++;
+  return { token, next: i };
+}
+function _tlMakeAccessLogTokenizer() {
+  let columns = null;
+  let fingerprint = '';
+  const buildColumns = (cells) => {
+    if (cells.length === 8
+        && typeof cells[2] === 'string' && _TL_ACCESS_LOG_TLS_PROTO_RE.test(cells[2])
+        && typeof cells[5] === 'string' && /^\d+$/.test(cells[5])) {
+      fingerprint = 'tls';
+      return _TL_ACCESS_LOG_TLS_COLS.slice();
+    }
+    fingerprint = 'generic';
+    const out = ['time'];
+    for (let i = 1; i < cells.length; i++) out.push('field_' + (i + 1));
+    return out;
+  };
+  const tokenize = (line, _mtime) => {
+    if (!line) return null;
+    let s = line;
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    if (!s.length) return null;
+    if (!_TL_ACCESS_LOG_TS_RE.test(s)) return null;
+    const cells = [];
+    let i = 0;
+    const len = s.length;
+    while (i < len) {
+      const f = _tlReadAccessLogField(s, i);
+      if (!f) break;
+      cells.push(f.token);
+      if (f.next === i) break;
+      i = f.next;
+    }
+    if (cells.length < 2) return null;
+    if (!_tlAccessLogTimestampOk(cells[0])) return null;
+    if (!columns) columns = buildColumns(cells);
+    return cells;
+  };
+  const getColumns = (_width) => columns ? columns.slice() : [];
+  const getDefaultStackColIdx = () => (fingerprint === 'tls' ? 2 : null);
+  const getFormatLabel = () =>
+    fingerprint === 'tls' ? 'TLS Access Log' : 'Access Log';
+  return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
+}
+
 // ── Zeek TSV mirror ──
 // Canonical implementation lives in
 // `src/app/timeline/timeline-helpers.js::_tlMakeZeekTokenizer`.

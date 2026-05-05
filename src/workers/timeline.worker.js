@@ -537,6 +537,19 @@ const STRUCTURED_LOG_KINDS = {
     makeTokenizer: () => _tlMakeApacheErrorTokenizer(),
     label: 'Apache error_log',
   },
+  'access-log': {
+    // Stateful — generic space-delimited access log. Covers
+    // formats that are NOT Apache / Nginx CLF (no bracketed
+    // `[date]` token) but DO lead with a recognisable timestamp
+    // — notably Pulse Secure / Ivanti Connect Secure exports,
+    // custom proxy logs, and any hand-rolled access log. Tokenises
+    // on space + CLF-style quoted runs; the "TLS access log"
+    // fingerprint (8 cols — ts, ip, TLS proto, cipher, request,
+    // bytes, referer, UA) gets friendly column names. Other
+    // shapes fall back to `time`, `field_2`, …, `field_N`.
+    makeTokenizer: () => _tlMakeAccessLogTokenizer(),
+    label: 'Access Log',
+  },
 };
 
 async function _parseCsv(buffer, explicitDelim, kindHint) {

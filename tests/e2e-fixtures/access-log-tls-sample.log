@@ -1,0 +1,5 @@
+2025-05-15--17-43-27 64.62.197.102 TLSv1.2 ECDHE-RSA-AES128-GCM-SHA256 "GET /mifs/rs/api/v2/featureusage_history?format=shadowserver HTTP/1.1" 277 "-" "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.2 Safari/605.1.15"
+2025-05-15--17-43-39 10.43.168.110 TLSv1.2 ECDHE-RSA-AES256-GCM-SHA384 "GET / HTTP/1.1" 288 "-" "curl/7.29.0"
+2025-05-15--17-43-41 10.43.168.110 TLSv1.2 ECDHE-RSA-AES256-GCM-SHA384 "GET / HTTP/1.1" 288 "-" "curl/7.29.0"
+2025-05-15--17-45-02 198.51.100.42 TLSv1.3 TLS_AES_256_GCM_SHA384 "POST /api/auth/login HTTP/2" 512 "https://example.test/login" "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+2025-05-15--17-46-10 203.0.113.17 TLSv1.2 ECDHE-RSA-CHACHA20-POLY1305 "GET /static/banner.png HTTP/1.1" 2048 "https://example.test/home" "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X)"

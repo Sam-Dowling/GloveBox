@@ -414,6 +414,36 @@ extendApp({
       }
       if (head.length >= 2 && hits / head.length >= 0.6) return 'logfmt';
     }
+    // Generic space-delimited access log sniff. Catches log formats
+    // that are NOT Apache / Nginx CLF (no bracketed `[date]` token)
+    // but DO lead with a recognisable timestamp, e.g. Pulse Secure /
+    // Ivanti Connect Secure exports:
+    //
+    //   2025-05-15--17-43-27 64.62.197.102 TLSv1.2 ECDHE-RSA-AES128-GCM-SHA256 \
+    //     "GET /mifs/…" 277 "-" "Mozilla/5.0 (…)"
+    //
+    // The signal is: each line starts with one of the timestamp
+    // shapes `_tlParseTimestamp` accepts (ISO 8601 with time, the
+    // Ivanti double-dash form, epoch seconds / ms), followed
+    // immediately by whitespace and at least one more token. This
+    // sits AFTER logfmt because logfmt's `key=value` shape is the
+    // more specific signal and access-log lines often contain
+    // `key=value` tokens in their message bodies.
+    //
+    // Sits AFTER the CLF sniff too — CLF lines begin with an IP
+    // rather than a timestamp and would only match the generic
+    // access-log probe if the CLF sniff was skipped first, so the
+    // ordering is purely belt-and-braces.
+    const _ACCESS_LOG_LINE_RE =
+      /^(?:-?\d{10}|-?\d{13}|\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?|\d{4}-\d{2}-\d{2}--\d{2}-\d{2}-\d{2}|\d{4}\/\d{2}\/\d{2}[ T]\d{2}:\d{2}:\d{2})\s+\S/;
+    {
+      const head = lines.slice(0, 5);
+      let hits = 0;
+      for (let i = 0; i < head.length; i++) {
+        if (_ACCESS_LOG_LINE_RE.test(head[i])) hits++;
+      }
+      if (head.length >= 2 && hits / head.length >= 0.6) return 'access-log';
+    }
     const candidates = [',', '\t', ';', '|'];
     let best = { delim: null, cols: 0, confidence: 0 };
     for (const d of candidates) {
@@ -659,7 +689,8 @@ extendApp({
             || ext === 'zeek' || ext === 'jsonl'
             || ext === 'cloudtrail' || ext === 'cef'
             || ext === 'leef' || ext === 'logfmt'
-            || ext === 'w3c' || ext === 'apache-error') workerKind = 'csv';
+            || ext === 'w3c' || ext === 'apache-error'
+            || ext === 'access-log') workerKind = 'csv';
       else if (ext === 'sqlite' || ext === 'db') workerKind = 'sqlite';
       else if (ext === 'pcap' || ext === 'pcapng' || ext === 'cap') workerKind = 'pcap';
 
@@ -820,7 +851,8 @@ extendApp({
                                   || ext === 'zeek' || ext === 'jsonl'
                                   || ext === 'cloudtrail' || ext === 'cef'
                                   || ext === 'leef' || ext === 'logfmt'
-                                  || ext === 'w3c' || ext === 'apache-error');
+                                  || ext === 'w3c' || ext === 'apache-error'
+                                  || ext === 'access-log');
           const opts = (workerKind === 'csv')
             ? { explicitDelim: ext === 'tsv' ? '\t'
                   : (ext === 'log' ? ' ' : null),

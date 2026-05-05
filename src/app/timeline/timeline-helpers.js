@@ -1767,6 +1767,203 @@ function _tlMakeApacheErrorTokenizer() {
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
 
+// ── Generic space-delimited access log tokeniser ───────────────────
+// Covers space-delimited access / audit logs that do NOT match the
+// Apache / Nginx CLF shape — notably Pulse Secure / Ivanti Connect
+// Secure exports, custom proxy logs, and any hand-rolled access log
+// where:
+//
+//   - Column 1 is a recognisable timestamp (ISO 8601 with space or
+//     `T` separator, the Ivanti `YYYY-MM-DD--HH-MM-SS` double-dash
+//     form, or epoch-seconds / epoch-ms digits).
+//   - Subsequent columns are either bare (no whitespace inside) or
+//     wrapped in `"…"` (backslash-escaped quotes honoured the same
+//     way CLF does it — `\"` and `\\` are decoded, other `\X`
+//     passes through).
+//
+// Shape, using the user's Pulse Secure example:
+//
+//   2025-05-15--17-43-27 64.62.197.102 TLSv1.2 ECDHE-RSA-AES128-GCM-SHA256 \
+//     "GET /mifs/…" 277 "-" "Mozilla/5.0 (…)"
+//
+// There is no fixed column count — different emitters ship different
+// schemas. We tokenise into a dense row and emit synthetic
+// `time`, `field_2`, …, `field_N` column names. The first valid row
+// locks the column count; later rows pad / trim to that width so the
+// RowStore stays dense.
+//
+// Canonical fingerprint: the "TLS access log" shape (8 fields —
+// timestamp, client IP, TLS proto, cipher, quoted request, bytes,
+// quoted referer, quoted UA) gets CLF-style friendly names
+// (`time`, `ip`, `tls_version`, `tls_cipher`, `request`, `bytes`,
+// `referer`, `user_agent`) so the Timeline auto-axis and the IP /
+// request columns line up without manual column renaming.
+//
+// Stateless per-line tokeniser; histogram stack defaults to the
+// last-but-one column (Referer / last quoted metadata) — the router
+// will overlay a cardinality probe if that column's distinct count
+// exceeds the stack-column gate.
+//
+// Why this isn't the CLF tokeniser with a looser timestamp check:
+// the CLF tokeniser is a fixed-shape lexer pinned to a `[date]`
+// bracketed timestamp at field 4 and a quoted request at field 5.
+// Changing its shape to admit bare timestamps in col 1 would collapse
+// every non-CLF space-delimited line onto a wider CLF row and
+// confuse the CLF-specific column naming. Keep them separate so
+// either format can evolve without regressing the other.
+
+// Accepts any of the timestamp shapes `_tlParseTimestamp` recognises
+// with a time component (Epoch s/ms, ISO, Ivanti double-dash, a few
+// syslog-style compacts). The probe is lexical only — we don't need
+// Date.parse agreement to decide "this line starts with a timestamp",
+// only that the token shape is unambiguously temporal. The
+// `_tlParseTimestamp` call happens later per-row on the resolved
+// cell — that's the authoritative parse.
+const _TL_ACCESS_LOG_TS_RE =
+  /^(?:-?\d{10}|-?\d{13}|\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?|\d{4}-\d{2}-\d{2}--\d{2}-\d{2}-\d{2}|\d{4}\/\d{2}\/\d{2}[ T]\d{2}:\d{2}:\d{2})(?=\s)/;
+
+// Lightweight validator for the access-log timestamp column —
+// keeps the tokeniser self-contained (no dependency on the full
+// `_tlParseTimestamp` regex waterfall) and, crucially, usable from
+// the worker shim where `_tlParseTimestamp` isn't mirrored. Rejects
+// shapes that look temporal but encode an impossible calendar date
+// (e.g. `2025-02-31--00-00-00`) — a loose accept here would admit
+// any space-delimited file with a leading digit run.
+function _tlAccessLogTimestampOk(s) {
+  if (typeof s !== 'string' || !s) return false;
+  // Epoch — any 10 or 13 digit integer is accepted.
+  if (/^-?\d{10}$/.test(s) || /^-?\d{13}$/.test(s)) return true;
+  // ISO 8601 with time — delegate to Date.parse after normalisation.
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(s)
+      || /^\d{4}\/\d{2}\/\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(s)) {
+    const norm = s.replace(' ', 'T').replace(/\//g, '-');
+    return Number.isFinite(Date.parse(norm));
+  }
+  // Ivanti double-dash form `YYYY-MM-DD--HH-MM-SS`.
+  const m = /^(\d{4})-(\d{2})-(\d{2})--(\d{2})-(\d{2})-(\d{2})$/.exec(s);
+  if (m) {
+    const mo = +m[2], d = +m[3], hh = +m[4], mm = +m[5], ss = +m[6];
+    return (mo >= 1 && mo <= 12 && d >= 1 && d <= 31
+            && hh < 24 && mm < 60 && ss < 60);
+  }
+  return false;
+}
+
+// CLF-style read: unquoted run up to the next space, or `"..."`
+// quoted run with `\\` / `\"` decoded. Returns `{ token, next }`
+// where `next` is the index past the trailing whitespace.
+function _tlReadAccessLogField(line, i) {
+  const len = line.length;
+  if (i >= len) return null;
+  if (line.charCodeAt(i) === 0x22 /* " */) {
+    // Quoted field — CLF-style backslash escapes.
+    i++;
+    let result = '';
+    let runStart = i;
+    while (i < len) {
+      const c = line.charCodeAt(i);
+      if (c === 0x5C /* \ */ && i + 1 < len) {
+        const next = line.charCodeAt(i + 1);
+        if (next === 0x22 /* " */ || next === 0x5C) {
+          if (i > runStart) result += line.slice(runStart, i);
+          result += String.fromCharCode(next);
+          i += 2;
+          runStart = i;
+          continue;
+        }
+        i += 2;
+        continue;
+      }
+      if (c === 0x22) {
+        if (i > runStart) result += line.slice(runStart, i);
+        i++;                              // step past closing `"`
+        while (i < len && line.charCodeAt(i) === 0x20) i++;
+        return { token: result, next: i };
+      }
+      i++;
+    }
+    return null;                          // unterminated
+  }
+  // Unquoted — read to next space.
+  const start = i;
+  while (i < len && line.charCodeAt(i) !== 0x20) i++;
+  const token = line.slice(start, i);
+  while (i < len && line.charCodeAt(i) === 0x20) i++;
+  return { token, next: i };
+}
+
+// "TLS access log" fingerprint — 8 columns:
+//   1 timestamp
+//   2 client IP     (dotted-quad v4 or `:`-containing v6)
+//   3 TLS version   (`TLSv1.0` .. `TLSv1.3` / `SSLv3`)
+//   4 cipher        (uppercase letters + digits + `-`)
+//   5 request       (quoted)
+//   6 bytes         (digits)
+//   7 referer       (quoted)
+//   8 user agent    (quoted)
+const _TL_ACCESS_LOG_TLS_COLS = [
+  'time', 'ip', 'tls_version', 'tls_cipher', 'request',
+  'bytes', 'referer', 'user_agent',
+];
+
+const _TL_ACCESS_LOG_TLS_PROTO_RE = /^(?:TLSv1(?:\.[0-3])?|SSLv[23])$/;
+
+function _tlMakeAccessLogTokenizer() {
+  let columns = null;
+  let fingerprint = '';                   // 'tls' | 'generic' | ''
+
+  const buildColumns = (cells) => {
+    // TLS-access-log fingerprint: exactly 8 cells, col 3 looks
+    // like a TLS version, col 6 is all digits (bytes). Bail to
+    // the generic naming if any of these fail.
+    if (cells.length === 8
+        && typeof cells[2] === 'string' && _TL_ACCESS_LOG_TLS_PROTO_RE.test(cells[2])
+        && typeof cells[5] === 'string' && /^\d+$/.test(cells[5])) {
+      fingerprint = 'tls';
+      return _TL_ACCESS_LOG_TLS_COLS.slice();
+    }
+    fingerprint = 'generic';
+    const out = ['time'];
+    for (let i = 1; i < cells.length; i++) out.push('field_' + (i + 1));
+    return out;
+  };
+
+  const tokenize = (line, _mtime) => {
+    if (!line) return null;
+    let s = line;
+    if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+    if (!s.length) return null;
+    // Quick reject: must open with a recognised timestamp shape.
+    if (!_TL_ACCESS_LOG_TS_RE.test(s)) return null;
+
+    const cells = [];
+    let i = 0;
+    const len = s.length;
+    while (i < len) {
+      const f = _tlReadAccessLogField(s, i);
+      if (!f) break;                      // unterminated quoted field
+      cells.push(f.token);
+      if (f.next === i) break;            // guard against zero-width reads
+      i = f.next;
+    }
+    if (cells.length < 2) return null;    // must have at least ts + one
+    // Verify column 1 actually parses as a timestamp. Cheap insurance
+    // — the lexical regex above is permissive by design.
+    if (!_tlAccessLogTimestampOk(cells[0])) return null;
+    if (!columns) columns = buildColumns(cells);
+    return cells;
+  };
+
+  const getColumns = (_width) => columns ? columns.slice() : [];
+  // For the TLS fingerprint, stack on TLS version (col 2) — low
+  // cardinality, useful. For the generic case, leave it to the
+  // host-side cardinality probe.
+  const getDefaultStackColIdx = () => (fingerprint === 'tls' ? 2 : null);
+  const getFormatLabel = () =>
+    fingerprint === 'tls' ? 'TLS Access Log' : 'Access Log';
+  return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
+}
+
 function _tlMakeZeekTokenizer() {
   // Defaults match the Zeek convention; overridden on the fly if the
   // file's preamble carries a `#set_separator` / `#unset_field` /
@@ -1944,6 +2141,23 @@ function _tlParseTimestamp(s) {
     const ms = Date.parse(norm);
     return Number.isFinite(ms) ? ms : NaN;
   }
+  // Pulse Secure / Ivanti Connect Secure (and similar hand-rolled
+  // access log) timestamp: `YYYY-MM-DD--HH-MM-SS` — double-dash
+  // between date and time, hyphens as the time separator. Not an
+  // ISO form so `Date.parse` would reject it; normalise to the
+  // canonical ISO spelling and delegate.
+  {
+    const m = /^(\d{4})-(\d{2})-(\d{2})--(\d{2})-(\d{2})-(\d{2})$/.exec(str);
+    if (m) {
+      const y = +m[1], mo = +m[2], d = +m[3];
+      const hh = +m[4], mm = +m[5], ss = +m[6];
+      if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31
+          && hh < 24 && mm < 60 && ss < 60) {
+        const ms = Date.UTC(y, mo - 1, d, hh, mm, ss);
+        if (Number.isFinite(ms)) return ms;
+      }
+    }
+  }
   // Microsoft .NET JSON dates: /Date(1234567890123)/
   const webJson = /^\/Date\((-?\d+)\)\/$/.exec(str);
   if (webJson) return Number(webJson[1]);
@@ -2041,6 +2255,7 @@ function _tlParseTimestamp(s) {
 const _TL_RE_EPOCH_S = /^-?\d{10}$/;
 const _TL_RE_EPOCH_MS = /^-?\d{13}$/;
 const _TL_RE_ISO = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/;
+const _TL_RE_IVANTI_DASHED = /^\d{4}-\d{2}-\d{2}--\d{2}-\d{2}-\d{2}$/;
 const _TL_RE_DOTNET = /^\/Date\((-?\d+)\)\/$/;
 const _TL_RE_DATE_YMD = /^(\d{4})[-./](\d{1,2})[-./](\d{1,2})$/;
 const _TL_RE_YEAR_MONTH = /^(\d{4})[-./](\d{2})$/;
@@ -2066,6 +2281,7 @@ function _tlDetectTimestampFormat(store, colIdx, sampleSize) {
     if (_TL_RE_EPOCH_S.test(str)) tag = 'epoch-s';
     else if (_TL_RE_EPOCH_MS.test(str)) tag = 'epoch-ms';
     else if (_TL_RE_ISO.test(str)) tag = 'iso';
+    else if (_TL_RE_IVANTI_DASHED.test(str)) tag = 'ivanti-dashed';
     else if (_TL_RE_DOTNET.test(str)) tag = 'dotnet';
     else if (_TL_RE_DATE_YMD.test(str)) tag = 'date-ymd';
     else if (_TL_RE_YEAR_MONTH.test(str)) tag = 'year-month';
@@ -2103,6 +2319,23 @@ function _tlParseTimestampFast(s, fmt) {
         const norm = str.replace(' ', 'T').replace(/ ?(?:UTC|GMT)$/i, 'Z');
         const ms = Date.parse(norm);
         return Number.isFinite(ms) ? ms : NaN;
+      }
+      break;
+    }
+    case 'ivanti-dashed': {
+      const m = _TL_RE_IVANTI_DASHED.exec(str);
+      if (m) {
+        const y  = +str.slice(0, 4);
+        const mo = +str.slice(5, 7);
+        const d  = +str.slice(8, 10);
+        const hh = +str.slice(12, 14);
+        const mm = +str.slice(15, 17);
+        const ss = +str.slice(18, 20);
+        if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31
+            && hh < 24 && mm < 60 && ss < 60) {
+          const ms = Date.UTC(y, mo - 1, d, hh, mm, ss);
+          if (Number.isFinite(ms)) return ms;
+        }
       }
       break;
     }

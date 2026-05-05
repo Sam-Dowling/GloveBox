@@ -79,6 +79,14 @@ TimelineView._STRUCTURED_LOG_KINDS = {
     makeTokenizer: () => _tlMakeApacheErrorTokenizer(),
     label: 'Apache error_log',
   },
+  'access-log': {
+    // Stateful — generic space-delimited access log with a
+    // recognised timestamp in column 1. See the worker-side entry
+    // (and the `_tlMakeAccessLogTokenizer` block in
+    // `timeline-helpers.js`) for the full rationale.
+    makeTokenizer: () => _tlMakeAccessLogTokenizer(),
+    label: 'Access Log',
+  },
 };
 
 Object.assign(TimelineView, {
