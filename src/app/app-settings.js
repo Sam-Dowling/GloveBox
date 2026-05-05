@@ -110,7 +110,7 @@ extendApp({
     overlay.innerHTML = `
       <div class="settings-dialog" role="dialog" aria-modal="true" aria-label="Settings">
         <div class="settings-header">
-          <span class="settings-title">🕵🏻 Loupe <small class="settings-version">v${version}</small></span>
+          <span class="settings-title">🕵🏻 Loupe</span>
           <button class="settings-close" title="Close (Esc)" aria-label="Close">✕</button>
         </div>
         <div class="settings-tabs" role="tablist">
@@ -868,32 +868,31 @@ extendApp({
   // ── Help tab ───────────────────────────────────────────────────────────
   _renderHelpTab(body) {
     const version = typeof LOUPE_VERSION !== 'undefined' ? LOUPE_VERSION : 'dev';
+    // Hosted-mode detection mirrors _checkHostedMode in app-core.js: when
+    // Loupe is served over HTTP(S) we can't honestly claim "OFFLINE" on
+    // the status light. Flip the dot to amber + label to "HOSTED", and
+    // reuse the same framing as the hosted-mode privacy bar so the two
+    // surfaces don't contradict each other.
+    const isHosted = location.protocol !== 'file:';
+    const statusClass = isHosted ? 'help-strip-status is-hosted' : 'help-strip-status';
+    const dotClass    = isHosted ? 'help-privacy-dot is-hosted' : 'help-privacy-dot';
+    const statusLabel = isHosted ? 'Hosted' : 'Offline';
+    const statusTitle = isHosted
+      ? 'Served over HTTP \u2014 your file still never leaves this tab, but for maximum privacy, download and open loupe.html locally'
+      : 'Nothing leaves this tab';
     body.innerHTML = `
-      <h3>Start here</h3>
-      <p><strong>What Loupe is.</strong> A 100% offline static-analysis tool for
-      suspicious files. Loupe never uploads, phones home, or executes anything
-      — it opens the file, parses its structure, extracts indicators (URLs, IPs,
-      hashes, emails, crypto addresses), decodes obfuscated scripts, and runs
-      YARA rules, all inside your browser tab.</p>
-
-      <p><strong>How to load a file</strong></p>
-      <ul>
-        <li><strong>Drag &amp; drop</strong> — a single file, multiple files, or a whole folder</li>
-        <li>Click <strong>📁 Open File</strong> in the toolbar</li>
-        <li>Paste with <kbd class="help-kbd">Ctrl+V</kbd> — great for ClickFix / pasted PowerShell one-liners</li>
-      </ul>
-
-      <p><strong>What you get back</strong></p>
-      <ul>
-        <li><strong>Viewer</strong> — format-aware rendering (PDFs as pages, EVTX as a timeline, archives as a tree, …)</li>
-        <li><strong>🛡 Security sidebar</strong> (<kbd class="help-kbd">S</kbd>) — risk verdict, YARA hits, IOCs, MITRE ATT&amp;CK pivots</li>
-        <li><strong>⚡ Summarize</strong> — one-click SOC-ready summary to clipboard</li>
-        <li><strong>📤 Export</strong> — STIX 2.1 / MISP / IOC list / JSON / Markdown</li>
-      </ul>
-
-      <p><strong>Try it.</strong> No sample file? Grab one from the
-      <code>examples/</code> folder in the repo, or paste any suspicious
-      script you have laying around.</p>
+      <div class="help-strip">
+        <span class="help-strip-icon" aria-hidden="true">🔍</span>
+        <span class="help-strip-name">Loupe</span>
+        <span class="help-strip-ver">v${version}</span>
+        <span class="help-strip-sep" aria-hidden="true">·</span>
+        <span class="help-strip-tag">No upload · No network · No execution</span>
+        <span class="help-strip-spacer"></span>
+        <span class="${statusClass}" title="${statusTitle}">
+          <span class="${dotClass}" aria-hidden="true"></span>
+          <span class="help-strip-status-label">${statusLabel}</span>
+        </span>
+      </div>
 
       <h3>Keyboard Shortcuts</h3>
       <table class="help-kbd-table">

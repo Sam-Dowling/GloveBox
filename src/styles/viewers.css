@@ -5930,6 +5930,164 @@ body.dark .help-update-btn:hover {
   border-color: rgb(var(--accent-rgb) / .35);
 }
 
+/* ══════════════════════════════════════════════════════
+   HELP DIALOG — slim identity strip + privacy guarantees
+
+   The Help tab opens with a single-line horizontal strip that
+   surfaces the product name, version, tagline, and an always-on
+   "Offline" status light. A muted centred sub-line immediately
+   below carries the three concrete privacy guarantees, and the
+   eye lands straight on the Keyboard Shortcuts table beneath.
+
+   All colours route through theme tokens (--accent-rgb, --text,
+   --text-muted, --hairline) so the block themes automatically
+   alongside the rest of the dialog.
+   ══════════════════════════════════════════════════════ */
+
+/* Promote every h3 inside the Help body to the same uppercase
+   micro-cap so "Keyboard Shortcuts" and "Links" share one
+   visual language with the rest of the tab. */
+.help-body h3 {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .6px;
+  color: #888;
+  margin: 18px 0 8px;
+  padding: 0;
+  border: none;
+}
+
+body.dark .help-body h3 {
+  color: var(--text-muted);
+}
+
+/* Slim identity strip — a single horizontal row, ~44 px tall. */
+.help-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 14px;
+  margin: 2px 0 6px;
+  border-radius: 10px;
+  border: 1px solid rgb(var(--accent-rgb) / .15);
+  background: rgb(var(--accent-rgb) / .04);
+}
+
+body.dark .help-strip {
+  border-color: rgb(var(--accent-rgb) / .22);
+  background: rgb(var(--accent-rgb) / .06);
+}
+
+.help-strip-icon {
+  font-size: 16px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 3px rgb(var(--accent-rgb) / .35));
+}
+
+.help-strip-name {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: #222;
+  margin-left: 2px;
+}
+
+body.dark .help-strip-name {
+  color: var(--text);
+}
+
+.help-strip-ver {
+  font-size: 11px;
+  font-weight: 500;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
+}
+
+body.dark .help-strip-ver {
+  color: var(--text-muted);
+}
+
+.help-strip-sep {
+  font-size: 11px;
+  color: #999;
+  opacity: .55;
+  padding: 0 2px;
+}
+
+body.dark .help-strip-sep {
+  color: var(--text-muted);
+}
+
+.help-strip-tag {
+  font-size: 12px;
+  color: #666;
+}
+
+body.dark .help-strip-tag {
+  color: var(--text-muted);
+}
+
+.help-strip-spacer {
+  flex: 1;
+}
+
+.help-strip-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.help-strip-status-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--accent);
+}
+
+.help-privacy-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 rgb(var(--accent-rgb) / .5);
+  animation: help-pulse 2s ease-out infinite;
+}
+
+@keyframes help-pulse {
+  0%   { box-shadow: 0 0 0 0 rgb(var(--accent-rgb) / .55); }
+  70%  { box-shadow: 0 0 0 8px rgb(var(--accent-rgb) / 0);  }
+  100% { box-shadow: 0 0 0 0 rgb(var(--accent-rgb) / 0);    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .help-privacy-dot { animation: none; }
+}
+
+/* Hosted-mode variant: amber dot + "HOSTED" label to avoid calling
+   a bundle served over HTTP(S) "Offline". The amber hex is hard-coded
+   rather than routed through `--risk-med` because that token has no
+   channel-triplet (`--risk-med-rgb`) companion across the themes, and
+   introducing one just for this one dot is more churn than it's worth.
+   The `prefers-reduced-motion` rule above already covers this keyframe
+   because its selector targets the element, not the animation name. */
+.help-privacy-dot.is-hosted {
+  background: #f59e0b;
+  animation: help-pulse-hosted 2s ease-out infinite;
+}
+
+@keyframes help-pulse-hosted {
+  0%   { box-shadow: 0 0 0 0   rgba(245, 158, 11, .55); }
+  70%  { box-shadow: 0 0 0 8px rgba(245, 158, 11, 0);   }
+  100% { box-shadow: 0 0 0 0   rgba(245, 158, 11, 0);   }
+}
+
+.help-strip-status.is-hosted .help-strip-status-label {
+  color: #f59e0b;
+}
+
 /* ══════════════════════════════════════════════════
    UPDATE CHECK DIALOG
    ══════════════════════════════════════════════════ */
