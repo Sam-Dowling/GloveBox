@@ -80,7 +80,7 @@ class FolderFile {
    * Build a FolderFile from raw `webkitGetAsEntry()` results plus any
    * loose top-level files. Walks every directory entry breadth-first
    * up to `PARSER_LIMITS.MAX_FOLDER_ENTRIES` (4 096 by default), then
-   * returns `{ folder: FolderFile, truncated: boolean, walkedCount }`.
+   * returns `{ folder, truncated, walkedCount, walkErrors }`.
    *
    * Directory walking is async (FileSystem API uses callbacks). The
    * caller (`App._ingestFolderOrFiles`) awaits this before kicking
@@ -95,6 +95,14 @@ class FolderFile {
    *     skipped with `truncated = true`; sibling entries continue to be
    *     walked. Without this a single bad file in a 4 000-entry tree
    *     would throw away the other 3 999.
+   *   • Per-directory `createReader().readEntries()` failures are caught
+   *     and recorded on `walkErrors` as
+   *     `{ path, kind: 'dir', name, message }`. Chromium macOS throws
+   *     `EncodingError: A URI supplied to the API was malformed...`
+   *     here on otherwise valid folder drops (known browser bug, fatal
+   *     for the descriptor). The caller inspects `walkErrors` to decide
+   *     whether to fall back to the loose-file path — see
+   *     `App._ingestFolderFromEntries` for the fallback policy.
    *
    * @param {string} rootName        Display name for the root.
    * @param {Array<{entry?: any, file?: File, path?: string,
@@ -114,7 +122,9 @@ class FolderFile {
    *        bare `entry.name` (or `file.name`) is used — i.e. it is
    *        placed at the top level of the synthetic root.
    * @returns {Promise<{folder: FolderFile, truncated: boolean,
-   *                    walkedCount: number}>}
+   *                    walkedCount: number,
+   *                    walkErrors: Array<{path:string, kind:string,
+   *                                       name:string, message:string}>}>}
    */
   static async fromEntries(rootName, sources) {
     const cap = (typeof PARSER_LIMITS !== 'undefined'
@@ -122,6 +132,12 @@ class FolderFile {
     const flat = [];
     let truncated = false;
     let walkedCount = 0;
+    // Per-directory / per-leaf failures accumulate here so the caller
+    // can distinguish "Chromium EncodingError on root walk" (empty tree,
+    // should fall back to loose-file ingest) from "hit the 4 096 cap"
+    // (full tree, cap hit). `kind` is 'dir' when readEntries rejected,
+    // 'leaf' when child.file() rejected.
+    const walkErrors = [];
 
     const pushDir = (path) => {
       if (flat.length >= cap) { truncated = true; return false; }
@@ -155,9 +171,29 @@ class FolderFile {
       // pathological browser implementation that never returns []).
       for (let guard = 0; guard < 1024; guard++) {
         if (flat.length >= cap) { truncated = true; return; }
-        const batch = await new Promise((resolve, reject) => {
-          reader.readEntries((entries) => resolve(entries), (err) => reject(err));
-        });
+        // readEntries itself can reject on Chromium macOS with
+        // `EncodingError: A URI supplied to the API was malformed...`
+        // when the browser can't synthesise the internal `filesystem:`
+        // URL for a dropped directory — a known Chromium bug, fatal for
+        // the descriptor. Record the failure on `walkErrors` and abort
+        // this subtree so the caller can fall back cleanly. Without
+        // this the old code swallowed the error, marked `truncated`,
+        // and returned zero entries — user saw an empty tree under a
+        // misleading "truncated at 4,096" toast.
+        let batch;
+        try {
+          batch = await new Promise((resolve, reject) => {
+            reader.readEntries((entries) => resolve(entries), (err) => reject(err));
+          });
+        } catch (err) {
+          walkErrors.push({
+            path: prefix || (dirEntry && dirEntry.name) || '',
+            kind: 'dir',
+            name: (err && err.name) ? String(err.name) : 'Error',
+            message: (err && err.message) ? String(err.message) : String(err),
+          });
+          return;
+        }
         if (!batch || batch.length === 0) return;
         for (const child of batch) {
           if (flat.length >= cap) { truncated = true; return; }
@@ -168,7 +204,7 @@ class FolderFile {
           } else if (child.isFile) {
             // Per-leaf try/catch — a single AV-blocked, permission-denied,
             // dead-symlink, or transient-FS-error leaf must NOT abort the
-            // whole walk. Mark the result truncated, skip the leaf, keep
+            // whole walk. Record on `walkErrors`, skip the leaf, keep
             // going. Without this, one bad file in a 4 000-entry tree
             // throws away the other 3 999.
             let file = null;
@@ -176,7 +212,13 @@ class FolderFile {
               file = await new Promise((resolve, reject) => {
                 child.file((f) => resolve(f), (err) => reject(err));
               });
-            } catch (_) {
+            } catch (err) {
+              walkErrors.push({
+                path: childPath,
+                kind: 'leaf',
+                name: (err && err.name) ? String(err.name) : 'Error',
+                message: (err && err.message) ? String(err.message) : String(err),
+              });
               truncated = true;
               continue;
             }
@@ -200,6 +242,12 @@ class FolderFile {
           catch (e) {
             // eslint-disable-next-line no-console
             console.warn('FolderFile: root walk failed for', entry.name, e);
+            walkErrors.push({
+              path: entry.name || '',
+              kind: 'dir',
+              name: (e && e.name) ? String(e.name) : 'Error',
+              message: (e && e.message) ? String(e.message) : String(e),
+            });
             truncated = true;
           }
           continue;
@@ -213,10 +261,16 @@ class FolderFile {
           try { await walkDir(entry, relPath); }
           catch (e) {
             // A single failed directory shouldn't kill the whole ingest.
-            // Surface as a synthetic IOC.INFO row at render time via the
-            // truncated flag — the caller already pushes one when truncated.
+            // Record on walkErrors so the caller can differentiate
+            // "walk failed" from "cap hit".
             // eslint-disable-next-line no-console
             console.warn('FolderFile: directory walk failed for', relPath, e);
+            walkErrors.push({
+              path: relPath,
+              kind: 'dir',
+              name: (e && e.name) ? String(e.name) : 'Error',
+              message: (e && e.message) ? String(e.message) : String(e),
+            });
             truncated = true;
           }
         } else if (entry.isFile) {
@@ -228,6 +282,12 @@ class FolderFile {
           } catch (e) {
             // eslint-disable-next-line no-console
             console.warn('FolderFile: file read failed for', relPath, e);
+            walkErrors.push({
+              path: relPath,
+              kind: 'leaf',
+              name: (e && e.name) ? String(e.name) : 'Error',
+              message: (e && e.message) ? String(e.message) : String(e),
+            });
             truncated = true;
           }
         }
@@ -243,6 +303,7 @@ class FolderFile {
       folder: new FolderFile(rootName, flat),
       truncated,
       walkedCount,
+      walkErrors,
     };
   }
 }

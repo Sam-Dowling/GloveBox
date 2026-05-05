@@ -161,6 +161,10 @@ class FolderRenderer {
     };
     const entries = (file && file._loupeFolderEntries) || [];
     const truncated = !!(opts && opts.truncated);
+    const walkErrors = (opts && Array.isArray(opts.walkErrors))
+      ? opts.walkErrors : [];
+    const dirWalkFailures = walkErrors.filter(w => w && w.kind === 'dir');
+    const hasDirWalkFailure = dirWalkFailures.length > 0;
 
     const fileCount = entries.filter(e => !e.dir).length;
     const dirCount  = entries.filter(e =>  e.dir).length;
@@ -170,7 +174,28 @@ class FolderRenderer {
       'Directory count': dirCount,
     };
 
-    if (truncated) {
+    // Distinguish "browser refused to enumerate a directory" from
+    // "walker hit MAX_FOLDER_ENTRIES cap". The former is a Chromium
+    // macOS `EncodingError` on `readEntries()` (fatal-for-descriptor
+    // browser bug); the latter is the legitimate 4 096-entry cap. The
+    // ingest caller (`App._ingestFolderFromEntries`) already surfaces a
+    // toast on both paths; the sidebar IOC rows below give the analyst
+    // a persistent audit trail in Summary / STIX / MISP exports.
+    if (hasDirWalkFailure) {
+      const first = dirWalkFailures[0] || {};
+      const errTag = first.name
+        ? `${first.name}: ${first.message || ''}`.trim()
+        : 'the browser refused to enumerate';
+      pushIOC(findings, {
+        type: IOC.INFO,
+        value:
+          `Folder walk failed for ${dirWalkFailures.length.toLocaleString()} ` +
+          `subdirector${dirWalkFailures.length === 1 ? 'y' : 'ies'} ` +
+          `(${errTag}). This is a Chromium FileSystem API limitation on ` +
+          'macOS — drill-down results reflect only the readable subset.',
+        severity: 'info',
+      });
+    } else if (truncated) {
       pushIOC(findings, {
         type: IOC.INFO,
         value:

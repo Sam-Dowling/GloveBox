@@ -1118,6 +1118,8 @@ extendApp({
     folder(file, buffer) {
       this.findings = FolderRenderer.analyzeForSecurity(file, {
         truncated: !!file._loupeFolderTruncated,
+        walkErrors: Array.isArray(file._loupeFolderWalkErrors)
+          ? file._loupeFolderWalkErrors : [],
       });
       const docEl = FolderRenderer.render(file, buffer, this);
       // Wire the standard `open-inner-file` drill-down protocol —

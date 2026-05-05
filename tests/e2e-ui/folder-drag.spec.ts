@@ -491,6 +491,154 @@ test.describe('folder ingest', () => {
     expect(noteVisible).toBe(true);
   });
 
+  // ── Chromium macOS EncodingError fallback ─────────────────────────
+  // Chromium on macOS throws
+  //   EncodingError: A URI supplied to the API was malformed...
+  // from `createReader().readEntries(...)` on otherwise-valid folder
+  // drops. It's a known browser bug with no JS-side recovery for the
+  // descriptor (crbug.com tracker hits since Chrome 128+ on macOS).
+  //
+  // Pre-fix behaviour: the walker swallowed the error, latched
+  // `truncated = true`, and dispatched an empty `FolderFile`. The
+  // analyst saw an empty tree under a misleading "Folder ingest
+  // truncated at 4,096 entries" toast.
+  //
+  // Post-fix contract:
+  //   1. If the drop also carried loose top-level files
+  //      (`DataTransfer.files`), fall back to the loose-file path so
+  //      the analyst gets a tree with what WAS readable.
+  //   2. If there were no loose files to fall back to, surface a clear
+  //      toast pointing at the Open button. Never dispatch an empty
+  //      folder view, never claim we "truncated at 4,096".
+  test('Chromium EncodingError on folder walk falls back to loose files', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const w = window as unknown as {
+        app: {
+          _handleFiles(files: unknown, opts: { fsEntries: unknown[] }): void;
+          _testApiWaitForIdle(opts?: { timeoutMs?: number }): Promise<void>;
+          _testApiDumpResult(): unknown;
+          _fileMeta: { name?: string } | null;
+          currentResult: { dispatchId?: string } | null;
+        };
+      };
+      // Mock an asRoot directory whose `readEntries` rejects
+      // synchronously with EncodingError — exactly what Chromium
+      // macOS produces.
+      const failingRoot = {
+        isFile: false,
+        isDirectory: true,
+        name: 'Archive',
+        fullPath: '/Archive',
+        createReader() {
+          return {
+            readEntries(_ok: (e: unknown[]) => void, err: (e: Error) => void) {
+              const e = Object.assign(
+                new Error('A URI supplied to the API was malformed or ' +
+                          'resulting Data URL has exceeded the URL length ' +
+                          'limitations for Data URLs'),
+                { name: 'EncodingError' });
+              setTimeout(() => err(e), 0);
+            },
+          };
+        },
+      };
+      // Supply two loose sibling files in the `files` list — the
+      // drop-handler forwards these to `_ingestFolderFromEntries` as
+      // the fallback bucket.
+      const loose = [
+        new File(['sibling-one\n'], 'skin.js', { type: 'text/javascript' }),
+        new File(['sibling-two\n'], 'readme.txt', { type: 'text/plain' }),
+      ];
+      w.app._handleFiles(loose, { fsEntries: [failingRoot] });
+      await w.app._testApiWaitForIdle({ timeoutMs: 10000 });
+      return {
+        result: w.app._testApiDumpResult(),
+        fileMetaName: w.app._fileMeta && w.app._fileMeta.name,
+      };
+    });
+
+    // Fallback kicked in — the two loose files become a "Dropped files"
+    // synthetic root, NOT an empty `Archive` tree.
+    const r = result.result as { dispatchId: string };
+    expect(r.dispatchId).toBe('folder');
+    expect(result.fileMetaName).toBe('Dropped files');
+
+    // Tree shows both loose siblings, neither of which was the
+    // `Archive` directory row.
+    const treePaths = await page
+      .locator('.folder-view .arch-col-path')
+      .allInnerTexts();
+    const joined = treePaths.join('\n');
+    expect(joined).toContain('skin.js');
+    expect(joined).toContain('readme.txt');
+    expect(joined).not.toContain('Archive');
+
+    // Toast must NOT say "truncated at 4,096" — pre-fix regression.
+    // Instead it explains the fallback. Toast hides after 3 s; we read
+    // it synchronously after `_handleFiles` resolves.
+    const toastText = await page.locator('#toast').innerText();
+    expect(toastText).toContain("Couldn't read folder");
+    expect(toastText).toContain('Archive');
+    expect(toastText).not.toContain('truncated at 4,096');
+  });
+
+  // ── Chromium EncodingError with no loose fallback ─────────────────
+  // When the drop carried ONLY the un-readable directory (no sibling
+  // files), there's nothing to fall back to. The ingest must abort
+  // cleanly with an actionable toast — never dispatch an empty tree.
+  test('Chromium EncodingError with no loose files surfaces actionable toast', async ({ page }) => {
+    const result = await page.evaluate(async () => {
+      const w = window as unknown as {
+        app: {
+          _handleFiles(files: unknown, opts: { fsEntries: unknown[] }): void;
+          _testApiWaitForIdle(opts?: { timeoutMs?: number }): Promise<void>;
+          currentResult: { dispatchId?: string } | null;
+          _fileMeta: { name?: string } | null;
+        };
+      };
+      const failingRoot = {
+        isFile: false,
+        isDirectory: true,
+        name: 'Archive',
+        fullPath: '/Archive',
+        createReader() {
+          return {
+            readEntries(_ok: (e: unknown[]) => void, err: (e: Error) => void) {
+              setTimeout(() => err(Object.assign(
+                new Error('malformed URI'), { name: 'EncodingError' })), 0);
+            },
+          };
+        },
+      };
+      // Pre-condition: no file is currently loaded so any state change
+      // below would reflect the failing ingest, not residual state.
+      w.app._handleFiles(null, { fsEntries: [failingRoot] });
+      // Wait for the toast to appear — `_ingestFolderFromEntries`
+      // resolves synchronously on the error path.
+      await new Promise(r => setTimeout(r, 100));
+      return {
+        // After the failed ingest, currentResult should still be null
+        // (no file was ever loaded).
+        afterDispatchId: w.app.currentResult
+          ? w.app.currentResult.dispatchId || null
+          : null,
+        afterFileMetaName: w.app._fileMeta && w.app._fileMeta.name,
+      };
+    });
+
+    // No empty-tree dispatch — currentResult is still null.
+    expect(result.afterDispatchId).toBeNull();
+
+    const toastText = await page.locator('#toast').innerText();
+    expect(toastText).toContain("Couldn't read folder");
+    expect(toastText).toContain('Archive');
+    // Toast points the analyst at a recoverable action.
+    expect(toastText).toMatch(/Open button|picker|drag the files/);
+    // Pre-fix regression: never claim a 4,096-entry truncation when
+    // nothing was truncated.
+    expect(toastText).not.toContain('truncated at 4,096');
+  });
+
   // ── Auto-expand threshold honoured by ArchiveTree.render('auto') ──
   // The `'auto'` mode used by every real archive renderer expands iff
   // `entries.length <= AUTO_EXPAND_MAX_ENTRIES` (256). Verify the

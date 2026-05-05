@@ -324,6 +324,7 @@ Full skeleton details live in `CONTRIBUTING.md § Renderer Contract` (detection 
 - `e937d32` — drag-and-drop files were captured by iframe; re-dispatch `loupe-drop` `CustomEvent`.
 - `e76ba0e` — defer vendor compile, add early drag-drop bootstrap, idle-init `BgCanvas`.
 - `3b4aa78` — hosted-mode privacy bar; external-file drag gating.
+- `<pending>` — Chromium macOS `readEntries()` EncodingError on folder drops now surfaces on `FolderFile.fromEntries`'s `walkErrors` and falls back to loose-file ingest instead of dispatching an empty tree under a misleading "truncated at 4,096" toast.
 
 ### State leak & cleanup
 - `eb46706` — clear copy-content cache, sidebar highlight timers, stale view refs on file-clear.

@@ -857,7 +857,12 @@ class App {
     // Path 1 — directory present in fsEntries → folder root.
     const hasDir = fsEntries.some(e => e && e.isDirectory);
     if (hasDir) {
-      this._ingestFolderFromEntries(fsEntries);
+      // Pass the original FileList through so that, if the browser's
+      // directory walker fails (Chromium macOS EncodingError on
+      // `readEntries()` is a known offender), the ingest can fall back
+      // to any loose files sitting alongside the failed directory
+      // instead of dispatching an empty tree.
+      this._ingestFolderFromEntries(fsEntries, fileList);
       return;
     }
 
@@ -891,7 +896,16 @@ class App {
   // labels the synthetic root "Dropped items". The walker never blocks
   // the UI longer than the strictly-async readEntries / file-getter
   // round-trips.
-  async _ingestFolderFromEntries(fsEntries) {
+  //
+  // `looseFiles` is the original `DataTransfer.files` FileList (or a
+  // plain array) threaded through from `_handleFiles`. When the walker
+  // fails to enumerate a directory entirely — e.g. Chromium macOS
+  // throws `EncodingError: A URI supplied to the API was malformed...`
+  // from `readEntries()`, a known browser bug with no JS-side recovery
+  // for the descriptor — we fall back to ingesting whatever loose
+  // top-level files the drop also carried, so the analyst isn't left
+  // staring at an empty tree under a misleading "truncated" toast.
+  async _ingestFolderFromEntries(fsEntries, looseFiles) {
     const dirEntries = fsEntries.filter(e => e && e.isDirectory);
     const fileEntries = fsEntries.filter(e => e && e.isFile);
     let rootName;
@@ -914,13 +928,72 @@ class App {
       const sources = (dirEntries.length === 1 && fileEntries.length === 0)
         ? [{ entry: dirEntries[0], asRoot: true }]
         : fsEntries.map(entry => ({ entry, path: entry.name }));
-      const { folder, truncated } =
+      const { folder, truncated, walkErrors } =
         await FolderFile.fromEntries(rootName, sources);
-      if (truncated) {
+
+      // Distinguish "walk failed entirely → empty tree" from
+      // "walk succeeded, hit entry cap". The former is the Chromium
+      // macOS EncodingError path; the latter is the legitimate 4 096-
+      // entry truncation. Without this split, the toast lied to the
+      // analyst ("truncated at 4 096" when nothing was truncated, just
+      // refused) and the tree rendered empty.
+      const hasDirWalkFailure = Array.isArray(walkErrors) &&
+        walkErrors.some(w => w && w.kind === 'dir');
+      const fileCount = (folder._loupeFolderEntries || [])
+        .filter(e => e && !e.dir).length;
+
+      if (hasDirWalkFailure && fileCount === 0) {
+        // The directory walker produced zero leaves because the browser
+        // refused to enumerate. Fall back to the loose `DataTransfer.
+        // files` list if the drop also carried files — at least the
+        // analyst sees something. If there's nothing to fall back to,
+        // surface an actionable toast pointing them at the Open button.
+        const loose = Array.isArray(looseFiles) ? looseFiles
+          : (looseFiles ? Array.from(looseFiles) : []);
+        const firstErr = walkErrors.find(w => w && w.kind === 'dir') || {};
+        const errTag = firstErr.name
+          ? `${firstErr.name}: ${firstErr.message || ''}`.trim()
+          : 'the browser refused to enumerate the directory';
+        if (loose.length > 1) {
+          this._toast(
+            `Couldn't read folder "${rootName}" (${errTag}). ` +
+            `Falling back to ${loose.length} loose file${loose.length === 1 ? '' : 's'} from the drop.`,
+            'info');
+          await this._ingestLooseMultiFile(loose);
+          return;
+        }
+        if (loose.length === 1) {
+          this._toast(
+            `Couldn't read folder "${rootName}" (${errTag}). ` +
+            'Opening the one loose file from the drop instead.',
+            'info');
+          this._resetNavStack();
+          await this._loadFile(loose[0]);
+          return;
+        }
+        this._toast(
+          `Couldn't read folder "${rootName}" (${errTag}). ` +
+          'This is a known Chromium macOS limitation on some folders — ' +
+          'use the Open button (picker) or drag the files themselves.',
+          'error');
+        return;
+      }
+
+      if (truncated && !hasDirWalkFailure) {
         this._toast(
           `Folder ingest truncated at ${
             (PARSER_LIMITS.MAX_FOLDER_ENTRIES || 4096).toLocaleString()
           } entries — open a smaller subtree for full coverage.`,
+          'info');
+      } else if (truncated && hasDirWalkFailure) {
+        // Partial walk: we got some leaves but at least one subtree
+        // refused. Keep the analyst informed without conflating with
+        // the cap-hit case.
+        const failed = walkErrors.filter(w => w && w.kind === 'dir').length;
+        this._toast(
+          `Folder ingest partially failed: ${failed.toLocaleString()} ` +
+          `subdirector${failed === 1 ? 'y' : 'ies'} couldn't be enumerated ` +
+          '(Chromium FileSystem API). Drilled-in results reflect what was readable.',
           'info');
       }
       this._resetNavStack();
@@ -928,6 +1001,7 @@ class App {
       // can surface the IOC.INFO row from inside its analyser hook (the
       // load pipeline doesn't pass per-file analysis options through).
       folder._loupeFolderTruncated = truncated;
+      folder._loupeFolderWalkErrors = Array.isArray(walkErrors) ? walkErrors : [];
       await this._loadFile(folder);
     } catch (e) {
       console.error(e);

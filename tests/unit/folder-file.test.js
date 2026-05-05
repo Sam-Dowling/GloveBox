@@ -4,8 +4,9 @@
 // `FolderFile.fromEntries` walks an array of `FileSystemEntry`-shaped
 // objects (real ones come from `webkitGetAsEntry()` on a folder drop),
 // flattens the tree into `{path, dir, size, file?, mtime?}` rows, and
-// returns `{folder, truncated, walkedCount}`. Two contract points
-// matter for safety / resilience and are the focus of these tests:
+// returns `{folder, truncated, walkedCount, walkErrors}`. The contract
+// points that matter for safety / resilience and are the focus of these
+// tests:
 //
 //   1. Per-leaf `entry.file(…)` failures (AV-blocked, permission denied,
 //      dead symlink, transient FS error) MUST be caught and the leaf
@@ -15,6 +16,11 @@
 //   2. Walk halts at `PARSER_LIMITS.MAX_FOLDER_ENTRIES` with
 //      `truncated = true`. Both directory and file pushes count toward
 //      the cap.
+//   3. `readEntries` rejections (Chromium macOS `EncodingError` on
+//      folder drops — fatal-for-descriptor browser bug) MUST be caught
+//      and recorded on `walkErrors` with `kind: 'dir'` so the caller
+//      can distinguish "browser refused to enumerate" from "hit 4 096
+//      cap" and fall back to loose-file ingest appropriately.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -181,11 +187,12 @@ test('FolderFile.fromEntries: nested directory walk preserves relative paths', a
     'nested leaf carries `sub/inner.txt`, top-level leaf bare; root NOT prefixed');
 });
 
-test('FolderFile.fromEntries: directory walk that throws via readEntries marks truncated', async () => {
-  // Whole-directory failure (e.g. denied recursion permission). The
-  // walker's outer try/catch should swallow the error and mark
-  // truncated = true so the analyst sees the warning toast / IOC.INFO
-  // row but the rest of the ingest continues.
+test('FolderFile.fromEntries: directory walk that throws via readEntries records walkError', async () => {
+  // Whole-directory failure (e.g. denied recursion permission, or
+  // Chromium macOS EncodingError). The walker's inner try/catch around
+  // the `readEntries` promise should capture the error onto
+  // `walkErrors` so the caller can distinguish this from a cap-hit
+  // truncation. Healthy siblings must still appear in the flat list.
   const failingDir = {
     isFile: false,
     isDirectory: true,
@@ -193,7 +200,8 @@ test('FolderFile.fromEntries: directory walk that throws via readEntries marks t
     createReader() {
       return {
         readEntries(_onSuccess, onError) {
-          setTimeout(() => onError(new Error('DOMException: NotAllowedError')), 0);
+          setTimeout(() => onError(
+            Object.assign(new Error('NotAllowedError'), { name: 'NotAllowedError' })), 0);
         },
       };
     },
@@ -205,11 +213,110 @@ test('FolderFile.fromEntries: directory walk that throws via readEntries marks t
     { entry: failingDir, path: 'denied' },
     { entry: okFile, path: 'ok.txt' },
   ];
-  const { folder, truncated } = await FolderFile.fromEntries('mixed', sources);
-  assert.equal(truncated, true, 'directory-walk failure latches truncated');
+  const { folder, truncated, walkErrors } = await FolderFile.fromEntries('mixed', sources);
+
   // The directory ROW itself is pushed before walkDir is called, so it
   // appears in the flat list even though its children were unreachable.
   // The healthy sibling file must still be present.
   const paths = folder.entries.map(e => e.path).sort();
   assert.deepEqual(host(paths), ['denied', 'ok.txt']);
+  // Regression: walkErrors surfaces the dir-kind failure so the caller
+  // can differentiate from cap-hit truncation.
+  assert.ok(Array.isArray(walkErrors), 'walkErrors is an array');
+  assert.ok(walkErrors.some(w => w && w.kind === 'dir' && w.name === 'NotAllowedError'),
+    'walkErrors records the dir-kind failure with its DOMException name');
+  // `truncated` stays false: no entries were enumerated-then-dropped
+  // (no cap hit, no per-leaf failure). Dir-walk failures route through
+  // walkErrors, not through the truncation flag.
+  assert.equal(truncated, false,
+    'pure dir-walk failure with zero leaves enumerated keeps truncated=false');
+});
+
+test('FolderFile.fromEntries: Chromium EncodingError on root walk yields empty tree + dir walkError', async () => {
+  // Regression: Chromium macOS throws
+  //   EncodingError: A URI supplied to the API was malformed...
+  // from `createReader().readEntries(...)` on otherwise-valid folder
+  // drops (known browser bug, fatal for the descriptor). Pre-fix the
+  // walker swallowed the error, latched `truncated = true`, and
+  // returned an empty flat list — the analyst saw an empty tree under
+  // a misleading "truncated at 4,096" toast. Fix contract: record on
+  // `walkErrors` with `kind: 'dir'` and the real error name/message so
+  // the caller can fall back to loose-file ingest and surface an
+  // accurate toast.
+  const encErr = Object.assign(
+    new Error('A URI supplied to the API was malformed or resulting Data URL ' +
+              'has exceeded the URL length limitations for Data URLs'),
+    { name: 'EncodingError' },
+  );
+  const failingRoot = {
+    isFile: false,
+    isDirectory: true,
+    name: 'Archive',
+    createReader() {
+      return {
+        readEntries(_onSuccess, onError) {
+          setTimeout(() => onError(encErr), 0);
+        },
+      };
+    },
+  };
+  const { folder, truncated, walkErrors } = await FolderFile.fromEntries(
+    'Archive', [{ entry: failingRoot, asRoot: true }]);
+
+  // Zero leaves reach the flat list — the descriptor was dead on arrival.
+  assert.equal(folder.entries.length, 0, 'empty tree on root-walk EncodingError');
+  // Truncated stays false: no entries were enumerated-then-dropped.
+  // The cap-hit branch is reserved for legitimate 4 096-entry overflows.
+  assert.equal(truncated, false,
+    'root-walk failure with zero leaves must NOT latch cap-hit truncation');
+  assert.ok(Array.isArray(walkErrors) && walkErrors.length >= 1,
+    'walkErrors records the root-walk failure');
+  const dirErr = walkErrors.find(w => w && w.kind === 'dir');
+  assert.ok(dirErr, 'walkErrors contains a dir-kind entry');
+  assert.equal(dirErr.name, 'EncodingError',
+    'real DOMException name propagated to caller for diagnostic toast');
+  assert.ok(/malformed/i.test(dirErr.message),
+    'real error message propagated for the "(${errTag})" toast fragment');
+});
+
+test('FolderFile.fromEntries: partial walk — one subtree fails, siblings and outer leaves survive', async () => {
+  // Chromium's EncodingError typically kills a specific subtree, not
+  // the whole drop. Confirm that when one nested dir's `readEntries`
+  // rejects, the outer walk still surfaces every readable leaf AND
+  // records the failure on `walkErrors` so the caller can emit a
+  // "partial failure" toast rather than the cap-hit one.
+  const failingSub = {
+    isFile: false,
+    isDirectory: true,
+    name: 'unreadable',
+    createReader() {
+      return {
+        readEntries(_onSuccess, onError) {
+          setTimeout(() => onError(
+            Object.assign(new Error('malformed URI'), { name: 'EncodingError' })), 0);
+        },
+      };
+    },
+  };
+  const root = makeDirEntry('outer', [
+    makeFileEntry('top.txt', fakeFile('top.txt', 1)),
+    failingSub,
+    makeFileEntry('also.txt', fakeFile('also.txt', 2)),
+  ]);
+  const { folder, truncated, walkErrors } = await FolderFile.fromEntries(
+    'outer', [{ entry: root, asRoot: true }]);
+
+  const paths = folder.entries.map(e => e.path).sort();
+  // The subdir ROW is pushed before walkDir is called, so it appears
+  // in the flat list even though its children were unreachable.
+  assert.deepEqual(host(paths), ['also.txt', 'top.txt', 'unreadable'],
+    'readable siblings + the subdir row survive the failed subtree');
+  // Caller-visible: at least one dir-kind walkError recorded.
+  assert.ok(walkErrors.some(w => w && w.kind === 'dir' && w.name === 'EncodingError'),
+    'subtree EncodingError recorded on walkErrors with kind=dir');
+  // `truncated` is left untouched by a dir-kind failure from inside
+  // walkDir (the 4 096 cap wasn't hit). The ingest caller keys off
+  // `walkErrors.length > 0` to branch the toast, not on `truncated`.
+  assert.equal(truncated, false,
+    'partial walk with zero cap hits and zero per-leaf failures keeps truncated=false');
 });
