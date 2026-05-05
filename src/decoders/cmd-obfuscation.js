@@ -2421,6 +2421,30 @@ Object.assign(EncodedContentDetector.prototype, {
       }
     }
 
+    // Detection-only candidate: `deobfuscated` is byte-identical to the
+    // raw match (live-fetch curl|sh, eval $(curl …), source <(wget …)
+    // etc.). There is no peel to present and no reanalysis to run — the
+    // upstream URL is the payload, already surfaced as an IOC.URL by
+    // the extractor, and the family-specific IOC.PATTERN mirror in
+    // `_patternIocs` captures the T-ID commentary. Returning a full
+    // `encoded-content` card with `_deobfuscatedText === _obfuscatedText`
+    // produces a tautological "Deobfuscation" finding whose "Load for
+    // analysis" button replaces the input with an identical copy (see
+    // bash-obfuscation.js B4 comment). Emit a sentinel instead; the
+    // host (`app-load.js`) routes the IOCs to `externalRefs` and skips
+    // the encoded-content card entirely.
+    if (deobf === candidate.raw) {
+      return {
+        _detectionOnly: true,
+        severity,
+        iocs,
+        offset: candidate.offset,
+        length: candidate.length,
+        technique: candidate.technique,
+        raw: candidate.raw,
+      };
+    }
+
     return {
       type: 'encoded-content',
       severity,

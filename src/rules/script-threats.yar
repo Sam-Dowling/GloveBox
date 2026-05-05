@@ -1186,26 +1186,6 @@ rule Bash_Variable_Obfuscation
         any of ($ifs_manip, $rev_pipe, $xxd_pipe) or ($eval_var and any of ($var_concat, $printf_slash, $bracket_cmd)) or ($heredoc_exec and $eval_var)
 }
 
-rule Shell_Curl_Wget_Pipe_Exec
-{
-    meta:
-        description = "Detects shell commands that download and directly execute scripts via pipe"
-        severity = "high"
-        category = "obfuscation"
-        mitre       = "T1059.004"
-        applies_to  = "bash, plaintext, decoded-payload"
-    strings:
-        $curl_bash = /curl\s+[^\|]*\|\s*(ba)?sh/ nocase
-        $wget_bash = /wget\s+[^\|]*\|\s*(ba)?sh/ nocase
-        $curl_eval = /eval\s+\$\(\s*curl\s+/ nocase
-        $wget_eval = /eval\s+\$\(\s*wget\s+/ nocase
-        $curl_source = /source\s+<\(\s*curl\s+/ nocase
-        $wget_source = /source\s+<\(\s*wget\s+/ nocase
-
-    condition:
-        any of them
-}
-
 rule Python_Reverse_Shell
 {
     meta:
