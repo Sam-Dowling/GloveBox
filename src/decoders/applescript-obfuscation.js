@@ -1313,7 +1313,7 @@ Object.assign(EncodedContentDetector.prototype, {
    * Emits a candidate per match with:
    *   technique: 'AppleScript Dynamic-Fetch Binding'
    *   deobfuscated: a human-readable annotation naming the var + source
-   *   _patternIocs: [{ type: 'url', value: <cmd-embedded URL> }, …]
+   *   _patternIocs: [{ url: <label string>, severity: 'high' }, …]
    */
   _emitAppleScriptDynamicFetchCandidates(text, candidates) {
     if (!/\bdo\s+shell\s+script\b/i.test(text)) return;
@@ -1361,10 +1361,14 @@ Object.assign(EncodedContentDetector.prototype, {
         _resolvedValue: '',
         _dynamicSource: { type: 'do-shell-script', urls, command: cmd },
         _patternIocs: urls.map(u => ({
-          type: 'url',
-          value: u,
+          // `_patternIocs` entries are emitted as IOC.PATTERN rows
+          // with the `url:` field carrying the row label. Dynamic-
+          // fetch URLs surface as `IOC.PATTERN` (labelled with the
+          // URL + provenance note) rather than `IOC.URL` because
+          // `_processCommandObfuscation`'s consumer unconditionally
+          // stamps `IOC.PATTERN` for `_patternIocs` entries.
+          url: 'Dynamic C2 discovery via `do shell script` \u2014 ' + u,
           severity: 'high',
-          note: 'Dynamic C2 discovery via `do shell script` in AppleScript handler',
         })),
       });
       emitted++;
@@ -1598,8 +1602,13 @@ Object.assign(EncodedContentDetector.prototype, {
         }
         const patternIocs = resolved.fullyResolved
           ? [{
-              type: 'pattern',
-              value: isAdmin
+              // The `_patternIocs` shape consumed by
+              // `_processCommandObfuscation` uses `url:` (a label
+              // string for the PATTERN row — name is historical,
+              // it's not restricted to URLs) not `value:`. Other
+              // decoder families (bash, cmd) agree. Using the wrong
+              // key surfaces `IOC Pattern: undefined` in the sidebar.
+              url: isAdmin
                 ? 'AppleScript Reassembled Admin Shell Command'
                 : 'AppleScript Reassembled Shell Command',
               severity: isAdmin ? 'critical' : 'high',
@@ -1607,10 +1616,12 @@ Object.assign(EncodedContentDetector.prototype, {
           : [];
         for (const u of dynamicFetchUrls) {
           patternIocs.push({
-            type: 'url',
-            value: u,
+            // IOC.PATTERN shape; see comment on other _patternIocs
+            // entries in this file for why the `url:` key is the
+            // label channel (not `value:`).
+            url: 'Dynamic C2 discovery via `do shell script` (assigned to '
+              + assignedToVar + ') \u2014 ' + u,
             severity: 'high',
-            note: 'Dynamic C2 discovery via `do shell script` (assigned to ' + assignedToVar + ')',
           });
         }
         results.push({

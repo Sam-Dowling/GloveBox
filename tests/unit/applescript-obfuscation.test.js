@@ -779,9 +779,9 @@ test('applescript-obfuscation: Tier C — dynamic-fetch URL appears as URL IOC',
   const cands = d._findAppleScriptObfuscationCandidates(text, {});
   const dyn = pick(cands, c => c.technique === 'AppleScript Dynamic-Fetch Binding');
   assert.ok(dyn.length >= 1);
-  const urls = dyn[0]._patternIocs.filter(p => p.type === 'url').map(p => p.value);
-  assert.ok(urls.includes('https://c2.example/beacon'),
-    `expected URL IOC; got: ${JSON.stringify(urls)}`);
+  const urls = dyn[0]._patternIocs.map(p => p.url);
+  assert.ok(urls.some(u => /https:\/\/c2\.example\/beacon/.test(u)),
+    `expected URL IOC label; got: ${JSON.stringify(urls)}`);
 });
 
 test('applescript-obfuscation: Tier C — sink context (set X to do shell script <chain>) surfaces dynamic URL', () => {

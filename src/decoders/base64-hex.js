@@ -153,7 +153,26 @@ Object.assign(EncodedContentDetector.prototype, {
         const offset = rm.index;
         const psContext = this._isPowerShellEncodedCommand(text, offset);
         const highConf = EncodedContentDetector.HIGH_CONFIDENCE_B64.find(h => raw.startsWith(h.prefix));
-        if (!psContext && !highConf) continue;
+        // AppleScript rescue: `set <var> to "<base64>"` followed (within
+        // ≤ 2 KiB) by a `base64 -D|-d|--decode` pipeline referencing the
+        // same var. The AppleScript char-code / property-binding
+        // decoder (`applescript-obfuscation.js`) resolves the sink's
+        // shell-command envelope (`echo … | base64 -D | bash`) but
+        // doesn't recursively decode base64 inside resolved command
+        // strings — so without this rescue pass, a 60-char base64
+        // payload wrapped in `set b64 to "…"` sits below the 64-char
+        // default-mode floor and no top-level Base64 finding emits.
+        // IOCs embedded inside the decoded command (the real `curl
+        // http://attacker.com/...` line) would only surface AFTER an
+        // analyst clicks "Load for analysis" on the AppleScript sink.
+        //
+        // The gate is deliberately narrow: the candidate must be inside
+        // a `"..."`-quoted AppleScript variable assignment AND the
+        // same identifier must appear downstream in a `base64 -…` decode
+        // context. Real-world FPs are unlikely because benign 24-64 char
+        // quoted blobs are almost never followed by `base64 -D|-d`.
+        const asCtx = this._isAppleScriptBase64DecodeVarContext(text, offset, raw);
+        if (!psContext && !highConf && !asCtx) continue;
         // Same whitelist gates as the main loop.
         if (this._isDataURI(text, offset)) continue;
         if (this._isPEMBlock(text, offset)) continue;
@@ -166,13 +185,58 @@ Object.assign(EncodedContentDetector.prototype, {
           length: raw.length,
           entropy: this._shannonEntropyString(raw),
           confidence: 'high',
-          hint: highConf ? highConf.desc : 'PowerShell encoded string',
+          hint: highConf ? highConf.desc
+                         : psContext ? 'PowerShell encoded string'
+                                     : 'AppleScript base64-decode variable',
           autoDecoded: true,
         });
       }
     }
 
     return candidates;
+  },
+
+  // Detect `set <var> to "<base64>"` + downstream
+  // `<var> … base64 -D|--decode` usage on the same AppleScript file.
+  // Used as a rescue trigger in `_findBase64Candidates` so base64
+  // blobs smaller than the default-mode 64-char floor still emit as
+  // high-confidence candidates when the surrounding AppleScript
+  // context strongly implies "this base64 is decoded at runtime and
+  // piped to a shell".
+  //
+  // Conservative predicate — both legs must match for the rescue to
+  // fire:
+  //   1. The candidate's byte before is `"`, and within the preceding
+  //      ≤ 64 chars on the same line we find `set\s+(NAME)\s+to\s+"$`
+  //   2. Within the following ≤ 2048 chars, we find NAME again in a
+  //      context containing `base64\s+-(?:d|decode|D)`
+  //
+  // Returns `true` iff both conditions hold. No partial credit.
+  _isAppleScriptBase64DecodeVarContext(text, offset, raw) {
+    if (typeof text !== 'string' || offset < 1 || offset >= text.length) return false;
+    // The candidate must be immediately preceded by `"` — i.e. the
+    // base64 is the body of a string literal. Bail cheaply otherwise.
+    if (text[offset - 1] !== '"') return false;
+    const endOffset = offset + raw.length;
+    if (endOffset >= text.length || text[endOffset] !== '"') return false;
+    // Look backwards on the same line (up to 128 chars) for
+    // `set\s+(NAME)\s+to\s+"`.
+    const lineStart = Math.max(0, offset - 128);
+    const preamble = text.substring(lineStart, offset - 1);
+    /* safeRegex: builtin */
+    const setRe = /(?:^|[\r\n])\s*set\s+([_A-Za-z][A-Za-z0-9_]{0,63})\s+to\s+$/;
+    const m = setRe.exec(preamble);
+    if (!m) return false;
+    const varName = m[1];
+    // Look forward up to 2 KiB for the variable reappearing in a
+    // `base64 -D|-d|--decode` pipeline. This is structural, not a
+    // strict dependency order — the decode may happen before the
+    // string reference in the sink expression.
+    const window = text.substring(endOffset + 1, Math.min(text.length, endOffset + 1 + 2048));
+    if (!window.includes(varName)) return false;
+    /* safeRegex: builtin */
+    const decodeRe = /\bbase64\s+-(?:d|D|-decode|-Decode)\b/;
+    return decodeRe.test(window);
   },
 
   _findHexCandidates(text, context) {
