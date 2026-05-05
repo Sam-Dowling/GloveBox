@@ -327,28 +327,64 @@ class App {
       e.stopPropagation();
       hideOverlay();
       dz.classList.remove('drag-over');
-      // Two ingress shapes:
-      //   • `dataTransfer.items` — required for directory drops
-      //     (`webkitGetAsEntry()` only lives on items, not files).
-      //   • `dataTransfer.files` — flat fallback for browsers / drags
-      //     that don't expose items (rare today; OS clipboard files
-      //     pasted via drag are one historical source).
+      // Three ingress shapes (preference order):
+      //   • `item.getAsFileSystemHandle()` — modern File System Access
+      //     API, works around Chromium macOS `EncodingError` on
+      //     `readEntries()`. Async, so we collect Promises and await
+      //     them before handing off to `_handleFiles`.
+      //   • `item.webkitGetAsEntry()` — legacy FileSystemEntry surface.
+      //     Required for directory drops on browsers that don't support
+      //     the modern handle API.
+      //   • `dataTransfer.files` — flat FileList fallback.
       const dt = e.dataTransfer;
       const items = (dt && dt.items) ? Array.from(dt.items) : [];
+      // Kick off handle fetches in parallel — `getAsFileSystemHandle`
+      // is async and `DataTransferItemList` invalidates once we yield.
+      const handlePromises = items
+        .filter(it => it && it.kind === 'file'
+                    && typeof it.getAsFileSystemHandle === 'function')
+        .map(it => {
+          try { return it.getAsFileSystemHandle(); }
+          catch (_) { return null; }
+        });
+      // Eagerly snapshot legacy entries too — they remain valid once
+      // the item list invalidates (unlike the item list itself).
       const fsEntries = items
         .filter(it => it && it.kind === 'file' && typeof it.webkitGetAsEntry === 'function')
-        .map(it => it.webkitGetAsEntry())
+        .map(it => {
+          try { return it.webkitGetAsEntry(); }
+          catch (_) { return null; }
+        })
         .filter(Boolean);
-      if (fsEntries.length) {
-        // `_handleFiles` is the single-owner ingress; it picks the right
-        // path (single-file vs synthetic folder) based on what's
-        // available. We pass the entries on a side channel so it can
-        // walk directories without us repeating the logic.
-        this._handleFiles(dt.files, { fsEntries });
+      // Snapshot files before we await (FileList can invalidate).
+      const files = (dt && dt.files) ? dt.files : null;
+
+      if (handlePromises.length) {
+        // Await handles, filter nulls/rejections, then dispatch.
+        Promise.allSettled(handlePromises).then(results => {
+          const fsHandles = [];
+          for (const r of results) {
+            if (r.status === 'fulfilled' && r.value) fsHandles.push(r.value);
+          }
+          const opts = {};
+          if (fsHandles.length) opts.fsHandles = fsHandles;
+          if (fsEntries.length) opts.fsEntries = fsEntries;
+          // If neither handles nor entries produced directories, fall
+          // through to the flat files list.
+          if (fsHandles.length || fsEntries.length) {
+            this._handleFiles(files, opts);
+          } else if (files && files.length) {
+            this._handleFiles(files);
+          }
+        });
         return;
       }
-      if (dt && dt.files && dt.files.length) {
-        this._handleFiles(dt.files);
+      if (fsEntries.length) {
+        this._handleFiles(files, { fsEntries });
+        return;
+      }
+      if (files && files.length) {
+        this._handleFiles(files);
       }
     });
 
@@ -383,20 +419,38 @@ class App {
     });
 
     // ── Drop-zone click / file-input ────────────────────────────────────
+    // The drop-zone itself (landing surface) still opens the file
+    // picker on click — that's the analyst-expected behaviour. The
+    // toolbar `📁 Open ▾` button is a dropdown with both File and
+    // Folder choices; see `_setupToolbar` + `_openOpenMenu`.
     dz.addEventListener('click', () => fi.click());
     fi.addEventListener('change', e => {
       const files = e.target.files;
       if (files && files.length) {
-        // `webkitdirectory` is opt-in — when the picker is configured
-        // for it, the browser walks the directory tree itself and the
-        // FileList contains every leaf with a `webkitRelativePath`. We
-        // route through `_handleFiles` either way; it picks the right
-        // path (single file vs synthetic folder) based on whether the
-        // FileList carries multiple entries / relative paths.
+        // `_handleFiles` picks the right path (single file / multi-file
+        // loose / webkitRelativePath folder) based on the FileList shape.
         this._handleFiles(files);
       }
       fi.value = '';
     });
+
+    // Folder picker (`webkitdirectory` input). Every leaf carries
+    // `webkitRelativePath`, which `_handleFiles` routes through
+    // `_ingestFolderFromRelativePaths`. Kept as a separate hidden input
+    // because `webkitdirectory` on an `<input>` is mode-exclusive —
+    // the same element can't offer both file and folder pickers.
+    //
+    // This input is the reliable escape hatch for macOS Chrome's known
+    // `EncodingError` on drag-dropped folders (the drop-handler fallback
+    // toast points analysts here).
+    const folderInput = document.getElementById('folder-input');
+    if (folderInput) {
+      folderInput.addEventListener('change', e => {
+        const files = e.target.files;
+        if (files && files.length) this._handleFiles(files);
+        folderInput.value = '';
+      });
+    }
 
     // ── Drain pending early-bootstrap drops/pastes ─────────────────────
     // `src/app/early-drop-bootstrap.js` runs before the heavy vendor
@@ -412,14 +466,45 @@ class App {
     try {
       const earlyDrop = window.__loupePendingDrop;
       const earlyDropEntries = window.__loupePendingDropEntries;
+      const earlyDropHandlesPromise = window.__loupePendingDropHandlesPromise;
       const earlyPaste = window.__loupePendingPaste;
       if (typeof window.__loupeEarlyDropTeardown === 'function') {
         window.__loupeEarlyDropTeardown();
       }
       window.__loupePendingDrop = null;
       window.__loupePendingDropEntries = null;
+      window.__loupePendingDropHandlesPromise = null;
       window.__loupePendingPaste = null;
-      if (Array.isArray(earlyDropEntries) && earlyDropEntries.length) {
+      if (earlyDropHandlesPromise && typeof earlyDropHandlesPromise.then === 'function') {
+        // Modern File System Access API path — preferred when available
+        // (macOS Chromium's `readEntries` bug doesn't affect handles).
+        // Await the handles then route through `_handleFiles`; fall
+        // back to legacy `earlyDropEntries` on the side channel so
+        // `_ingestFolderFromEntries` has every chance of working.
+        earlyDropHandlesPromise.then(fsHandles => {
+          const opts = {};
+          if (Array.isArray(fsHandles) && fsHandles.length) opts.fsHandles = fsHandles;
+          if (Array.isArray(earlyDropEntries) && earlyDropEntries.length) {
+            opts.fsEntries = earlyDropEntries;
+          }
+          if (opts.fsHandles || opts.fsEntries) {
+            this._handleFiles(earlyDrop, opts);
+          } else if (Array.isArray(earlyDrop) && earlyDrop.length) {
+            this._handleFiles(earlyDrop);
+          } else if (Array.isArray(earlyPaste) && earlyPaste.length) {
+            this._handleFiles(earlyPaste);
+          }
+        }).catch(() => {
+          // Handles failed — fall back to entries / loose files.
+          if (Array.isArray(earlyDropEntries) && earlyDropEntries.length) {
+            this._handleFiles(earlyDrop, { fsEntries: earlyDropEntries });
+          } else if (Array.isArray(earlyDrop) && earlyDrop.length) {
+            this._handleFiles(earlyDrop);
+          } else if (Array.isArray(earlyPaste) && earlyPaste.length) {
+            this._handleFiles(earlyPaste);
+          }
+        });
+      } else if (Array.isArray(earlyDropEntries) && earlyDropEntries.length) {
         // Folder / multi-item drop captured before App boot. Route
         // through `_handleFiles` with the entries on the side channel
         // so directory walking happens via `webkitGetAsEntry`.
@@ -434,7 +519,11 @@ class App {
   }
 
   _setupToolbar() {
-    document.getElementById('btn-open').addEventListener('click', () => document.getElementById('file-input').click());
+    // `#btn-open` is a dropdown ("📁 Open ▾") with File / Folder entries.
+    // The Folder entry triggers the dedicated `#folder-input`
+    // (`webkitdirectory`) which is the reliable escape hatch for
+    // macOS Chrome's drag-drop `EncodingError` bug.
+    document.getElementById('btn-open').addEventListener('click', () => this._toggleOpenMenu());
     document.getElementById('btn-close').addEventListener('click', () => {
       // Timeline view owns its own cleanup path; fall through to the regular
       // analyser close otherwise. `_timelineCurrent` is the single source of
@@ -842,6 +931,10 @@ class App {
   //     picker → group by the first path segment; if every leaf shares
   //     the same root, use it as the folder name.
   //
+  // `opts.fsHandles` — Array<FileSystemHandle> from `getAsFileSystemHandle()`,
+  //                    the modern API path. Preferred over `fsEntries`
+  //                    when both are present (macOS Chromium's
+  //                    `readEntries` bug doesn't affect handles).
   // `opts.fsEntries`  — Array<FileSystemEntry> from `webkitGetAsEntry()`,
   //                     supplied by the drop handler when items are present.
   // `opts.skipNavReset` — internal hook used by drill-down callers; not
@@ -853,6 +946,17 @@ class App {
       ? (Array.isArray(files) ? files : Array.from(files))
       : [];
     const fsEntries = Array.isArray(o.fsEntries) ? o.fsEntries : [];
+    const fsHandles = Array.isArray(o.fsHandles) ? o.fsHandles : [];
+
+    // Path 0 — FileSystemHandle with at least one directory → modern
+    // API folder walk. Preferred over the legacy fsEntries path
+    // because Chromium macOS `readEntries()` throws `EncodingError`
+    // on some folder drops and the handle API sidesteps it entirely.
+    const hasHandleDir = fsHandles.some(h => h && h.kind === 'directory');
+    if (hasHandleDir) {
+      this._ingestFolderFromHandles(fsHandles, fileList);
+      return;
+    }
 
     // Path 1 — directory present in fsEntries → folder root.
     const hasDir = fsEntries.some(e => e && e.isDirectory);
@@ -987,7 +1091,7 @@ class App {
         this._toast(
           `Couldn't read folder "${rootName}" (${errTag}). ` +
           'This is a known Chromium macOS limitation on some folders — ' +
-          'use the Open button (picker) or drag the files themselves.',
+          'use 📁 Open ▾ → Open Folder… instead.',
           'error');
         return;
       }
@@ -1013,6 +1117,89 @@ class App {
       // Stash the truncation flag so FolderRenderer.analyzeForSecurity
       // can surface the IOC.INFO row from inside its analyser hook (the
       // load pipeline doesn't pass per-file analysis options through).
+      folder._loupeFolderTruncated = truncated;
+      folder._loupeFolderWalkErrors = Array.isArray(walkErrors) ? walkErrors : [];
+      await this._loadFile(folder);
+    } catch (e) {
+      console.error(e);
+      this._toast(`Failed to ingest folder: ${e.message}`, 'error');
+    } finally {
+      this._setLoading(false);
+    }
+  }
+
+  // ── Folder ingress: FileSystemHandle path (modern File System Access
+  //    API; DataTransferItem.getAsFileSystemHandle) ──────────────────
+  // This is the preferred walker on Chromium because the legacy
+  // `webkitGetAsEntry()` / `readEntries()` surface has a known macOS
+  // Chromium bug (`EncodingError` on otherwise-valid folder drops).
+  // Handle-based iteration uses a different internal descriptor and
+  // is not affected. Falls back to the entry walker if handle walking
+  // still comes up empty.
+  async _ingestFolderFromHandles(fsHandles, looseFiles) {
+    const dirHandles = fsHandles.filter(h => h && h.kind === 'directory');
+    const fileHandles = fsHandles.filter(h => h && h.kind === 'file');
+    let rootName;
+    if (dirHandles.length === 1 && fileHandles.length === 0) {
+      rootName = dirHandles[0].name;
+    } else {
+      rootName = 'Dropped items';
+    }
+    if (!(await this._confirmLargeFolderIngest(fsHandles.length))) return;
+
+    this._setLoading(true);
+    try {
+      const sources = (dirHandles.length === 1 && fileHandles.length === 0)
+        ? [{ handle: dirHandles[0], asRoot: true }]
+        : fsHandles.map(handle => ({ handle, path: handle.name }));
+      const { folder, truncated, walkErrors } =
+        await FolderFile.fromFileSystemHandles(rootName, sources);
+
+      const hasDirWalkFailure = Array.isArray(walkErrors) &&
+        walkErrors.some(w => w && w.kind === 'dir');
+      const fileCount = (folder._loupeFolderEntries || [])
+        .filter(e => e && !e.dir).length;
+
+      // If the handle walk somehow came up empty, try falling back to
+      // loose files from the drop before surfacing a toast. This path
+      // is very unlikely to fire — handle walking is robust — but it
+      // mirrors the entry-walker fallback for defence-in-depth.
+      if (hasDirWalkFailure && fileCount === 0) {
+        const rawLoose = Array.isArray(looseFiles) ? looseFiles
+          : (looseFiles ? Array.from(looseFiles) : []);
+        // For the handle path we don't have fsEntries to correlate
+        // names against; skip the name-filter and rely on the
+        // slice-probe alone to drop pseudo-Files.
+        const loose =
+          await this._filterReadableLooseFiles(rawLoose, []);
+        if (loose.length > 1) {
+          this._toast(
+            `Couldn't read folder "${rootName}". ` +
+            `Falling back to ${loose.length} loose files from the drop.`,
+            'info');
+          await this._ingestLooseMultiFile(loose);
+          return;
+        }
+        if (loose.length === 1) {
+          this._resetNavStack();
+          await this._loadFile(loose[0]);
+          return;
+        }
+        this._toast(
+          `Couldn't read folder "${rootName}". ` +
+          'Try the 📁 Open ▾ → Open Folder… button instead.',
+          'error');
+        return;
+      }
+
+      if (truncated) {
+        this._toast(
+          `Folder ingest truncated at ${
+            (PARSER_LIMITS.MAX_FOLDER_ENTRIES || 4096).toLocaleString()
+          } entries — open a smaller subtree for full coverage.`,
+          'info');
+      }
+      this._resetNavStack();
       folder._loupeFolderTruncated = truncated;
       folder._loupeFolderWalkErrors = Array.isArray(walkErrors) ? walkErrors : [];
       await this._loadFile(folder);

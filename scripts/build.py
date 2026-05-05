@@ -2013,7 +2013,10 @@ HTML = f"""<!DOCTYPE html>
     <div class="tb-separator"></div>
     <!-- File operations group -->
     <div class="tb-group" id="file-ops">
-      <button class="tb-btn" id="btn-open" title="Open file (or drag &amp; drop)">📁 Open File</button>
+      <div class="tb-menu-wrap">
+        <button class="tb-btn" id="btn-open" aria-haspopup="menu" aria-expanded="false" title="Open a file or folder (or drag &amp; drop)">📁 Open <span class="tb-caret">▾</span></button>
+        <div class="tb-menu hidden" id="open-menu" role="menu"></div>
+      </div>
       <button class="tb-btn hidden" id="btn-close" title="Close file (Esc)">✕</button>
       <nav class="hidden" id="breadcrumbs" aria-label="File path"></nav>
     </div>
@@ -2023,7 +2026,20 @@ HTML = f"""<!DOCTYPE html>
     <div class="tb-separator"></div>
     <button class="tb-btn tb-icon-btn" id="btn-yara" title="YARA rule editor (Y)">📐</button>
     <button class="tb-btn tb-icon-btn" id="btn-settings" title="Settings (,) · Help (?)">⚙</button>
-    <input type="file" id="file-input" accept="{accept_attr}" style="display:none">
+    <!-- File picker — `multiple` so multi-file selection reaches
+         `_ingestLooseMultiFile`. `accept` is a hint only; analysts can
+         always override via "All Files". -->
+    <input type="file" id="file-input" accept="{accept_attr}" multiple style="display:none">
+    <!-- Folder picker — `webkitdirectory` flips the native dialog into
+         directory-selection mode. `accept` is deliberately omitted here:
+         browsers ignore `accept` under `webkitdirectory` and in some
+         versions it even suppresses legitimate sub-files. The picker
+         silently flattens the tree; every leaf carries
+         `webkitRelativePath` which `_ingestFolderFromRelativePaths`
+         consumes. This exists because drag-dropping a folder on macOS
+         Chrome is unreliable (known Chromium `EncodingError` on
+         `readEntries()` for folders dragged from Finder). -->
+    <input type="file" id="folder-input" webkitdirectory multiple style="display:none">
 
   </div>
 
@@ -2055,7 +2071,7 @@ HTML = f"""<!DOCTYPE html>
       </div>
       <div id="drop-zone">
         <span class="dz-icon">📄</span>
-        <div class="dz-text">Drop a file here to analyse</div>
+        <div class="dz-text">Drop a file or folder here to analyse</div>
         <div class="dz-sub">Extracts IOCs, decodes obfuscated payloads, runs 500+ YARA rules, and renders 60+ formats — 100% offline in your browser.</div>
       </div>
       <div id="page-container"></div>

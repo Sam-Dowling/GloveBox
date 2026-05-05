@@ -1389,6 +1389,111 @@ extendApp({
   },
 
   // ════════════════════════════════════════════════════════════════════════
+  // Open menu — "📁 Open ▾" dropdown hosting File / Folder picker entries
+  // ════════════════════════════════════════════════════════════════════════
+  //
+  // The toolbar's `📁 Open ▾` button opens a two-item menu:
+  //   • "Open File…"   → triggers the hidden `#file-input` (`multiple`,
+  //                      `accept` extension list).
+  //   • "Open Folder…" → triggers the hidden `#folder-input`
+  //                      (`webkitdirectory multiple`), which flattens
+  //                      the directory tree into `webkitRelativePath`
+  //                      leaves — consumed by
+  //                      `_ingestFolderFromRelativePaths`.
+  //
+  // The Folder entry exists because drag-dropping a folder on macOS
+  // Chrome fails intermittently with a Chromium bug: `readEntries()` on
+  // a `webkitGetAsEntry()` directory throws
+  //   `EncodingError: A URI supplied to the API was malformed...`
+  // for some folder drops (appears to correlate with APFS / quarantined
+  // / iCloud-backed paths). The `webkitdirectory` input uses a
+  // completely different code path in Chromium and is not affected.
+  //
+  // Styling reuses `.tb-menu` / `.tb-menu-item` (same classes as the
+  // Export menu) so no new CSS is needed.
+
+  _getOpenMenuItems() {
+    return [
+      { id: 'open-file', icon: '📄', label: 'Open File…', action: () => {
+        const fi = document.getElementById('file-input');
+        if (fi) fi.click();
+      }},
+      { id: 'open-folder', icon: '📂', label: 'Open Folder…', action: () => {
+        const fi = document.getElementById('folder-input');
+        if (fi) fi.click();
+      }},
+    ];
+  },
+
+  _buildOpenMenu() {
+    const menu = document.getElementById('open-menu');
+    if (!menu) return;
+    menu.innerHTML = '';
+    menu.setAttribute('role', 'menu');
+    for (const item of this._getOpenMenuItems()) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tb-menu-item';
+      btn.dataset.openId = item.id;
+      btn.setAttribute('role', 'menuitem');
+      const iconSpan = document.createElement('span');
+      iconSpan.className = 'tb-menu-icon';
+      iconSpan.textContent = item.icon;
+      btn.appendChild(iconSpan);
+      const labelSpan = document.createElement('span');
+      labelSpan.className = 'tb-menu-label';
+      labelSpan.textContent = item.label;
+      btn.appendChild(labelSpan);
+      btn.addEventListener('click', () => {
+        this._closeOpenMenu();
+        try { item.action(); }
+        catch (err) {
+          console.error('Open menu action failed:', err);
+          this._toast('Couldn’t open picker — see console', 'error');
+        }
+      });
+      menu.appendChild(btn);
+    }
+  },
+
+  _openOpenMenu() {
+    this._buildOpenMenu();
+    const menu = document.getElementById('open-menu');
+    const btn = document.getElementById('btn-open');
+    if (!menu || !btn) return;
+    menu.classList.remove('hidden');
+    btn.setAttribute('aria-expanded', 'true');
+    const onDocDown = e => {
+      if (menu.contains(e.target) || btn.contains(e.target)) return;
+      this._closeOpenMenu();
+    };
+    const onEsc = e => { if (e.key === 'Escape') this._closeOpenMenu(); };
+    this._openMenuDismiss = () => {
+      document.removeEventListener('mousedown', onDocDown, true);
+      document.removeEventListener('keydown', onEsc, true);
+      this._openMenuDismiss = null;
+    };
+    setTimeout(() => {
+      document.addEventListener('mousedown', onDocDown, true);
+      document.addEventListener('keydown', onEsc, true);
+    }, 0);
+  },
+
+  _closeOpenMenu() {
+    const menu = document.getElementById('open-menu');
+    const btn = document.getElementById('btn-open');
+    if (menu) menu.classList.add('hidden');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    if (this._openMenuDismiss) this._openMenuDismiss();
+  },
+
+  _toggleOpenMenu() {
+    const menu = document.getElementById('open-menu');
+    if (menu && !menu.classList.contains('hidden')) this._closeOpenMenu();
+    else this._openOpenMenu();
+  },
+
+  // ════════════════════════════════════════════════════════════════════════
   // Export menu — shared entrypoint for every on-disk / clipboard export
   // ════════════════════════════════════════════════════════════════════════
   //

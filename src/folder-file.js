@@ -306,6 +306,142 @@ class FolderFile {
       walkErrors,
     };
   }
+
+  /**
+   * Build a FolderFile from `FileSystemDirectoryHandle` /
+   * `FileSystemFileHandle` objects obtained via
+   * `DataTransferItem.getAsFileSystemHandle()` (modern File System Access
+   * API). This is the preferred walker on Chromium because the legacy
+   * `webkitGetAsEntry()` / `readEntries()` surface has a known macOS
+   * Chromium bug: `readEntries()` throws
+   *   `EncodingError: A URI supplied to the API was malformed...`
+   * for some folder drops (APFS / quarantined / iCloud-backed paths),
+   * leaving the analyst with an unopenable folder. `FileSystemHandle`
+   * uses a different internal descriptor and is not affected.
+   *
+   * The handle walk uses the async iterator on directory handles
+   * (`for await (const [name, child] of dir.entries()) {...}`), which is
+   * batch-free — no `readEntries()` equivalent to fail on.
+   *
+   * Contract mirrors `fromEntries`:
+   *   • Honours `PARSER_LIMITS.MAX_FOLDER_ENTRIES`.
+   *   • Per-leaf `handle.getFile()` failures are caught and recorded on
+   *     `walkErrors` with `kind: 'leaf'`; sibling entries continue.
+   *   • Per-directory `entries()` iteration failures are caught and
+   *     recorded with `kind: 'dir'`; the caller can inspect walkErrors
+   *     to decide whether to fall back.
+   *   • Path semantics identical: when `asRoot` is set on a single
+   *     directory handle, its children walk under an empty prefix (no
+   *     redundant `<root>/<root>/...` nesting).
+   *
+   * @param {string} rootName
+   * @param {Array<{handle: any, asRoot?: boolean, path?: string}>} sources
+   * @returns {Promise<{folder: FolderFile, truncated: boolean,
+   *                    walkedCount: number,
+   *                    walkErrors: Array<object>}>}
+   */
+  static async fromFileSystemHandles(rootName, sources) {
+    const cap = (typeof PARSER_LIMITS !== 'undefined'
+                 && PARSER_LIMITS && PARSER_LIMITS.MAX_FOLDER_ENTRIES) || 4096;
+    const flat = [];
+    let truncated = false;
+    let walkedCount = 0;
+    const walkErrors = [];
+
+    const pushDir = (path) => {
+      if (flat.length >= cap) { truncated = true; return false; }
+      flat.push({ path, dir: true, size: 0 });
+      walkedCount++;
+      return true;
+    };
+    const pushFile = (path, file) => {
+      if (flat.length >= cap) { truncated = true; return false; }
+      flat.push({
+        path,
+        dir: false,
+        size: (file && Number.isFinite(file.size)) ? file.size : 0,
+        file,
+        mtime: (file && file.lastModified) ? new Date(file.lastModified) : null,
+      });
+      walkedCount++;
+      return true;
+    };
+
+    const walkDir = async (dirHandle, prefix) => {
+      if (flat.length >= cap) { truncated = true; return; }
+      // `dirHandle.entries()` yields `[name, FileSystemHandle]` pairs.
+      // Iteration errors are caught per-subtree so one bad directory
+      // doesn't kill the whole walk.
+      try {
+        for await (const [childName, childHandle] of dirHandle.entries()) {
+          if (flat.length >= cap) { truncated = true; return; }
+          const childPath = prefix ? prefix + '/' + childName : childName;
+          if (childHandle.kind === 'directory') {
+            if (!pushDir(childPath)) return;
+            await walkDir(childHandle, childPath);
+          } else if (childHandle.kind === 'file') {
+            let file = null;
+            try {
+              file = await childHandle.getFile();
+            } catch (err) {
+              walkErrors.push({
+                path: childPath,
+                kind: 'leaf',
+                name: (err && err.name) ? String(err.name) : 'Error',
+                message: (err && err.message) ? String(err.message) : String(err),
+              });
+              truncated = true;
+              continue;
+            }
+            if (!pushFile(childPath, file)) return;
+          }
+        }
+      } catch (err) {
+        walkErrors.push({
+          path: prefix || (dirHandle && dirHandle.name) || '',
+          kind: 'dir',
+          name: (err && err.name) ? String(err.name) : 'Error',
+          message: (err && err.message) ? String(err.message) : String(err),
+        });
+      }
+    };
+
+    for (const src of (sources || [])) {
+      if (flat.length >= cap) { truncated = true; break; }
+      if (!src || !src.handle) continue;
+      const handle = src.handle;
+      if (handle.kind === 'directory') {
+        if (src.asRoot) {
+          await walkDir(handle, '');
+          continue;
+        }
+        const relPath = (src.path || handle.name || '').replace(/^\/+/, '');
+        if (!pushDir(relPath)) break;
+        await walkDir(handle, relPath);
+      } else if (handle.kind === 'file') {
+        const relPath = (src.path || handle.name || '').replace(/^\/+/, '');
+        try {
+          const file = await handle.getFile();
+          if (!pushFile(relPath, file)) break;
+        } catch (err) {
+          walkErrors.push({
+            path: relPath,
+            kind: 'leaf',
+            name: (err && err.name) ? String(err.name) : 'Error',
+            message: (err && err.message) ? String(err.message) : String(err),
+          });
+          truncated = true;
+        }
+      }
+    }
+
+    return {
+      folder: new FolderFile(rootName, flat),
+      truncated,
+      walkedCount,
+      walkErrors,
+    };
+  }
 }
 
 if (typeof window !== 'undefined') window.FolderFile = FolderFile;

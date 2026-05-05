@@ -103,19 +103,42 @@
     // (the parallel `files` list contains junk-shaped DirectoryEntry
     // proxies on most browsers). Cleared by `_handleFiles` after the
     // App processes it.
+    //
+    // We ALSO kick off `getAsFileSystemHandle()` calls in parallel:
+    // on modern Chromium this returns handles that are not subject
+    // to the macOS `readEntries()` `EncodingError` bug. The handle
+    // objects remain valid across the `DataTransferItemList`
+    // invalidation. The resulting promise is stashed on
+    // `__loupePendingDropHandlesPromise` — the App awaits it during
+    // drain.
     if (dt && dt.items && dt.items.length) {
       const entries = [];
+      const handlePromises = [];
       for (const item of dt.items) {
         if (!item || item.kind !== 'file') continue;
         // `webkitGetAsEntry` is the standard cross-browser name today
         // (the un-prefixed `getAsEntry` exists in some specs but isn't
         // shipping anywhere as of writing). Returns null if the item
         // isn't a filesystem entry (e.g. drag from another tab).
-        const ent = (typeof item.webkitGetAsEntry === 'function')
-          ? item.webkitGetAsEntry() : null;
-        if (ent) entries.push(ent);
+        try {
+          const ent = (typeof item.webkitGetAsEntry === 'function')
+            ? item.webkitGetAsEntry() : null;
+          if (ent) entries.push(ent);
+        } catch (_) { /* non-fatal — continue with other items */ }
+        if (typeof item.getAsFileSystemHandle === 'function') {
+          try { handlePromises.push(item.getAsFileSystemHandle()); }
+          catch (_) { /* non-fatal */ }
+        }
       }
       if (entries.length) window.__loupePendingDropEntries = entries;
+      if (handlePromises.length) {
+        // Resolve to a plain array of handles (nulls / rejections
+        // filtered out) so the App drain code can just `await` it.
+        window.__loupePendingDropHandlesPromise = Promise.allSettled(handlePromises)
+          .then(results => results
+            .filter(r => r.status === 'fulfilled' && r.value)
+            .map(r => r.value));
+      }
     }
   };
 
