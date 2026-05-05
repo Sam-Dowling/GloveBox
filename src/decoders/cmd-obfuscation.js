@@ -221,6 +221,29 @@ const KNOWN_PS_CMDLETS_SENSITIVE = Object.freeze({
 // ════════════════════════════════════════════════════════════════════════════
 
 
+// Shared PowerShell obfuscation-gate whitelist used by the `-replace`
+// sentinel-strip branch AND the backtick-escape branch. The first
+// group is the classic LOLBin set (iex, Invoke-Expression, rundll32,
+// certutil, mshta, curl, tftp, …); the second group is the curated
+// .NET weaponisation-namespace set — each entry is a documented
+// download-cradle / process-spawn / AMSI-bypass / code-load primitive
+// (MITRE ATT&CK T1059.001, T1105, T1055, T1620). Namespaces match on
+// the backtick-stripped form, so `Sy`st`em.Ne`t.We`b`Cl`ie`nt` cleans
+// to `system.net.webclient` and gates through.
+//
+// The two branches used to carry hand-maintained copies of the LOLBin
+// subset; drift between them had been flagged informally. Factoring
+// them into a single constant is both a cleanup and a pre-requisite
+// for the namespace-chain addition — keeping two truth tables in sync
+// across a ~15-entry extension was a footgun waiting to happen.
+//
+// Keep this list narrow. Every entry feeds `_processCommand-
+// Obfuscation`'s `dangerousPatterns` severity calc (tier = high
+// unless explicitly upgraded). Broadening it to generic namespaces
+// like `system.collections.*` risks FPs on legitimate .NET scripts.
+// Each addition warrants a companion fixture in the unit suite.
+const _PS_SUSPICIOUS_KEYWORDS_RE = /^(?:invoke-expression|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-process|new-object|set-executionpolicy|invoke-command|get-credential|convertto-securestring|frombase64string|encodedcommand|invoke-mimikatz|invoke-shellcode|powershell|powershell_ise|cmd|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|finger|tftp|ssh|curl|winrs|installutil|msbuild|pip|iex|system\.net\.webclient|system\.net\.webrequest|system\.net\.sockets\.tcpclient|system\.net\.sockets\.udpclient|system\.net\.http\.httpclient|system\.io\.compression\.deflatestream|system\.io\.compression\.gzipstream|system\.management\.automation\.scriptblock|system\.reflection\.assembly|system\.reflection\.assemblybuilder|system\.text\.encoding|system\.convert|system\.diagnostics\.process|system\.diagnostics\.processstartinfo|system\.runtime\.interopservices\.marshal)$/i;
+
 
 Object.assign(EncodedContentDetector.prototype, {
   /**
@@ -1087,9 +1110,10 @@ Object.assign(EncodedContentDetector.prototype, {
       const result = original.split(sentinel).join('');
       if (result.length < 3 || result === original) continue;
       // Post-strip: require a suspicious PowerShell LOLBin keyword.
-      // Matches the keyword set used by the backtick branch above.
-      const psKeywords = /^(invoke-expression|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-process|new-object|set-executionpolicy|invoke-command|get-credential|convertto-securestring|frombase64string|encodedcommand|invoke-mimikatz|invoke-shellcode|powershell|powershell_ise|cmd|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|finger|tftp|ssh|curl|winrs|installutil|msbuild|pip|iex)$/i;
-      if (!this._bruteforce && !psKeywords.test(result)) continue;
+      // Shared gate with the backtick branch below (see
+      // `_PS_SUSPICIOUS_KEYWORDS_RE`) — includes LOLBin names AND the
+      // curated .NET weaponisation-namespace set.
+      if (!this._bruteforce && !_PS_SUSPICIOUS_KEYWORDS_RE.test(result)) continue;
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'PowerShell -replace Sentinel Strip',
@@ -1107,22 +1131,26 @@ Object.assign(EncodedContentDetector.prototype, {
     // a handful of named-escape exceptions like `` `n ``, `` `t `` that
     // do the obvious thing). Adversaries abuse it to break up LOLBin
     // names into single-char-plus-backtick fragments so simple
-    // substring/keyword scanners miss them. The three canonical
-    // shapes we see in the wild are:
+    // substring/keyword scanners miss them. The canonical shapes we
+    // see in the wild are:
     //
     //   (a) compact:   I`nv`o`ke-`E`xp`ression     (multi-char segs)
     //   (b) full-char: i`n`v`o`k`e`-`e`x`p`r`e`s`s`i`o`n  (every char)
     //   (c) digit-tail: r`u`n`d`l`l`3`2 / re`gs`vr`32     (rundll32)
     //   (d) single:    pow`ershell / Invoke`-Expression     (one tick)
+    //   (e) dotted:    Sy`st`em.Ne`t.We`b`Cl`ie`nt         (.NET chain)
     //
-    // We unify all four by allowing: word-chars + optional escaped-or-
+    // We unify all five by allowing: word-chars + optional escaped-or-
     // literal hyphen + word-chars, with backticks permitted between
-    // ANY two characters. The tightening that keeps ReDoS bounded is
-    // the outer `\b…\b` anchors, bounded repetition counts, and the
-    // post-match sanity test `(raw.match(/`/g).length >= 1)` — which
-    // is just a cheap pre-filter to drop zero-tick tokens; the real
-    // decision is made by `suspiciousKeywords`, not tick count.
-    const backtickRe = /\b[a-zA-Z][a-zA-Z0-9`]{2,200}(?:`?-`?[a-zA-Z0-9`]{1,200})?\b/g;
+    // ANY two characters and dots permitted inside the token body so
+    // .NET namespace chains (shape `e`) match as a single candidate.
+    // The tightening that keeps ReDoS bounded is the outer `\b…\b`
+    // anchors, bounded repetition counts, and the post-match sanity
+    // test `(raw.match(/`/g).length >= 1)` — which is just a cheap
+    // pre-filter to drop zero-tick tokens; the real decision is made
+    // by `_PS_SUSPICIOUS_KEYWORDS_RE`, not tick count.
+    /* safeRegex: builtin */
+    const backtickRe = /\b[a-zA-Z][a-zA-Z0-9.`]{2,200}(?:`?-`?[a-zA-Z0-9.`]{1,200})?\b/g;
     while ((m = backtickRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
@@ -1131,15 +1159,12 @@ Object.assign(EncodedContentDetector.prototype, {
       if ((raw.match(/`/g) || []).length < 1) continue;
 
       const cleaned = raw.replace(/`/g, '');
-      // Must resolve to a known suspicious keyword. LOLBAS additions
-      // kept in sync with SENSITIVE_CMD_KEYWORDS above — tftp / curl /
-      // ssh are also valid PowerShell aliases, so backtick-escape
-      // variants like `t``ftp` show up in real droppers. `iex` is the
-      // canonical PS alias for Invoke-Expression and shows up in
-      // single-tick `i`ex` shapes; `powershell_ise` covers the ISE
-      // variant.
-      const suspiciousKeywords = /^(invoke-expression|invoke-webrequest|invoke-restmethod|downloadstring|downloadfile|start-process|new-object|set-executionpolicy|invoke-command|get-credential|convertto-securestring|frombase64string|encodedcommand|invoke-mimikatz|invoke-shellcode|powershell|powershell_ise|cmd|wscript|cscript|mshta|certutil|bitsadmin|regsvr32|rundll32|finger|tftp|ssh|curl|winrs|installutil|msbuild|pip|iex)$/i;
-      if (!suspiciousKeywords.test(cleaned)) continue;
+      // Must resolve to a known suspicious keyword. LOLBin set (tftp /
+      // curl / ssh are valid PS aliases; `iex` is the canonical
+      // Invoke-Expression alias; `powershell_ise` covers the ISE
+      // variant) plus curated .NET weaponisation namespaces (see
+      // `_PS_SUSPICIOUS_KEYWORDS_RE` at the top of this module).
+      if (!_PS_SUSPICIOUS_KEYWORDS_RE.test(cleaned)) continue;
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'PowerShell Backtick Escape',

@@ -240,6 +240,7 @@ Full skeleton details live in `CONTRIBUTING.md § Renderer Contract` (detection 
 - `25f2e66` — cap CMD deobfuscated expansion at 32× raw / 8 KiB.
 - `25f2e66` — PS backtick regex must bridge around hyphens and digits.
 - `4372f30` — PS backtick-escape tick-count floor relaxed 2→1; whitelist is the real gate (recovers `pow\`ershell`, `Invoke\`-Expression`, `i\`ex`).
+- `<pending>` — PS backtick regex char class widened `[a-zA-Z0-9\`]` → `[a-zA-Z0-9.\`]` so dotted .NET namespace chains (`Sy\`st\`em.Ne\`t.We\`b\`Cl\`ie\`nt`) match as a single token; `-replace` + backtick branches now share a single `_PS_SUSPICIOUS_KEYWORDS_RE` whitelist extended with curated weaponisation namespaces (`system.net.webclient`, `system.io.compression.*`, `system.reflection.assembly`, `system.diagnostics.process*`, `system.management.automation.scriptblock`, …). Fixes per-finding "Load for analysis" loading only the gated token and reassembled stitched script leaving the obfuscated tail on line 3.
 - `25f2e66` — added PS sentinel-strip, empty-arg format, env slicer, `%COMSPEC%`, single-bang expansion.
 - `<pending>` — CMD single-bang `!VAR!` branch also needs the 32× / 8 KiB amp cap.
 - `0b37971` — BASH `${CMD:-default}` resolves default only when var is unset.
