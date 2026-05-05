@@ -166,7 +166,7 @@ function _refangString(str) {
 // re-stamps the side-channel maps onto the array exactly where the old
 // code did.
 //
-// Per-type quota of 200 prevents URL-heavy inputs from starving every other
+// Per-type quota of 400 prevents URL-heavy inputs from starving every other
 // IOC class. `_droppedByType` / `_totalSeenByType` are returned so the
 // sidebar can render "Showing N of M <type>" notes.
 function extractInterestingStringsCore(text, opts) {
@@ -176,7 +176,7 @@ function extractInterestingStringsCore(text, opts) {
 
   const seen = new Set(existingValues);
   const results = [];
-  const PER_TYPE_CAP = 200;
+  const PER_TYPE_CAP = 400;
   const typeCounts = new Map();
   const droppedByType = new Map();
   const totalSeenByType = new Map();
@@ -383,7 +383,7 @@ function extractInterestingStringsCore(text, opts) {
   // single pathological regex (e.g. unbounded quantifier-around-rare-char on a
   // long single-line input) cannot monopolise the main thread. Caps each
   // regex at 500 ms wall-clock and 10 000 matches; both are well above the
-  // realistic worst case (per-type IOC cap is 200, every regex below is a
+  // realistic worst case (per-type IOC cap is 400, every regex below is a
   // tight prefix-anchored shape that matches in <1 ms on legitimate input).
   // Returns a plain array so existing `for (const m of ...)` loops are
   // byte-equivalent at the call site. Defence-in-depth on top of the bounded

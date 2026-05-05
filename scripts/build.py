@@ -972,6 +972,15 @@ APP_JS_FILES = [
     # `class VirtualTextView` global is defined when the renderer's
     # `_buildTextPane()` constructs it.
     'src/renderers/virtual-text-view.js',
+    # code-formatter.js — best-efforts visual code pretty-printer used by
+    # PlainTextRenderer's Format toggle. Pure function (no DOM, no
+    # globals, no IO); see its header for the design contract. Lives at
+    # `src/code-formatter.js` (not `src/renderers/`) because it's a pure
+    # helper — the `src/renderers/` directory is gated by the renderer
+    # contract (every file there must export a `render()` method). Must
+    # load BEFORE plaintext-renderer.js so `CodeFormatter` is defined
+    # when the renderer's `_buildTextPane()` checks for it.
+    'src/code-formatter.js',
     'src/renderers/plaintext-renderer.js',
     'src/renderers/clickonce-renderer.js',
     'src/renderers/msix-renderer.js',

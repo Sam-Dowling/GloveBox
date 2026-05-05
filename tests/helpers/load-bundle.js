@@ -302,6 +302,8 @@ function loadModulesWithManifest(relPaths, opts) {
 const DEFAULT_EXPOSE = [
   // src/archive-budget.js
   'ArchiveBudget',
+  // src/code-formatter.js
+  'CodeFormatter',
   // src/constants.js
   'IOC',
   'IOC_CANONICAL_SEVERITY',

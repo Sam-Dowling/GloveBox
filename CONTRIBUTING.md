@@ -546,7 +546,7 @@ Push checklist:
 6. Every IOC must be click-to-focus navigable —
    `container._rawText`, `_showSourcePane()`, or a custom handler.
 7. Generic text extraction is capped per-type
-   (`_extractInterestingStrings`, `PER_TYPE_CAP = 200`); drops surface
+   (`_extractInterestingStrings`, `PER_TYPE_CAP = 400`); drops surface
    via `findings._iocTruncation`. Renderer-seeded IOCs are exempt —
    renderers own their own caps via item 4.
 
@@ -796,8 +796,8 @@ the documented values.
 | `loupe_summary_include_nicelisted` | Summary builder (`app-ui.js`) | `"group"` (separate sub-table — default), `"omit"` (drop nicelisted rows), or `"inline"` (single combined table, no marker). |
 | `loupe_nicelist_builtin_enabled` | `setBuiltinEnabled` (`nicelist-user.js`) | `"1"` (on — default) / `"0"` (off). |
 | `loupe_nicelists_user` | `save` (`nicelist-user.js`) | `{version:1, lists:[{id,name,enabled,createdAt,updatedAt,entries}]}`. Capped at 64 lists × 10 000 entries × 1 MB. |
-| `loupe_plaintext_highlight` | `PlainTextRenderer._writeHighlightPref` | `"on"` (default) / `"off"`. Hidden — and highlighting skipped — by the shared rich-render gate (see `loupe_plaintext_wrap`), plus a hljs-loaded check. |
-| `loupe_plaintext_wrap` | `PlainTextRenderer._writeWrapPref` | `"on"` (default) / `"off"`. Hidden — and wrap forced off — by the shared rich-render gate (`RICH_MAX_BYTES` 512 KB / `RICH_MAX_LINES` 10 000 / `RICH_MAX_LINE_LEN` 5 000 chars), which gates highlight too. |
+| `loupe_plaintext_format` | `PlainTextRenderer._writeFormatPref` | `"on"` / `"off"` (default). Gated by the shared rich-render gate (`RICH_MAX_BYTES` 1 MB / `RICH_MAX_LINES` 20 000 / `RICH_MAX_LINE_LEN` 10 000 chars) AND a detected `LANG_MAP` / MIME language — no button is shown on unknown-language files or on builds without `CodeFormatter`. Visual-only: `_rawText` (sidebar click-to-focus, IOC offsets, YARA scan buffer) always tracks the unformatted source. |
+| `loupe_plaintext_wrap` | `PlainTextRenderer._writeWrapPref` | `"on"` (default) / `"off"`. Hidden — and wrap forced off — by the shared rich-render gate (`RICH_MAX_BYTES` 1 MB / `RICH_MAX_LINES` 20 000 / `RICH_MAX_LINE_LEN` 10 000 chars), which gates format too. Syntax highlighting runs whenever the gate passes — no user toggle. |
 | `loupe_grid_drawer_w` | `_saveDrawerWidth` (`grid-viewer.js`) | Row-details drawer width in px. Default 420; min 280; max dynamic. |
 | `loupe_grid_colW_<gridKey>` | `_saveUserColumnWidth` | `{"<colIdx>": pxWidth, …}`. Per-renderer manual overrides; double-clicking a handle deletes the entry to restore auto-size. |
 | `loupe_timeline_grid_h` | `.tl-splitter` drag | Virtual-grid pane height in px (clamped on read). |

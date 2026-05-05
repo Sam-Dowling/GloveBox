@@ -73,7 +73,7 @@ test('redos-bound: 200 KB blob with one legitimate ZWSP-split identifier still f
 test('redos-bound: safeMatchAll caps each regex at 10 000 matches', () => {
   // The `_matchAll` shim in `extractInterestingStringsCore` passes
   // `maxMatches=10000`. Build an input with > 10 000 trivial email-shape
-  // hits and assert that the per-type cap (`PER_TYPE_CAP = 200`) still
+  // hits and assert that the per-type cap (`PER_TYPE_CAP = 400`) still
   // applies — the safeMatchAll cap is invisible to the public API
   // because the per-type cap kicks in long before. This guards against
   // a future tweak that would relax the per-type cap.
@@ -85,8 +85,8 @@ test('redos-bound: safeMatchAll caps each regex at 10 000 matches', () => {
   assert.ok(ms < 2000,
     `12 000-email input must finish < 2 s (saw ${ms.toFixed(1)} ms).`);
   const acceptedEmails = host(result.findings.filter(e => e.type === IOC.EMAIL));
-  // Per-type cap is 200; safeMatchAll cap is 10 000 — accepted is
+  // Per-type cap is 400; safeMatchAll cap is 10 000 — accepted is
   // bounded by the per-type cap, not safeMatchAll.
-  assert.equal(acceptedEmails.length, 200,
-    `per-type cap must hold (expected 200, got ${acceptedEmails.length}).`);
+  assert.equal(acceptedEmails.length, 400,
+    `per-type cap must hold (expected 400, got ${acceptedEmails.length}).`);
 });

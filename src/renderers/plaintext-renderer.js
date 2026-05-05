@@ -3,9 +3,12 @@
 // plaintext-renderer.js — Catch-all viewer for unsupported file types
 // Shows plain text (with line numbers) or hex dump depending on content.
 // Supports encoding auto-detection (UTF-8, UTF-16LE, UTF-16BE, Latin-1),
-// a toggle between text / hex views, a syntax-highlight on/off toggle
-// (`loupe_plaintext_highlight`) and a word-wrap on/off toggle
-// (`loupe_plaintext_wrap`).
+// a best-efforts code-formatting toggle (`loupe_plaintext_format`) and a
+// word-wrap on/off toggle (`loupe_plaintext_wrap`). Syntax highlighting
+// is always on (when possible) — there's no user-facing toggle because
+// the rich-render gate already makes the feature unavailable long before
+// it becomes a perf problem, and a "disable highlighting" switch would
+// only be useful on files where it's already disabled automatically.
 //
 // Both rich-rendering toggles share a single feasibility gate
 // (`_canEnhance` → `RICH_MAX_*`) so they appear/disappear in lock-step.
@@ -18,6 +21,28 @@
 // over `RICH_MAX_LINE_LEN` from both highlight and wrap modes (hljs
 // produces a gigantic span tree on one long line even if the byte total
 // is modest, and pre-wrap rows of that width paint catastrophically).
+//
+// Best-efforts code formatter (Format toggle): visual-only — runs
+// `CodeFormatter.format(text, lang)` before the source is split into
+// rows for display. `_rawText` (used by click-to-focus and IOC/YARA
+// offsets) is left pointing at the original source, so offset-derived
+// highlights may land on slightly shifted lines when formatting is on.
+// This is an explicit, documented trade-off of the "no recomputation"
+// design: toggling Format never re-runs any analysis.
+//
+// Language-detection strategy (drives both the Format button's visibility
+// and the lang label passed to `CodeFormatter.format` / `hljs.highlight`):
+//   1. Extension lookup in `LANG_MAP` (fast path — drives button visible
+//      at first paint for known extensions).
+//   2. MIME-type lookup in `MIME_TO_LANG` (fast path fallback).
+//   3. If 1+2 miss: `hljs.highlightAuto()` runs during `_buildTextPane`
+//      (it already ran anyway for highlighting). If the auto-detected
+//      language is in `_FORMATTABLE_LANGS` AND the relevance score is
+//      ≥ `_AUTO_DETECT_MIN_RELEVANCE`, the Format button is revealed
+//      and the lang is cached on `this._effectiveLang` so the toggle-
+//      rebuild path can pass it to the formatter. This makes Format
+//      work on pasted / extensionless content (clipboard.txt paste,
+//      extensionless downloads). See `src/code-formatter.js`.
 // ════════════════════════════════════════════════════════════════════════════
 class PlainTextRenderer {
 
@@ -229,6 +254,35 @@ class PlainTextRenderer {
     'text/x-properties': 'properties',
   };
 
+  // Languages the `CodeFormatter` helper actually knows how to format.
+  // MUST be a subset of the labels `CodeFormatter.format()` accepts — if
+  // a label is in this set but `CodeFormatter` treats it as unsupported
+  // the Format button will be a visible no-op (harmless but noisy).
+  //
+  // Kept as a literal (not `new Set([...CodeFormatter._BRACE_LANGS, …])`)
+  // so evaluation order during bundle concatenation is load-order
+  // independent and doesn't require `CodeFormatter` to be defined first.
+  //
+  // Parity is asserted by `tests/unit/plaintext-format-autodetect.test.js`.
+  static _FORMATTABLE_LANGS = new Set([
+    // C-family brace langs (matches CodeFormatter._BRACE_LANGS)
+    'javascript', 'typescript', 'json', 'css', 'scss', 'less',
+    'c', 'cpp', 'csharp', 'java', 'go', 'rust', 'swift', 'kotlin', 'php',
+    // XML block-tag splitter
+    'xml',
+    // Indent-only shells
+    'powershell', 'bash', 'dos',
+  ]);
+
+  // Minimum `hljs.highlightAuto()` relevance score required to accept an
+  // auto-detected language as the effective lang for the Format button.
+  // hljs relevance is a heuristic; 5 is a low floor that accepts short
+  // code snippets while still rejecting the vast majority of prose /
+  // log lines. Because Format defaults to Off, a false-positive button
+  // is cheap: the user must click before any formatter work happens,
+  // and `CodeFormatter.format()` bails closed on unbalanced input.
+  static _AUTO_DETECT_MIN_RELEVANCE = 5;
+
   // ── Shared "rich rendering" gate ────────────────────────────────────────
   // Both the syntax-highlight and word-wrap toggles share these thresholds
   // so they appear/disappear in lock-step — a file is either eligible for
@@ -244,9 +298,9 @@ class PlainTextRenderer {
   // Wrap mode forfeits the `VirtualTextView` virtualisation that keeps
   // sidebar-resize at native FPS, so its cost dominates the choice of
   // ceilings (hljs is comfortable up to several hundred KB).
-  static RICH_MAX_BYTES     = 512 * 1024;
-  static RICH_MAX_LINES     = 10_000;
-  static RICH_MAX_LINE_LEN  = 5000;
+  static RICH_MAX_BYTES     = 1024 * 1024;
+  static RICH_MAX_LINES     = 20_000;
+  static RICH_MAX_LINE_LEN  = 10_000;
 
   // Display-only chunk size for soft-wrap (characters). Used by
   // `VirtualTextView` to chunk pathologically long lines when wrap is
@@ -257,20 +311,24 @@ class PlainTextRenderer {
   // truncated).
   static MAX_LINES = RENDER_LIMITS.MAX_TEXT_LINES;
   // Storage keys for the toggle preferences.
-  static HIGHLIGHT_PREF_KEY = 'loupe_plaintext_highlight';
+  // NB: the legacy `loupe_plaintext_highlight` key is no longer read or
+  // written — syntax highlighting is now always on when the rich-render
+  // gate allows it. Stale values in `localStorage` are harmless (no
+  // migration needed; `safeStorage` simply ignores unknown keys).
+  static FORMAT_PREF_KEY    = 'loupe_plaintext_format';
   static WRAP_PREF_KEY      = 'loupe_plaintext_wrap';
 
   // ── Preference accessors ────────────────────────────────────────────────
 
-  /** Read the user's syntax-highlight preference (default: on). */
-  static _readHighlightPref() {
-    const v = safeStorage.get(PlainTextRenderer.HIGHLIGHT_PREF_KEY);
-    return v !== 'off';
+  /** Read the user's best-efforts code-formatting preference (default: off). */
+  static _readFormatPref() {
+    const v = safeStorage.get(PlainTextRenderer.FORMAT_PREF_KEY);
+    return v === 'on';
   }
 
-  /** Persist the user's syntax-highlight preference. */
-  static _writeHighlightPref(enabled) {
-    safeStorage.set(PlainTextRenderer.HIGHLIGHT_PREF_KEY, enabled ? 'on' : 'off');
+  /** Persist the user's best-efforts code-formatting preference. */
+  static _writeFormatPref(enabled) {
+    safeStorage.set(PlainTextRenderer.FORMAT_PREF_KEY, enabled ? 'on' : 'off');
   }
 
   /** Read the user's word-wrap preference (default: on). */
@@ -302,21 +360,36 @@ class PlainTextRenderer {
     // extraction) don't drift on CRLF files. See `.clinerules` gotcha.
     const decodedText = this._normalizeNewlines(this._decodeAs(bytes, detected.encoding));
 
-    // Pre-compute whether the rich-rendering toggles (Highlight + Wrap)
-    // are possible at all for this file. Both toggles share a single
-    // gate (`_canEnhance`) so they appear/disappear in lock-step;
-    // splitting them previously left users staring at a Wrap button
-    // without Highlight on medium-sized files (or vice versa). The
-    // outer gate also applies inside `_buildTextPane` so a pre-checked
-    // `richPossible` here doesn't permit a stale state to leak through
-    // an encoding switch.
+    // Pre-compute whether the rich-rendering toggles (Format + Wrap) are
+    // possible at all for this file. Both toggles share a single gate
+    // (`_canEnhance`) so they appear/disappear in lock-step. Highlighting
+    // uses the same gate but has no user-facing toggle — it just runs
+    // whenever it's feasible (hljs loaded + gate passes).
     //
-    // Highlight has one extra requirement (hljs must actually be loaded
-    // in this build); Wrap doesn't depend on hljs, so the two flags
-    // diverge only on builds without hljs.
-    const richPossible      = isTextByDefault && this._canEnhance(decodedText, bytes);
-    const highlightPossible = richPossible && (typeof hljs !== 'undefined');
-    const wrapPossible      = richPossible;
+    // Format has an extra requirement: a language must be known. The
+    // fast path uses `_detectLangForFile` (extension/MIME lookup). If
+    // that misses, `_buildTextPane` falls back to `hljs.highlightAuto()`
+    // and — when the auto-detected language is in `_FORMATTABLE_LANGS`
+    // and scores ≥ `_AUTO_DETECT_MIN_RELEVANCE` — calls the reveal
+    // callback below to un-hide the Format button. This is the path
+    // that makes Format work on pasted / extensionless content.
+    const richPossible = isTextByDefault && this._canEnhance(decodedText, bytes);
+    const wrapPossible = richPossible;
+    const detectedLangForFormat = richPossible
+      ? this._detectLangForFile(fileName, this._mimeType)
+      : null;
+    // `formatPossible` now only requires the rich-gate + CodeFormatter
+    // bundle presence — the language check moved to per-render
+    // visibility (initially hidden when lang is unknown, revealed by
+    // `_buildTextPane` via auto-detect if it finds a formattable lang).
+    const formatPossible = richPossible
+                           && (typeof CodeFormatter !== 'undefined');
+    // Effective language for the formatter — seeded from the static
+    // fast-path lookup, updated by the auto-detect reveal callback.
+    // The Format-toggle rebuild path reads this via `_buildTextPane`'s
+    // first argument preference: if `this._effectiveLang` is truthy,
+    // `_buildTextPane` uses it instead of re-running `_detectLangForFile`.
+    this._effectiveLang = detectedLangForFormat;
 
     // ── Info bar with toggle + encoding selector ──────────────────────
     const info = document.createElement('div');
@@ -335,27 +408,57 @@ class PlainTextRenderer {
     spacer.style.flex = '1';
     info.appendChild(spacer);
 
-    // Syntax-highlight toggle (persisted). Only rendered when
-    // highlighting is actually possible for this file — otherwise the
-    // button would be a no-op.
-    let highlightEnabled = PlainTextRenderer._readHighlightPref();
-    let hlLabel = null;
-    let hlBtn = null;
-    if (highlightPossible) {
-      hlLabel = document.createElement('label');
-      hlLabel.className = 'plaintext-enc-label';
-      hlLabel.textContent = 'Highlight:';
-      info.appendChild(hlLabel);
+    // Best-efforts code-formatter toggle (persisted). Rendered whenever
+    // the rich-render gate passes and `CodeFormatter` is bundled. The
+    // button may start *hidden* when no language has been detected yet
+    // via the extension/MIME fast path — `_buildTextPane` will un-hide
+    // it (via `_revealFormatButton`) if `hljs.highlightAuto()` matches a
+    // `_FORMATTABLE_LANGS` member with sufficient relevance. This is
+    // what makes Format work on pasted / extensionless content.
+    //
+    // Formatting is visual-only: `_rawText` continues to point at the
+    // original source so sidebar click-to-focus, YARA offsets, and IOC
+    // extraction all see unchanged bytes. See file header.
+    let formatEnabled = PlainTextRenderer._readFormatPref();
+    let fmtLabel = null;
+    let fmtBtn = null;
+    if (formatPossible) {
+      fmtLabel = document.createElement('label');
+      fmtLabel.className = 'plaintext-enc-label';
+      fmtLabel.textContent = 'Format:';
+      // Hide the label until we know there's a formattable language —
+      // either via the fast path or via auto-detect inside
+      // `_buildTextPane`. Kept as `visibility:hidden` would preserve
+      // layout space; `display:none` is fine because the label lives
+      // between a flex-spacer and the encoding selector (no alignment
+      // dependency).
+      if (!detectedLangForFormat) fmtLabel.style.display = 'none';
+      info.appendChild(fmtLabel);
 
-      hlBtn = document.createElement('button');
-      hlBtn.className = 'plaintext-toggle-btn';
-      hlBtn.textContent = highlightEnabled ? 'On' : 'Off';
-      hlBtn.title = 'Toggle syntax highlighting (persisted)';
-      info.appendChild(hlBtn);
+      fmtBtn = document.createElement('button');
+      fmtBtn.className = 'plaintext-toggle-btn';
+      fmtBtn.textContent = formatEnabled ? 'On' : 'Off';
+      fmtBtn.title = 'Toggle best-efforts code formatting (visual only, persisted). ' +
+                     'Re-indents braces/brackets and splits long lines at statement ' +
+                     'boundaries — no analysis is re-run. Click-to-focus offsets map ' +
+                     'to the original source so highlights may land on shifted lines ' +
+                     'while Format is on.';
+      if (!detectedLangForFormat) fmtBtn.style.display = 'none';
+      info.appendChild(fmtBtn);
+
+      // If no lang is known yet, force format off on this first build —
+      // otherwise the `_buildTextPane` call below would run the
+      // formatter with `lang=null` and no-op, which is harmless, but
+      // we also want the subsequent auto-detect reveal to land on an
+      // "Off" button the user can click. The pref itself is untouched
+      // (no `_writeFormatPref` call), so a future file with a known
+      // extension still honours the user's stored preference.
+      if (!detectedLangForFormat) formatEnabled = false;
     } else {
-      // Force highlighting off for this render so `_buildTextPane`
-      // doesn't waste time re-checking the same gate.
-      highlightEnabled = false;
+      // Force format off when the button would be hidden, so a stale
+      // `"on"` pref from a prior rich-gated file doesn't try to run the
+      // formatter on a file we know it can't help with.
+      formatEnabled = false;
     }
 
     // Word-wrap toggle (persisted). Only rendered when the file is
@@ -414,8 +517,22 @@ class PlainTextRenderer {
     const contentArea = document.createElement('div');
     contentArea.className = 'plaintext-content-area';
 
-    // Build both views
-    const textPane = this._buildTextPane(decodedText, bytes, fileName, this._mimeType, highlightEnabled, wrapEnabled);
+    // Build both views.
+    //
+    // `_revealFormatButton` is a side-channel used by `_buildTextPane`'s
+    // auto-detect fallback: if hljs detects a formattable language with
+    // sufficient relevance, it calls this to un-hide the Format button.
+    // Stashed on the renderer instance so both the initial build and
+    // subsequent rebuilds (encoding / format / wrap toggles) can reach it.
+    this._revealFormatButton = (autoLang) => {
+      if (!fmtBtn || !autoLang) return;
+      if (this._effectiveLang === autoLang) return; // already revealed
+      this._effectiveLang = autoLang;
+      if (fmtLabel) fmtLabel.style.display = '';
+      fmtBtn.style.display = '';
+    };
+
+    const textPane = this._buildTextPane(decodedText, bytes, fileName, this._mimeType, formatEnabled, wrapEnabled);
     const hexPane = this._buildHexPane(bytes, fileName);
 
     // Show the correct one by default
@@ -444,15 +561,15 @@ class PlainTextRenderer {
     // Mutable reference to the current text pane (may be replaced on re-render)
     contentArea._textPane = textPane;
 
-    // Rebuild helper — used by both encoding change and highlight toggle
+    // Rebuild helper — used by both encoding change and format/wrap toggles
     const rebuildTextPane = () => {
       const oldTextPane = contentArea._textPane;
-      const newTextPane = this._buildTextPane(currentText, bytes, fileName, this._mimeType, highlightEnabled, wrapEnabled);
+      const newTextPane = this._buildTextPane(currentText, bytes, fileName, this._mimeType, formatEnabled, wrapEnabled);
       newTextPane.style.display = oldTextPane.style.display;
       contentArea.replaceChild(newTextPane, oldTextPane);
       // Tear down the old VirtualTextView so its rAFs / ResizeObserver
       // / event listeners don't leak across rebuilds (encoding switch,
-      // syntax-highlight toggle).
+      // format / wrap toggle).
       if (oldTextPane && oldTextPane._virtualView) {
         try { oldTextPane._virtualView.destroy(); } catch (_) { /* ignore */ }
       }
@@ -470,12 +587,13 @@ class PlainTextRenderer {
       toggleBtn.textContent = showingText ? '⬡ Hex' : '🔡 Text';
       toggleBtn.title = showingText ? 'Switch to hex dump view' : 'Switch to plain text view';
       wrap.className = showingText ? 'plaintext-view' : 'hex-view';
-      // Show/hide encoding selector + highlight toggle (only relevant for text view).
-      // hlLabel / hlBtn may be null when highlighting is impossible for this file.
+      // Show/hide encoding selector + format + wrap toggles (only relevant
+      // for text view). `fmtLabel` / `fmtBtn` may be null when formatting is
+      // impossible for this file (no language detected, gate failed, etc).
       encLabel.style.display = showingText ? '' : 'none';
       encSelect.style.display = showingText ? '' : 'none';
-      if (hlLabel) hlLabel.style.display = showingText ? '' : 'none';
-      if (hlBtn) hlBtn.style.display = showingText ? '' : 'none';
+      if (fmtLabel) fmtLabel.style.display = showingText ? '' : 'none';
+      if (fmtBtn) fmtBtn.style.display = showingText ? '' : 'none';
       if (wrapLabel) wrapLabel.style.display = showingText ? '' : 'none';
       if (wrapBtn) wrapBtn.style.display = showingText ? '' : 'none';
       this._updateInfoText(infoText, showingText, bytes, currentEncoding, detectedLang, contentArea._textPane._lineCount);
@@ -489,16 +607,16 @@ class PlainTextRenderer {
       rebuildTextPane();
     });
 
-    // ── Highlight toggle handler ─────────────────────────────────────────
+    // ── Format toggle handler ────────────────────────────────────────────
     // Only wire up the handler when the button was actually rendered —
-    // for files where highlighting is impossible (hljs missing, too
-    // large, or containing a pathologically long line) the button is
-    // omitted from the info bar entirely.
-    if (hlBtn) {
-      hlBtn.addEventListener('click', () => {
-        highlightEnabled = !highlightEnabled;
-        PlainTextRenderer._writeHighlightPref(highlightEnabled);
-        hlBtn.textContent = highlightEnabled ? 'On' : 'Off';
+    // for files where formatting is impossible (no language detected,
+    // outside the rich-render gate, or `CodeFormatter` not bundled) the
+    // button is omitted from the info bar entirely.
+    if (fmtBtn) {
+      fmtBtn.addEventListener('click', () => {
+        formatEnabled = !formatEnabled;
+        PlainTextRenderer._writeFormatPref(formatEnabled);
+        fmtBtn.textContent = formatEnabled ? 'On' : 'Off';
         rebuildTextPane();
       });
     }
@@ -674,22 +792,17 @@ class PlainTextRenderer {
 
   // ── Build text pane (line-numbered view with syntax highlighting) ────────
 
-  _buildTextPane(text, bytes, fileName, mimeType, highlightEnabled, wrapEnabled) {
-    const lines = text.split('\n');
-
-    // Detect any pathologically long line — common in minified JS, CSS, JSON.
-    // Drives `VirtualTextView`'s soft-wrap chunking when wrap is OFF (the
-    // virtualised path can't render a single 2 MB <td> in one row). The
-    // highlight gate below uses `_canEnhance(text, bytes)` directly so
-    // the per-line cap stays in lock-step with the outer toggle gate.
-    let maxLineLen = 0;
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].length > maxLineLen) maxLineLen = lines[i].length;
-      if (maxLineLen > PlainTextRenderer.RICH_MAX_LINE_LEN) break;
-    }
-    const hasLongLine = maxLineLen > PlainTextRenderer.RICH_MAX_LINE_LEN;
-
-    // Get file extension and determine language
+  /**
+   * Resolve the highlight.js language label for this file from extension,
+   * MIME type, or extensionless filename patterns. Factored out of
+   * `_buildTextPane` so the outer `render()` can decide whether to show
+   * the Format button before building the text pane.
+   *
+   * Returns `null` when no language could be inferred — both the Format
+   * button (`render()`) and the formatter call (`_buildTextPane`) treat
+   * `null` as "no-op, render as plain text."
+   */
+  _detectLangForFile(fileName, mimeType) {
     const ext = (fileName || '').split('.').pop().toLowerCase();
     // Try extension first, then fall back to MIME type
     let lang = PlainTextRenderer.LANG_MAP[ext];
@@ -708,15 +821,70 @@ class PlainTextRenderer {
         lang = 'makefile';
       }
     }
+    return lang || null;
+  }
 
-    // Gate: hljs must be available AND user preference on AND the same
-    // shared rich-render gate that decided whether the toggle was even
-    // shown. Re-checking here (rather than trusting an outer flag)
-    // keeps the inner gate honest across encoding switches, where the
-    // line count and longest-line characteristics can shift.
-    const shouldHighlight = highlightEnabled &&
-                            typeof hljs !== 'undefined' &&
-                            this._canEnhance(text, bytes);
+  _buildTextPane(text, bytes, fileName, mimeType, formatEnabled, wrapEnabled) {
+    // Resolve the language up-front — drives both the formatter (when
+    // enabled) and the hljs highlight call further down. Prefer the
+    // cached effective lang (set by a prior auto-detect pass on the
+    // same file) over re-running `_detectLangForFile`; that way a
+    // Format-toggle rebuild after auto-detect has already succeeded
+    // doesn't need a second detection round-trip.
+    let lang = (this && this._effectiveLang)
+      || this._detectLangForFile(fileName, mimeType);
+
+    // Decide whether rich-mode features (highlight + format) are feasible.
+    // Re-evaluated here rather than trusting an outer flag so encoding
+    // switches (which can shift line count / longest-line shape) don't
+    // let a stale pre-check leak through.
+    const richAllowed = this._canEnhance(text, bytes);
+
+    // Optional visual-only formatter pass. Runs BEFORE we split the
+    // source into display rows so the formatted text drives the line
+    // count, `_lineToFirstRow`, and the hljs span tree. `_rawText` is
+    // stamped by the outer `render()` on the wrapper element and still
+    // points at the original (unformatted) source — see file header
+    // for the offset-drift trade-off this makes.
+    //
+    // The formatter has its own internal bailouts (input > 2 MiB,
+    // output amp > 3×, unmatched brackets, etc.) and returns the input
+    // verbatim on any issue, so a failed format pass is indistinguishable
+    // from Format-off.
+    let displayText = text;
+    if (formatEnabled && richAllowed && lang && typeof CodeFormatter !== 'undefined') {
+      try {
+        const formatted = CodeFormatter.format(text, lang);
+        if (typeof formatted === 'string' && formatted.length > 0) {
+          displayText = formatted;
+        }
+      } catch (_) {
+        // Any throw → fall back to unformatted display. Formatting is a
+        // visual nicety, never a correctness invariant.
+        displayText = text;
+      }
+    }
+
+    const lines = displayText.split('\n');
+
+    // Detect any pathologically long line — common in minified JS, CSS, JSON.
+    // Drives `VirtualTextView`'s soft-wrap chunking when wrap is OFF (the
+    // virtualised path can't render a single 2 MB <td> in one row). Runs
+    // against the DISPLAY text (post-format) because that's what the view
+    // actually has to render; formatting strictly shortens longest lines
+    // when it runs at all.
+    let maxLineLen = 0;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].length > maxLineLen) maxLineLen = lines[i].length;
+      if (maxLineLen > PlainTextRenderer.RICH_MAX_LINE_LEN) break;
+    }
+    const hasLongLine = maxLineLen > PlainTextRenderer.RICH_MAX_LINE_LEN;
+
+    // Syntax highlighting is always on when feasible (no user toggle).
+    // Gate on `richAllowed` (same shared rich-render gate the Format /
+    // Wrap buttons use) so the hljs span tree can't blow up on a file
+    // that already exceeds the rich-mode envelope.
+    const shouldHighlight = richAllowed && typeof hljs !== 'undefined';
 
     let highlightedLines = null;
     let detectedLang = null;
@@ -725,13 +893,41 @@ class PlainTextRenderer {
       try {
         let result;
         if (lang) {
-          // Known language — use specific highlighting
-          result = hljs.highlight(text, { language: lang, ignoreIllegals: true });
+          // Known language — use specific highlighting on the DISPLAY text.
+          result = hljs.highlight(displayText, { language: lang, ignoreIllegals: true });
           detectedLang = lang;
         } else {
-          // Unknown — try auto-detection
-          result = hljs.highlightAuto(text);
+          // Unknown — try auto-detection.
+          result = hljs.highlightAuto(displayText);
           detectedLang = result.language || null;
+
+          // Auto-detect reveal: if hljs returned a formattable language
+          // with sufficient relevance, promote it to the effective lang
+          // and reveal the Format button (which the outer `render()`
+          // left hidden because the fast-path lookup found nothing).
+          // `result.relevance` is an hljs-internal heuristic; floor
+          // defined by `_AUTO_DETECT_MIN_RELEVANCE`. This is the code
+          // path that makes Format work on pasted / extensionless
+          // content (e.g. a clipboard.txt paste of a PowerShell
+          // snippet). The formatter itself is never invoked here —
+          // `formatEnabled` was forced to false by `render()` when
+          // the button started hidden, so the user has to click
+          // before any formatting work happens.
+          const autoRel = (result && typeof result.relevance === 'number')
+                            ? result.relevance
+                            : 0;
+          if (detectedLang
+              && autoRel >= PlainTextRenderer._AUTO_DETECT_MIN_RELEVANCE
+              && PlainTextRenderer._FORMATTABLE_LANGS.has(detectedLang)) {
+            // Cache as the effective lang so a subsequent Format
+            // toggle (which triggers a rebuild) uses this lang for
+            // the formatter call path.
+            if (this && typeof this._revealFormatButton === 'function') {
+              try { this._revealFormatButton(detectedLang); } catch (_) { /* non-fatal UI */ }
+            } else if (this) {
+              this._effectiveLang = detectedLang;
+            }
+          }
         }
         // Split highlighted HTML by lines
         highlightedLines = result.value.split('\n');
@@ -760,6 +956,11 @@ class PlainTextRenderer {
     // a line longer than `RICH_MAX_LINE_LEN` from both toggles, so when
     // `wrapEnabled` is true `hasLongLine` is guaranteed false and the
     // wrap path never has to soft-wrap chunks.
+    //
+    // `rawText` passed to the view is the DISPLAY text (post-format), so
+    // `_lineToFirstRow` aligns with the rows the user sees. The outer
+    // wrapper's `_rawText` (used by sidebar click-to-focus) is the
+    // ORIGINAL source — see the note in the formatter branch above.
     const view = new VirtualTextView({
       lines:            count === lines.length ? lines : lines.slice(0, count),
       highlightedLines: highlightedLines || null,
@@ -772,10 +973,7 @@ class PlainTextRenderer {
         ? `… truncated (${lines.length - maxLines} more lines)`
         : '',
       gutterDigits,
-      // _rawText is also stamped by the outer `render()` on the wrapper
-      // (.plaintext-view), but the focus engine queries the inner view
-      // for byte-offset → row mapping so we mirror it here too.
-      rawText: text,
+      rawText: displayText,
       wrap:    !!wrapEnabled,
     });
 
@@ -799,7 +997,7 @@ class PlainTextRenderer {
     const pre = document.createElement('pre');
     pre.className = 'hex-dump';
 
-    const maxBytes = 64 * 1024; // 64 KB cap
+    const maxBytes = 128 * 1024; // 128 KB cap
     const cap = Math.min(bytes.length, maxBytes);
     const lines = [];
 
