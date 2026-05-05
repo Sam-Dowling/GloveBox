@@ -2447,6 +2447,18 @@ Object.assign(EncodedContentDetector.prototype, {
 
     return {
       type: 'encoded-content',
+      // `findingKind: 'technique'` marks this finding as a behavioural-
+      // detection result (cmd / bash / AppleScript / PowerShell obfuscation
+      // technique) rather than a byte-level encoding (Base64, hex, zlib,
+      // XOR, etc.). The sidebar branches on this so the card header reads
+      // `CMD Caret Insertion` instead of the nonsensical
+      // `CMD Caret Insertion-encoded content` — `encoded-content` is the
+      // finding *container* type, not a claim that the bytes were
+      // transformed by an encoding scheme. Absence of the field means
+      // "legacy encoding path" for every non-cmd-obfuscation emitter
+      // (encoded-content-detector.js, base64-hex.js, zlib.js, etc.); no
+      // migration needed.
+      findingKind: 'technique',
       severity,
       encoding: candidate.technique,
       offset: candidate.offset,
@@ -2456,7 +2468,11 @@ Object.assign(EncodedContentDetector.prototype, {
       chain: [candidate.technique, 'Deobfuscated Command'],
       classification: { type: 'Deobfuscated Command', ext: '.txt' },
       entropy: this._shannonEntropyBytes(deobfBytes),
-      hint: candidate.technique,
+      // No `hint` — historically this was set to `candidate.technique` so
+      // the sidebar's `title — hint` em-dash trail would render something,
+      // but that duplicated the title verbatim. `hint` is now reserved
+      // for genuinely descriptive extra context (e.g. base64-hex.js uses
+      // it for "PE executable header (4D5A)"). Leave it unset.
       iocs,
       innerFindings: [],
       autoDecoded: true,

@@ -1094,7 +1094,21 @@ extendApp({
       header.appendChild(badge);
       const title = document.createElement('span');
       title.className = 'enc-finding-title';
-      title.textContent = `${finding.encoding}-encoded content`;
+      // `findingKind: 'technique'` (stamped by
+      // `_processCommandObfuscation`) marks behavioural-detection findings
+      // — cmd / bash / AppleScript / PowerShell obfuscation techniques —
+      // that reuse the `encoded-content` finding shape as a transport
+      // envelope but are NOT byte-level encodings. For those, the
+      // `<encoding>-encoded content` template reads as nonsense (e.g.
+      // "CMD Caret Insertion-encoded content"), so we render the
+      // technique name alone. Any other value (including `undefined`)
+      // falls through to the legacy path so Base64 / zlib / XOR /
+      // interleaved-separator findings are untouched.
+      if (finding.findingKind === 'technique') {
+        title.textContent = finding.encoding;
+      } else {
+        title.textContent = `${finding.encoding}-encoded content`;
+      }
       if (finding.hint) title.textContent += ` — ${finding.hint}`;
       header.appendChild(title);
       // Depth badge: only shown for multi-layer findings (≥ 2 *encoding*

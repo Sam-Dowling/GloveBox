@@ -404,4 +404,17 @@ test('cmd-obfuscation: _processCommandObfuscation returns a normal encoded-conte
     '_deobfuscatedText must carry the actual peel');
   assert.equal(result.canLoad, true,
     'normal encoded-content findings advertise canLoad');
+  // Schema discriminator: cmd-obfuscation findings must stamp
+  // `findingKind: 'technique'` so the sidebar suppresses the
+  // `<encoding>-encoded content` title template (which reads as
+  // nonsense for behavioural-detection techniques). Consumed by
+  // `src/app/app-sidebar.js`.
+  assert.equal(result.findingKind, 'technique',
+    "_processCommandObfuscation must stamp findingKind: 'technique'");
+  // Tautological `hint: candidate.technique` has been removed — it
+  // duplicated the title. `hint` is now reserved for genuinely
+  // descriptive extra context (e.g. base64-hex.js uses it for
+  // "PE executable header (4D5A)").
+  assert.equal(result.hint, undefined,
+    'tautological hint === encoding must not be set');
 });
