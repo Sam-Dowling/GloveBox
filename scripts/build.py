@@ -27,6 +27,10 @@ from datetime import datetime, timezone
 # scripts/build.py → repo root is the parent of this file's directory.
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+# Local helper modules live alongside build.py in scripts/.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from check_pushioc import scan_bare_pushioc as _scan_bare_pushioc, ALLOWLIST as _PUSH_IOC_GATE_ALLOWLIST  # noqa: E402
+
 # ── --test-api flag ──────────────────────────────────────────────────────────
 # When set, the build:
 #   * appends `src/app/app-test-api.js` to APP_JS_FILES so the
@@ -1659,38 +1663,21 @@ _check_bare_ioc_types()
 # invariants` rule #4 require every IOC emission to route through
 # `pushIOC(findings, opts)` from `src/constants.js`. Bare pushes
 # (`findings.interestingStrings.push({...})` /
-# `findings.externalRefs.push({...})`) silently skip:
+# `findings.externalRefs.push({...})`) silently skip wire-shape validation,
+# URL sibling auto-emission, unresolved-sentinel filtering, and the extras
+# whitelist.
 #
-#   • wire-shape validation (type + value required; canonical severity
-#     default; unresolved-sentinel sentinel filter)
-#   • URL sibling emission (auto-emitted `IOC.DOMAIN`, `IOC.IP`,
-#     `IOC.PATTERN` punycode + abuse-suffix rows via tldts)
-#   • metadata whitelist for YARA/EVTX extras
-#
-# This gate rejects any `\.(interestingStrings|externalRefs)\.push(` pattern
-# outside `src/constants.js` (which defines the chokepoint itself). The
-# single exemption is `src/constants.js` because `pushIOC()` and
-# `emitUrlSiblings()` there push into `findings[bucket]` directly — that's
-# the atomic terminal step.
-_BARE_PUSH_RE = _re.compile(
-    r'\.(?:interestingStrings|externalRefs)\.push\s*\('
-)
-_PUSH_IOC_GATE_ALLOWLIST = { 'src/constants.js' }
-
+# Detection is implemented in `scripts/check_pushioc.py::scan_bare_pushioc`
+# (so it is unit-testable without paying the full build concatenation
+# cost). Two overlapping scans catch both same-line and fluent split-call
+# shapes — see that module's docstring for details.
 def _check_pushioc_only():
     violations = []
     for rel in EARLY_JS_FILES + APP_JS_FILES:
         if rel in _PUSH_IOC_GATE_ALLOWLIST:
             continue
         text = read(rel)
-        for lineno, line in enumerate(text.splitlines(), start=1):
-            stripped = line.lstrip()
-            # Skip pure comment lines so reference snippets in docstrings
-            # and migration-history comments don't trip the gate.
-            if stripped.startswith('//') or stripped.startswith('*'):
-                continue
-            if _BARE_PUSH_RE.search(line):
-                violations.append(f"{rel}:{lineno}: {line.strip()}")
+        violations.extend(_scan_bare_pushioc(rel, text))
     if violations:
         msg = (
             "Build gate failed — bare `findings.*.push({...})` outside "
