@@ -201,4 +201,126 @@ test.describe('paste ingress', () => {
     expect(findings.iocCount).toBe(0);
     expect(findings.risk).toBeNull();
   });
+
+  test('paste while drilled-in resets the nav stack (no stale parent crumbs)', async ({ page }) => {
+    // Regression guard for the bug where pasting a new file while the
+    // user was drilled into an inner-child (zip member, decoded
+    // payload, reassembled script, "All the way" chain) replaced the
+    // visible view via `_loadFile` but left `_navStack` populated —
+    // so the breadcrumb trail kept linking back to an unrelated
+    // parent file whose buffer no longer matched the current
+    // findings. Every other top-level ingress (drag-drop, file
+    // picker, folder walkers, `_clearFile`) calls `_resetNavStack()`
+    // first; paste was the outlier. The fix is four explicit
+    // `_resetNavStack()` calls in `_loadPastePayload` (one per
+    // successful-load branch, leaving the "Nothing to paste" branch
+    // untouched). See `src/app/app-core.js`.
+
+    // 1. Load a plaintext "parent" file through the normal ingress.
+    await page.evaluate(async () => {
+      const w = window as unknown as {
+        __loupeTest: {
+          loadBytes(name: string, bytes: Uint8Array): Promise<unknown>;
+        };
+      };
+      const parent = new TextEncoder().encode('parent-file http://parent.example/');
+      await w.__loupeTest.loadBytes('parent.txt', parent);
+    });
+
+    // 2. Simulate a drill-down by calling `openInnerFile` directly
+    //    with a synthetic inner File. This pushes a frame onto
+    //    `_navStack` and re-enters `_loadFile` — the same path
+    //    taken by zip-row clicks, Deobfuscation "Load stitched
+    //    script" buttons, etc.
+    await page.evaluate(async () => {
+      const w = window as unknown as {
+        app: {
+          openInnerFile(f: File, parentBuf: ArrayBuffer | null, ctx: unknown): void;
+        };
+        __loupeTest: { waitForIdle(): Promise<void> };
+      };
+      const innerBytes = new TextEncoder().encode('inner-file http://inner.example/');
+      const innerFile = new File([innerBytes], 'inner.txt', { type: 'text/plain' });
+      w.app.openInnerFile(innerFile, null, { parentName: 'parent.txt' });
+      await w.__loupeTest.waitForIdle();
+    });
+
+    // Sanity: `_navStack` now holds exactly the parent frame so the
+    // drill-down is genuine. Without this baseline the post-paste
+    // assertion could pass trivially on an already-empty stack.
+    const navDepthBefore = await page.evaluate(() => {
+      const w = window as unknown as { app: { _navStack: unknown[] } };
+      return w.app._navStack.length;
+    });
+    expect(navDepthBefore).toBe(1);
+
+    // Also confirm the breadcrumb trail actually rendered a clickable
+    // ancestor — the fix point of the bug is the visible trail, not
+    // just the internal stack. Ancestor crumbs render as
+    // `button.crumb` (not `.crumb-current`, which is the current
+    // page's non-clickable span); a drilled-in state must surface at
+    // least one such button.
+    const ancestorCrumbsBefore = await page.evaluate(() => {
+      const nav = document.getElementById('breadcrumbs');
+      if (!nav) return 0;
+      return nav.querySelectorAll('button.crumb:not(.crumb-current)').length;
+    });
+    expect(ancestorCrumbsBefore).toBeGreaterThan(0);
+
+    // 3. Paste a fresh plaintext payload. Same synthetic-event shape
+    //    used throughout this spec file.
+    await page.evaluate(async () => {
+      const dt = {
+        files: [] as File[],
+        items: [] as DataTransferItem[],
+        types: ['text/plain'],
+        getData(kind: string) {
+          return kind === 'text/plain'
+            ? 'pasted-after-drill http://pasted.example/'
+            : '';
+        },
+      };
+      const e = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(e, 'clipboardData', { value: dt });
+      document.dispatchEvent(e);
+      await new Promise(r => setTimeout(r, 0));
+      const w = window as unknown as {
+        __loupeTest: { waitForIdle(): Promise<void> };
+      };
+      await w.__loupeTest.waitForIdle();
+    });
+
+    // 4. `_navStack` must be empty — paste is a fresh top-level
+    //    load and any drill-down context from before belongs to a
+    //    different analysis.
+    const navDepthAfter = await page.evaluate(() => {
+      const w = window as unknown as { app: { _navStack: unknown[] } };
+      return w.app._navStack.length;
+    });
+    expect(navDepthAfter).toBe(0);
+
+    // Breadcrumb nav must render only the current crumb (non-clickable
+    // span) and no clickable ancestor buttons. Before the fix, the
+    // parent/inner ancestors stayed linked and `_navJumpTo` could
+    // navigate back into a buffer unrelated to the current findings.
+    const ancestorCrumbsAfter = await page.evaluate(() => {
+      const nav = document.getElementById('breadcrumbs');
+      if (!nav) return -1;
+      return nav.querySelectorAll('button.crumb:not(.crumb-current)').length;
+    });
+    expect(ancestorCrumbsAfter).toBe(0);
+
+    // 5. The current findings must reflect the PASTED content, not
+    //    the parent or the inner child. `_renderBreadcrumbs` derives
+    //    the visible trail from `_navStack` + `_fileMeta`, so this
+    //    doubles as a check that no stale ancestor is reachable.
+    const findings = await dumpFindings(page);
+    const urlValues = findings.iocs
+      .filter(i => i.type === 'URL')
+      .map(i => i.value)
+      .join('|');
+    expect(urlValues).toContain('pasted.example');
+    expect(urlValues).not.toContain('parent.example');
+    expect(urlValues).not.toContain('inner.example');
+  });
 });

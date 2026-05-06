@@ -613,6 +613,12 @@ class App {
 
     // Check for files (e.g., copied file from explorer, screenshot)
     if (dt.files && dt.files.length) {
+      // Paste is a fresh top-level load — reset the nav stack so a
+      // drilled-in context (zip inner-child, decoded payload, "All the
+      // way" chain) doesn't leave stale parent crumbs above the newly
+      // pasted file. Mirrors the reset every other top-level ingress
+      // performs (`_handleFiles`, folder walkers, `_clearFile`).
+      this._resetNavStack();
       this._loadFile(dt.files[0]);
       return;
     }
@@ -624,6 +630,8 @@ class App {
         if (blob) {
           const ext = item.type.split('/')[1] === 'jpeg' ? 'jpg' : item.type.split('/')[1];
           const file = new File([blob], `clipboard.${ext}`, { type: item.type });
+          // Paste is a fresh top-level load — see nav-stack note above.
+          this._resetNavStack();
           this._loadFile(file);
           return;
         }
@@ -648,10 +656,14 @@ class App {
         text.replace(/\r\n/g, '\n') === cached.normText) {
         const file = new File([cached.buffer], cached.name,
           { type: 'application/octet-stream' });
+        // Paste is a fresh top-level load — see nav-stack note above.
+        this._resetNavStack();
         this._loadFile(file);
         return;
       }
       const file = new File([text], 'clipboard.txt', { type: 'text/plain' });
+      // Paste is a fresh top-level load — see nav-stack note above.
+      this._resetNavStack();
       this._loadFile(file);
       return;
     }
@@ -660,6 +672,8 @@ class App {
     const html = dt.getData('text/html');
     if (html && html.trim()) {
       const file = new File([html], 'clipboard.html', { type: 'text/html' });
+      // Paste is a fresh top-level load — see nav-stack note above.
+      this._resetNavStack();
       this._loadFile(file);
       return;
     }
