@@ -18,6 +18,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ], {
   expose: [
@@ -180,7 +181,7 @@ test('worker-shim copy of _tlTokenizeSyslog3164 matches main-bundle copy', () =>
   // Load the shim through the same `loadModules` harness so its top-
   // level `const` bindings get projected onto the sandbox via the
   // expose-block trick documented in `tests/helpers/load-bundle.js`.
-  const shimCtx = loadModules(['src/workers/timeline-worker-shim.js'], {
+  const shimCtx = loadModules(['src/app/timeline/timeline-parser-helpers.js', 'src/workers/timeline-worker-shim.js'], {
     expose: ['_tlTokenizeSyslog3164', '_TL_SYSLOG3164_COLS', '_tlDecodePri'],
   });
   const shimTokenize = shimCtx._tlTokenizeSyslog3164;

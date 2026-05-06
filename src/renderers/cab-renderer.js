@@ -28,19 +28,13 @@
 // ════════════════════════════════════════════════════════════════════════════
 class CabRenderer {
 
-  // Same classifier sets as ZipRenderer — keep these in lock-step so the
-  // sidebar grading is consistent across every archive renderer.
-  static EXEC_EXTS = new Set([
-    'exe', 'dll', 'scr', 'com', 'pif', 'cpl', 'msi', 'msp', 'mst', 'sys',
-    'bat', 'cmd', 'ps1', 'psm1', 'psd1', 'vbs', 'vbe', 'js', 'jse',
-    'wsf', 'wsh', 'wsc', 'hta', 'lnk', 'inf', 'reg', 'sct',
-    'jar', 'py', 'rb', 'sh', 'bash', 'so', 'dylib',
-    'docm', 'xlsm', 'pptm', 'dotm', 'xltm', 'potm', 'ppam', 'xlam',
-  ]);
-  static DECOY_EXTS = new Set([
-    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-    'jpg', 'png', 'gif', 'txt', 'rtf',
-  ]);
+  // Same classifier sets as ZipRenderer / RarRenderer / SevenZRenderer —
+  // delegated to the shared `ArchiveAnalysis` helper so all four
+  // archive renderers agree on what counts as dangerous and what
+  // counts as a decoy. The aliases keep legacy
+  // `CabRenderer.EXEC_EXTS.has(...)` call sites working unchanged.
+  static EXEC_EXTS = ArchiveAnalysis.EXEC_EXTS;
+  static DECOY_EXTS = ArchiveAnalysis.DECOY_EXTS;
 
   // ── Render ────────────────────────────────────────────────────────────
 
@@ -401,31 +395,15 @@ class CabRenderer {
 
   _checkWarnings(files) {
     const w = [];
-    const execs = files.filter(e => CabRenderer.EXEC_EXTS.has((e.path || '').split('.').pop().toLowerCase()));
-    if (execs.length) {
-      w.push({ sev: 'high', msg: `⚠ ${execs.length} executable/script file(s): ${execs.slice(0, 5).map(e => e.path.split('/').pop()).join(', ')}${execs.length > 5 ? ' …' : ''}` });
-    }
-    const doubles = files.filter(e => this._isDoubleExt(e.path));
-    if (doubles.length) {
-      w.push({ sev: 'high', msg: `⚠ Double-extension file(s) detected: ${doubles.slice(0, 3).map(e => e.path.split('/').pop()).join(', ')}${doubles.length > 3 ? ' …' : ''}` });
-    }
-    const nested = files.filter(e => /\.(zip|rar|7z|cab|gz|tar|iso|img)$/i.test(e.path));
-    if (nested.length) {
-      w.push({ sev: 'medium', msg: `📦 Nested archive(s): ${nested.slice(0, 3).map(e => e.path.split('/').pop()).join(', ')}` });
-    }
-    const htas = files.filter(e => /\.hta$/i.test(e.path));
-    if (htas.length) w.push({ sev: 'high', msg: `⚠ HTA file(s) — can execute arbitrary scripts` });
-    const lnks = files.filter(e => /\.lnk$/i.test(e.path));
-    if (lnks.length) w.push({ sev: 'high', msg: `⚠ Windows shortcut (.lnk) file(s) — common phishing technique` });
 
-    const traversal = files.filter(e => {
-      const p = e.path || '';
-      return p.includes('../') || p.includes('..\\') || p.startsWith('/') || /^[A-Za-z]:/.test(p);
-    });
-    if (traversal.length) {
-      w.push({ sev: 'high', msg: `⚠ Path traversal attempt detected — ${traversal.length} entry/entries with suspicious paths` });
+    // Shared archive-family warnings — see src/archive-analysis.js.
+    // 'cabinet' is the human label used in the Zip-Slip / Tar-Slip
+    // message so the warning reads naturally for CAB-specific cases.
+    for (const warning of ArchiveAnalysis.buildCommonWarnings(files, { kind: 'cabinet' })) {
+      w.push(warning);
     }
 
+    // CAB-specific: split entries.
     const split = files.filter(e => e.special);
     if (split.length) {
       w.push({ sev: 'medium', msg: `📦 ${split.length} entry/entries are split across cabinets — payload is incomplete on its own` });
@@ -435,12 +413,7 @@ class CabRenderer {
   }
 
   _isDoubleExt(path) {
-    const name = (path || '').split('/').pop();
-    const parts = name.split('.');
-    if (parts.length < 3) return false;
-    const last = parts[parts.length - 1].toLowerCase();
-    const prev = parts[parts.length - 2].toLowerCase();
-    return CabRenderer.EXEC_EXTS.has(last) && CabRenderer.DECOY_EXTS.has(prev);
+    return ArchiveAnalysis.isDoubleExt(path);
   }
 
   // ── Security analysis ─────────────────────────────────────────────────
@@ -520,7 +493,7 @@ class CabRenderer {
     // Warnings → externalRefs + risk
     const warnings = this._checkWarnings(parsed.files);
     for (const w of warnings) {
-      f.externalRefs.push({ type: IOC.PATTERN, url: w.msg, severity: w.sev });
+      pushIOC(f, { type: IOC.PATTERN, url: w.msg, severity: w.sev , bucket: 'externalRefs' });
       if (w.sev === 'high') escalateRisk(f, 'high');
       else if (w.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
     }
@@ -528,10 +501,10 @@ class CabRenderer {
     // Surface executable/script paths as FILE_PATH IOCs (same grammar as zip-renderer)
     const dangerous = parsed.files.filter(e => CabRenderer.EXEC_EXTS.has((e.path || '').split('.').pop().toLowerCase()));
     if (dangerous.length) {
-      f.externalRefs.push({ type: IOC.PATTERN, url: `${dangerous.length} executable/script file(s) inside cabinet`, severity: 'high' });
+      pushIOC(f, { type: IOC.PATTERN, url: `${dangerous.length} executable/script file(s) inside cabinet`, severity: 'high' , bucket: 'externalRefs' });
       escalateRisk(f, 'high');
       for (const e of dangerous.slice(0, 50)) {
-        f.externalRefs.push({ type: IOC.FILE_PATH, url: e.path, severity: 'high' });
+        pushIOC(f, { type: IOC.FILE_PATH, url: e.path, severity: 'high' , bucket: 'externalRefs' });
       }
     }
 
@@ -540,10 +513,10 @@ class CabRenderer {
     const listingCap = 100;
     for (const e of parsed.files.slice(0, listingCap)) {
       if (dangerous.includes(e)) continue;
-      f.externalRefs.push({ type: IOC.FILE_PATH, url: e.path, severity: 'info' });
+      pushIOC(f, { type: IOC.FILE_PATH, url: e.path, severity: 'info' , bucket: 'externalRefs' });
     }
     if (parsed.files.length > listingCap) {
-      f.externalRefs.push({ type: IOC.INFO, url: `+${parsed.files.length - listingCap} more file path(s) truncated`, severity: 'info' });
+      pushIOC(f, { type: IOC.INFO, url: `+${parsed.files.length - listingCap} more file path(s) truncated`, severity: 'info' , bucket: 'externalRefs' });
     }
 
     return f;

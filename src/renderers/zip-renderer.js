@@ -6,14 +6,11 @@
 // ════════════════════════════════════════════════════════════════════════════
 class ZipRenderer {
 
-  // Extensions considered dangerous inside archives
-  static EXEC_EXTS = new Set([
-    'exe', 'dll', 'scr', 'com', 'pif', 'cpl', 'msi', 'msp', 'mst',
-    'bat', 'cmd', 'ps1', 'psm1', 'psd1', 'vbs', 'vbe', 'js', 'jse', 'wsf', 'wsh', 'wsc',
-    'hta', 'lnk', 'inf', 'reg', 'sct',
-    'jar', 'py', 'rb', 'sh', 'bash',
-    'docm', 'xlsm', 'pptm', 'dotm', 'xltm', 'potm', 'ppam', 'xlam',
-  ]);
+  // Extensions considered dangerous inside archives.
+  // Delegates to the shared `ArchiveAnalysis` helper so ZIP / RAR / 7z /
+  // CAB all agree on the classifier set. The alias keeps legacy
+  // `ZipRenderer.EXEC_EXTS.has(...)` call sites working unchanged.
+  static EXEC_EXTS = ArchiveAnalysis.EXEC_EXTS;
 
   // macOS .app bundle path regex — matches the root segment of a bundle,
   // e.g. "MyApp.app/" or "Foo/.Bar.app/". Tight start-anchor rejects
@@ -23,10 +20,9 @@ class ZipRenderer {
   // IOC cap for .app bundle FILE_PATH emission — mirrors DMG renderer.
   static APP_IOC_CAP = 60;
 
-  // Double-extension patterns attackers use (e.g. invoice.pdf.exe)
-  static DECOY_EXTS = new Set([
-    'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'jpg', 'png', 'gif', 'txt', 'rtf',
-  ]);
+  // Double-extension patterns attackers use (e.g. invoice.pdf.exe).
+  // Aliased to the shared helper — see EXEC_EXTS above.
+  static DECOY_EXTS = ArchiveAnalysis.DECOY_EXTS;
 
   // Common passwords for malware samples. Order matters — malware-sample
   // culture first (highest prior on the files an analyst actually drops
@@ -1050,7 +1046,7 @@ class ZipRenderer {
 
     // ── Gzip handling ────────────────────────────────────────────────────────
     if (bytes[0] === 0x1F && bytes[1] === 0x8B) {
-      f.externalRefs.push({ type: IOC.INFO, url: 'Gzip compressed file', severity: 'info' });
+      pushIOC(f, { type: IOC.INFO, url: 'Gzip compressed file', severity: 'info' , bucket: 'externalRefs' });
 
       // Try to decompress and analyze contents
       try {
@@ -1067,35 +1063,35 @@ class ZipRenderer {
           }
         }
       } catch (e) {
-        f.externalRefs.push({ type: IOC.INFO, url: 'Gzip decompression failed — file may be corrupted', severity: 'medium' });
+        pushIOC(f, { type: IOC.INFO, url: 'Gzip decompression failed — file may be corrupted', severity: 'medium' , bucket: 'externalRefs' });
       }
       return f;
     }
 
     // ── TAR handling ─────────────────────────────────────────────────────────
     if (this._isTar(bytes)) {
-      f.externalRefs.push({ type: IOC.INFO, url: 'TAR archive', severity: 'info' });
+      pushIOC(f, { type: IOC.INFO, url: 'TAR archive', severity: 'info' , bucket: 'externalRefs' });
       const entries = this._parseTar(bytes);
       return this._analyzeArchiveEntries(f, entries);
     }
 
     // ── ZIP encryption check ─────────────────────────────────────────────────
     if (this._detectEncryption(bytes)) {
-      f.externalRefs.push({ type: IOC.PATTERN, url: 'Password-protected archive detected', severity: 'high' });
+      pushIOC(f, { type: IOC.PATTERN, url: 'Password-protected archive detected', severity: 'high' , bucket: 'externalRefs' });
       escalateRisk(f, 'high');
 
       // Try to crack password
       const result = await this._tryPasswords(bytes, ZipRenderer.PASSWORD_LIST);
       if (result.success) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: `Archive password cracked: "${result.password}"`, severity: 'high' });
+        pushIOC(f, { type: IOC.PATTERN, url: `Archive password cracked: "${result.password}"`, severity: 'high' , bucket: 'externalRefs' });
       }
 
       // Show filenames from central directory
       const cdEntries = this._parseCentralDirectory(bytes);
       const dangerous = cdEntries.filter(e => ZipRenderer.EXEC_EXTS.has(e.name.split('.').pop().toLowerCase()));
       if (dangerous.length) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: `${dangerous.length} executable/script file(s) inside encrypted archive`, severity: 'high' });
-        for (const e of dangerous) f.externalRefs.push({ type: IOC.FILE_PATH, url: e.name, severity: 'high' });
+        pushIOC(f, { type: IOC.PATTERN, url: `${dangerous.length} executable/script file(s) inside encrypted archive`, severity: 'high' , bucket: 'externalRefs' });
+        for (const e of dangerous) pushIOC(f, { type: IOC.FILE_PATH, url: e.name, severity: 'high' , bucket: 'externalRefs' });
       }
       return f;
     }
@@ -1105,13 +1101,13 @@ class ZipRenderer {
     try { zip = await JSZip.loadAsync(buffer); } catch (e) {
       // Not a valid ZIP — check for other archive formats
       if (bytes[0] === 0x52 && bytes[1] === 0x61 && bytes[2] === 0x72) {
-        f.externalRefs.push({ type: IOC.INFO, url: 'RAR archive — extraction not supported in-browser', severity: 'info' });
+        pushIOC(f, { type: IOC.INFO, url: 'RAR archive — extraction not supported in-browser', severity: 'info' , bucket: 'externalRefs' });
       } else if (bytes[0] === 0x37 && bytes[1] === 0x7A && bytes[2] === 0xBC && bytes[3] === 0xAF) {
-        f.externalRefs.push({ type: IOC.INFO, url: '7-Zip archive — extraction not supported in-browser', severity: 'info' });
+        pushIOC(f, { type: IOC.INFO, url: '7-Zip archive — extraction not supported in-browser', severity: 'info' , bucket: 'externalRefs' });
       } else if (bytes[0] === 0x4D && bytes[1] === 0x53 && bytes[2] === 0x43 && bytes[3] === 0x46) {
-        f.externalRefs.push({ type: IOC.INFO, url: 'CAB archive — extraction not supported in-browser', severity: 'info' });
+        pushIOC(f, { type: IOC.INFO, url: 'CAB archive — extraction not supported in-browser', severity: 'info' , bucket: 'externalRefs' });
       } else {
-        f.externalRefs.push({ type: IOC.INFO, url: 'Archive format not fully parseable', severity: 'info' });
+        pushIOC(f, { type: IOC.INFO, url: 'Archive format not fully parseable', severity: 'info' , bucket: 'externalRefs' });
       }
       return f;
     }
@@ -1249,7 +1245,7 @@ class ZipRenderer {
   _analyzeArchiveEntries(f, entries) {
     const warnings = this._checkWarnings(entries);
     for (const w of warnings) {
-      f.externalRefs.push({ type: IOC.PATTERN, url: w.msg, severity: w.sev });
+      pushIOC(f, { type: IOC.PATTERN, url: w.msg, severity: w.sev , bucket: 'externalRefs' });
       if (w.sev === 'high') escalateRisk(f, 'high');
       else if (w.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
     }
@@ -1268,7 +1264,7 @@ class ZipRenderer {
         const note = t.kind === 'symlink-traversal'
           ? `tar symlink target escapes archive root → ${t.target}`
           : (t.kind === 'absolute-path' ? 'absolute path inside archive' : 'parent-dir traversal in entry name');
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.FILE_PATH,
           url: t.path,
           severity: 'high',
@@ -1277,14 +1273,14 @@ class ZipRenderer {
           // into the entry-list `_rawText`. Without it the IOC row
           // is unclickable.
           _highlightText: t.path,
-        });
+        bucket: 'externalRefs' });
       }
       if (traversalEntries.length > cap) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.INFO,
           url: `+${traversalEntries.length - cap} more path-traversal entry/entries truncated`,
           severity: 'info',
-        });
+        bucket: 'externalRefs' });
       }
       escalateRisk(f, 'high');
     }
@@ -1292,11 +1288,11 @@ class ZipRenderer {
     // Count dangerous files
     const dangerous = entries.filter(e => !e.dir && ZipRenderer.EXEC_EXTS.has((e.path || '').split('.').pop().toLowerCase()));
     if (dangerous.length) {
-      f.externalRefs.push({ type: IOC.PATTERN, url: `${dangerous.length} executable/script file(s) inside archive`, severity: 'high' });
+      pushIOC(f, { type: IOC.PATTERN, url: `${dangerous.length} executable/script file(s) inside archive`, severity: 'high' , bucket: 'externalRefs' });
       escalateRisk(f, 'high');
     }
     for (const e of dangerous) {
-      f.externalRefs.push({ type: IOC.FILE_PATH, url: e.path, severity: 'high' });
+      pushIOC(f, { type: IOC.FILE_PATH, url: e.path, severity: 'high' , bucket: 'externalRefs' });
     }
 
     // ── macOS .app bundle detection ────────────────────────────────────────
@@ -1306,14 +1302,14 @@ class ZipRenderer {
       const roots = Array.from(bundles);
       const cap = ZipRenderer.APP_IOC_CAP;
       for (const root of roots.slice(0, cap)) {
-        f.externalRefs.push({ type: IOC.FILE_PATH, url: root + '/', severity: 'medium' });
+        pushIOC(f, { type: IOC.FILE_PATH, url: root + '/', severity: 'medium' , bucket: 'externalRefs' });
       }
       if (roots.length > cap) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.INFO,
           url: `… and ${roots.length - cap} more .app bundle path(s) not shown`,
           severity: 'info',
-        });
+        bucket: 'externalRefs' });
       }
     }
 
@@ -1335,35 +1331,12 @@ class ZipRenderer {
   //
   // Static so `_checkWarnings` and `_analyzeArchiveEntries` see exactly
   // the same set of offenders.
+  // Static so `_checkWarnings` and `_analyzeArchiveEntries` see exactly
+  // the same set of offenders. Delegates to the shared
+  // `ArchiveAnalysis.findTraversalEntries` helper so all four archive
+  // renderers (zip / rar / 7z / cab) use the same strict detector.
   static _findTraversalEntries(entries) {
-    const hits = [];
-    for (const e of entries || []) {
-      const rawPath = e.path || e.name || '';
-      const p = rawPath.replace(/\\/g, '/');
-      // Absolute paths — Unix, UNC, or drive-letter prefixed.
-      if (rawPath.startsWith('/') || rawPath.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(rawPath)) {
-        hits.push({ path: rawPath, kind: 'absolute-path' });
-        continue;
-      }
-      // Parent-dir segment (avoids matching e.g. `foo..bar.txt`).
-      if (p === '..' || p.startsWith('../') || p.endsWith('/..') || p.includes('/../')) {
-        hits.push({ path: rawPath, kind: 'parent-traversal' });
-        continue;
-      }
-      // Tar symlink targets.
-      const ln = e.linkName;
-      if (ln) {
-        const lnNorm = String(ln).replace(/\\/g, '/');
-        const lnAbs = ln.startsWith('/') || /^[A-Za-z]:[\\/]/.test(ln);
-        const lnEscape = lnAbs
-          || lnNorm === '..' || lnNorm.startsWith('../')
-          || lnNorm.endsWith('/..') || lnNorm.includes('/../');
-        if (lnEscape) {
-          hits.push({ path: rawPath, kind: 'symlink-traversal', target: ln });
-        }
-      }
-    }
-    return hits;
+    return ArchiveAnalysis.findTraversalEntries(entries);
   }
 
   // Return a Set of unique `.app` bundle root paths (e.g. "Foo.app",
@@ -1459,12 +1432,7 @@ class ZipRenderer {
 
 
   _isDoubleExt(path) {
-    const name = (path || '').split('/').pop();
-    const parts = name.split('.');
-    if (parts.length < 3) return false;
-    const last = parts[parts.length - 1].toLowerCase();
-    const prev = parts[parts.length - 2].toLowerCase();
-    return ZipRenderer.EXEC_EXTS.has(last) && ZipRenderer.DECOY_EXTS.has(prev);
+    return ArchiveAnalysis.isDoubleExt(path);
   }
 
   // ── Non-ZIP fallback (RAR, 7z, CAB etc.) ──────────────────────────────────

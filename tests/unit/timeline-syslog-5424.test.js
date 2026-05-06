@@ -20,6 +20,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ], {
   expose: [
@@ -184,7 +185,7 @@ test('tokenize: column header constant matches tokenised width', () => {
 // realms or the sync (Firefox file://) and async (worker) parse
 // paths will silently diverge.
 test('worker-shim copy of _tlTokenizeSyslog5424 matches main-bundle copy', () => {
-  const shimCtx = loadModules(['src/workers/timeline-worker-shim.js'], {
+  const shimCtx = loadModules(['src/app/timeline/timeline-parser-helpers.js', 'src/workers/timeline-worker-shim.js'], {
     expose: ['_tlTokenizeSyslog5424', '_TL_SYSLOG5424_COLS', '_tlDecodePri'],
   });
   const shimTokenize = shimCtx._tlTokenizeSyslog5424;

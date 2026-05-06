@@ -31,6 +31,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ], {
   expose: ['_tlMakeAccessLogTokenizer', '_tlParseTimestamp'],
@@ -214,7 +215,7 @@ test('_tlParseTimestamp: rejects invalid Ivanti-dashed values', () => {
 
 // ── Cross-realm parity ─────────────────────────────────────────────
 test('worker-shim copy of _tlMakeAccessLogTokenizer matches main-bundle copy', () => {
-  const shimCtx = loadModules(['src/workers/timeline-worker-shim.js'], {
+  const shimCtx = loadModules(['src/app/timeline/timeline-parser-helpers.js', 'src/workers/timeline-worker-shim.js'], {
     expose: ['_tlMakeAccessLogTokenizer'],
   });
   const shimMake = shimCtx._tlMakeAccessLogTokenizer;

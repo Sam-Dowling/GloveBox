@@ -31,6 +31,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ], {
   expose: ['_tlMakeLEEFTokenizer', '_TL_LEEF_HEADER_COLS'],
@@ -209,7 +210,7 @@ test('tolerates a leading UTF-8 BOM on the first line', () => {
 
 // ── Cross-realm parity ───────────────────────────────────────────────
 test('worker-shim copy of _tlMakeLEEFTokenizer matches main-bundle copy', () => {
-  const shimCtx = loadModules(['src/workers/timeline-worker-shim.js'], {
+  const shimCtx = loadModules(['src/app/timeline/timeline-parser-helpers.js', 'src/workers/timeline-worker-shim.js'], {
     expose: ['_tlMakeLEEFTokenizer'],
   });
   const shimMake = shimCtx._tlMakeLEEFTokenizer;

@@ -869,6 +869,17 @@ APP_JS_FILES = [
     # renderer (archive-tree.js + cab/rar/seven7/zip/jar/msix/browserext/
     # npm/iso/dmg/pkg).
     'src/archive-budget.js',
+    # archive-analysis.js — canonical EXEC / DECOY classifier sets +
+    # strict Zip-Slip / Tar-Slip traversal detector + common warning
+    # builder shared across every archive renderer (zip / rar / 7z /
+    # cab). Extracted from `ZipRenderer._findTraversalEntries` +
+    # per-renderer copies of EXEC_EXTS / _isDoubleExt / _checkWarnings
+    # so all four formats produce identical warnings for identical
+    # suspicious inputs. Must load AFTER constants.js (uses none of
+    # its exports directly but follows the shared-helper convention)
+    # and BEFORE every archive renderer that references
+    # `ArchiveAnalysis.*` or the aliased `EXEC_EXTS`.
+    'src/archive-analysis.js',
     # FolderFile — synthetic top-level "file" object for drag-dropped
     # directories, multi-file loose drops, and `webkitdirectory` picker
     # ingestion (see `App._handleFiles` in `src/app/app-core.js`). Holds
@@ -969,6 +980,13 @@ APP_JS_FILES = [
     'src/renderers/hta-renderer.js',
     'src/renderers/html-renderer.js',
     'src/renderers/pdf-renderer.js',
+    # binary-reader.js — pure endian-aware byte-read helpers shared
+    # by every native binary renderer (PE / ELF / Mach-O). Each
+    # renderer wraps the static helpers as `_u8` / `_u16` / `_u32` /
+    # `_u64` / `_str` / `_hex` / `_entropy` / `_esc` instance methods
+    # that pass `this._le`. Must load BEFORE pe / elf / macho
+    # renderers below.
+    'src/binary-reader.js',
     'src/renderers/pe-renderer.js',
     'src/renderers/elf-renderer.js',
     'src/renderers/macho-renderer.js',
@@ -1060,6 +1078,15 @@ APP_JS_FILES = [
     # `pushIOC`. EVTX is the sole controlled exception: the router calls
     # `EvtxDetector.analyzeForSecurity` and threads the result into
     # TimelineView purely to feed the in-view Detections + Entities sections.
+    # timeline-parser-helpers.js — shared parser/tokenizer helpers used
+    # by BOTH timeline-helpers.js (main thread) AND the timeline parse
+    # worker bundle. Holds the truly-identical CLF / syslog / JSONL /
+    # CloudTrail / CEF / LEEF / logfmt / W3C / Apache / access-log /
+    # Zeek tokenizer functions and their constant tables. Must load
+    # BEFORE timeline-helpers.js (which depends on these symbols) and
+    # is concatenated into `_timeline_worker_bundle_src` after the
+    # worker shim, see the bundle definition further below.
+    'src/app/timeline/timeline-parser-helpers.js',
     'src/app/timeline/timeline-helpers.js',
     'src/app/timeline/timeline-query.js',
     'src/app/timeline/timeline-query-editor.js',
@@ -1185,6 +1212,13 @@ APP_JS_FILES = [
     'src/app/timeline/timeline-view-geoip.js',
     'src/app/timeline/timeline-router.js',
 
+    # app-file-meta.js — pure file-metadata helpers (`_md5`, `_hashFile`,
+    # `_detectMagic`, `_looksLikePgp`, `_computeEntropy`) extracted from
+    # `app-load.js` so that file can shrink toward orchestration only.
+    # Behaviour-preserving move; load order requires `app-core.js`
+    # (defines `extendApp`) before us, and us before `app-load.js`
+    # (the consumer).
+    'src/app/app-file-meta.js',
     'src/app/app-load.js',
     'src/app/app-sidebar.js',
     # app-sidebar-focus.js holds the click-to-focus / highlighting engine:
@@ -1320,6 +1354,7 @@ yara_worker_js = (
 # (pure formatters).
 _timeline_worker_bundle_src = (
     read('src/workers/timeline-worker-shim.js') + '\n'
+    + read('src/app/timeline/timeline-parser-helpers.js') + '\n'
     + read('src/row-store.js') + '\n'
     + read('src/renderers/csv-renderer.js') + '\n'
     + read('src/renderers/sqlite-renderer.js') + '\n'
@@ -1617,6 +1652,59 @@ def _check_bare_ioc_types():
         raise SystemExit(msg)
 
 _check_bare_ioc_types()
+
+
+# ── Build gate: `pushIOC()`-only IOC emission ────────────────────────────────
+# `CONTRIBUTING.md → Footguns Cheat-Sheet` rule #4 and `AGENTS.md → The hard
+# invariants` rule #4 require every IOC emission to route through
+# `pushIOC(findings, opts)` from `src/constants.js`. Bare pushes
+# (`findings.interestingStrings.push({...})` /
+# `findings.externalRefs.push({...})`) silently skip:
+#
+#   • wire-shape validation (type + value required; canonical severity
+#     default; unresolved-sentinel sentinel filter)
+#   • URL sibling emission (auto-emitted `IOC.DOMAIN`, `IOC.IP`,
+#     `IOC.PATTERN` punycode + abuse-suffix rows via tldts)
+#   • metadata whitelist for YARA/EVTX extras
+#
+# This gate rejects any `\.(interestingStrings|externalRefs)\.push(` pattern
+# outside `src/constants.js` (which defines the chokepoint itself). The
+# single exemption is `src/constants.js` because `pushIOC()` and
+# `emitUrlSiblings()` there push into `findings[bucket]` directly — that's
+# the atomic terminal step.
+_BARE_PUSH_RE = _re.compile(
+    r'\.(?:interestingStrings|externalRefs)\.push\s*\('
+)
+_PUSH_IOC_GATE_ALLOWLIST = { 'src/constants.js' }
+
+def _check_pushioc_only():
+    violations = []
+    for rel in EARLY_JS_FILES + APP_JS_FILES:
+        if rel in _PUSH_IOC_GATE_ALLOWLIST:
+            continue
+        text = read(rel)
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            stripped = line.lstrip()
+            # Skip pure comment lines so reference snippets in docstrings
+            # and migration-history comments don't trip the gate.
+            if stripped.startswith('//') or stripped.startswith('*'):
+                continue
+            if _BARE_PUSH_RE.search(line):
+                violations.append(f"{rel}:{lineno}: {line.strip()}")
+    if violations:
+        msg = (
+            "Build gate failed — bare `findings.*.push({...})` outside "
+            "`pushIOC()` chokepoint.\n"
+            "All IOC emission must route through `pushIOC(findings, opts)` "
+            "from src/constants.js so wire-shape validation, unresolved-\n"
+            "sentinel filtering, URL sibling auto-emission, and the "
+            "extras-key whitelist apply uniformly. See CONTRIBUTING.md →\n"
+            "Footguns rule #4 and AGENTS.md → The hard invariants rule #4.\n"
+            "Offending sites:\n  " + "\n  ".join(violations)
+        )
+        raise SystemExit(msg)
+
+_check_pushioc_only()
 
 
 # ── Build gate: `_rawText` LF-normalisation ───────────────────────────────────

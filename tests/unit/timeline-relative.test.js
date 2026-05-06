@@ -23,6 +23,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 // declaration.
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ]);
 const { _tlParseRelative, _tlFormatRelative } = ctx;

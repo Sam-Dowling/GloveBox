@@ -37,6 +37,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ], {
   expose: ['_tlMakeW3CTokenizer'],
@@ -268,7 +269,7 @@ test('tolerates a leading UTF-8 BOM on the first line', () => {
 
 // ── Cross-realm parity ────────────────────────────────────────────
 test('worker-shim copy of _tlMakeW3CTokenizer matches main-bundle copy', () => {
-  const shimCtx = loadModules(['src/workers/timeline-worker-shim.js'], {
+  const shimCtx = loadModules(['src/app/timeline/timeline-parser-helpers.js', 'src/workers/timeline-worker-shim.js'], {
     expose: ['_tlMakeW3CTokenizer'],
   });
   const shimMake = shimCtx._tlMakeW3CTokenizer;

@@ -233,7 +233,9 @@ extendApp({
   _removeUploadedRule(ruleName) {
     const src = this._getUploadedYaraRules();
     if (!src) return false;
-    /* safeRegex: builtin */
+    // `ruleName` is escaped inline — the `replace(/[.*+?^${}()|[\]\\]/g, ...)` call
+    // makes every regex metacharacter literal before splicing into the source.
+    /* safeRegex: escaped-input */
     const rx = new RegExp('\\brule\\s+' + ruleName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*(?::\\s*[\\w\\s]{1,128}?)?\\s*\\{[\\s\\S]{0,65536}?\\n\\}', 'g');
     const newSrc = src.replace(rx, '').trim();
     this._setUploadedYaraRules(newSrc || '');
@@ -2485,16 +2487,19 @@ extendApp({
         }
       }
       allMatches.sort((a, b) => a.offset - b.offset);
-      this.findings.externalRefs.push({
+      pushIOC(this.findings, {
         type: IOC.YARA,
-        url: text,
+        value: text,
         severity: sev,
         description: desc || '',       // exposed for Summary / STIX / MISP
-        _yaraRuleName: r.ruleName,
-        _yaraCategory: (r.meta && r.meta.category) ? r.meta.category : '',  // drives the sidebar's colour-coded category pill
-        _yaraStrings: yaraStrings,     // structured per-string breakdown for the sidebar
-        _yaraCondition: r.condition || '',  // raw condition expression for the sidebar's hover-revealed "reason for detection"
-        _yaraMatches: allMatches       // For click-to-highlight cycling
+        bucket: 'externalRefs',
+        extras: {
+          _yaraRuleName: r.ruleName,
+          _yaraCategory: (r.meta && r.meta.category) ? r.meta.category : '',  // drives the sidebar's colour-coded category pill
+          _yaraStrings: yaraStrings,     // structured per-string breakdown for the sidebar
+          _yaraCondition: r.condition || '',  // raw condition expression for the sidebar's hover-revealed "reason for detection"
+          _yaraMatches: allMatches,      // For click-to-highlight cycling
+        },
       });
 
       if (!maxSeverity || sevRank[sev] > sevRank[maxSeverity]) maxSeverity = sev;

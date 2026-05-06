@@ -32,6 +32,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ], {
   expose: ['_tlMakeLogfmtTokenizer'],
@@ -162,7 +163,7 @@ test('keys may include `.` `-` `/` (e.g. log.level, request-id, x/y)', () => {
 
 // ── Cross-realm parity ──────────────────────────────────────────────
 test('worker-shim copy of _tlMakeLogfmtTokenizer matches main-bundle copy', () => {
-  const shimCtx = loadModules(['src/workers/timeline-worker-shim.js'], {
+  const shimCtx = loadModules(['src/app/timeline/timeline-parser-helpers.js', 'src/workers/timeline-worker-shim.js'], {
     expose: ['_tlMakeLogfmtTokenizer'],
   });
   const shimMake = shimCtx._tlMakeLogfmtTokenizer;

@@ -22,8 +22,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { loadModules } = require('../helpers/load-bundle.js');
 
-const ctx = loadModules(['src/constants.js', 'src/renderers/zip-renderer.js'], {
-  expose: ['ZipRenderer'],
+const ctx = loadModules(['src/constants.js', 'src/archive-analysis.js', 'src/renderers/zip-renderer.js'], {
+  expose: ['ZipRenderer', 'ArchiveAnalysis'],
 });
 const { ZipRenderer } = ctx;
 

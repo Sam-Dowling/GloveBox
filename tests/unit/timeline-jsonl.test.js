@@ -17,6 +17,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ], {
   expose: [
@@ -235,7 +236,7 @@ test('schema is capped at MAX_COLUMNS to avoid OOM', () => {
 
 // ── Cross-bundle parity ──────────────────────────────────────────────
 test('worker-shim copy of _tlMakeJsonlTokenizer matches main-bundle copy', () => {
-  const shimCtx = loadModules(['src/workers/timeline-worker-shim.js'], {
+  const shimCtx = loadModules(['src/app/timeline/timeline-parser-helpers.js', 'src/workers/timeline-worker-shim.js'], {
     expose: ['_tlMakeJsonlTokenizer'],
   });
   const shimMake = shimCtx._tlMakeJsonlTokenizer;

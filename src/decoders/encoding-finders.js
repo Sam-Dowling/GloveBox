@@ -48,7 +48,9 @@ Object.assign(EncodedContentDetector.prototype, {
     // fire FPs on benign log files. Bruteforce/aggressive paths keep the
     // existing 10-min via the lower-floor regex.
     const minSeq = this._aggressive ? 10 : 12;
-    /* safeRegex: builtin */
+    // `minSeq` is a compile-time constant chosen from {10, 12}. The
+    // source string is entirely builtin otherwise — no user input.
+    /* safeRegex: generated-bounded */
     const re = new RegExp(`(?:%[0-9a-fA-F]{2}){${minSeq},}`, 'g');
     let m;
     while ((m = re.exec(text)) !== null) {
@@ -94,7 +96,8 @@ Object.assign(EncodedContentDetector.prototype, {
     // Aggressive / bruteforce paths keep the looser threshold.
     const decMin = this._aggressive ? 8 : 12;
     const hexMin = this._aggressive ? 8 : 10;
-    /* safeRegex: builtin */
+    // Compile-time constants spliced into a builtin pattern.
+    /* safeRegex: generated-bounded */
     const decRe = new RegExp(`(?:&#\\d{1,5};){${decMin},}`, 'g');
     let m;
     while ((m = decRe.exec(text)) !== null) {
@@ -113,7 +116,7 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
     // Hex entities: &#xHH; sequences
-    /* safeRegex: builtin */
+    /* safeRegex: generated-bounded */
     const hexRe = new RegExp(`(?:&#x[0-9a-fA-F]{1,4};){${hexMin},}`, 'g');
     while ((m = hexRe.exec(text)) !== null) {
       throwIfAborted();
@@ -142,7 +145,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // Default-mode floor raised 8→12. JSON i18n bundles commonly have
     // long runs of `\uNNNN` escapes for CJK strings — 8 is too low.
     const minRun = this._aggressive ? 8 : 12;
-    /* safeRegex: builtin */
+    /* safeRegex: generated-bounded */
     const re = new RegExp(`(?:\\\\u[0-9a-fA-F]{4}){${minRun},}`, 'g');
     let m;
     while ((m = re.exec(text)) !== null) {
@@ -368,7 +371,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // regex character-class fragments commonly cleared the 8-escape gate.
     const minRun = this._aggressive ? 8 : 12;
     // Octal: \NNN where NNN is 1-3 octal digits, no 'x' or 'u' after backslash
-    /* safeRegex: builtin */
+    /* safeRegex: generated-bounded */
     const re = new RegExp(`(?:\\\\[0-3]?[0-7]{2}){${minRun},}`, 'g');
     let m;
     while ((m = re.exec(text)) !== null) {
@@ -616,7 +619,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // 4-escape gate. Aggressive (selection-decode) keeps 2 so analyst-
     // selected short obfuscated property accesses still trigger.
     const minRun = this._bruteforce ? 2 : (this._aggressive ? 4 : 8);
-    /* safeRegex: builtin */
+    /* safeRegex: generated-bounded */
     const re = new RegExp(`(?:\\\\x[0-9a-fA-F]{2}){${minRun},}`, 'g');
     let m;
     while ((m = re.exec(text)) !== null) {
@@ -700,9 +703,9 @@ Object.assign(EncodedContentDetector.prototype, {
       // mode so short reversed identifiers don't auto-emit.
       const looksExec = _EXEC_INTENT_RE.test(reversed);
       const minBlob   = this._aggressive ? 20 : 40;
-      /* safeRegex: builtin */
+      /* safeRegex: generated-bounded */
       const blobB64Re = new RegExp(`^[A-Za-z0-9+\\/=_\\-]{${minBlob},}$`);
-      /* safeRegex: builtin */
+      /* safeRegex: generated-bounded */
       const blobHexRe = new RegExp(`^[0-9a-fA-F]{${minBlob},}$`);
       const looksB64  = blobB64Re.test(reversed);
       const looksHex  = blobHexRe.test(reversed);
@@ -747,7 +750,7 @@ Object.assign(EncodedContentDetector.prototype, {
     // Built via `new RegExp(...)` because the `{minFrags - 1},` repetition
     // bound is dynamic (varies with this._aggressive).
     const reSrc = `(?:["'][^"'\\\\\\n\\r]{0,80}["']\\s*\\+\\s*){${minFrags - 1},}["'][^"'\\\\\\n\\r]{0,80}["']`;
-    /* safeRegex: builtin */
+    /* safeRegex: generated-bounded */
     const re = new RegExp(reSrc, 'g');
 
     let m;

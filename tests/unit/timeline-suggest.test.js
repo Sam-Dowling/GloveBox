@@ -31,6 +31,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 // production bundle (see scripts/build.py JS_FILES).
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
   'src/app/timeline/timeline-query.js',
 ], { expose: ['_tlSuggestContext', '_tlTokenize'] });

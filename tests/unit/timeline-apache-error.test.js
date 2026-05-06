@@ -32,6 +32,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ], {
   expose: ['_tlMakeApacheErrorTokenizer', '_TL_APACHE_ERROR_COLS'],
@@ -224,7 +225,7 @@ test('tolerates a leading UTF-8 BOM', () => {
 
 // ── Cross-realm parity ────────────────────────────────────────────
 test('worker-shim copy of _tlMakeApacheErrorTokenizer matches main-bundle copy', () => {
-  const shimCtx = loadModules(['src/workers/timeline-worker-shim.js'], {
+  const shimCtx = loadModules(['src/app/timeline/timeline-parser-helpers.js', 'src/workers/timeline-worker-shim.js'], {
     expose: ['_tlMakeApacheErrorTokenizer'],
   });
   const shimMake = shimCtx._tlMakeApacheErrorTokenizer;

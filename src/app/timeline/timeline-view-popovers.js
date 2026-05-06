@@ -1494,7 +1494,11 @@ Object.assign(TimelineView.prototype, {
         const escAnchor = _escLiteral(anchor);
         let re;
         try {
-          /* safeRegex: builtin */
+          // `escAnchor` is `_escLiteral(anchor)` — all regex metacharacters
+          // are made literal before splicing into the source. `tokenPattern`
+          // is a bounded, builtin alternation over a small generated token
+          // set from the column sampler, not free-form input.
+          /* safeRegex: escaped-input */
           re = side === 'left'
             ? new RegExp(escAnchor + '(' + tokenPattern + ')', 'i')
             : new RegExp('(' + tokenPattern + ')' + escAnchor, 'i');

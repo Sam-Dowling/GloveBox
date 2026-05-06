@@ -26,6 +26,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ], {
   expose: [
@@ -180,7 +181,7 @@ test('stack-by-path table: covers the well-known Zeek log paths', () => {
 
 // ── Cross-bundle parity ──────────────────────────────────────────────
 test('worker-shim copy of _tlMakeZeekTokenizer matches main-bundle copy', () => {
-  const shimCtx = loadModules(['src/workers/timeline-worker-shim.js'], {
+  const shimCtx = loadModules(['src/app/timeline/timeline-parser-helpers.js', 'src/workers/timeline-worker-shim.js'], {
     expose: ['_tlMakeZeekTokenizer', '_TL_ZEEK_STACK_BY_PATH'],
   });
   const shimMake = shimCtx._tlMakeZeekTokenizer;

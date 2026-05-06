@@ -72,7 +72,8 @@ function buildSandbox() {
   const files = [
     'src/constants.js',
     'src/storage.js',
-    'src/app/timeline/timeline-helpers.js',
+    'src/app/timeline/timeline-parser-helpers.js',
+  'src/app/timeline/timeline-helpers.js',
   ];
 
   const stubClass = 'class TimelineView { constructor() {} }\n';

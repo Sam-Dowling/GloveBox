@@ -206,46 +206,12 @@ function _tlTokenizeClfLine(line) {
   }
   return out;                                 // 9 — Combined
 }
-const _TL_CLF_COMBINED_COLS = ['ip', 'ident', 'auth', 'time', 'request',
-                               'status', 'bytes', 'referer', 'user_agent'];
-const _TL_CLF_COMMON_COLS   = ['ip', 'ident', 'auth', 'time', 'request',
-                               'status', 'bytes'];
 function _tlCanonicalLogColumns(width) {
   if (width === 9) return _TL_CLF_COMBINED_COLS.slice();
   if (width === 7) return _TL_CLF_COMMON_COLS.slice();
   const cols = [];
   for (let i = 0; i < width; i++) cols.push(`col ${i + 1}`);
   return cols;
-}
-
-// ── Syslog (RFC 3164) helpers — worker-side ────────────────────────────────
-//
-// Mirrors `_tlDecodePri`, `_tlInferYear`, `_tlTokenizeSyslog3164`,
-// `_tlTokenizeSyslog5424`, `_tlMakeJsonlTokenizer`,
-// `_tlMakeCloudTrailTokenizer`, `_tlMakeCEFTokenizer`,
-// `_tlMakeLEEFTokenizer`, `_tlMakeLogfmtTokenizer`, `_tlMakeW3CTokenizer`, `_tlMakeApacheErrorTokenizer`, `_tlMakeZeekTokenizer`, the
-// `_TL_SYSLOG{3164,5424}_COLS` constants, `_TL_JSONL_*` constants,
-// `_TL_CLOUDTRAIL_CANONICAL_COLS`, `_TL_CEF_HEADER_COLS`,
-// `_TL_LEEF_HEADER_COLS`, and `_TL_ZEEK_STACK_BY_PATH` in
-// `src/app/timeline/timeline-helpers.js`.
-// Helpers must live here too because the main-bundle helpers file isn't
-// concatenated into the worker bundle. **Keep in lockstep with the
-// canonical implementation.** The unit tests in
-// `tests/unit/timeline-syslog-3164.test.js` exercise the main-bundle
-// copy; an additional cross-check ensures the two copies agree.
-
-const _TL_SYSLOG_SEVERITY = ['emergency', 'alert', 'critical', 'error',
-                             'warning', 'notice', 'informational', 'debug'];
-const _TL_SYSLOG_FACILITY = [
-  'kern', 'user', 'mail', 'daemon', 'auth', 'syslog', 'lpr', 'news',
-  'uucp', 'cron', 'authpriv', 'ftp', 'ntp', 'audit', 'alert', 'clock',
-  'local0', 'local1', 'local2', 'local3', 'local4', 'local5', 'local6', 'local7',
-];
-function _tlSyslogSeverityName(sev) {
-  return _TL_SYSLOG_SEVERITY[sev | 0] || '';
-}
-function _tlSyslogFacilityName(fac) {
-  return _TL_SYSLOG_FACILITY[fac | 0] || ('facility' + (fac | 0));
 }
 function _tlDecodePri(pri) {
   if (pri === null || pri === undefined || pri === '') return null;
@@ -259,16 +225,6 @@ function _tlDecodePri(pri) {
     severityName: _tlSyslogSeverityName(severity),
     facilityName: _tlSyslogFacilityName(facility),
   };
-}
-const _TL_MONTH_ABBR = {
-  jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
-  jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11,
-};
-function _tlInferYear(fileLastModified) {
-  if (Number.isFinite(fileLastModified) && fileLastModified > 0) {
-    return new Date(fileLastModified).getUTCFullYear();
-  }
-  return new Date().getUTCFullYear();
 }
 function _tlTokenizeSyslog3164(line, fileLastModifiedMs) {
   if (!line) return null;
@@ -328,8 +284,6 @@ function _tlTokenizeSyslog3164(line, fileLastModifiedMs) {
     message,
   ];
 }
-const _TL_SYSLOG3164_COLS = ['Timestamp', 'Severity', 'Facility', 'Host',
-                             'Program', 'PID', 'Message'];
 
 // ── RFC 5424 mirror ──
 // Canonical implementation lives in
@@ -398,16 +352,6 @@ function _tlTokenizeSyslog5424(line, _fileLastModifiedMs) {
     msg,
   ];
 }
-const _TL_SYSLOG5424_COLS = ['Timestamp', 'Severity', 'Facility', 'Host',
-                             'App', 'ProcID', 'MsgID', 'StructuredData',
-                             'Message'];
-
-// ── JSONL mirror ──
-// Canonical implementation lives in
-// `src/app/timeline/timeline-helpers.js::_tlMakeJsonlTokenizer`.
-// Cross-realm parity is enforced by `tests/unit/timeline-jsonl.test.js`.
-const _TL_JSONL_FLATTEN_MAX_DEPTH = 8;
-const _TL_JSONL_MAX_COLUMNS = 256;
 function _tlMakeJsonlTokenizer() {
   let schema = null;
   let schemaIndex = null;
@@ -489,19 +433,6 @@ function _tlMakeJsonlTokenizer() {
   const getFormatLabel = () => 'JSONL';
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
-
-// ── AWS CloudTrail mirror ──
-// Canonical implementation lives in
-// `src/app/timeline/timeline-helpers.js::_tlMakeCloudTrailTokenizer`.
-// Cross-realm parity is enforced by
-// `tests/unit/timeline-cloudtrail.test.js`.
-const _TL_CLOUDTRAIL_CANONICAL_COLS = [
-  'eventTime', 'eventName', 'eventSource', 'awsRegion',
-  'sourceIPAddress', 'userIdentity.type', 'userIdentity.userName',
-  'userIdentity.arn', 'userIdentity.accountId', 'userAgent',
-  'eventID', 'eventType', 'recipientAccountId', 'requestID',
-  'errorCode', 'errorMessage', 'readOnly', 'managementEvent',
-];
 function _tlMakeCloudTrailTokenizer() {
   const inner = _tlMakeJsonlTokenizer();
   const seed = {};
@@ -523,16 +454,6 @@ function _tlMakeCloudTrailTokenizer() {
     getFormatLabel: () => 'AWS CloudTrail',
   };
 }
-
-// ── CEF (ArcSight) mirror ──
-// Canonical implementation lives in
-// `src/app/timeline/timeline-helpers.js::_tlMakeCEFTokenizer`.
-// Cross-realm parity is enforced by `tests/unit/timeline-cef.test.js`.
-const _TL_CEF_HEADER_COLS = [
-  'Version', 'Vendor', 'Product', 'ProductVersion',
-  'SignatureID', 'Name', 'Severity',
-];
-const _TL_CEF_MAX_EXT_COLUMNS = 256;
 function _tlMakeCEFTokenizer() {
   let extSchema = null;
   let extSchemaIndex = null;
@@ -656,15 +577,6 @@ function _tlMakeCEFTokenizer() {
   const getFormatLabel = () => 'CEF';
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
-
-// ── LEEF (IBM QRadar) mirror ──
-// Canonical implementation lives in
-// `src/app/timeline/timeline-helpers.js::_tlMakeLEEFTokenizer`.
-// Cross-realm parity is enforced by `tests/unit/timeline-leef.test.js`.
-const _TL_LEEF_HEADER_COLS = [
-  'Version', 'Vendor', 'Product', 'ProductVersion', 'EventID',
-];
-const _TL_LEEF_MAX_EXT_COLUMNS = 256;
 function _tlMakeLEEFTokenizer() {
   let extSchema = null;
   let extSchemaIndex = null;
@@ -829,12 +741,6 @@ function _tlMakeLEEFTokenizer() {
   const getFormatLabel = () => 'LEEF';
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
-
-// ── logfmt mirror ──
-// Canonical implementation lives in
-// `src/app/timeline/timeline-helpers.js::_tlMakeLogfmtTokenizer`.
-// Cross-realm parity is enforced by `tests/unit/timeline-logfmt.test.js`.
-const _TL_LOGFMT_MAX_COLUMNS = 256;
 function _tlMakeLogfmtTokenizer() {
   let schema = null;
   let schemaIndex = null;
@@ -949,12 +855,6 @@ function _tlMakeLogfmtTokenizer() {
   const getFormatLabel = () => 'logfmt';
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
-
-// ── W3C Extended (IIS / AWS ELB / ALB / CloudFront) mirror ──
-// Canonical implementation lives in
-// `src/app/timeline/timeline-helpers.js::_tlMakeW3CTokenizer`.
-// Cross-realm parity is enforced by `tests/unit/timeline-w3c.test.js`.
-const _TL_W3C_MAX_COLUMNS = 256;
 function _tlMakeW3CTokenizer() {
   let schema = null;
   let schemaIndex = null;
@@ -1061,21 +961,6 @@ function _tlMakeW3CTokenizer() {
   const getFormatLabel = () => label;
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
-
-// ── Apache error_log mirror ──
-// Canonical implementation lives in
-// `src/app/timeline/timeline-helpers.js::_tlMakeApacheErrorTokenizer`.
-// Cross-realm parity is enforced by `tests/unit/timeline-apache-error.test.js`.
-const _TL_APACHE_ERROR_COLS = [
-  'Timestamp', 'Module', 'Severity', 'PID', 'TID', 'Client',
-  'ErrorCode', 'Message',
-];
-const _TL_APACHE_ERR_MON = {
-  jan:0, feb:1, mar:2, apr:3, may:4, jun:5,
-  jul:6, aug:7, sep:8, oct:9, nov:10, dec:11,
-};
-const _TL_APACHE_ERR_TS_RE =
-  /^\[(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) {1,2}(\d{1,2}) (\d{2}):(\d{2}):(\d{2})(?:\.(\d+))? (\d{4})\]/;
 /* safeRegex: builtin */
 const _TL_APACHE_ERR_LINE_RE = new RegExp(
   '^' +
@@ -1120,19 +1005,6 @@ function _tlMakeApacheErrorTokenizer() {
   const getFormatLabel = () => 'Apache error_log';
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
-
-// ── Generic space-delimited access-log mirror ──
-// Canonical implementation lives in
-// `src/app/timeline/timeline-helpers.js::_tlMakeAccessLogTokenizer`.
-// Cross-realm parity is enforced by
-// `tests/unit/timeline-access-log.test.js`.
-const _TL_ACCESS_LOG_TS_RE =
-  /^(?:-?\d{10}|-?\d{13}|\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?|\d{4}-\d{2}-\d{2}--\d{2}-\d{2}-\d{2}|\d{4}\/\d{2}\/\d{2}[ T]\d{2}:\d{2}:\d{2})(?=\s)/;
-const _TL_ACCESS_LOG_TLS_PROTO_RE = /^(?:TLSv1(?:\.[0-3])?|SSLv[23])$/;
-const _TL_ACCESS_LOG_TLS_COLS = [
-  'time', 'ip', 'tls_version', 'tls_cipher', 'request',
-  'bytes', 'referer', 'user_agent',
-];
 function _tlAccessLogTimestampOk(s) {
   if (typeof s !== 'string' || !s) return false;
   if (/^-?\d{10}$/.test(s) || /^-?\d{13}$/.test(s)) return true;
@@ -1228,20 +1100,6 @@ function _tlMakeAccessLogTokenizer() {
     fingerprint === 'tls' ? 'TLS Access Log' : 'Access Log';
   return { tokenize, getColumns, getDefaultStackColIdx, getFormatLabel };
 }
-
-// ── Zeek TSV mirror ──
-// Canonical implementation lives in
-// `src/app/timeline/timeline-helpers.js::_tlMakeZeekTokenizer`.
-// Cross-realm parity is enforced by `tests/unit/timeline-zeek.test.js`.
-const _TL_ZEEK_STACK_BY_PATH = {
-  conn:  'proto',
-  dns:   'qtype_name',
-  http:  'method',
-  ssl:   'version',
-  weird: 'name',
-  files: 'mime_type',
-  notice: 'note',
-};
 function _tlMakeZeekTokenizer() {
   let unsetField = '-';
   let emptyField = '(empty)';

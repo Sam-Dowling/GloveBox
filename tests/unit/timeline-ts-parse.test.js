@@ -20,6 +20,7 @@ const { loadModules } = require('../helpers/load-bundle.js');
 
 const ctx = loadModules([
   'src/constants.js',
+  'src/app/timeline/timeline-parser-helpers.js',
   'src/app/timeline/timeline-helpers.js',
 ], {
   expose: ['_tlParseTimestamp', '_tlParseTimestampFast', '_tlNormaliseIsoSuffix'],

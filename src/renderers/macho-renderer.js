@@ -392,71 +392,37 @@ class MachoRenderer {
   };
 
   // ═══════════════════════════════════════════════════════════════════════
-  //  Binary read helpers (endian-aware)
+  //  Binary read helpers (endian-aware) — delegate to BinaryReader so PE,
+  //  ELF, and Mach-O all share one implementation. See src/binary-reader.js.
   // ═══════════════════════════════════════════════════════════════════════
 
-  _u8(b, o) { return b[o]; }
+  _u8(b, o) { return BinaryReader.u8(b, o); }
 
   _u16(b, o) {
-    return this._le
-      ? b[o] | (b[o + 1] << 8)
-      : (b[o] << 8) | b[o + 1];
+    return this._le ? BinaryReader.u16le(b, o) : BinaryReader.u16be(b, o);
   }
 
   _u32(b, o) {
-    return this._le
-      ? (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0
-      : ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
+    return this._le ? BinaryReader.u32le(b, o) : BinaryReader.u32be(b, o);
   }
 
   // Returns a BigInt-safe 64-bit value as a Number (loses precision above 2^53)
   _u64(b, o) {
-    if (this._le) {
-      const lo = this._u32(b, o);
-      const hi = this._u32(b, o + 4);
-      return hi * 0x100000000 + lo;
-    } else {
-      const hi = this._u32(b, o);
-      const lo = this._u32(b, o + 4);
-      return hi * 0x100000000 + lo;
-    }
+    return this._le ? BinaryReader.u64le(b, o) : BinaryReader.u64be(b, o);
   }
 
   // Read big-endian uint32 (for Fat headers, which are always BE)
-  _u32be(b, o) {
-    return ((b[o] << 24) | (b[o + 1] << 16) | (b[o + 2] << 8) | b[o + 3]) >>> 0;
-  }
+  _u32be(b, o) { return BinaryReader.u32be(b, o); }
 
-  _str(b, o, maxLen) {
-    let s = '';
-    for (let i = 0; i < maxLen && o + i < b.length; i++) {
-      if (b[o + i] === 0) break;
-      s += String.fromCharCode(b[o + i]);
-    }
-    return s;
-  }
+  _str(b, o, maxLen) { return BinaryReader.cstring(b, o, maxLen); }
 
-  _hex(v, digits) {
-    if (typeof v === 'number') return '0x' + v.toString(16).toUpperCase().padStart(digits || 8, '0');
-    return '0x0';
-  }
+  _hex(v, digits) { return BinaryReader.hex(v, digits || 8); }
 
   _entropy(b, offset, length) {
-    if (length <= 0 || offset + length > b.length) return 0;
-    const freq = new Uint32Array(256);
-    const end = Math.min(offset + length, b.length);
-    const actual = end - offset;
-    for (let i = offset; i < end; i++) freq[b[i]]++;
-    let ent = 0;
-    for (let i = 0; i < 256; i++) {
-      if (freq[i] === 0) continue;
-      const p = freq[i] / actual;
-      ent -= p * Math.log2(p);
-    }
-    return ent;
+    return BinaryReader.entropy(b, offset, length);
   }
 
-  _esc(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  _esc(s) { return BinaryReader.esc(s); }
 
   _fmtVersion(v) {
     return `${(v >> 16) & 0xFFFF}.${(v >> 8) & 0xFF}.${v & 0xFF}`;

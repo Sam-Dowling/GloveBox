@@ -349,39 +349,23 @@ class PeRenderer {
   ];
 
   // ═══════════════════════════════════════════════════════════════════════
-  //  Binary read helpers
+  //  Binary read helpers — PE is always little-endian, so wrap the LE
+  //  variants from BinaryReader directly. PE / ELF / Mach-O all share
+  //  the same low-level reader (see src/binary-reader.js).
   // ═══════════════════════════════════════════════════════════════════════
 
-  _u8(bytes, off) { return bytes[off]; }
-  _u16(bytes, off) { return bytes[off] | (bytes[off + 1] << 8); }
-  _u32(bytes, off) { return (bytes[off] | (bytes[off + 1] << 8) | (bytes[off + 2] << 16) | (bytes[off + 3] << 24)) >>> 0; }
-  _u64(bytes, off) {
-    const lo = this._u32(bytes, off), hi = this._u32(bytes, off + 4);
-    // Return as a Number (safe up to 2^53)
-    return hi * 0x100000000 + lo;
-  }
+  _u8(bytes, off) { return BinaryReader.u8(bytes, off); }
+  _u16(bytes, off) { return BinaryReader.u16le(bytes, off); }
+  _u32(bytes, off) { return BinaryReader.u32le(bytes, off); }
+  _u64(bytes, off) { return BinaryReader.u64le(bytes, off); }
 
-  _str(bytes, off, len) {
-    let s = '';
-    for (let i = 0; i < len && bytes[off + i] !== 0; i++) s += String.fromCharCode(bytes[off + i]);
-    return s;
-  }
+  _str(bytes, off, len) { return BinaryReader.cstring(bytes, off, len); }
 
-  _hex(v, digits) { return '0x' + v.toString(16).toUpperCase().padStart(digits || 0, '0'); }
+  _hex(v, digits) { return BinaryReader.hex(v, digits); }
 
   _entropy(bytes, off, len) {
-    if (!len || off + len > bytes.length) return 0;
-    const freq = new Uint32Array(256);
-    const end = Math.min(off + len, bytes.length);
-    const actual = end - off;
-    for (let i = off; i < end; i++) freq[bytes[i]]++;
-    let ent = 0;
-    for (let i = 0; i < 256; i++) {
-      if (freq[i] === 0) continue;
-      const p = freq[i] / actual;
-      ent -= p * Math.log2(p);
-    }
-    return Math.round(ent * 1000) / 1000;
+    // PE renderer historically rounds to 3 decimal places; preserve.
+    return BinaryReader.entropy(bytes, off, len, 1000);
   }
 
   // ═══════════════════════════════════════════════════════════════════════
