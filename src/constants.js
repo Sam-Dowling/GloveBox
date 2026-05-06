@@ -917,9 +917,48 @@ function throwIfAborted() {
  * @param {string}  [opts.bucket]     'externalRefs' | 'interestingStrings' (default 'interestingStrings')
  * @param {number}  [opts.sourceOffset] byte/char offset into `_rawText` (for click-to-focus precision)
  * @param {number}  [opts.sourceLength] length at `sourceOffset` (paired with above)
+ * @param {string}  [opts.description] long-form description (YARA rules, parsers)
+ * @param {object}  [opts.extras]     validated passthrough for renderer-specific
+ *                                    metadata. Keys are whitelisted: YARA
+ *                                    fields (`_yaraRuleName`, `_yaraCategory`,
+ *                                    `_yaraStrings`, `_yaraCondition`,
+ *                                    `_yaraMatches`) and EVTX fields
+ *                                    (`eventId`, `count`). Unknown keys are
+ *                                    silently dropped so renderers can pass a
+ *                                    loose object without leaking arbitrary
+ *                                    shape.
  */
+// Whitelist of metadata keys that may ride along on a pushIOC entry via
+// `opts.extras`. Kept explicit rather than open-ended so the IOC wire-shape
+// contract remains a single source of truth. New keys MUST be added here
+// before renderers may depend on them.
+const PUSH_IOC_EXTRAS_ALLOWED = Object.freeze([
+  // YARA sidebar rendering / click-to-highlight cycling
+  '_yaraRuleName',
+  '_yaraCategory',
+  '_yaraStrings',
+  '_yaraCondition',
+  '_yaraMatches',
+  // EVTX event-id + count (Timeline detection filtering + summaries)
+  'eventId',
+  'count',
+]);
 function pushIOC(findings, opts) {
-  if (!findings || !opts || !opts.type || !opts.value) return;
+  if (!findings || !opts || !opts.type) return;
+  // Accept two call shapes:
+  //   1. Canonical opts shape: `{ type, value, severity?, ... }`.
+  //   2. Prebuilt entry shape: `{ type, url, severity?, _highlightText?, ... }`
+  //      — used by renderers that compose a `ref` object locally (clickonce,
+  //      eml, hta, lnk, url, browserext, msix, npm) and previously emitted it
+  //      via bare `.push(ref)`. Detected by presence of `url` without `value`.
+  // The prebuilt-entry path preserves every existing field (including already-
+  // underscored metadata like `_sourceOffset`) so the wire shape that hits the
+  // sidebar is identical to the bare-push shape. This lets those renderers
+  // migrate to `pushIOC()` without a field-rename churn that would risk
+  // losing click-to-focus precision or highlight metadata.
+  const isPrebuilt = (opts.value === undefined) && (typeof opts.url === 'string');
+  if (!isPrebuilt && !opts.value) return;
+  const sentinelProbe = isPrebuilt ? opts.url : opts.value;
   // ── Unresolved-sentinel rejection ───────────────────────────────────
   // Obfuscation decoders emit partial-resolution sentinels (U+27E8 /
   // U+27E9 — `⟨unresolved:NAME⟩`, `⟨VAR:~start,len⟩`, `⟨…⟩`) inside
@@ -946,24 +985,53 @@ function pushIOC(findings, opts) {
   // `pushIOC` calls pass sentinel-free strings. `hasUnresolvedSentinel`
   // is defined in this same file above; no worker shim impact because
   // `pushIOC` is main-thread-only (timeline worker has a no-op stub).
-  if (hasUnresolvedSentinel(opts.value)) return;
+  if (hasUnresolvedSentinel(sentinelProbe)) return;
   const bucket = opts.bucket || 'interestingStrings';
   if (!Array.isArray(findings[bucket])) findings[bucket] = [];
-  const sev = opts.severity || IOC_CANONICAL_SEVERITY[opts.type] || 'info';
-  const entry = {
-    type: opts.type,
-    url: String(opts.value),
-    severity: sev,
-  };
-  if (opts.highlightText) entry._highlightText = String(opts.highlightText);
-  if (opts.note) entry.note = String(opts.note);
-  // sourceOffset/sourceLength: numeric byte/char range into the
-  // renderer's `_rawText` for sidebar click-to-focus precision. Both
-  // must be set together; a sourceOffset of 0 is a real value (start
-  // of file), so use `typeof === 'number'` rather than truthiness.
-  if (typeof opts.sourceOffset === 'number' && typeof opts.sourceLength === 'number') {
-    entry._sourceOffset = opts.sourceOffset;
-    entry._sourceLength = opts.sourceLength;
+
+  let entry;
+  if (isPrebuilt) {
+    // Copy the caller's entry so we don't mutate their local object.
+    // All pre-existing fields survive (_highlightText, _sourceOffset,
+    // _sourceLength, description, _yaraRuleName, etc). The canonical
+    // severity is filled in only when the caller omitted it.
+    entry = Object.assign({}, opts);
+    delete entry.bucket;
+    delete entry._noDomainSibling;
+    if (!entry.severity) entry.severity = IOC_CANONICAL_SEVERITY[opts.type] || 'info';
+    entry.url = String(entry.url);
+  } else {
+    const sev = opts.severity || IOC_CANONICAL_SEVERITY[opts.type] || 'info';
+    entry = {
+      type: opts.type,
+      url: String(opts.value),
+      severity: sev,
+    };
+    if (opts.highlightText) entry._highlightText = String(opts.highlightText);
+    if (opts.note) entry.note = String(opts.note);
+    // Long-form description — YARA rules and parser detections store a human
+    // sentence here for Summary/STIX/MISP export. Separate from `note` which
+    // is the short sidebar chip.
+    if (opts.description) entry.description = String(opts.description);
+    // sourceOffset/sourceLength: numeric byte/char range into the
+    // renderer's `_rawText` for sidebar click-to-focus precision. Both
+    // must be set together; a sourceOffset of 0 is a real value (start
+    // of file), so use `typeof === 'number'` rather than truthiness.
+    if (typeof opts.sourceOffset === 'number' && typeof opts.sourceLength === 'number') {
+      entry._sourceOffset = opts.sourceOffset;
+      entry._sourceLength = opts.sourceLength;
+    }
+    // Whitelisted extras — YARA/EVTX metadata that the sidebar + exports
+    // need to preserve. Unknown keys are silently dropped so callers can
+    // hand us a loose object without widening the wire shape.
+    if (opts.extras && typeof opts.extras === 'object') {
+      for (const key of PUSH_IOC_EXTRAS_ALLOWED) {
+        if (Object.prototype.hasOwnProperty.call(opts.extras, key)
+            && opts.extras[key] !== undefined) {
+          entry[key] = opts.extras[key];
+        }
+      }
+    }
   }
   findings[bucket].push(entry);
 
@@ -973,7 +1041,7 @@ function pushIOC(findings, opts) {
   // which re-surfaces siblings for URL rows produced by the worker-bundled
   // `extractInterestingStringsCore` (which runs tldts-free by design).
   if (opts.type === IOC.URL && !opts._noDomainSibling) {
-    emitUrlSiblings(findings, opts.value, bucket);
+    emitUrlSiblings(findings, sentinelProbe, bucket);
   }
 }
 
