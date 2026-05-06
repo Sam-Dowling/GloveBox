@@ -228,7 +228,9 @@ class SecurityAnalyzer {
         }
       }
     }
-    f.externalRefs.push(...this._externalRefs(parsed));
+    for (const ref of this._externalRefs(parsed)) {
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
+    }
 
     // ── T3.4: docProps/custom.xml IOC scanning ──────────────────────────
     if (parsed.customProps) {
@@ -241,31 +243,31 @@ class SecurityAnalyzer {
           // URL scan
           const urls = val.match(/https?:\/\/[^\s"'<>]+/gi) || [];
           for (const url of urls) {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.URL, url, severity: 'high',
-              note: `Hidden in docProps/custom.xml property "${prop.getAttribute('name') || '?'}"`
-            });
+              note: `Hidden in docProps/custom.xml property "${prop.getAttribute('name') || '?'}"`,
+            bucket: 'externalRefs' });
             if (f.risk !== 'high') escalateRisk(f, 'high');
           }
           // IP scan
           const ips = val.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [];
           for (const ip of ips) {
             if (!/^(0\.|127\.|255\.|10\.|192\.168\.)/.test(ip)) {
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.IP, url: ip, severity: 'medium',
-                note: `In docProps/custom.xml property "${prop.getAttribute('name') || '?'}"`
-              });
+                note: `In docProps/custom.xml property "${prop.getAttribute('name') || '?'}"`,
+              bucket: 'externalRefs' });
               if (f.risk === 'low') escalateRisk(f, 'medium');
             }
           }
           // Base64 blob scan
           if (/^[A-Za-z0-9+/=]{100,}$/.test(val)) {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.PATTERN,
               url: `Base64 blob in custom property "${prop.getAttribute('name') || '?'}" (${val.length} chars)`,
               severity: 'high',
-              note: 'Possible encoded payload in docProps/custom.xml'
-            });
+              note: 'Possible encoded payload in docProps/custom.xml',
+            bucket: 'externalRefs' });
             if (f.risk !== 'high') escalateRisk(f, 'high');
           }
         }
@@ -292,11 +294,11 @@ class SecurityAnalyzer {
           for (const df of dangerousFields) {
             if (df.re.test(text) && !seen.has(df.label + ':' + text.slice(0, 80))) {
               seen.add(df.label + ':' + text.slice(0, 80));
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.PATTERN,
                 url: `Field code: ${df.label} — "${text.slice(0, 120)}"`,
-                severity: df.sev
-              });
+                severity: df.sev,
+              bucket: 'externalRefs' });
               if (df.sev === 'critical') escalateRisk(f, 'high');
               else if (f.risk === 'low') escalateRisk(f, 'medium');
             }
@@ -306,7 +308,7 @@ class SecurityAnalyzer {
           for (const url of urlM) {
             if (!seen.has('url:' + url)) {
               seen.add('url:' + url);
-              f.externalRefs.push({ type: IOC.URL, url, severity: 'high', note: 'URL in field instruction' });
+              pushIOC(f, { type: IOC.URL, url, severity: 'high', note: 'URL in field instruction' , bucket: 'externalRefs' });
               if (f.risk !== 'high') escalateRisk(f, 'high');
             }
           }
@@ -318,11 +320,11 @@ class SecurityAnalyzer {
           for (const df of dangerousFields) {
             if (df.re.test(instr) && !seen.has(df.label + ':' + instr.slice(0, 80))) {
               seen.add(df.label + ':' + instr.slice(0, 80));
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.PATTERN,
                 url: `Field code: ${df.label} — "${instr.slice(0, 120)}"`,
-                severity: df.sev
-              });
+                severity: df.sev,
+              bucket: 'externalRefs' });
               if (df.sev === 'critical') escalateRisk(f, 'high');
               else if (f.risk === 'low') escalateRisk(f, 'medium');
             }

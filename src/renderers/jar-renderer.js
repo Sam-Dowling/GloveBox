@@ -1198,11 +1198,11 @@ class JarRenderer {
       if (manifest.attrs['Class-Path']) f.metadata['Class-Path'] = manifest.attrs['Class-Path'];
       if (manifest.attrs['Premain-Class']) {
         f.metadata['⚠ Premain-Class'] = manifest.attrs['Premain-Class'];
-        f.interestingStrings.push({ type: IOC.PATTERN, url: `Java Agent: ${manifest.attrs['Premain-Class']}`, severity: 'high' });
+        pushIOC(f, { type: IOC.PATTERN, url: `Java Agent: ${manifest.attrs['Premain-Class']}`, severity: 'high' , bucket: 'interestingStrings' });
       }
       if (manifest.attrs['Agent-Class']) {
         f.metadata['⚠ Agent-Class'] = manifest.attrs['Agent-Class'];
-        f.interestingStrings.push({ type: IOC.PATTERN, url: `Dynamic Agent: ${manifest.attrs['Agent-Class']}`, severity: 'high' });
+        pushIOC(f, { type: IOC.PATTERN, url: `Dynamic Agent: ${manifest.attrs['Agent-Class']}`, severity: 'high' , bucket: 'interestingStrings' });
       }
     }
 
@@ -1239,7 +1239,7 @@ class JarRenderer {
       if (e.dir) continue;
       const eExt = e.path.split('.').pop().toLowerCase();
       if (dangerousExts.has(eExt)) {
-        f.interestingStrings.push({ type: IOC.FILE_PATH, url: e.path, severity: 'medium', note: 'Suspicious resource inside JAR' });
+        pushIOC(f, { type: IOC.FILE_PATH, url: e.path, severity: 'medium', note: 'Suspicious resource inside JAR' , bucket: 'interestingStrings' });
         if (f.risk === 'low') escalateRisk(f, 'medium');
       }
     }
@@ -1284,11 +1284,11 @@ class JarRenderer {
     }
     for (const g of apiGroups.values()) {
       const suffix = g.count > 1 ? ` (×${g.count})` : '';
-      f.interestingStrings.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${g.api}: ${g.desc}${suffix}`,
-        severity: g.severity
-      });
+        severity: g.severity,
+      bucket: 'interestingStrings' });
     }
 
     // URLs (deduped — the same URL can appear in many constant pools).
@@ -1311,12 +1311,12 @@ class JarRenderer {
     for (const ip of analysis.ips) {
       if (seenIps.has(ip)) continue;
       seenIps.add(ip);
-      f.interestingStrings.push({ type: IOC.IP, url: ip, severity: 'medium' });
+      pushIOC(f, { type: IOC.IP, url: ip, severity: 'medium' , bucket: 'interestingStrings' });
     }
 
     // Obfuscation
     for (const o of obfuscation) {
-      f.interestingStrings.push({ type: IOC.PATTERN, url: `Obfuscation: ${o}`, severity: 'high' });
+      pushIOC(f, { type: IOC.PATTERN, url: `Obfuscation: ${o}`, severity: 'high' , bucket: 'interestingStrings' });
     }
 
     // Risk assessment — count distinct APIs, not raw match occurrences, so six

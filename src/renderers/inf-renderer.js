@@ -203,40 +203,40 @@ class InfSctRenderer {
     const ext = (fileName || '').split('.').pop().toLowerCase();
 
     if (ext === 'sct') {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.INFO,
         url: 'Windows Script Component (.sct) — COM scriptlet, Squiblydoo attack vector via regsvr32',
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       const analysis = this._analyzeSct(text);
       for (const s of analysis.scripts) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `Script block: ${s.language} — ${s.code ? s.code.length + ' chars' : 'empty'}`,
-          severity: 'high'
-        });
+          severity: 'high',
+        bucket: 'externalRefs' });
         if (s.code) f.modules.push({ name: `sct_script_${s.language}`, source: s.code });
       }
       for (const w of analysis.warnings) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: w.label, severity: w.sev });
+        pushIOC(f, { type: IOC.PATTERN, url: w.label, severity: w.sev , bucket: 'externalRefs' });
       }
       for (const r of analysis.registration) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: `${r.type}: ${r.value}`, severity: 'medium' });
+        pushIOC(f, { type: IOC.PATTERN, url: `${r.type}: ${r.value}`, severity: 'medium' , bucket: 'externalRefs' });
       }
     } else {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.INFO,
         url: 'Windows Setup Information File (.inf) — can execute commands via right-click Install or CMSTP',
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       const analysis = this._analyzeInf(text);
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${analysis.sections.length} section(s), ${analysis.directives.length} directive(s)`,
-        severity: 'info'
-      });
+        severity: 'info',
+      bucket: 'externalRefs' });
       for (const w of analysis.warnings) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: w.label, severity: w.sev });
+        pushIOC(f, { type: IOC.PATTERN, url: w.label, severity: w.sev , bucket: 'externalRefs' });
       }
       const highCount = analysis.warnings.filter(w => w.sev === 'high' || w.sev === 'critical').length;
       if (highCount >= 3) escalateRisk(f, 'critical');
@@ -276,7 +276,7 @@ class InfSctRenderer {
       const offset = text.indexOf(v);
       const entry = { type, url: v, severity: sev };
       if (offset >= 0) { entry._sourceOffset = offset; entry._sourceLength = v.length; }
-      f.interestingStrings.push(entry);
+      pushIOC(f, Object.assign({ bucket: 'interestingStrings' }, entry));
     };
 
     // Walk every directive / entry that the parser found

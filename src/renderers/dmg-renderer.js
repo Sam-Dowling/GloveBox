@@ -205,20 +205,20 @@ class DmgRenderer {
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
 
     // DMG baseline (mirrors ISO: bypasses Mark-of-the-Web once mounted)
-    f.externalRefs.push({
+    pushIOC(f, {
       type: IOC.PATTERN,
       url: 'Disk image file — bypasses Mark-of-the-Web (MOTW) protection on macOS',
-      severity: 'medium'
-    });
+      severity: 'medium',
+    bucket: 'externalRefs' });
 
     // Encrypted shell?
     const envelope = this._detectEncrypted(bytes);
     if (envelope) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `Encrypted DMG (${envelope}) — contents not inspectable without passphrase`,
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
       f.metadata = { title: '(encrypted DMG)', subject: this._fmtBytes(bytes.length) };
       return f;
@@ -242,42 +242,42 @@ class DmgRenderer {
     // misled into thinking the list is complete.
     const APP_IOC_CAP = 100;
     if (strings.apps.length) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${strings.apps.length} application bundle path(s) inside disk image`,
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
       for (const path of strings.apps.slice(0, APP_IOC_CAP)) {
-        f.externalRefs.push({ type: IOC.FILE_PATH, url: path, severity: 'high' });
+        pushIOC(f, { type: IOC.FILE_PATH, url: path, severity: 'high' , bucket: 'externalRefs' });
       }
       if (strings.apps.length > APP_IOC_CAP) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.INFO,
           url: `… ${strings.apps.length - APP_IOC_CAP} additional .app bundle path(s) not shown (IOC cap ${APP_IOC_CAP})`,
-          severity: 'info'
-        });
+          severity: 'info',
+        bucket: 'externalRefs' });
       }
     }
 
     // "Drag-to-Applications" phishing shape: Applications symlink + .app
     if (strings.hasApplicationsSymlink && strings.apps.length) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: 'DMG contains both an Applications symlink and a .app bundle — classic drag-to-install social-engineering shape',
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
     }
 
     // Hidden .app (leading dot) — staple of macOS trojans
     const hidden = strings.apps.filter(a => /(^|\/)\./.test(a));
     if (hidden.length) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${hidden.length} hidden .app bundle(s) inside disk image`,
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
     }
 
@@ -289,16 +289,16 @@ class DmgRenderer {
       // Anchor the host check to the URL's hostname so "evil-apple.com.bad.example"
       // isn't silently whitelisted as an apple.com URL by a substring match.
       if (this._isAppleHost(u)) continue;
-      f.externalRefs.push({ type: IOC.URL, url: u, severity: 'info' });
+      pushIOC(f, { type: IOC.URL, url: u, severity: 'info' , bucket: 'externalRefs' });
       urlCount++;
       if (f.externalRefs.length > 200) { urlTrunc = true; break; }
     }
     if (urlTrunc) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.INFO,
         url: `URL harvest truncated at ${urlCount} — additional URLs present but not emitted (IOC cap reached)`,
-        severity: 'info'
-      });
+        severity: 'info',
+      bucket: 'externalRefs' });
     }
 
     return f;

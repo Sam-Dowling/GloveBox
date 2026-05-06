@@ -138,11 +138,11 @@ class ImageRenderer {
           const endPos = i + 8;
           if (endPos < bytes.length) {
             const extra = bytes.length - endPos;
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.PATTERN,
               url: `${this._fmtBytes(extra)} of data appended after PNG IEND chunk — possible steganography or embedded payload`,
-              severity: 'medium'
-            });
+              severity: 'medium',
+            bucket: 'externalRefs' });
             escalateRisk(f, 'medium');
           }
           break;
@@ -159,11 +159,11 @@ class ImageRenderer {
       if (lastFFD9 >= 0 && lastFFD9 + 2 < bytes.length) {
         const extra = bytes.length - lastFFD9 - 2;
         if (extra > 0) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.PATTERN,
             url: `${this._fmtBytes(extra)} of data appended after JPEG EOI marker — possible steganography or embedded payload`,
-            severity: 'medium'
-          });
+            severity: 'medium',
+          bucket: 'externalRefs' });
           escalateRisk(f, 'medium');
         }
       }
@@ -179,11 +179,11 @@ class ImageRenderer {
       if (trailerPos >= 0 && trailerPos + 1 < bytes.length) {
         const extra = bytes.length - trailerPos - 1;
         if (extra > 0) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.PATTERN,
             url: `${this._fmtBytes(extra)} of data appended after GIF trailer — possible steganography or embedded payload`,
-            severity: 'medium'
-          });
+            severity: 'medium',
+          bucket: 'externalRefs' });
           if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       }
@@ -215,11 +215,11 @@ class ImageRenderer {
               typeBytes[2] === tBytes[2] && typeBytes[3] === tBytes[3]) {
             // Large chunk flag
             if (chunkLen > 1024) {
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.PATTERN,
                 url: `Large PNG ${tName} chunk (${this._fmtBytes(chunkLen)}) — potential data-hiding channel`,
-                severity: 'medium'
-              });
+                severity: 'medium',
+              bucket: 'externalRefs' });
               if (f.risk === 'low') escalateRisk(f, 'medium');
             }
             // Extract text content for payload scanning
@@ -232,11 +232,11 @@ class ImageRenderer {
                 const keyword = String.fromCharCode(...bytes.subarray(dataStart, nullPos));
                 textContent = String.fromCharCode(...bytes.subarray(nullPos + 1, dataEnd));
                 if (!STANDARD_KEYWORDS.has(keyword) && keyword.length > 0) {
-                  f.externalRefs.push({
+                  pushIOC(f, {
                     type: IOC.PATTERN,
                     url: `Non-standard PNG tEXt keyword: "${keyword}" — may hide custom data`,
-                    severity: 'info'
-                  });
+                    severity: 'info',
+                  bucket: 'externalRefs' });
                 }
               } else if (tName === 'iTXt') {
                 // iTXt: keyword\0 compressionFlag(1) compressionMethod(1) langTag\0 translatedKeyword\0 text
@@ -255,11 +255,11 @@ class ImageRenderer {
                   textContent = String.fromCharCode(...bytes.subarray(textStart, dataEnd));
                 }
                 if (!STANDARD_KEYWORDS.has(keyword) && keyword.length > 0) {
-                  f.externalRefs.push({
+                  pushIOC(f, {
                     type: IOC.PATTERN,
                     url: `Non-standard PNG iTXt keyword: "${keyword}" — may hide custom data`,
-                    severity: 'info'
-                  });
+                    severity: 'info',
+                  bucket: 'externalRefs' });
                 }
               } else if (tName === 'zTXt') {
                 // zTXt: keyword\0 compressionMethod(1) compressedText
@@ -267,11 +267,11 @@ class ImageRenderer {
                 while (nullPos < dataEnd && bytes[nullPos] !== 0) nullPos++;
                 const keyword = String.fromCharCode(...bytes.subarray(dataStart, nullPos));
                 if (!STANDARD_KEYWORDS.has(keyword) && keyword.length > 0) {
-                  f.externalRefs.push({
+                  pushIOC(f, {
                     type: IOC.PATTERN,
                     url: `Non-standard PNG zTXt keyword: "${keyword}" — may hide custom data`,
-                    severity: 'info'
-                  });
+                    severity: 'info',
+                  bucket: 'externalRefs' });
                 }
                 // Try decompressing zTXt content
                 const compData = bytes.subarray(nullPos + 2, dataEnd);
@@ -285,27 +285,27 @@ class ImageRenderer {
               // Scan text content for payloads
               if (textContent.length > 50) {
                 if (/^[A-Za-z0-9+/=]{100,}$/.test(textContent) || /[A-Za-z0-9+/=]{100,}/.test(textContent)) {
-                  f.externalRefs.push({
+                  pushIOC(f, {
                     type: IOC.PATTERN,
                     url: `PNG ${tName} chunk contains Base64 blob (${textContent.length} chars) — possible encoded payload`,
-                    severity: 'high'
-                  });
+                    severity: 'high',
+                  bucket: 'externalRefs' });
                   escalateRisk(f, 'high');
                 }
                 if (/TVqQ|TVpQ|TVoA|TVnA|\bMZ\b/.test(textContent)) {
-                  f.externalRefs.push({
+                  pushIOC(f, {
                     type: IOC.PATTERN,
                     url: `PNG ${tName} chunk contains PE magic signature — hidden executable payload`,
-                    severity: 'high'
-                  });
+                    severity: 'high',
+                  bucket: 'externalRefs' });
                   escalateRisk(f, 'high');
                 }
                 if (/powershell|cmd\s*\/c|<script|<\?php|eval\s*\(/i.test(textContent)) {
-                  f.externalRefs.push({
+                  pushIOC(f, {
                     type: IOC.PATTERN,
                     url: `PNG ${tName} chunk contains script payload pattern`,
-                    severity: 'high'
-                  });
+                    severity: 'high',
+                  bucket: 'externalRefs' });
                   escalateRisk(f, 'high');
                 }
               }
@@ -327,11 +327,11 @@ class ImageRenderer {
       if (declaredSize > 0 && declaredSize < bytes.length) {
         const extra = bytes.length - declaredSize;
         if (extra > 16) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.PATTERN,
             url: `${this._fmtBytes(extra)} of data appended past declared BMP size (${this._fmtBytes(declaredSize)}) — possible embedded payload`,
-            severity: 'medium'
-          });
+            severity: 'medium',
+          bucket: 'externalRefs' });
           if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       }
@@ -340,11 +340,11 @@ class ImageRenderer {
     // Check for embedded PE header inside image
     for (let i = 16; i < bytes.length - 4; i++) {
       if (bytes[i] === 0x4D && bytes[i + 1] === 0x5A && bytes[i + 2] === 0x90 && bytes[i + 3] === 0x00) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `Embedded PE (MZ) header found at offset ${i} inside image — hidden executable`,
-          severity: 'high'
-        });
+          severity: 'high',
+        bucket: 'externalRefs' });
         escalateRisk(f, 'high');
         break;
       }
@@ -353,11 +353,11 @@ class ImageRenderer {
     // Check for embedded ZIP inside image (polyglot)
     for (let i = 16; i < bytes.length - 4; i++) {
       if (bytes[i] === 0x50 && bytes[i + 1] === 0x4B && bytes[i + 2] === 0x03 && bytes[i + 3] === 0x04) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `Embedded ZIP archive found at offset ${i} inside image — polyglot file`,
-          severity: 'medium'
-        });
+          severity: 'medium',
+        bucket: 'externalRefs' });
         if (f.risk === 'low') escalateRisk(f, 'medium');
         break;
       }
@@ -661,29 +661,29 @@ class ImageRenderer {
       if (str.length < 20) continue;
       // Base64 blob check
       if (/^[A-Za-z0-9+/=]{100,}$/.test(str) || /[A-Za-z0-9+/=]{100,}/.test(str)) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `EXIF ${field} contains Base64 blob (${str.length} chars) — possible encoded payload`,
-          severity: 'high'
-        });
+          severity: 'high',
+        bucket: 'externalRefs' });
         if (f.risk !== 'high') escalateRisk(f, 'high');
       }
       // PE magic in text
       if (/TVqQ|TVpQ|TVoA|TVnA|\bMZ\b/.test(str)) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `EXIF ${field} contains PE magic signature — hidden executable payload`,
-          severity: 'high'
-        });
+          severity: 'high',
+        bucket: 'externalRefs' });
         escalateRisk(f, 'high');
       }
       // Script patterns
       if (/powershell|cmd\s*\/c|<script|<\?php|<\?=|eval\s*\(|document\.write/i.test(str)) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `EXIF ${field} contains script payload pattern`,
-          severity: 'high'
-        });
+          severity: 'high',
+        bucket: 'externalRefs' });
         escalateRisk(f, 'high');
       }
     }

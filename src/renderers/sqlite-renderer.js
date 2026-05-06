@@ -53,16 +53,16 @@ class SqliteRenderer {
           }
           f.metadata.urlCount = seen.size;
           if (seen.size > URL_CAP) {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.INFO,
               url: `URL extraction truncated at ${URL_CAP} — history contains ${seen.size} distinct URLs`,
               severity: 'info',
-            });
+            bucket: 'externalRefs' });
           }
         }
       }
     } catch (e) {
-      f.externalRefs.push({ type: IOC.INFO, url: 'SQLite parse warning: ' + e.message, severity: 'info' });
+      pushIOC(f, { type: IOC.INFO, url: 'SQLite parse warning: ' + e.message, severity: 'info' , bucket: 'externalRefs' });
     }
     return f;
   }

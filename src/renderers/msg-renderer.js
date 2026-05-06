@@ -260,8 +260,8 @@ class MsgRenderer {
       const msg = this._extract(cfb);
       f.metadata = { title: msg.subject, creator: msg.from, created: msg.date };
       for (const a of msg.attachments) {
-        if (/\.(exe|bat|cmd|vbs|js|ps1|hta|scr|msi|dll|com|jar)$/i.test(a.name)) { escalateRisk(f, 'high'); f.externalRefs.push({ type: IOC.ATTACHMENT, url: a.name, severity: 'high' }); }
-        else if (/\.(doc[mx]?|xls[mx]?|ppt[mx]?|doc|xls|ppt)$/i.test(a.name)) { if (f.risk === 'low') escalateRisk(f, 'medium'); f.externalRefs.push({ type: IOC.ATTACHMENT, url: a.name, severity: 'medium' }); }
+        if (/\.(exe|bat|cmd|vbs|js|ps1|hta|scr|msi|dll|com|jar)$/i.test(a.name)) { escalateRisk(f, 'high'); pushIOC(f, { type: IOC.ATTACHMENT, url: a.name, severity: 'high' , bucket: 'externalRefs' }); }
+        else if (/\.(doc[mx]?|xls[mx]?|ppt[mx]?|doc|xls|ppt)$/i.test(a.name)) { if (f.risk === 'low') escalateRisk(f, 'medium'); pushIOC(f, { type: IOC.ATTACHMENT, url: a.name, severity: 'medium' , bucket: 'externalRefs' }); }
       }
       if (msg.bodyHtml) {
         // Extract body URLs with a hard cap; emit _highlightText so the
@@ -288,13 +288,13 @@ class MsgRenderer {
 
           if (unwrapped) {
             // Wrapper (info) — the URL visible in the HTML body.
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.URL,
               url: u,
               severity: 'info',
               note: `${unwrapped.provider} wrapper`,
               _highlightText: u,
-            });
+            bucket: 'externalRefs' });
             // Decoded inner URL (high) — the real destination. Only
             // count the unwrap as material (`sawUnwrap`) when we actually
             // emit the inner IOC: an empty-`u=` Proofpoint wrapper would
@@ -304,48 +304,48 @@ class MsgRenderer {
             if (unwrapped.originalUrl && !seenUrls.has(innerKey)) {
               seenUrls.add(innerKey);
               sawUnwrap = true;
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.URL,
                 url: unwrapped.originalUrl,
                 severity: 'high',
                 note: `Extracted from ${unwrapped.provider}`,
                 _highlightText: u,
-              });
+              bucket: 'externalRefs' });
             }
             // Microsoft SafeLinks embeds the recipient email in `data=`.
             for (const em of (unwrapped.emails || [])) {
               const ek = em.toLowerCase();
               if (seenEmails.has(ek)) continue;
               seenEmails.add(ek);
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.EMAIL,
                 url: em,
                 severity: 'medium',
                 note: `Extracted from ${unwrapped.provider}`,
                 _highlightText: u,
-              });
+              bucket: 'externalRefs' });
             }
           } else {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.URL,
               url: u,
               severity: 'info',
               _highlightText: u,
-            });
+            bucket: 'externalRefs' });
           }
         }
         if (allBodyUrls.length > BODY_URL_CAP) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.INFO,
             url: `URL extraction truncated at ${BODY_URL_CAP} — body contains ${allBodyUrls.length} total URLs`,
             severity: 'info',
-          });
+          bucket: 'externalRefs' });
         }
         // A decoded SafeLink in the body is a phishing-worthy signal on
         // its own — escalate risk past the baseline.
         if (sawUnwrap && f.risk === 'low') escalateRisk(f, 'medium');
         if (/width=.{0,5}[01].{0,5}height=.{0,5}[01]/i.test(msg.bodyHtml))
-          f.externalRefs.push({ type: IOC.PATTERN, url: '1x1 or 0x0 image detected', severity: 'medium' });
+          pushIOC(f, { type: IOC.PATTERN, url: '1x1 or 0x0 image detected', severity: 'medium' , bucket: 'externalRefs' });
       }
 
       // Display-name / brand mismatch on the From header (M1.12). MSG
@@ -354,14 +354,14 @@ class MsgRenderer {
       // handles both shapes.
       if (msg.from && typeof EmailSpoof !== 'undefined') {
         for (const d of EmailSpoof.analyseFromHeader(msg.from)) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.PATTERN,
             url: d.reason,
             severity: d.severity,
             note: d.kind === 'brand-mismatch'
               ? 'Display-name brand keyword does not match sender domain — phishing pretext'
               : 'Display-name embeds a different domain than the sender',
-          });
+          bucket: 'externalRefs' });
           if (d.severity === 'high' && f.risk !== 'high') escalateRisk(f, 'high');
           else if (d.severity === 'medium' && f.risk === 'low') escalateRisk(f, 'medium');
         }

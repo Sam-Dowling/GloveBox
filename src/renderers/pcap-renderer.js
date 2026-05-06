@@ -197,11 +197,11 @@ class PcapRenderer {
 
     // Format banner — always emit so the sidebar shows the capture's
     // identity even on a pristine PCAP with zero IOCs.
-    f.externalRefs.push({
+    pushIOC(f, {
       type: IOC.PATTERN,
       url: `${parsed.kind === 'pcapng' ? 'PCAPNG' : 'libpcap'} capture — ${parsed.formatLabel || 'unknown'}`,
       severity: 'info',
-    });
+    bucket: 'externalRefs' });
 
     if (parsed.error) {
       pushIOC(f, {
@@ -265,22 +265,22 @@ class PcapRenderer {
       // exposure. T1040 (network sniffing) covers the analyst-side case;
       // the operator-side risk is unencrypted credential transit.
       escalateRisk(f, 'medium');
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${parsed.httpHosts.length} plaintext HTTP host${parsed.httpHosts.length === 1 ? '' : 's'} observed — credential / cookie exposure surface`,
         severity: 'medium',
-      });
+      bucket: 'externalRefs' });
       f.capabilities.push({ id: 'T1040', source: 'pcap-http-plaintext' });
     }
 
     // ── HTTP Basic auth → high (T1040 plaintext credentials) ───────────
     if (parsed.httpBasicAuthCount > 0) {
       escalateRisk(f, 'high');
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `Authorization: Basic header observed in ${parsed.httpBasicAuthCount} request${parsed.httpBasicAuthCount === 1 ? '' : 's'} — plaintext credentials over HTTP (T1040)`,
         severity: 'high',
-      });
+      bucket: 'externalRefs' });
     }
 
     // ── TLS SNIs → DOMAIN IOCs ─────────────────────────────────────────
@@ -296,19 +296,19 @@ class PcapRenderer {
     // ── Unencrypted-FTP / Telnet command-and-control surfaces ──────────
     if (parsed.telnetSeen) {
       escalateRisk(f, 'medium');
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: 'Telnet (TCP/23) traffic observed — unencrypted shell over network (T1021.001 / T1040)',
         severity: 'medium',
-      });
+      bucket: 'externalRefs' });
     }
     if (parsed.ftpSeen) {
       escalateRisk(f, 'medium');
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: 'FTP control-channel (TCP/21) traffic observed — plaintext credentials risk (T1040)',
         severity: 'medium',
-      });
+      bucket: 'externalRefs' });
     }
 
     // Stash full parsed-capture shape on the findings object so

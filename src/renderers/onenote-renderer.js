@@ -188,21 +188,21 @@ class OneNoteRenderer {
     };
 
     // OneNote files are inherently suspicious in email context
-    f.externalRefs.push({
+    pushIOC(f, {
       type: IOC.PATTERN,
       url: 'OneNote file — commonly used as phishing vector since macro-blocking',
-      severity: 'medium'
-    });
+      severity: 'medium',
+    bucket: 'externalRefs' });
 
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const objects = this._findEmbeddedObjects(bytes);
 
     if (objects.length) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${objects.length} embedded file object(s) in OneNote`,
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
 
       f.metadata.embeddedObjectCount = objects.length;
@@ -235,12 +235,12 @@ class OneNoteRenderer {
         const note = obj.sniffedType
           ? `FileDataStoreObject blob — sniffed as ${obj.sniffedType} (${this._fmtBytes(obj.size || 0)})`
           : `FileDataStoreObject blob (${this._fmtBytes(obj.size || 0)})`;
-        f.externalRefs.push({
+        pushIOC(f, {
           type: obj.name ? IOC.FILE_PATH : IOC.PATTERN,
           url: label,
           severity: sev,
           note,
-        });
+        bucket: 'externalRefs' });
 
         // ── QR-decode embedded image blobs ─────────────────────────────
         const mime = sniffToMime(obj.sniffedType);
@@ -286,19 +286,19 @@ class OneNoteRenderer {
     for (const m of fullText.matchAll(/https?:\/\/[^\s"'<>]{6,}/g)) {
       if (urlCount >= URL_CAP) { urlTruncated = true; break; }
       urlCount++;
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.URL,
         url: m[0],
         severity: 'medium',
         _highlightText: m[0],
-      });
+      bucket: 'externalRefs' });
     }
     if (urlTruncated) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.INFO,
         url: `URL extraction truncated at ${URL_CAP} — file contains additional URLs not listed`,
         severity: 'info',
-      });
+      bucket: 'externalRefs' });
     }
 
 

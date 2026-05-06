@@ -177,7 +177,7 @@ class UrlShortcutRenderer {
           _highlightText: parsed.url
         };
         if (loc) { ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-        f.externalRefs.push(ref);
+        pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
         if (r.sev === 'high') escalateRisk(f, 'high');
         else if (r.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
       }
@@ -190,7 +190,7 @@ class UrlShortcutRenderer {
         _highlightText: parsed.url
       };
       if (loc) { urlRef._sourceOffset = loc.offset; urlRef._sourceLength = loc.length; }
-      f.externalRefs.push(urlRef);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, urlRef));
     }
 
     if (parsed.iconFile) {
@@ -202,7 +202,7 @@ class UrlShortcutRenderer {
         _highlightText: parsed.iconFile
       };
       if (loc) { ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-      f.externalRefs.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
     }
 
     // Pattern detection is handled entirely by YARA (auto-scan on file load)

@@ -191,7 +191,7 @@ class LnkRenderer {
         seenVal.add(key);
         const ref = { type, url: s, severity: sev || 'info' };
         if (note) ref.note = note;
-        f.externalRefs.push(ref);
+        pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
       };
       addField(info.localBasePath || info.netSharePath, IOC.FILE_PATH, 'info', 'Shortcut target');
       addField(info.relativePath, IOC.FILE_PATH, 'info', 'Relative path');
@@ -212,18 +212,18 @@ class LnkRenderer {
         if (info.tracker.machineId) {
           const host = info.tracker.machineId.trim();
           if (host) {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.HOSTNAME, url: host, severity: 'info',
-              note: 'TrackerDataBlock machine ID'
-            });
+              note: 'TrackerDataBlock machine ID',
+            bucket: 'externalRefs' });
           }
         }
         const mac = info.tracker.mac || info.tracker.birthMac;
         if (mac) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.MAC, url: mac, severity: 'info',
-            note: 'TrackerDataBlock MAC address'
-          });
+            note: 'TrackerDataBlock MAC address',
+          bucket: 'externalRefs' });
         }
       }
 
@@ -241,7 +241,7 @@ class LnkRenderer {
       const dangers = this._findDangers(info);
 
       for (const d of dangers) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: d.label + ': ' + d.detail, severity: d.sev });
+        pushIOC(f, { type: IOC.PATTERN, url: d.label + ': ' + d.detail, severity: d.sev , bucket: 'externalRefs' });
         if (d.sev === 'high') escalateRisk(f, 'high');
         else if (d.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
       }
@@ -260,7 +260,7 @@ class LnkRenderer {
       for (const m of allPaths.matchAll(/\\\\[^\s\\]+\\[^\s]+/g)) {
         if (uncSeen.has(m[0])) continue;
         uncSeen.add(m[0]);
-        f.externalRefs.push({ type: IOC.UNC_PATH, url: m[0], severity: 'medium' });
+        pushIOC(f, { type: IOC.UNC_PATH, url: m[0], severity: 'medium' , bucket: 'externalRefs' });
         if (f.risk === 'low') escalateRisk(f, 'medium');
       }
 
@@ -268,18 +268,18 @@ class LnkRenderer {
       for (const src of [info.iconLocation, info.iconEnvPath]) {
         if (!src) continue;
         if (/^\\\\/.test(src)) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.UNC_PATH, url: src, severity: 'high',
-            note: 'Icon fetched from UNC (credential-theft/SMB beacon)'
-          });
+            note: 'Icon fetched from UNC (credential-theft/SMB beacon)',
+          bucket: 'externalRefs' });
           escalateRisk(f, 'high');
         } else if (/^https?:\/\//i.test(src)) {
           const u = sanitizeUrl(src);
           if (u) {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.URL, url: u, severity: 'high',
-              note: 'Icon fetched from remote URL'
-            });
+              note: 'Icon fetched from remote URL',
+            bucket: 'externalRefs' });
             escalateRisk(f, 'high');
           }
         }
@@ -292,7 +292,7 @@ class LnkRenderer {
           if (/^https?:\/\//i.test(it.label)) {
             const u = sanitizeUrl(it.label);
             if (u) {
-              f.externalRefs.push({ type: IOC.URL, url: u, severity: 'medium' });
+              pushIOC(f, { type: IOC.URL, url: u, severity: 'medium' , bucket: 'externalRefs' });
               if (f.risk === 'low') escalateRisk(f, 'medium');
             }
           }
@@ -301,12 +301,12 @@ class LnkRenderer {
 
       // HotKey assignment on a shortcut is unusual outside the Start Menu
       if (info.hotKey) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: 'HotKey assigned: ' + info.hotKey,
           severity: 'low',
-          note: 'Shortcut has a keyboard HotKey (unusual for droppers)'
-        });
+          note: 'Shortcut has a keyboard HotKey (unusual for droppers)',
+        bucket: 'externalRefs' });
       }
 
     } catch (_) { /* parse failed — non-fatal */ }

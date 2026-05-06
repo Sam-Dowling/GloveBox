@@ -142,11 +142,11 @@ class HtaRenderer {
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
     const normalizedText = lfNormalize(text);
 
-    f.externalRefs.push({
+    pushIOC(f, {
       type: IOC.INFO,
       url: 'HTML Application (HTA) — runs with full system access via mshta.exe',
-      severity: 'high'
-    });
+      severity: 'high',
+    bucket: 'externalRefs' });
 
     // Script block count (structural check) — pin to the first <script tag
     // so clicking the finding scrolls the Source pane to the script region.
@@ -163,20 +163,20 @@ class HtaRenderer {
         ref._sourceOffset = firstScriptIdx;
         ref._sourceLength = '<script'.length;
       }
-      f.externalRefs.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
     }
 
     // HTA:APPLICATION tag — security-relevant attributes worth jumping to.
     const htaTagMatch = normalizedText.match(/<HTA:APPLICATION\b/i);
     if (htaTagMatch) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: 'HTA:APPLICATION declaration — HTA metadata',
         severity: 'info',
         _highlightText: htaTagMatch[0],
         _sourceOffset: htaTagMatch.index,
-        _sourceLength: htaTagMatch[0].length
-      });
+        _sourceLength: htaTagMatch[0].length,
+      bucket: 'externalRefs' });
     }
 
     // Pattern detection is handled entirely by YARA (auto-scan on file load).

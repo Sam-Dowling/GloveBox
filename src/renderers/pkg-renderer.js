@@ -154,11 +154,11 @@ class PkgRenderer {
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
 
     // PKG baseline — installer executes with root on the target Mac
-    f.externalRefs.push({
+    pushIOC(f, {
       type: IOC.PATTERN,
       url: 'macOS Installer Package — scripts execute with root privileges during install',
-      severity: 'medium'
-    });
+      severity: 'medium',
+    bucket: 'externalRefs' });
 
     let pkg;
     try { pkg = await this._parse(bytes); } catch (e) { return f; }
@@ -179,44 +179,44 @@ class PkgRenderer {
     const legacy  = scripts.filter(s => LEGACY_NAMES.has(s.name));
     const modern  = scripts.filter(s => !LEGACY_NAMES.has(s.name));
     if (modern.length) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${modern.length} install script(s): ${modern.map(s => s.path.split('/').pop()).join(', ')}`,
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
     }
     if (legacy.length) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${legacy.length} legacy install script(s) (pre-PackageMaker delivery path): ${legacy.map(s => s.name).join(', ')}`,
-        severity: 'medium'
-      });
+        severity: 'medium',
+      bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
     for (const s of scripts) {
-      f.externalRefs.push({ type: IOC.FILE_PATH, url: s.path, severity: 'high' });
+      pushIOC(f, { type: IOC.FILE_PATH, url: s.path, severity: 'high' , bucket: 'externalRefs' });
     }
 
     // Unsigned installer is a real (if mundane) red flag. Lift baseline
     // risk so the sidebar surfaces "medium" even when no scripts ship —
     // an unsigned installer is still a publisher-verification failure.
     if (!pkg.signature) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: 'Installer package is unsigned — cannot verify publisher',
-        severity: 'medium'
-      });
+        severity: 'medium',
+      bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // Root auth + scripts = macOS malware's signature combo
     if (pkg.meta.auth && /root/i.test(pkg.meta.auth) && scripts.length) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: 'Scripts run as root (auth="Root") — elevated malware execution path',
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
     }
 
@@ -225,14 +225,14 @@ class PkgRenderer {
     const launchPaths = pkg.files.filter(x => !x.dir &&
       /\/(LaunchDaemons|LaunchAgents)\/[^/]+\.plist$/i.test(x.path));
     if (launchPaths.length) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${launchPaths.length} LaunchDaemon/LaunchAgent plist(s) installed — macOS persistence mechanism`,
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
       for (const lp of launchPaths.slice(0, 20)) {
-        f.externalRefs.push({ type: IOC.FILE_PATH, url: lp.path, severity: 'high' });
+        pushIOC(f, { type: IOC.FILE_PATH, url: lp.path, severity: 'high' , bucket: 'externalRefs' });
       }
     }
 
@@ -245,11 +245,11 @@ class PkgRenderer {
         const body = await this._readScriptBody(bytes, pkg, s);
         if (!body) continue;
         if (/\b(curl|wget)\b[^\n|]*\|\s*(ba)?sh\b/i.test(body)) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.PATTERN,
             url: `Install script "${s.name}" uses curl|bash / wget|sh download-and-execute`,
-            severity: 'high'
-          });
+            severity: 'high',
+          bucket: 'externalRefs' });
           escalateRisk(f, 'high');
         }
         const urls = body.match(/https?:\/\/[^\s"'<>`]+/g) || [];
@@ -257,7 +257,7 @@ class PkgRenderer {
           // Hostname-anchored whitelist — see _isAppleHost for why a plain
           // substring test on the URL is unsafe (evil-apple.com.bad.example).
           if (this._isAppleHost(u)) continue;
-          f.externalRefs.push({ type: IOC.URL, url: u, severity: 'medium' });
+          pushIOC(f, { type: IOC.URL, url: u, severity: 'medium' , bucket: 'externalRefs' });
           if (f.externalRefs.length > 200) break;
         }
       } catch (e) { /* keep going — one failed script shouldn't kill the analysis */ }
@@ -275,7 +275,7 @@ class PkgRenderer {
       const seen = new Set();
       for (const u of urls) {
         if (seen.has(u)) continue; seen.add(u);
-        f.externalRefs.push({ type: IOC.URL, url: u, severity: 'medium' });
+        pushIOC(f, { type: IOC.URL, url: u, severity: 'medium' , bucket: 'externalRefs' });
         if (f.externalRefs.length > 200) break;
       }
     }

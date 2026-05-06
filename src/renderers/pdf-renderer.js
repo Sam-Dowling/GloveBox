@@ -127,7 +127,7 @@ class PdfRenderer {
       const uri = this._unescapePdfString(m[1]);
       if (uri && !uriSeen.has(uri)) {
         uriSeen.add(uri);
-        f.externalRefs.push({ type: IOC.URL, url: uri, severity: 'medium', note: '/URI action' });
+        pushIOC(f, { type: IOC.URL, url: uri, severity: 'medium', note: '/URI action' , bucket: 'externalRefs' });
         if (f.risk === 'low') escalateRisk(f, 'medium');
       }
     }
@@ -138,7 +138,7 @@ class PdfRenderer {
           .replace(/\u0000/g, '').trim();
         if (decoded && !uriSeen.has(decoded)) {
           uriSeen.add(decoded);
-          f.externalRefs.push({ type: IOC.URL, url: decoded, severity: 'medium', note: '/URI action' });
+          pushIOC(f, { type: IOC.URL, url: decoded, severity: 'medium', note: '/URI action' , bucket: 'externalRefs' });
           if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       } catch (_) { /* skip malformed */ }
@@ -148,10 +148,10 @@ class PdfRenderer {
     for (const m of raw.matchAll(/\/Launch\b[^>]{0,400}?\/F\s*\(((?:\\[\s\S]|[^\\)])*)\)/g)) {
       const target = this._unescapePdfString(m[1]);
       if (target) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.COMMAND_LINE, url: target, severity: 'high',
-          note: '/Launch action target (executes local file)'
-        });
+          note: '/Launch action target (executes local file)',
+        bucket: 'externalRefs' });
         escalateRisk(f, 'high');
       }
     }
@@ -159,10 +159,10 @@ class PdfRenderer {
     for (const m of raw.matchAll(/\/Win\b[^>]{0,400}?\/F\s*\(((?:\\[\s\S]|[^\\)])*)\)/g)) {
       const target = this._unescapePdfString(m[1]);
       if (target) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.COMMAND_LINE, url: target, severity: 'high',
-          note: '/Launch /Win target'
-        });
+          note: '/Launch /Win target',
+        bucket: 'externalRefs' });
         escalateRisk(f, 'high');
       }
     }
@@ -172,11 +172,11 @@ class PdfRenderer {
       const target = this._unescapePdfString(m[1]);
       if (target) {
         const isUrl = /^(https?|ftp):\/\//i.test(target);
-        f.externalRefs.push({
+        pushIOC(f, {
           type: isUrl ? IOC.URL : IOC.FILE_PATH,
           url: target, severity: 'high',
-          note: '/GoToR remote jump'
-        });
+          note: '/GoToR remote jump',
+        bucket: 'externalRefs' });
         escalateRisk(f, 'high');
       }
     }
@@ -184,28 +184,28 @@ class PdfRenderer {
     // ── /GoToE (embedded-file jump) ────────────────────────────────────────
     const goToECount = (raw.match(/\/S\s*\/GoToE\b/g) || []).length;
     if (goToECount) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN, url: `${goToECount} /GoToE action(s)`,
-        severity: 'high', note: '/GoToE jumps into an embedded PDF (malware staging)'
-      });
+        severity: 'high', note: '/GoToE jumps into an embedded PDF (malware staging)',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
     }
 
     // ── /SubmitForm and /ImportData ───────────────────────────────────────
     const submitCount = (raw.match(/\/S\s*\/SubmitForm\b/g) || []).length;
     if (submitCount) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN, url: `${submitCount} /SubmitForm action(s)`,
-        severity: 'medium', note: 'Form submission exfil vector'
-      });
+        severity: 'medium', note: 'Form submission exfil vector',
+      bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
     const importCount = (raw.match(/\/S\s*\/ImportData\b/g) || []).length;
     if (importCount) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN, url: `${importCount} /ImportData action(s)`,
-        severity: 'medium', note: 'Imports FDF/XFDF at open'
-      });
+        severity: 'medium', note: 'Imports FDF/XFDF at open',
+      bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
@@ -220,27 +220,27 @@ class PdfRenderer {
     const jsNameCount = (raw.match(/\/JavaScript\b/g) || []).length - jsActionCount;
     const jsCount = jsActionCount + Math.max(0, jsNameCount);
     if (jsCount) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN, url: `${jsCount} /JS or /JavaScript object(s)`,
-        severity: 'high', note: 'PDF JavaScript — used by exploits and phishing'
-      });
+        severity: 'high', note: 'PDF JavaScript — used by exploits and phishing',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
     }
 
     // ── /OpenAction / /AA (additional actions) presence ───────────────────
     if (/\/OpenAction\b/.test(raw)) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN, url: '/OpenAction present',
-        severity: 'medium', note: 'Action runs automatically on open'
-      });
+        severity: 'medium', note: 'Action runs automatically on open',
+      bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
     const aaCount = (raw.match(/\/AA\b/g) || []).length;
     if (aaCount) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN, url: `/AA additional-actions (${aaCount})`,
-        severity: 'medium', note: 'Trigger on page/field events'
-      });
+        severity: 'medium', note: 'Trigger on page/field events',
+      bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
@@ -253,12 +253,12 @@ class PdfRenderer {
       for (const e of ef) {
         const isDanger = this._isDangerousExt(e.name) ||
           /application\/x-(ms-)?(dos|win)?exec|application\/x-msdownload|application\/octet-stream/i.test(e.mime || '');
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.FILE_PATH,
           url: e.name || '(unnamed embedded file)',
           severity: isDanger ? 'high' : 'medium',
-          note: `/EmbeddedFile — ${e.mime || 'unknown MIME'}${e.size ? ', ' + this._fmtBytes(e.size) : ''}`
-        });
+          note: `/EmbeddedFile — ${e.mime || 'unknown MIME'}${e.size ? ', ' + this._fmtBytes(e.size) : ''}`,
+        bucket: 'externalRefs' });
         if (isDanger) escalateRisk(f, 'high');
         else if (f.risk === 'low') escalateRisk(f, 'medium');
       }
@@ -269,11 +269,11 @@ class PdfRenderer {
     if (xfa.present) {
       const note = `XFA form${xfa.dynamic ? ' (dynamic)' : ''}` +
         (xfa.bodySize ? ` — ${this._fmtBytes(xfa.bodySize)}` : '');
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN, url: note,
         severity: xfa.dynamic ? 'high' : 'medium',
-        note: 'XFA has been used for CVE-2018-4990-style exploitation'
-      });
+        note: 'XFA has been used for CVE-2018-4990-style exploitation',
+      bucket: 'externalRefs' });
       if (xfa.dynamic) escalateRisk(f, 'high');
       else if (f.risk === 'low') escalateRisk(f, 'medium');
       f.metadata.xfa = xfa.dynamic ? 'dynamic' : 'static';
@@ -284,14 +284,14 @@ class PdfRenderer {
       for (const url of xfa.urls) {
         if (!uriSeen.has(url)) {
           uriSeen.add(url);
-          f.externalRefs.push({ type: IOC.URL, url, severity: 'medium', note: 'XFA form URL' });
+          pushIOC(f, { type: IOC.URL, url, severity: 'medium', note: 'XFA form URL' , bucket: 'externalRefs' });
           if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       }
       for (const note2 of xfa.scriptHints) {
-        f.externalRefs.push({
-          type: IOC.PATTERN, url: note2, severity: 'high', note: 'XFA suspicious script'
-        });
+        pushIOC(f, {
+          type: IOC.PATTERN, url: note2, severity: 'high', note: 'XFA suspicious script',
+        bucket: 'externalRefs' });
         escalateRisk(f, 'high');
       }
     }
@@ -299,44 +299,44 @@ class PdfRenderer {
     // ── Encryption ────────────────────────────────────────────────────────
     if (/\/Encrypt\b/.test(raw)) {
       f.metadata.encrypted = true;
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN, url: 'Encrypted PDF',
-        severity: 'medium', note: 'Content may be obfuscated from static scanners'
-      });
+        severity: 'medium', note: 'Content may be obfuscated from static scanners',
+      bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // ── T2.12: JBIG2 / CCITTFax filter chain flagging ──────────────────
     const jbig2Count = (raw.match(/\/JBIG2Decode\b/g) || []).length;
     if (jbig2Count) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${jbig2Count} /JBIG2Decode filter(s) — historically associated with exploit chains (FORCEDENTRY class)`,
         severity: 'medium',
-        note: 'CVE-2021-30860 and related pdfium vulnerabilities use JBIG2'
-      });
+        note: 'CVE-2021-30860 and related pdfium vulnerabilities use JBIG2',
+      bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
     const ccittCount = (raw.match(/\/CCITTFaxDecode\b/g) || []).length;
     if (ccittCount) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${ccittCount} /CCITTFaxDecode filter(s) — historically associated with exploit chains`,
         severity: 'medium',
-        note: 'CCITTFax combined with other filters has been used in PDF exploits'
-      });
+        note: 'CCITTFax combined with other filters has been used in PDF exploits',
+      bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
     // ── T3.10: Object stream density abuse ──────────────────────────────
     const objStmCount = (raw.match(/\/ObjStm\b/g) || []).length;
     if (objStmCount > 10) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `High object-stream density (${objStmCount} /ObjStm entries) — potential anti-analysis obfuscation`,
         severity: 'medium',
-        note: 'Object streams compress multiple objects into single streams, making static analysis harder'
-      });
+        note: 'Object streams compress multiple objects into single streams, making static analysis harder',
+      bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
@@ -503,12 +503,12 @@ class PdfRenderer {
               r.type === IOC.FILE_PATH && r.url === filename);
             if (!alreadyFlagged) {
               const isDanger = this._isDangerousExt(filename);
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.FILE_PATH,
                 url: filename,
                 severity: isDanger ? 'high' : 'medium',
-                note: `/EmbeddedFile (via pdf.js)${entry.size ? ' — ' + this._fmtBytes(entry.size) : ''}`
-              });
+                note: `/EmbeddedFile (via pdf.js)${entry.size ? ' — ' + this._fmtBytes(entry.size) : ''}`,
+              bucket: 'externalRefs' });
               if (isDanger) escalateRisk(f, 'high');
               else if (f.risk === 'low') escalateRisk(f, 'medium');
             }
@@ -553,20 +553,20 @@ class PdfRenderer {
               const val = a[field];
               if (val && !uriSeen.has(val)) {
                 uriSeen.add(val);
-                f.externalRefs.push({
+                pushIOC(f, {
                   type: IOC.URL, url: val, severity: 'medium',
-                  note: `Annotation /URI (page ${p})`
-                });
+                  note: `Annotation /URI (page ${p})`,
+                bucket: 'externalRefs' });
                 if (f.risk === 'low') escalateRisk(f, 'medium');
               }
             }
             // Annotation actions (pdf.js exposes .action for Launch/Named etc.)
             if (a.action && typeof a.action === 'string') {
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.PATTERN,
                 url: `Annotation action: ${a.action} (page ${p})`,
                 severity: 'low',
-              });
+              bucket: 'externalRefs' });
             }
             // ─── Dangerous annotation subtypes ──────────────────────────
             // pdf.js exposes `.subtype` on every annotation; the PDF spec
@@ -888,13 +888,13 @@ class PdfRenderer {
       const preview = s.source.length > 120 ?
         s.source.slice(0, 117).replace(/\s+/g, ' ') + '…' :
         s.source.replace(/\s+/g, ' ');
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${s.trigger}: ${preview}`,
         severity: 'high',
         note: `Extracted JavaScript (${this._fmtBytes(s.size)})` +
           (s.suspicious.length ? ` — ${s.suspicious.join(', ')}` : ''),
-      });
+      bucket: 'externalRefs' });
     }
   }
 

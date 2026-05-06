@@ -137,24 +137,24 @@ class RegRenderer {
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const text = this._decodeText(bytes);
 
-    f.externalRefs.push({
+    pushIOC(f, {
       type: IOC.INFO,
       url: 'Windows Registry File (.reg) — imports registry changes when double-clicked or merged',
-      severity: 'high'
-    });
+      severity: 'high',
+    bucket: 'externalRefs' });
 
     const analysis = this._analyze(text);
 
     // Report key/value counts
-    f.externalRefs.push({
+    pushIOC(f, {
       type: IOC.PATTERN,
       url: `${analysis.keys.length} registry key(s), ${analysis.values.length} value(s), ${analysis.deletions.length} deletion(s)`,
-      severity: 'info'
-    });
+      severity: 'info',
+    bucket: 'externalRefs' });
 
     // Report warnings as findings
     for (const w of analysis.warnings) {
-      f.externalRefs.push({ type: IOC.PATTERN, url: w.label, severity: w.sev });
+      pushIOC(f, { type: IOC.PATTERN, url: w.label, severity: w.sev , bucket: 'externalRefs' });
     }
 
     // Emit FILE_PATH / PROCESS / REGISTRY_KEY IOCs from parsed values.
@@ -202,7 +202,7 @@ class RegRenderer {
         if (offset >= 0) length = escaped.length;
       }
       if (offset >= 0) { entry._sourceOffset = offset; entry._sourceLength = length; }
-      f.interestingStrings.push(entry);
+      pushIOC(f, Object.assign({ bucket: 'interestingStrings' }, entry));
     };
 
     // Registry key paths themselves are first-class IOCs

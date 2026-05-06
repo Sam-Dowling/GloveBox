@@ -653,10 +653,11 @@ class PlainTextRenderer {
 
     if (!detected.isText) {
       // For binary files, note that this is an unsupported binary format
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.INFO,
-        url: `Binary file rendered as hex dump (.${ext})`,
-        severity: 'info'
+        value: `Binary file rendered as hex dump (.${ext})`,
+        severity: 'info',
+        bucket: 'externalRefs',
       });
     }
 

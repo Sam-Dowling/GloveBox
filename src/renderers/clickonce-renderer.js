@@ -257,7 +257,7 @@ class ClickOnceRenderer {
       const ref = { type: IOC.PATTERN, url: r.msg, severity: r.sev };
       if (r.highlight) ref._highlightText = r.highlight;
       if (loc) { ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-      f.externalRefs.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
       if (r.sev === 'high') score += 3;
       else if (r.sev === 'medium') score += 1.5;
       else score += 0.5;
@@ -278,7 +278,7 @@ class ClickOnceRenderer {
         severity: /^http:/i.test(u) ? 'medium' : 'info',
       };
       if (loc) { ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-      f.externalRefs.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
     }
 
     // ── Final risk bucket ──────────────────────────────────────────────

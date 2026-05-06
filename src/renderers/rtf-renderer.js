@@ -92,7 +92,7 @@ class RtfRenderer {
     // OLE object detection
     const oleFindings = this._findOleObjects(text);
     for (const o of oleFindings) {
-      f.externalRefs.push({ type: IOC.PATTERN, url: o.label, severity: o.sev });
+      pushIOC(f, { type: IOC.PATTERN, url: o.label, severity: o.sev , bucket: 'externalRefs' });
       if (o.sev === 'high') escalateRisk(f, 'high');
       else if (o.sev === 'medium' && f.risk !== 'high') escalateRisk(f, 'medium');
     }
@@ -111,11 +111,11 @@ class RtfRenderer {
       const cls = m[1].toLowerCase();
       const info = exploitClasses[cls];
       if (info) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `\\objclass "${m[1]}" — ${info.family}`,
-          severity: info.sev
-        });
+          severity: info.sev,
+        bucket: 'externalRefs' });
         if (info.sev === 'critical') escalateRisk(f, 'high');
         else if (f.risk === 'low') escalateRisk(f, 'medium');
       }
@@ -124,31 +124,31 @@ class RtfRenderer {
     // ── T2.9: Nested object depth counting ──────────────────────────────
     const objCount = (text.match(/\{\\object\b/gi) || []).length;
     if (objCount > 2) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `Multiple nested OLE objects detected (${objCount} objects) — possible parser-confusion evasion`,
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
     }
     // Detect RTF-within-RTF (nested {\rtf1)
     const rtfHeads = (text.match(/\{\\rtf1\b/gi) || []).length;
     if (rtfHeads > 1) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `Nested RTF document detected (${rtfHeads} \\rtf1 headers) — RTF-within-RTF evasion technique`,
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       escalateRisk(f, 'high');
     }
 
     // Structural: hex obfuscation analysis
     const hexEscapes = (text.match(/\\'[0-9a-fA-F]{2}/g) || []).length;
     if (hexEscapes > 500) {
-      f.externalRefs.push({ type: IOC.PATTERN, url: `Heavy hex obfuscation — ${hexEscapes} hex-escaped chars`, severity: 'high' });
+      pushIOC(f, { type: IOC.PATTERN, url: `Heavy hex obfuscation — ${hexEscapes} hex-escaped chars`, severity: 'high' , bucket: 'externalRefs' });
       escalateRisk(f, 'high');
     } else if (hexEscapes > 100) {
-      f.externalRefs.push({ type: IOC.PATTERN, url: `Moderate hex encoding — ${hexEscapes} hex-escaped chars`, severity: 'medium' });
+      pushIOC(f, { type: IOC.PATTERN, url: `Moderate hex encoding — ${hexEscapes} hex-escaped chars`, severity: 'medium' , bucket: 'externalRefs' });
       if (f.risk === 'low') escalateRisk(f, 'medium');
     }
 
@@ -158,7 +158,7 @@ class RtfRenderer {
       for (const t of templateMatch) {
         const url = t.replace(/\{\\[*]?\\template\s+/, '').replace(/\}$/, '').trim();
         if (url && /^https?:\/\//i.test(url)) {
-          f.externalRefs.push({ type: IOC.URL, url, severity: 'high' });
+          pushIOC(f, { type: IOC.URL, url, severity: 'high' , bucket: 'externalRefs' });
           escalateRisk(f, 'high');
         }
       }

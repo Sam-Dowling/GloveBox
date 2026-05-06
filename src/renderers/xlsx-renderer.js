@@ -295,7 +295,7 @@ class XlsxRenderer {
           const mashupRefs = await XlsxDataMashupScanner.scan(zip);
           const allRefs = [...relRefs, ...connRefs, ...mashupRefs];
           for (const r of allRefs) {
-            f.externalRefs.push(r);
+            pushIOC(f, Object.assign({ bucket: 'externalRefs' }, r));
             if (r.severity === 'critical') escalateRisk(f, 'critical');
             else if (r.severity === 'high') escalateRisk(f, 'high');
             else if (r.severity === 'medium' && f.risk === 'low') escalateRisk(f, 'medium');

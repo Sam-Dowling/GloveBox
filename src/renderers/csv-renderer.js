@@ -762,18 +762,18 @@ class CsvRenderer {
 
     if (dangerHit) {
       escalateRisk(f, 'critical');
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `Weaponised formula-injection payload (CWE-1236) on line ${dangerHit.line} — references command execution, DDE, or external data function: "${dangerHit.snippet}"`,
         severity: 'critical',
-      });
+      bucket: 'externalRefs' });
     } else if (anyFormula) {
       escalateRisk(f, 'medium');
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: 'Formula injection risk (CWE-1236) — cells beginning with =, +, -, or @ detected. Opened in a spreadsheet these may execute if the user accepts the formula prompt.',
         severity: 'medium',
-      });
+      bucket: 'externalRefs' });
     }
     return f;
   }

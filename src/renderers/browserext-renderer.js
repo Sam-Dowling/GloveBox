@@ -1035,7 +1035,7 @@ class BrowserExtRenderer {
         const loc = locate(r.highlight);
         if (loc) { ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
       }
-      f.externalRefs.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
       if (r.sev === 'critical') score += 5;
       else if (r.sev === 'high') score += 3;
       else if (r.sev === 'medium') score += 1.5;
@@ -1060,20 +1060,20 @@ class BrowserExtRenderer {
       const ref = { type: IOC.URL, url: u, severity: sev };
       const loc = locate(u);
       if (loc) { ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-      f.externalRefs.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
     }
 
     // ── Per-permission interestingStrings rows ────────────────────────
     for (const p of (parsed.permissions || [])) {
       if (BrowserExtRenderer.PERM_HIGH.has(p)) {
-        f.interestingStrings.push({ type: IOC.PATTERN, url: `permission: ${p}`, severity: 'high' });
+        pushIOC(f, { type: IOC.PATTERN, url: `permission: ${p}`, severity: 'high' , bucket: 'interestingStrings' });
       } else if (BrowserExtRenderer.PERM_MEDIUM.has(p)) {
-        f.interestingStrings.push({ type: IOC.PATTERN, url: `permission: ${p}`, severity: 'medium' });
+        pushIOC(f, { type: IOC.PATTERN, url: `permission: ${p}`, severity: 'medium' , bucket: 'interestingStrings' });
       }
     }
     for (const h of (parsed.hostPermissions || [])) {
       if (this._isBroadHost(h)) {
-        f.interestingStrings.push({ type: IOC.PATTERN, url: `host permission: ${h}`, severity: 'high' });
+        pushIOC(f, { type: IOC.PATTERN, url: `host permission: ${h}`, severity: 'high' , bucket: 'interestingStrings' });
       }
     }
 

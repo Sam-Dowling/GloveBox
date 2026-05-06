@@ -215,7 +215,7 @@ class PptxRenderer {
       // catches attachedTemplate, oleObject, external links, UNC paths.
       const relRefs = await OoxmlRelScanner.scan(zip);
       for (const r of relRefs) {
-        f.externalRefs.push(r);
+        pushIOC(f, Object.assign({ bucket: 'externalRefs' }, r));
         if (r.severity === 'high') escalateRisk(f, 'high');
         else if (r.severity === 'medium' && f.risk === 'low') escalateRisk(f, 'medium');
       }

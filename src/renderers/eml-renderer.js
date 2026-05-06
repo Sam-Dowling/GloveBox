@@ -228,7 +228,7 @@ class EmlRenderer {
         seenEmails.add(key);
         const ref = { type: IOC.EMAIL, url: addr, severity: severity || 'info', note };
         if (raw) ref._highlightText = raw;
-        f.externalRefs.push(ref);
+        pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
       };
       const pushUrl = (url, note, severity, raw) => {
         if (!url) return;
@@ -258,8 +258,7 @@ class EmlRenderer {
             note: note ? `${unwrapped.provider} wrapper (${note})` : `${unwrapped.provider} wrapper`,
           };
           if (raw) wrapperRef._highlightText = raw;
-          f.externalRefs.push(wrapperRef);
-
+          pushIOC(f, Object.assign({ bucket: 'externalRefs' }, wrapperRef));
           // Push the decoded inner URL at high severity. An unwrapped
           // SafeLink has bypassed the vendor's click-time check by the
           // time an analyst is reading the message, so it warrants a
@@ -275,7 +274,7 @@ class EmlRenderer {
               note: note ? `Extracted from ${unwrapped.provider} (${note})` : `Extracted from ${unwrapped.provider}`,
               _highlightText: raw || clean,
             };
-            f.externalRefs.push(innerRef);
+            pushIOC(f, Object.assign({ bucket: 'externalRefs' }, innerRef));
           }
 
           // Microsoft SafeLinks embeds the recipient email in the `data`
@@ -290,7 +289,7 @@ class EmlRenderer {
 
         const ref = { type: IOC.URL, url: clean, severity: severity || 'medium', note };
         if (raw) ref._highlightText = raw;
-        f.externalRefs.push(ref);
+        pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
       };
       const pushIp = (ip, note, severity, raw) => {
         if (!ip || seenIps.has(ip)) return;
@@ -300,7 +299,7 @@ class EmlRenderer {
         seenIps.add(ip);
         const ref = { type: IOC.IP, url: ip, severity: severity || 'medium', note };
         if (raw) ref._highlightText = raw;
-        f.externalRefs.push(ref);
+        pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
       };
 
 
@@ -348,11 +347,11 @@ class EmlRenderer {
         const rtAddr   = (email.replyTo.match(EMAIL_RE) || [])[0] || email.replyTo;
         if (fromAddr.toLowerCase() !== rtAddr.toLowerCase()) {
           replyToMismatch = true;
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.PATTERN,
             url: `Reply-To (${rtAddr}) differs from From (${fromAddr})`,
-            severity: 'medium'
-          });
+            severity: 'medium',
+          bucket: 'externalRefs' });
           if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       }
@@ -375,11 +374,11 @@ class EmlRenderer {
         const authorityWords = /\b(ceo|cfo|cto|coo|ciso|director|president|vp|admin|administrator|support|helpdesk|hr|payroll|it department|security|finance|accounting|legal)\b/i;
         const freemailDomains = /^(gmail\.com|yahoo\.com|outlook\.com|hotmail\.com|protonmail\.com|aol\.com|mail\.com|yandex\.com|gmx\.com|icloud\.com|zoho\.com|live\.com)$/i;
         if (displayName && authorityWords.test(displayName) && fromDomain && freemailDomains.test(fromDomain)) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.PATTERN,
             url: `Display name impersonates authority role ("${displayName.slice(0, 60)}") but sender is freemail (${fromDomain})`,
-            severity: 'high'
-          });
+            severity: 'high',
+          bucket: 'externalRefs' });
           if (f.risk !== 'high') escalateRisk(f, 'high');
         }
         // ── Brand / domain-literal mismatch (M1.12) ────────────────
@@ -389,14 +388,14 @@ class EmlRenderer {
         // detection per heuristic; both fire as IOC.PATTERN.
         if (typeof EmailSpoof !== 'undefined') {
           for (const d of EmailSpoof.analyseFromHeader(email.from)) {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.PATTERN,
               url: d.reason,
               severity: d.severity,
               note: d.kind === 'brand-mismatch'
                 ? 'Display-name brand keyword does not match sender domain — phishing pretext'
                 : 'Display-name embeds a different domain than the sender',
-            });
+            bucket: 'externalRefs' });
             if (d.severity === 'high' && f.risk !== 'high') escalateRisk(f, 'high');
             else if (d.severity === 'medium' && f.risk === 'low') escalateRisk(f, 'medium');
           }
@@ -413,22 +412,22 @@ class EmlRenderer {
           const rpAddr = (returnPath.match(EMAIL_RE) || [])[0] || '';
           const rpDomain = rpAddr ? (rpAddr.split('@')[1] || '').toLowerCase() : '';
           if (rpDomain && rpDomain !== fromDomain) {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.PATTERN,
               url: `Return-Path domain (${rpDomain}) differs from From domain (${fromDomain})`,
-              severity: 'medium'
-            });
+              severity: 'medium',
+            bucket: 'externalRefs' });
             if (f.risk === 'low') escalateRisk(f, 'medium');
           }
           // Message-ID domain mismatch
           const msgId = email.messageId || '';
           const midDomain = (msgId.match(/@([A-Za-z0-9.-]+)/) || [])[1] || '';
           if (midDomain && midDomain.toLowerCase() !== fromDomain) {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.PATTERN,
               url: `Message-ID domain (${midDomain}) differs from From domain (${fromDomain})`,
-              severity: 'info'
-            });
+              severity: 'info',
+            bucket: 'externalRefs' });
           }
         }
       }
@@ -441,11 +440,11 @@ class EmlRenderer {
           // Count Received hops
           const receivedCount = (unfoldedHeaders.match(/^Received:/gim) || []).length;
           if (receivedCount <= 2) {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.PATTERN,
               url: `Message claims to be a reply (In-Reply-To/References present) but has only ${receivedCount} Received hop(s) — possible thread hijack`,
-              severity: 'medium'
-            });
+              severity: 'medium',
+            bucket: 'externalRefs' });
             if (f.risk === 'low') escalateRisk(f, 'medium');
           }
         }
@@ -481,20 +480,20 @@ class EmlRenderer {
       {
         const bidiRE = /[\u202E\u202D\u200F\u200E\u2066\u2067\u2068\u2069\uFEFF]/;
         if (email.subject && bidiRE.test(email.subject)) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.PATTERN,
             url: 'Bidirectional text override detected in Subject — possible extension spoofing (T1036.002)',
-            severity: 'critical'
-          });
+            severity: 'critical',
+          bucket: 'externalRefs' });
           escalateRisk(f, 'high');
         }
         for (const att of email.attachments) {
           if (att.filename && bidiRE.test(att.filename)) {
-            f.externalRefs.push({
+            pushIOC(f, {
               type: IOC.PATTERN,
               url: `Bidirectional text override in attachment filename "${att.filename.slice(0, 80)}" — possible extension spoofing (T1036.002)`,
-              severity: 'critical'
-            });
+              severity: 'critical',
+            bucket: 'externalRefs' });
             escalateRisk(f, 'high');
           }
         }
@@ -514,11 +513,11 @@ class EmlRenderer {
       const qrPromises = [];
       for (const att of email.attachments) {
         if (dangerExts.test(att.filename)) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.ATTACHMENT,
             url: att.filename,
-            severity: 'high'
-          });
+            severity: 'high',
+          bucket: 'externalRefs' });
           escalateRisk(f, 'high');
         }
 
@@ -595,11 +594,11 @@ class EmlRenderer {
           failOrNone(spfV) && failOrNone(dkimV) && failOrNone(dmarcV);
 
         if (ar.includes('fail') || ar.includes('none')) {
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.PATTERN,
             url: 'SPF/DKIM/DMARC check: ' + email.authResults.substring(0, 200),
-            severity: authTripleFail ? 'high' : 'medium'
-          });
+            severity: authTripleFail ? 'high' : 'medium',
+          bucket: 'externalRefs' });
           if (f.risk === 'low') escalateRisk(f, 'medium');
         }
       }

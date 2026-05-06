@@ -478,12 +478,12 @@ class WasmRenderer {
         (h) => path === h.match || path.startsWith(h.match + '/') || imp.module === h.match
       );
       if (!hit) continue;
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${path} — ${hit.note}`,
         severity: hit.severity,
         _highlightText: imp.field,
-      });
+      bucket: 'externalRefs' });
       if (hit.technique && !seenTechniques.has(hit.technique)) {
         seenTechniques.add(hit.technique);
         f.capabilities.push({ id: hit.technique, source: 'wasm-import' });
@@ -497,12 +497,12 @@ class WasmRenderer {
     for (const exp of parsed.exports) {
       const hit = WasmRenderer.SUSPICIOUS_EXPORTS.find((h) => h.match.test(exp.name));
       if (!hit) continue;
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `export ${exp.name} — ${hit.note}`,
         severity: hit.severity,
         _highlightText: exp.name,
-      });
+      bucket: 'externalRefs' });
       if (hit.technique && !seenTechniques.has(hit.technique)) {
         seenTechniques.add(hit.technique);
         f.capabilities.push({ id: hit.technique, source: 'wasm-export' });
@@ -514,19 +514,19 @@ class WasmRenderer {
     // ── Memory anomalies ─────────────────────────────────────────────────
     if (parsed.memory) {
       if (parsed.memory.initial >= WasmRenderer.MEMORY_LARGE_INITIAL) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `Large initial memory — ${parsed.memory.initial} pages (${this._fmtBytes(parsed.memory.initial * 65536)}) — possible memory-mining or buffer-allocation attack primitive`,
           severity: 'medium',
-        });
+        bucket: 'externalRefs' });
         if (f.risk === 'low') escalateRisk(f, 'medium');
       }
       if (parsed.memory.maximum != null && parsed.memory.maximum >= WasmRenderer.MEMORY_HUGE_MAX) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `Huge maximum memory — ${parsed.memory.maximum} pages (≥ 1 GiB) — DoS / memory-exhaustion primitive`,
           severity: 'high',
-        });
+        bucket: 'externalRefs' });
         escalateRisk(f, 'high');
       }
     }

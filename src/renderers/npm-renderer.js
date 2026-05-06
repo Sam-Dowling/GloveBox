@@ -366,7 +366,7 @@ class NpmRenderer {
         const loc = locate(r.highlight);
         if (loc) { ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
       }
-      f.externalRefs.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
       if (r.sev === 'critical') score += 5;
       else if (r.sev === 'high') score += 3;
       else if (r.sev === 'medium') score += 1.5;
@@ -384,7 +384,7 @@ class NpmRenderer {
       const needle = `"${h.name}"`;
       const loc = locate(needle);
       if (loc) { ref._highlightText = needle; ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-      f.interestingStrings.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'interestingStrings' }, ref));
     }
 
     // ── Per-bin row — global CLI binaries installed on `npm i -g` ────────
@@ -417,7 +417,7 @@ class NpmRenderer {
       const needle = JSON.stringify(sv);
       const loc = locate(needle);
       if (loc) { ref._highlightText = needle; ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-      f.interestingStrings.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'interestingStrings' }, ref));
     }
 
     // ── URL IOCs from the manifest — repo / homepage / bugs / funding /
@@ -445,7 +445,7 @@ class NpmRenderer {
       const ref = { type: IOC.URL, url: httpUrl, severity: sev };
       const loc = locate(u);
       if (loc) { ref._highlightText = u; ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-      f.externalRefs.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
     }
 
     // ── Author email (if present) ────────────────────────────────────────
@@ -453,7 +453,7 @@ class NpmRenderer {
       const ref = { type: IOC.EMAIL, url: parsed.authorEmail, severity: 'info' };
       const loc = locate(parsed.authorEmail);
       if (loc) { ref._highlightText = parsed.authorEmail; ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-      f.interestingStrings.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'interestingStrings' }, ref));
     }
 
     // ── Integrity hash (if the manifest embeds it — npm pack writes
@@ -484,7 +484,7 @@ class NpmRenderer {
         const needle = `"${depName}"`;
         const loc = locate(needle);
         if (loc) { ref._highlightText = needle; ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-        f.interestingStrings.push(ref);
+        pushIOC(f, Object.assign({ bucket: 'interestingStrings' }, ref));
         depEmitted++;
       }
     }

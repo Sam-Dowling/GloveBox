@@ -126,11 +126,11 @@ class IsoRenderer {
     };
 
     // ISO/IMG are inherently suspicious in email context
-    f.externalRefs.push({
+    pushIOC(f, {
       type: IOC.PATTERN,
       url: 'Disk image file — bypasses Mark-of-the-Web (MOTW) protection',
-      severity: 'medium'
-    });
+      severity: 'medium',
+    bucket: 'externalRefs' });
 
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
     const entries = this._parseISO9660(bytes);
@@ -140,35 +140,35 @@ class IsoRenderer {
       const dangerous = files.filter(e => IsoRenderer.EXEC_EXTS.has(e.name.split('.').pop().toLowerCase()));
 
       if (dangerous.length) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `${dangerous.length} executable/script file(s) inside disk image`,
-          severity: 'high'
-        });
+          severity: 'high',
+        bucket: 'externalRefs' });
         escalateRisk(f, 'high');
         for (const e of dangerous) {
-          f.externalRefs.push({ type: IOC.FILE_PATH, url: e.path || e.name, severity: 'high' });
+          pushIOC(f, { type: IOC.FILE_PATH, url: e.path || e.name, severity: 'high' , bucket: 'externalRefs' });
         }
       }
 
       // LNK files
       const lnks = files.filter(e => /\.lnk$/i.test(e.name));
       if (lnks.length) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: 'Windows shortcut (.lnk) inside disk image — common phishing technique', severity: 'high' });
+        pushIOC(f, { type: IOC.PATTERN, url: 'Windows shortcut (.lnk) inside disk image — common phishing technique', severity: 'high' , bucket: 'externalRefs' });
         escalateRisk(f, 'high');
       }
 
       // autorun.inf
       const autorun = files.filter(e => /^autorun\.inf$/i.test(e.name));
       if (autorun.length) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: 'autorun.inf detected — may auto-execute content', severity: 'high' });
+        pushIOC(f, { type: IOC.PATTERN, url: 'autorun.inf detected — may auto-execute content', severity: 'high' , bucket: 'externalRefs' });
         escalateRisk(f, 'high');
       }
 
       // Hidden files (starting with .)
       const hidden = files.filter(e => e.name.startsWith('.') && e.name !== '.' && e.name !== '..');
       if (hidden.length) {
-        f.externalRefs.push({ type: IOC.PATTERN, url: `${hidden.length} hidden file(s) in disk image`, severity: 'medium' });
+        pushIOC(f, { type: IOC.PATTERN, url: `${hidden.length} hidden file(s) in disk image`, severity: 'medium' , bucket: 'externalRefs' });
       }
 
       if (entries._vol) {

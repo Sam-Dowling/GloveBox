@@ -278,11 +278,11 @@ class MsiRenderer {
 
     const bytes = new Uint8Array(buffer instanceof ArrayBuffer ? buffer : buffer.buffer);
 
-    f.externalRefs.push({
+    pushIOC(f, {
       type: IOC.INFO,
       url: 'Windows Installer Package (.msi) — executes with elevated privileges during installation',
-      severity: 'high'
-    });
+      severity: 'high',
+    bucket: 'externalRefs' });
 
     const bumpRisk = (s) => escalateRisk(f, s);
 
@@ -301,19 +301,19 @@ class MsiRenderer {
         if (tableName) tables.push(tableName);
       }
 
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `${ole.streamMeta.size} OLE stream(s), ${tables.length} MSI table(s)`,
-        severity: 'info'
-      });
+        severity: 'info',
+      bucket: 'externalRefs' });
 
       // ── T2.11: _Validation table absence flag ─────────────────────────
       if (!tables.includes('_Validation')) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: 'MSI lacks _Validation table — common in repackaged/trojanized installers',
-          severity: 'medium'
-        });
+          severity: 'medium',
+        bucket: 'externalRefs' });
         bumpRisk('medium');
       }
 
@@ -324,37 +324,37 @@ class MsiRenderer {
       const hasRegistry = tables.includes('Registry');
 
       if (hasCustomAction) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: 'CustomAction table present — installer can execute arbitrary code',
-          severity: 'high'
-        });
+          severity: 'high',
+        bucket: 'externalRefs' });
         bumpRisk('high');
       }
 
       if (hasBinary) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: 'Binary table present — contains embedded executables, DLLs, or scripts',
-          severity: 'medium'
-        });
+          severity: 'medium',
+        bucket: 'externalRefs' });
       }
 
       if (hasServiceInstall) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: 'ServiceInstall table — MSI will install Windows service(s)',
-          severity: 'high'
-        });
+          severity: 'high',
+        bucket: 'externalRefs' });
         bumpRisk('high');
       }
 
       if (hasRegistry) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: 'Registry table — MSI modifies Windows registry',
-          severity: 'medium'
-        });
+          severity: 'medium',
+        bucket: 'externalRefs' });
       }
 
       // Escalate to high if multiple concerning tables
@@ -393,29 +393,29 @@ class MsiRenderer {
               if (flagBits.length) noteParts.push(`flags=[${flagBits.join(', ')}]`);
               const isInScript = (row.type & 0x3000) !== 0;
               const finalSev = isInScript && sev === 'high' ? 'critical' : sev;
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.COMMAND_LINE,
                 url: noteParts.join(' · '),
-                severity: finalSev
-              });
+                severity: finalSev,
+              bucket: 'externalRefs' });
               bumpRisk(finalSev);
 
               // Surface likely command-line payloads as raw IOCs too
               if (row.target && [0x02, 0x12, 0x22, 0x32].includes(lowType)) {
-                f.externalRefs.push({
+                pushIOC(f, {
                   type: IOC.COMMAND_LINE,
                   url: row.target,
-                  severity: 'critical'
-                });
+                  severity: 'critical',
+                bucket: 'externalRefs' });
                 bumpRisk('critical');
               }
               // JScript/VBScript payload body
               if (row.target && [0x05, 0x06, 0x15, 0x16, 0x25, 0x26, 0x35, 0x36, 0x37, 0x38].includes(lowType)) {
-                f.externalRefs.push({
+                pushIOC(f, {
                   type: IOC.PATTERN,
                   url: `Inline script body (${lowType === 0x05 || lowType === 0x15 || lowType === 0x25 || lowType === 0x35 || lowType === 0x37 ? 'JScript' : 'VBScript'}): ${this._truncateStr(row.target, 160)}`,
-                  severity: 'critical'
-                });
+                  severity: 'critical',
+                bucket: 'externalRefs' });
                 bumpRisk('critical');
               }
             }
@@ -444,20 +444,20 @@ class MsiRenderer {
                 'Unknown/Data': 'info',
               };
               const sev = sevMap[bs.magic.type] || 'medium';
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.PATTERN,
                 url: `Binary stream "${bs.name}" (${this._fmtBytes(bs.size)}) — magic: ${bs.magic.type}`,
-                severity: sev
-              });
+                severity: sev,
+              bucket: 'externalRefs' });
               if (sev === 'high' || sev === 'critical') bumpRisk(sev);
             }
             if (cabCount) {
               f.metadata.embeddedCabs = cabCount;
-              f.externalRefs.push({
+              pushIOC(f, {
                 type: IOC.PATTERN,
                 url: `${cabCount} embedded Microsoft Cabinet (CAB) archive(s) in Binary table — payloads inside are not recursively unpacked`,
-                severity: 'high'
-              });
+                severity: 'high',
+              bucket: 'externalRefs' });
               bumpRisk('high');
             }
             if (sniffTypes.length <= 20) f.metadata.binaryStreamSniff = sniffTypes;
@@ -469,20 +469,20 @@ class MsiRenderer {
       const sigVerdict = this._checkAuthenticode(ole);
       if (sigVerdict) {
         f.metadata.authenticode = sigVerdict.summary;
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: sigVerdict.note,
-          severity: sigVerdict.severity
-        });
+          severity: sigVerdict.severity,
+        bucket: 'externalRefs' });
         if (sigVerdict.severity === 'high') bumpRisk('high');
       }
 
     } catch (e) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `MSI parse error: ${e.message}`,
-        severity: 'info'
-      });
+        severity: 'info',
+      bucket: 'externalRefs' });
     }
 
     // Mirror classic-pivot metadata into the IOC table. MSI Summary

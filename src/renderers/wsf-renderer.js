@@ -148,39 +148,39 @@ class WsfRenderer {
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
     const ext = (fileName || '').split('.').pop().toLowerCase();
 
-    f.externalRefs.push({
+    pushIOC(f, {
       type: IOC.PATTERN,
       url: `Windows Script File (.${ext}) — executes via Windows Script Host`,
-      severity: 'high'
-    });
+      severity: 'high',
+    bucket: 'externalRefs' });
 
     const analysis = this._analyze(text, ext);
 
     // Scripts as findings
     for (const s of analysis.scripts) {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: `Script block: ${s.language}${s.src ? ' (external: ' + s.src + ')' : ''} — ${s.code ? s.code.length + ' chars' : 'no inline code'}`,
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
       if (s.code) {
         f.modules.push({ name: `script_${s.language}`, source: s.code });
       }
       if (s.src) {
-        f.externalRefs.push({ type: IOC.URL, url: s.src, severity: 'high' });
+        pushIOC(f, { type: IOC.URL, url: s.src, severity: 'high' , bucket: 'externalRefs' });
       }
     }
 
     // Patterns
     for (const p of analysis.patterns) {
-      f.externalRefs.push({ type: IOC.PATTERN, url: p.label, severity: p.sev });
+      pushIOC(f, { type: IOC.PATTERN, url: p.label, severity: p.sev , bucket: 'externalRefs' });
     }
 
     // References
     for (const ref of analysis.references) {
-      if (ref.type === 'URL') f.externalRefs.push({ type: IOC.URL, url: ref.value, severity: 'high' });
-      else if (ref.type === 'CLSID') f.externalRefs.push({ type: IOC.PATTERN, url: `CLSID: ${ref.value}`, severity: 'medium' });
-      else if (ref.type === 'ProgID') f.externalRefs.push({ type: IOC.PATTERN, url: `ProgID: ${ref.value}`, severity: 'medium' });
+      if (ref.type === 'URL') pushIOC(f, { type: IOC.URL, url: ref.value, severity: 'high' , bucket: 'externalRefs' });
+      else if (ref.type === 'CLSID') pushIOC(f, { type: IOC.PATTERN, url: `CLSID: ${ref.value}`, severity: 'medium' , bucket: 'externalRefs' });
+      else if (ref.type === 'ProgID') pushIOC(f, { type: IOC.PATTERN, url: `ProgID: ${ref.value}`, severity: 'medium' , bucket: 'externalRefs' });
     }
 
     // Pattern detection is handled entirely by YARA (auto-scan on file load)

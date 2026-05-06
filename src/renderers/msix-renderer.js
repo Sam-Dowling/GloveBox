@@ -781,7 +781,7 @@ class MsixRenderer {
         const loc = locate(r.highlight);
         if (loc) { ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
       }
-      f.externalRefs.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
       if (r.sev === 'high') score += 3;
       else if (r.sev === 'medium') score += 1.5;
       else score += 0.5;
@@ -799,7 +799,7 @@ class MsixRenderer {
       const ref = { type: IOC.URL, url: u, severity: sev };
       const loc = locate(u);
       if (loc) { ref._sourceOffset = loc.offset; ref._sourceLength = loc.length; }
-      f.externalRefs.push(ref);
+      pushIOC(f, Object.assign({ bucket: 'externalRefs' }, ref));
     }
 
     // ── Per-capability and per-alias entries in interestingStrings ────
@@ -807,11 +807,11 @@ class MsixRenderer {
     for (const c of (parsed.capabilities || [])) {
       const sev = this._capSeverity(c);
       if (sev === 'high' || sev === 'medium') {
-        f.interestingStrings.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: `${c.restricted ? 'rescap' : 'capability'}: ${c.name}`,
           severity: sev,
-        });
+        bucket: 'interestingStrings' });
       }
     }
     for (const a of (parsed.applications || [])) {
@@ -819,11 +819,11 @@ class MsixRenderer {
         if (ex.category === 'windows.appExecutionAlias' && ex.aliases) {
           for (const al of ex.aliases) {
             if (MsixRenderer.ALIAS_HIJACK_NAMES.has(al.toLowerCase())) {
-              f.interestingStrings.push({
+              pushIOC(f, {
                 type: IOC.PATTERN,
                 url: `AppExecutionAlias hijack: ${al}`,
                 severity: 'high',
-              });
+              bucket: 'interestingStrings' });
             }
           }
         }

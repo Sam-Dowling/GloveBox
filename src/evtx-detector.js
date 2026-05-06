@@ -89,7 +89,13 @@ class EvtxDetector {
 
         const count = eidCounts[eid] || 0;
         const countSuffix = count > 1 ? ` (${count} events)` : '';
-        f.externalRefs.push({ type: IOC.PATTERN, url: desc + countSuffix, severity, eventId: eid, count });
+        pushIOC(f, {
+          type: IOC.PATTERN,
+          value: desc + countSuffix,
+          severity,
+          bucket: 'externalRefs',
+          extras: { eventId: eid, count },
+        });
 
         if (riskEsc) escalateRisk(f, riskEsc);
       }
@@ -99,7 +105,12 @@ class EvtxDetector {
       // ── Extract IOCs from event data fields ─────────────────────────
       EvtxDetector._extractEvtxIOCs(events, f);
     } catch (e) {
-      f.externalRefs.push({ type: IOC.INFO, url: 'EVTX parse warning: ' + e.message, severity: 'info' });
+      pushIOC(f, {
+        type: IOC.INFO,
+        value: 'EVTX parse warning: ' + e.message,
+        severity: 'info',
+        bucket: 'externalRefs',
+      });
     }
     return f;
   }
@@ -136,15 +147,16 @@ class EvtxDetector {
       if (f.externalRefs.length >= IOC_CAP) {
         if (!truncated) {
           truncated = true;
-          f.externalRefs.push({
+          pushIOC(f, {
             type: IOC.INFO,
-            url: `EVTX IOC extraction truncated at ${IOC_CAP} unique values — log contains additional IOCs beyond cap`,
+            value: `EVTX IOC extraction truncated at ${IOC_CAP} unique values — log contains additional IOCs beyond cap`,
             severity: 'info',
+            bucket: 'externalRefs',
           });
         }
         return;
       }
-      f.externalRefs.push({ type, url: val, severity: sev });
+      pushIOC(f, { type, value: val, severity: sev, bucket: 'externalRefs' });
     };
 
     // Keys in Sysmon / Security event data that contain process paths

@@ -35,44 +35,44 @@ class IqySlkRenderer {
     const normalizedText = lfNormalize(text);
 
     if (ext === 'iqy') {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: 'Internet Query (.iqy) file — tells Excel to fetch data from a remote URL',
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
 
       // Extract the URL from IQY — enrich with offset so clicking jumps to it.
       for (const m of normalizedText.matchAll(/https?:\/\/\S+/gi)) {
         const url = m[0].trim();
         if (!url) continue;
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.URL,
           url,
           severity: 'high',
           _highlightText: url,
           _sourceOffset: m.index,
-          _sourceLength: url.length
-        });
+          _sourceLength: url.length,
+        bucket: 'externalRefs' });
       }
     } else {
-      f.externalRefs.push({
+      pushIOC(f, {
         type: IOC.PATTERN,
         url: 'Symbolic Link (.slk) file — text-based spreadsheet that can execute macros',
-        severity: 'high'
-      });
+        severity: 'high',
+      bucket: 'externalRefs' });
 
       // Check for macro execution in SLK — pin to first occurrence.
       const pinPattern = (name, regex, severity, label) => {
         const m = normalizedText.match(regex);
         if (!m) return;
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.PATTERN,
           url: label,
           severity,
           _highlightText: m[0],
           _sourceOffset: m.index,
-          _sourceLength: m[0].length
-        });
+          _sourceLength: m[0].length,
+        bucket: 'externalRefs' });
       };
       pinPattern('EXEC', /\bEXEC\b/i, 'high', 'SLK contains EXEC — macro execution');
       pinPattern('CALL', /\bCALL\b/i, 'high', 'SLK contains CALL — DLL function call');
@@ -80,14 +80,14 @@ class IqySlkRenderer {
 
       // Extract URLs
       for (const m of normalizedText.matchAll(/https?:\/\/[^\s"';]+/g)) {
-        f.externalRefs.push({
+        pushIOC(f, {
           type: IOC.URL,
           url: m[0],
           severity: 'high',
           _highlightText: m[0],
           _sourceOffset: m.index,
-          _sourceLength: m[0].length
-        });
+          _sourceLength: m[0].length,
+        bucket: 'externalRefs' });
       }
     }
 
