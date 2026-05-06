@@ -2122,6 +2122,51 @@ const TL_REGEX_PRESETS = [
 // ════════════════════════════════════════════════════════════════════════════
 // Helpers
 // ════════════════════════════════════════════════════════════════════════════
+// Normalise trailing-timezone shapes on an input that `_TL_RE_ISO`
+// has already matched (i.e. starts with `YYYY-MM-DD[ T]HH:MM:SS…`) so
+// that `Date.parse` will accept the result. The substitutions run in
+// a fixed order — each step shrinks the suffix space monotonically
+// toward a legal ISO 8601 form. Covers these real-world variants:
+//
+//   • bare `Z`, `+HHMM`, `+HH:MM`, `-HHMM`, `-HH:MM`
+//     (already ISO-legal; pass-through)
+//   • trailing ` UTC`, ` GMT` — SQLite browser-history renderer
+//     (`src/renderers/sqlite-renderer.js`), zip renderer mtime,
+//     app-load `lastModified`.
+//   • trailing `UTC`, `GMT` with hyphen or underscore separator —
+//     `2026-04-18 12:12:40.104-UTC` (reported) and similar hand-rolled
+//     exports from SIEM / EDR pipelines.
+//   • bracketed / parenthesised `(UTC)`, `[UTC]`, `(GMT)`, `[GMT]` —
+//     some Windows event exports and JDK-style civil-time annotations.
+//   • space before a numeric offset — `… 12:12:40 +0000` /
+//     `… 12:12:40 -07:00`, common in MySQL / PostgreSQL log exports.
+//   • space before a trailing `Z`.
+//
+// NOT normalised (deferred to the `Date.parse` fallback or rejected):
+//   • Locale-ambiguous US/EU forms (`4/18/2026 12:12:40`).
+//   • ISO comma-decimal seconds (`12:12:40,104`).
+//   • RFC 2822 and similar — handled by the last-chance `Date.parse`
+//     branch in `_tlParseTimestamp`.
+function _tlNormaliseIsoSuffix(str) {
+  // 1. Date/time separator: first space → T. Leaves later tz-name
+  //    spaces intact so the bracketed-tz and space-before-offset
+  //    steps below can see them.
+  let s = str.replace(' ', 'T');
+  // 2. Bracketed / parenthesised tz names at end-of-string → Z.
+  s = s.replace(/\s*[[(](?:UTC|GMT)[\])]\s*$/i, 'Z');
+  // 3. Trailing `UTC` / `GMT` with space / hyphen / underscore / no
+  //    separator → Z. Character class is intentional: inside `[]`,
+  //    `-` is literal when it's at the end of the class. Strict `$`
+  //    anchor so we never rewrite a `UTC` that appears earlier.
+  s = s.replace(/[ _-]?(?:UTC|GMT)$/i, 'Z');
+  // 4. Space before a numeric tz offset: `… 12:12:40 +0000` →
+  //    `… 12:12:40+0000`. Covers `±HHMM` and `±HH:MM`.
+  s = s.replace(/\s+([+-]\d{2}:?\d{2})$/, '$1');
+  // 5. Space before trailing `Z`: `… 12:12:40 Z` → `… 12:12:40Z`.
+  s = s.replace(/\s+Z$/, 'Z');
+  return s;
+}
+
 function _tlParseTimestamp(s) {
   if (s == null) return NaN;
   if (typeof s === 'number') return s;
@@ -2132,12 +2177,12 @@ function _tlParseTimestamp(s) {
   if (/^-?\d{13}$/.test(str)) return Number(str);
   // ISO datetime (with time component).
   if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(str)) {
-    // Normalise the separator to 'T' and common tz suffixes (" UTC",
-    // " GMT") to 'Z' so Date.parse sees a valid ISO 8601 string.
-    // Without this, inputs like "2022-11-20 22:42:44 UTC" (produced by
-    // the SQLite browser-history renderer) become "2022-11-20T22:42:44 UTC"
-    // after the first replace, which Date.parse rejects.
-    const norm = str.replace(' ', 'T').replace(/ ?(?:UTC|GMT)$/i, 'Z');
+    // Normalise into a shape Date.parse accepts. See
+    // `_tlNormaliseIsoSuffix` for the full set of trailing-timezone
+    // variants covered (bare `Z`, `±HHMM` / `±HH:MM` offsets, and the
+    // word forms `UTC` / `GMT` with space / hyphen / underscore / no
+    // separator, with or without surrounding brackets / parens).
+    const norm = _tlNormaliseIsoSuffix(str);
     const ms = Date.parse(norm);
     return Number.isFinite(ms) ? ms : NaN;
   }
@@ -2316,7 +2361,9 @@ function _tlParseTimestampFast(s, fmt) {
       break;
     case 'iso': {
       if (_TL_RE_ISO.test(str)) {
-        const norm = str.replace(' ', 'T').replace(/ ?(?:UTC|GMT)$/i, 'Z');
+        // Shared with the slow path — see `_tlNormaliseIsoSuffix` for
+        // the full set of trailing-timezone shapes we accept.
+        const norm = _tlNormaliseIsoSuffix(str);
         const ms = Date.parse(norm);
         return Number.isFinite(ms) ? ms : NaN;
       }
