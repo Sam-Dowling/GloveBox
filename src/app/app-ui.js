@@ -791,7 +791,7 @@ extendApp({
     const dz = document.getElementById('drop-zone');
     dz.className = ''; dz.innerHTML = '';
     const icon = document.createElement('span'); icon.className = 'dz-icon'; icon.textContent = '📄'; dz.appendChild(icon);
-    const txt = document.createElement('div'); txt.className = 'dz-text'; txt.textContent = 'Drop a file here to analyse'; dz.appendChild(txt);
+    const txt = document.createElement('div'); txt.className = 'dz-text'; txt.textContent = 'Drop a file or folder here to analyse'; dz.appendChild(txt);
     const sub = document.createElement('div'); sub.className = 'dz-sub'; sub.textContent = 'Extracts IOCs, decodes obfuscated payloads, runs 500+ YARA rules, and renders 60+ formats — 100% offline in your browser.'; dz.appendChild(sub);
     // Hide close button + viewer toolbar. Breadcrumbs get hidden via
     // _renderBreadcrumbs() below once _fileMeta is cleared.
