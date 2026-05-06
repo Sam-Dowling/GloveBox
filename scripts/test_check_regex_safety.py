@@ -137,6 +137,64 @@ def test_escape_call_accepted_across_local_scope():
     assert rc == 0, err
 
 
+def test_inline_replace_escape_pattern_accepted():
+    # The canonical `escapeRegex`-equivalent inline form used at a few
+    # older call sites (e.g. `src/app/app-yara.js:239`) splices the
+    # historical regex-metacharacter class directly:
+    #
+    #     const escaped = needle.replace(/[.*+?^${}()|[]\\]/g, '\\$&');
+    #     const r = new RegExp(escaped);
+    #
+    # The gate accepts this shape as a valid escape call — the
+    # `ESCAPE_CALL_RE` in check_regex_safety.py has a second
+    # alternation branch specifically for it. Previously untested;
+    # a regression that removed this branch would break the YARA
+    # compiler's highlight-token surface without the unit suite
+    # catching it.
+    rc, out, err = run_against(textwrap.dedent(r'''
+        function build(needle) {
+          const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          /* safeRegex: escaped-input */
+          return new RegExp(escaped, 'g');
+        }
+    '''))
+    assert rc == 0, err
+
+
+def test_inline_replace_escape_pattern_required_for_escaped_input_annotation():
+    # Red-first companion to the test above: if the `.replace()` call
+    # is removed, the `escaped-input` annotation is no longer
+    # verifiable and the gate must fail. Proves the cross-check
+    # actually looks at the inline form, not just the presence of
+    # `.replace(` in general.
+    rc, out, err = run_against(textwrap.dedent(r'''
+        function build(needle) {
+          const escaped = needle;
+          /* safeRegex: escaped-input */
+          return new RegExp(escaped, 'g');
+        }
+    '''))
+    assert rc == 1
+    assert 'escaped-input annotation without escape call' in err, err
+
+
+def test_inline_replace_different_char_class_is_not_accepted():
+    # A `.replace()` that strips a different character class (e.g.
+    # just `/\s+/g` for whitespace) is NOT an escape — the gate's
+    # inline branch matches the FULL metacharacter set literally.
+    # A future contributor who writes a bespoke replace shouldn't
+    # accidentally satisfy the cross-check.
+    rc, out, err = run_against(textwrap.dedent(r'''
+        function build(needle) {
+          const escaped = needle.replace(/\s+/g, '_');
+          /* safeRegex: escaped-input */
+          return new RegExp(escaped, 'g');
+        }
+    '''))
+    assert rc == 1
+    assert 'escaped-input annotation without escape call' in err, err
+
+
 if __name__ == '__main__':
     import traceback
     tests = [(n, v) for n, v in globals().items() if n.startswith('test_')]

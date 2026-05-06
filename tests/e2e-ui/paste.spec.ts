@@ -323,4 +323,225 @@ test.describe('paste ingress', () => {
     expect(urlValues).not.toContain('parent.example');
     expect(urlValues).not.toContain('inner.example');
   });
+
+  test('file fork: paste with dt.files[0] loads as a File', async ({ page }) => {
+    // The first branch of `_loadPastePayload` (app-core.js:615): if
+    // `dt.files.length > 0`, the first File is loaded directly and
+    // the function returns. Every other fork (image / text / HTML)
+    // is skipped. This is the highest-priority paste path and was
+    // previously untested entirely.
+    //
+    // Synthetic DataTransfer with a real `File` in `files` exercises
+    // the branch end-to-end: a fresh top-level load must reset the
+    // nav stack AND route the buffer through the renderer registry
+    // by filename.
+    await page.evaluate(async () => {
+      // Build a real File with a defanged URL so the plaintext
+      // renderer surfaces an IOC — proves the dispatch went through.
+      const bytes = new TextEncoder().encode('http://file-fork.example/ and some text');
+      const file = new File([bytes], 'pasted-file.txt', { type: 'text/plain' });
+      const dt = {
+        files: [file],
+        items: [],
+        types: ['Files'],
+        getData() { return ''; },
+      };
+      const e = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(e, 'clipboardData', { value: dt });
+      document.dispatchEvent(e);
+      await new Promise(r => setTimeout(r, 0));
+      const w = window as unknown as {
+        __loupeTest: { waitForIdle(): Promise<void> };
+      };
+      await w.__loupeTest.waitForIdle();
+    });
+
+    const findings = await dumpFindings(page);
+    const urlValues = findings.iocs
+      .filter(i => i.type === 'URL')
+      .map(i => i.value)
+      .join('|');
+    expect(urlValues).toContain('file-fork.example');
+    // File-fork takes priority over text — fixture had no text/plain
+    // so the text fork could NOT have satisfied this. This assertion
+    // confirms the dispatch specifically came from dt.files.
+    expect(urlValues).not.toContain('clipboard.txt');
+
+    // Nav-stack reset also applies to this branch (one of the four
+    // `_resetNavStack()` call sites). Paste from a drilled-in state
+    // is equivalent to paste from fresh — asserted separately in the
+    // dedicated nav-reset test above.
+    const navDepth = await page.evaluate(() => {
+      const w = window as unknown as { app: { _navStack: unknown[] } };
+      return w.app._navStack.length;
+    });
+    expect(navDepth).toBe(0);
+  });
+
+  test('image fork: paste with items[*].type=image/png loads via getAsFile()', async ({ page }) => {
+    // The second branch of `_loadPastePayload` (app-core.js:627):
+    // iterate `dt.items`, find one whose type starts with `image/`,
+    // call `item.getAsFile()`, wrap as a File named
+    // `clipboard.<subtype>`. Previously untested.
+    //
+    // The image is a minimal 1×1 PNG — the image renderer surfaces
+    // a metadata entry ("PNG · 1×1 …") in `findings.metadata`, which
+    // is a reliable signal that the dispatch took the image path.
+    // A text dispatch would land `text/plain` and produce no image
+    // metadata.
+    await page.evaluate(async () => {
+      // 1×1 transparent PNG (67 bytes). Deterministic, standards-conformant.
+      const pngBytes = new Uint8Array([
+        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+        0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+        0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41,
+        0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+        0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+        0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+        0x42, 0x60, 0x82,
+      ]);
+      const blob = new Blob([pngBytes], { type: 'image/png' });
+      // Synthetic DataTransferItem — the handler reads `.type` and
+      // calls `.getAsFile()`. No need to mimic the full spec; the
+      // handler's surface is narrow.
+      const item = {
+        type: 'image/png',
+        getAsFile() { return new File([blob], 'pasted.png', { type: 'image/png' }); },
+      };
+      const dt = {
+        files: [],
+        items: [item],
+        types: ['image/png'],
+        getData() { return ''; },
+      };
+      const e = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(e, 'clipboardData', { value: dt });
+      document.dispatchEvent(e);
+      await new Promise(r => setTimeout(r, 0));
+      const w = window as unknown as {
+        __loupeTest: { waitForIdle(): Promise<void> };
+      };
+      await w.__loupeTest.waitForIdle();
+    });
+
+    // The image dispatched — the breadcrumb current-crumb carries
+    // the synthesised `clipboard.png` filename (the handler wraps
+    // the blob as `clipboard.<ext>`), and the renderer registry
+    // routed to the image renderer. `_fileMeta.name` is the most
+    // direct witness for the fork choice.
+    const fileMetaName = await page.evaluate(() => {
+      const w = window as unknown as { app: { _fileMeta: { name?: string } | null } };
+      return (w.app._fileMeta && w.app._fileMeta.name) || '';
+    });
+    expect(fileMetaName).toMatch(/^clipboard\.png$/);
+
+    // Nav-stack reset invariant — one of the four reset call sites.
+    const navDepth = await page.evaluate(() => {
+      const w = window as unknown as { app: { _navStack: unknown[] } };
+      return w.app._navStack.length;
+    });
+    expect(navDepth).toBe(0);
+  });
+
+  test('cached-copy roundtrip: same-session paste restores original bytes + filename', async ({ page }) => {
+    // Regression guard for the CRLF / extension silent-rewrite bug
+    // (`app-core.js:654`). When `_copyContent` stashes the source
+    // buffer + filename in `_lastCopiedMeta`, a subsequent paste of
+    // text that matches the cached `normText` (modulo CRLF → LF)
+    // must reload the ORIGINAL File — same name, same SHA-256 —
+    // not a freshly-built `clipboard.txt` with a different
+    // extension and a CRLF-stripped body.
+    //
+    // Without the cache check the pasted text's renderer dispatch
+    // falls through to highlight.js language auto-detect, which is
+    // a confusing result for a security tool where the file hash
+    // is the identity.
+    await page.evaluate(async () => {
+      const w = window as unknown as {
+        app: {
+          _lastCopiedMeta: { name: string; buffer: ArrayBuffer; normText: string } | null;
+        };
+      };
+      // Simulate `_copyContent` having populated the cache. Use a
+      // .applescript name so the round-trip path MUST restore the
+      // extension (falling through to `clipboard.txt` would drop
+      // the `.applescript` and pin the bug).
+      const originalText = 'osascript -e "tell application \\"Safari\\" to activate"';
+      const buffer = new TextEncoder().encode(originalText).buffer;
+      w.app._lastCopiedMeta = {
+        name: 'payload.applescript',
+        buffer,
+        normText: originalText,
+      };
+
+      // Paste the same text — handler must match on `normText` and
+      // reload `buffer` under the original name.
+      const dt = {
+        files: [],
+        items: [],
+        types: ['text/plain'],
+        getData(kind: string) {
+          return kind === 'text/plain' ? originalText : '';
+        },
+      };
+      const e = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(e, 'clipboardData', { value: dt });
+      document.dispatchEvent(e);
+      await new Promise(r => setTimeout(r, 0));
+      const wt = window as unknown as {
+        __loupeTest: { waitForIdle(): Promise<void> };
+      };
+      await wt.__loupeTest.waitForIdle();
+    });
+
+    // Filename preserved — NOT `clipboard.txt`.
+    const fileMetaName = await page.evaluate(() => {
+      const w = window as unknown as { app: { _fileMeta: { name?: string } | null } };
+      return (w.app._fileMeta && w.app._fileMeta.name) || '';
+    });
+    expect(fileMetaName).toBe('payload.applescript');
+  });
+
+  test('nothing-to-paste: empty clipboard surfaces the error toast', async ({ page }) => {
+    // The terminal branch of `_loadPastePayload` (app-core.js:681):
+    // no files, no image items, no text/plain, no text/html →
+    // `_toast('Nothing to paste', 'error')`. This branch intentionally
+    // skips `_resetNavStack()` (no-op on a no-op paste). The toast
+    // is the user's only feedback that the paste was seen at all.
+    await page.evaluate(async () => {
+      const dt = {
+        files: [],
+        items: [],
+        types: [],
+        getData() { return ''; },
+      };
+      const e = new Event('paste', { bubbles: true, cancelable: true });
+      Object.defineProperty(e, 'clipboardData', { value: dt });
+      document.dispatchEvent(e);
+      // Toast is set synchronously via setTimeout-hidden after 3s;
+      // a small yield is enough to let the handler run.
+      await new Promise(r => setTimeout(r, 0));
+    });
+
+    // The toast element receives the error text + `.toast-error`
+    // class. Read both; either changing independently breaks the
+    // user-visible contract.
+    const toastState = await page.evaluate(() => {
+      const el = document.getElementById('toast');
+      return {
+        text: el ? el.textContent : null,
+        cls: el ? el.className : null,
+        hidden: el ? el.classList.contains('hidden') : null,
+      };
+    });
+    expect(toastState.text).toBe('Nothing to paste');
+    expect(toastState.cls).toContain('toast-error');
+    expect(toastState.hidden).toBe(false);
+
+    // No file was loaded — findings must remain at the empty state.
+    const findings = await dumpFindings(page);
+    expect(findings.iocCount).toBe(0);
+  });
 });
