@@ -107,3 +107,72 @@ test('BinaryReader: esc escapes all four HTML metacharacters', () => {
   assert.equal(BinaryReader.esc(null), '');
   assert.equal(BinaryReader.esc(''), '');
 });
+
+// ─── Out-of-bounds / boundary reads ─────────────────────────────────────────
+// The integer read helpers are intentionally non-throwing: a partially-
+// parsed or truncated binary (e.g. a corrupt PE whose SizeOfImage points
+// past the file end) must not crash the renderer with a RangeError.
+// Instead the readers silently return:
+//   • u8 past end           → undefined
+//   • u16/u32/u64 fully OOB → 0 (all bytes undefined, coerced via bitwise ops)
+//   • partially OOB multi-byte reads → low bytes valid, high bytes zeroed
+//     (deterministic garbage, not NaN — because `undefined | (undefined<<8)`
+//     evaluates to 0 under ToInt32, not NaN)
+//   • cstring past end      → ''
+//   • entropy with off+len > bytes.length → 0
+// These tests pin that silent-fail contract so a future "hardening" that
+// switched to throwing would be caught here instead of crashing a
+// renderer in production.
+
+test('BinaryReader: u8 returns undefined past buffer end', () => {
+  const b = new Uint8Array([0x12, 0x34]);
+  assert.equal(BinaryReader.u8(b, b.length), undefined);
+  assert.equal(BinaryReader.u8(b, b.length + 10), undefined);
+});
+
+test('BinaryReader: u16le / u16be fully past buffer end return 0', () => {
+  const b = new Uint8Array([0x12, 0x34]);
+  assert.equal(BinaryReader.u16le(b, b.length), 0);
+  assert.equal(BinaryReader.u16be(b, b.length), 0);
+});
+
+test('BinaryReader: u16le / u16be partially OOB zero the missing high byte', () => {
+  const b = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
+  // Read starts at last byte — high byte is undefined (coerces to 0).
+  assert.equal(BinaryReader.u16le(b, b.length - 1), 0x78);
+  assert.equal(BinaryReader.u16be(b, b.length - 1), 0x7800);
+});
+
+test('BinaryReader: u32le / u32be fully past buffer end return 0', () => {
+  const b = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
+  assert.equal(BinaryReader.u32le(b, b.length), 0);
+  assert.equal(BinaryReader.u32be(b, b.length), 0);
+});
+
+test('BinaryReader: u32le / u32be partially OOB zero the missing high bytes', () => {
+  const b = new Uint8Array([0x12, 0x34, 0x56, 0x78]);
+  // Read starts two bytes before end — last two bytes undefined → 0.
+  assert.equal(BinaryReader.u32le(b, b.length - 2), 0x00007856);
+  assert.equal(BinaryReader.u32be(b, b.length - 2), 0x56780000);
+});
+
+test('BinaryReader: u64le / u64be fully past buffer end return 0', () => {
+  const b = new Uint8Array(4); // too small for any u64 read
+  assert.equal(BinaryReader.u64le(b, 0), 0);
+  assert.equal(BinaryReader.u64be(b, 0), 0);
+});
+
+test('BinaryReader: cstring returns empty string past buffer end', () => {
+  const b = new Uint8Array([0x61, 0x62]);
+  assert.equal(BinaryReader.cstring(b, b.length, 16), '');
+  assert.equal(BinaryReader.cstring(b, b.length + 5, 16), '');
+  assert.equal(BinaryReader.cstring(new Uint8Array(0), 0, 16), '');
+});
+
+test('BinaryReader: entropy returns 0 when off + len exceeds buffer length', () => {
+  const b = new Uint8Array([1, 2, 3, 4]);
+  // off (2) + len (10) > 4 → guard returns 0
+  assert.equal(BinaryReader.entropy(b, 2, 10), 0);
+  // off at buffer end
+  assert.equal(BinaryReader.entropy(b, b.length, 1), 0);
+});

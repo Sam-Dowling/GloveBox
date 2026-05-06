@@ -28,21 +28,74 @@ const ctx = loadModules(['src/constants.js', 'src/archive-analysis.js'], {
 const { ArchiveAnalysis } = ctx;
 
 test('ArchiveAnalysis: EXEC_EXTS contains every historical entry', () => {
-  for (const ext of [
+  // Full enumeration — must match the source of truth in archive-analysis.js.
+  // Ordered roughly by platform: Windows PE/scripts → PowerShell family →
+  // Windows Script Host family → Windows config/shortcuts → cross-platform
+  // runtimes → *nix shared objects → Office macro-enabled formats.
+  const EXPECTED = [
     'exe', 'dll', 'scr', 'com', 'pif', 'cpl', 'msi', 'msp', 'mst', 'sys',
-    'bat', 'cmd', 'ps1', 'vbs', 'js', 'wsf', 'hta', 'lnk', 'inf', 'reg',
-    'jar', 'py', 'sh', 'so', 'dylib',
-    'docm', 'xlsm', 'pptm',
-  ]) {
+    'bat', 'cmd', 'ps1', 'psm1', 'psd1', 'vbs', 'vbe', 'js', 'jse',
+    'wsf', 'wsh', 'wsc', 'hta', 'lnk', 'inf', 'reg', 'sct',
+    'jar', 'py', 'rb', 'sh', 'bash', 'so', 'dylib',
+    'docm', 'xlsm', 'pptm', 'dotm', 'xltm', 'potm', 'ppam', 'xlam',
+  ];
+  for (const ext of EXPECTED) {
     assert.ok(ArchiveAnalysis.EXEC_EXTS.has(ext), `EXEC_EXTS missing '${ext}'`);
   }
+  // Silent-removal guard — if the source ever loses an entry without the
+  // test being updated, the size mismatch catches it.
+  assert.equal(ArchiveAnalysis.EXEC_EXTS.size, EXPECTED.length,
+    `EXEC_EXTS size ${ArchiveAnalysis.EXEC_EXTS.size} != expected ${EXPECTED.length}; ` +
+    `something was added or removed in archive-analysis.js without the test being updated.`);
 });
 
 test('ArchiveAnalysis: DECOY_EXTS contains every historical entry', () => {
-  for (const ext of ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
-                     'jpg', 'png', 'gif', 'txt', 'rtf']) {
+  const EXPECTED = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+                    'jpg', 'png', 'gif', 'txt', 'rtf'];
+  for (const ext of EXPECTED) {
     assert.ok(ArchiveAnalysis.DECOY_EXTS.has(ext), `DECOY_EXTS missing '${ext}'`);
   }
+  assert.equal(ArchiveAnalysis.DECOY_EXTS.size, EXPECTED.length,
+    `DECOY_EXTS size ${ArchiveAnalysis.DECOY_EXTS.size} != expected ${EXPECTED.length}`);
+});
+
+test('ArchiveAnalysis: extOf returns trailing extension, lower-cased', () => {
+  // Canonical happy path — the hot call site in `buildCommonWarnings`.
+  assert.equal(ArchiveAnalysis.extOf('file.txt'), 'txt');
+  assert.equal(ArchiveAnalysis.extOf('FILE.EXE'), 'exe');
+  assert.equal(ArchiveAnalysis.extOf('dir/sub/file.pdf'), 'pdf');
+  // Multi-dot names take only the trailing segment.
+  assert.equal(ArchiveAnalysis.extOf('a.b.c.d'), 'd');
+  // Dots in parent segments are ignored — only the final basename matters.
+  assert.equal(ArchiveAnalysis.extOf('a.b/c.d'), 'd');
+});
+
+test('ArchiveAnalysis: extOf returns empty string for paths with no extension', () => {
+  // No dot at all → empty string, never throws.
+  assert.equal(ArchiveAnalysis.extOf('Makefile'), '');
+  assert.equal(ArchiveAnalysis.extOf('dir/README'), '');
+  // Trailing dot → empty (nothing after the dot).
+  assert.equal(ArchiveAnalysis.extOf('foo.'), '');
+  // Directory-style path (trailing slash → basename is empty).
+  assert.equal(ArchiveAnalysis.extOf('dir/'), '');
+});
+
+test('ArchiveAnalysis: extOf handles null / undefined / empty without throwing', () => {
+  // Guard contract — every caller passes `e.path || e.name` which can
+  // be undefined on malformed archive entries.
+  assert.equal(ArchiveAnalysis.extOf(null), '');
+  assert.equal(ArchiveAnalysis.extOf(undefined), '');
+  assert.equal(ArchiveAnalysis.extOf(''), '');
+});
+
+test('ArchiveAnalysis: extOf on leading-dot names treats the dot as separator', () => {
+  // `.hidden` → `lastIndexOf('.')` is 0, `slice(1)` is `'hidden'`. This
+  // matches Unix "dotfile" convention where the name IS the extension
+  // if that's all there is — benign for the EXEC_EXTS lookup
+  // (`'hidden'` isn't in the set). Pinned here so a future refactor
+  // that switches to a regex doesn't silently change the shape.
+  assert.equal(ArchiveAnalysis.extOf('.hidden'), 'hidden');
+  assert.equal(ArchiveAnalysis.extOf('.gitignore'), 'gitignore');
 });
 
 test('ArchiveAnalysis: isDoubleExt flags decoy + exec combination', () => {
@@ -156,10 +209,43 @@ test('ArchiveAnalysis: buildCommonWarnings skips directory entries', () => {
   assert.match(execs[0].msg, /1 executable/);
 });
 
-test('ArchiveAnalysis: parity — every renderer alias resolves to same Set', () => {
-  // Smoke check that the EXEC_EXTS / DECOY_EXTS exports are the actual
-  // shared frozen Sets, not copies. Renderer call sites alias them as
-  // `static EXEC_EXTS = ArchiveAnalysis.EXEC_EXTS`, so identity matters.
-  assert.strictEqual(ArchiveAnalysis.EXEC_EXTS, ArchiveAnalysis.EXEC_EXTS);
-  assert.strictEqual(ArchiveAnalysis.DECOY_EXTS, ArchiveAnalysis.DECOY_EXTS);
+test('ArchiveAnalysis: parity — every archive renderer aliases the shared Set (not a copy)', () => {
+  // Pins the contract that each archive renderer's `static EXEC_EXTS` /
+  // `static DECOY_EXTS` is an IDENTITY alias of the shared frozen Set.
+  //
+  // The previous version of this test compared `ArchiveAnalysis.EXEC_EXTS`
+  // to itself (`assert.strictEqual(X, X)`) and was therefore a no-op —
+  // it could never catch alias drift. Loading the actual renderer JS
+  // under node:vm is not viable either: these renderers pull in heavy
+  // deps (archive-tree, decompressor, pako, JSZip) that aren't on the
+  // unit-test harness surface.
+  //
+  // Instead, assert at the source-text level that each archive renderer
+  // declares the alias in its canonical shape:
+  //
+  //     static EXEC_EXTS = ArchiveAnalysis.EXEC_EXTS;
+  //     static DECOY_EXTS = ArchiveAnalysis.DECOY_EXTS;
+  //
+  // A copy (`new Set(ArchiveAnalysis.EXEC_EXTS)`), a manual literal
+  // (`new Set(['exe', ...])`), or any other divergent form fails this
+  // regex check. Drift is caught at the one place that matters: the
+  // renderer file itself.
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const REPO_ROOT = path.resolve(__dirname, '..', '..');
+  const RENDERERS = [
+    'src/renderers/zip-renderer.js',
+    'src/renderers/rar-renderer.js',
+    'src/renderers/seven7-renderer.js',
+    'src/renderers/cab-renderer.js',
+  ];
+  const EXEC_ALIAS_RE = /^\s*static\s+EXEC_EXTS\s*=\s*ArchiveAnalysis\.EXEC_EXTS\s*;\s*$/m;
+  const DECOY_ALIAS_RE = /^\s*static\s+DECOY_EXTS\s*=\s*ArchiveAnalysis\.DECOY_EXTS\s*;\s*$/m;
+  for (const rel of RENDERERS) {
+    const text = fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
+    assert.match(text, EXEC_ALIAS_RE,
+      `${rel}: missing canonical \`static EXEC_EXTS = ArchiveAnalysis.EXEC_EXTS;\` alias`);
+    assert.match(text, DECOY_ALIAS_RE,
+      `${rel}: missing canonical \`static DECOY_EXTS = ArchiveAnalysis.DECOY_EXTS;\` alias`);
+  }
 });
