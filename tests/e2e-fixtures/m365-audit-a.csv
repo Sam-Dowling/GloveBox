@@ -1,0 +1,11 @@
+Timestamp,UserId,EventName,Workload,ClientIP,UserAgent,Outcome,TargetResource,Raw
+2026-04-08T18:37:13.550868Z,brian.ramirez@litwareinc.com,UserLoggedIn,AzureActiveDirectory,10.67.139.172,Microsoft Office/16.0,Success,brian.ramirez@litwareinc.com,"{""Id"":""ba83a793"",""Operation"":""UserLoggedIn""}"
+2026-04-08T18:50:54.627469Z,barbara.williams@adatum.com,SharingInvitationCreated,SharePoint,202.203.96.25,okta-auth-js/7.5.1,Success,https://contoso.sharepoint.com/docs/deployment.docx,"{""Id"":""dd0cedcf"",""Operation"":""SharingInvitationCreated""}"
+2026-04-08T18:55:01.000000Z,brian.ramirez@litwareinc.com,FileAccessed,SharePoint,10.67.139.172,Microsoft Office/16.0,Success,https://contoso.sharepoint.com/docs/budget.xlsx,"{""Id"":""cc1""}"
+2026-04-08T19:00:00.000000Z,alice.jones@litwareinc.com,UserLoggedIn,AzureActiveDirectory,10.67.139.50,Chrome/125,Success,alice.jones@litwareinc.com,"{""Id"":""cc2""}"
+2026-04-08T19:05:12.000000Z,barbara.williams@adatum.com,FileDownloaded,SharePoint,202.203.96.25,okta-auth-js/7.5.1,Failure,https://contoso.sharepoint.com/docs/deploy.docx,"{""Id"":""cc3""}"
+2026-04-08T19:10:30.000000Z,eve.wilson@contoso.com,UserLoginFailed,AzureActiveDirectory,198.51.100.7,Mozilla/5.0 Firefox/126,Failure,eve.wilson@contoso.com,"{""Id"":""cc4""}"
+2026-04-08T19:15:45.000000Z,brian.ramirez@litwareinc.com,FolderCopied,OneDrive,10.67.139.172,Microsoft Office/16.0,Success,/personal/brian/Documents/Q2,"{""Id"":""cc5""}"
+2026-04-08T19:20:00.000000Z,dave.smith@adatum.com,MessageRead,Exchange,198.51.100.42,Outlook Mobile 4.2,Success,inbox/receipt-3214.eml,"{""Id"":""cc6""}"
+2026-04-08T19:25:14.000000Z,carol.park@litwareinc.com,SearchQueryPerformed,SharePoint,10.67.139.99,Chrome/125,Success,https://contoso.sharepoint.com/search?q=q2,"{""Id"":""cc7""}"
+2026-04-08T19:30:22.000000Z,alice.jones@litwareinc.com,UserStrongAuthClaimModified,AzureActiveDirectory,10.67.139.50,Chrome/125,Success,alice.jones@litwareinc.com,"{""Id"":""cc8""}"

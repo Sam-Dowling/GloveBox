@@ -1,0 +1,11 @@
+Timestamp,UserId,EventName,Workload,ClientIP,UserAgent,Outcome,TargetResource,Raw
+2026-04-08T18:53:04.049084Z,steven.lewis@litwareinc.com,FileAccessed,SharePoint,152.196.170.74,PostmanRuntime/7.37.3,Success,https://contoso.sharepoint.com/sites/Legal/marketing.pptx,"{""Id"":""b344de05"",""Operation"":""FileAccessed""}"
+2026-04-08T18:55:24.597316Z,sarah.jones@litwareinc.com,policy.evaluate_sign_on,Okta,121.95.183.233,Microsoft Office/16.0,Failure,sarah.jones@litwareinc.com,"{""eventType"":""policy.evaluate_sign_on""}"
+2026-04-08T19:02:00.000000Z,steven.lewis@litwareinc.com,FileDownloaded,SharePoint,152.196.170.74,PostmanRuntime/7.37.3,Success,https://contoso.sharepoint.com/sites/Legal/brief.pdf,"{""Id"":""bx1""}"
+2026-04-08T19:07:11.000000Z,mallory.stone@contoso.com,UserLoginFailed,AzureActiveDirectory,203.0.113.88,curl/8.0,Failure,mallory.stone@contoso.com,"{""Id"":""bx2""}"
+2026-04-08T19:12:42.000000Z,sarah.jones@litwareinc.com,user.session.start,Okta,121.95.183.233,Microsoft Office/16.0,Success,sarah.jones@litwareinc.com,"{""Id"":""bx3""}"
+2026-04-08T19:18:05.000000Z,trent.kim@adatum.com,SharingSet,SharePoint,198.51.100.200,Chrome/125,Success,https://contoso.sharepoint.com/sites/HR/reorg.docx,"{""Id"":""bx4""}"
+2026-04-08T19:22:33.000000Z,steven.lewis@litwareinc.com,MessageSend,Exchange,152.196.170.74,Outlook 16.0,Success,inbox/reply-to-council.eml,"{""Id"":""bx5""}"
+2026-04-08T19:28:12.000000Z,mallory.stone@contoso.com,UserLoginFailed,AzureActiveDirectory,203.0.113.88,curl/8.0,Failure,mallory.stone@contoso.com,"{""Id"":""bx6""}"
+2026-04-08T19:33:44.000000Z,trent.kim@adatum.com,FileRenamed,OneDrive,198.51.100.200,Chrome/125,Success,/personal/trent/Notes/meeting.txt,"{""Id"":""bx7""}"
+2026-04-08T19:39:00.000000Z,sarah.jones@litwareinc.com,user.authentication.sso,Okta,121.95.183.233,Microsoft Office/16.0,Success,sarah.jones@litwareinc.com,"{""Id"":""bx8""}"

@@ -1,0 +1,6 @@
+timestamp,hostname,severity,message
+2025-04-01T08:02:00Z,web01,info,healthcheck ok
+2025-04-01T08:07:00Z,web02,warn,rate limit hit
+2025-04-01T08:12:00Z,web01,error,upstream 502
+2025-04-01T08:20:00Z,web03,info,restart
+2025-04-01T08:44:00Z,web02,error,db timeout
