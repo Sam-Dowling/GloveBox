@@ -997,6 +997,37 @@ class App {
     // Path 3 — multi-file loose drop / multi-select picker. Bundle into
     // a synthetic "Dropped files" root so we never silently drop file 2..N.
     if (fileList.length > 1) {
+      // Multi-file drop onto an ACTIVE merged Timeline — route every
+      // merge-eligible file through `_timelineTryHandle` (which in
+      // turn calls `_timelineAddFile` because a Timeline is already
+      // loaded). Non-eligible files in the drop (binaries, PCAPs)
+      // fall back to the regular multi-file folder bundling. This
+      // keeps the drop-to-add UX fluid when an analyst drags a pile
+      // of logs at once.
+      if (this._timelineCurrent && this._timelineTryHandle) {
+        const eligible = [];
+        const other = [];
+        for (const f of fileList) {
+          if (!f || !f.name) { other.push(f); continue; }
+          const ext = f.name.split('.').pop().toLowerCase();
+          if (TIMELINE_MERGE_ELIGIBLE_KINDS.has(ext)) eligible.push(f);
+          else other.push(f);
+        }
+        if (eligible.length && !other.length) {
+          // Sequence the merges so each completes before the next
+          // starts — `_timelineAddFile` mutates `_timelineCurrent` and
+          // parallel calls would race on the shared registry.
+          (async () => {
+            for (const f of eligible) {
+              try {
+                await this._timelineAddFile(f);
+              } catch (_) { /* error already toasted by _timelineAddFile */ }
+            }
+          })();
+          return;
+        }
+        // Mixed drop — fall through to the folder-bundle path below.
+      }
       this._ingestLooseMultiFile(fileList);
       return;
     }

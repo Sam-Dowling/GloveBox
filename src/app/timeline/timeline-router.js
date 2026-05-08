@@ -471,6 +471,37 @@ extendApp({
   // magic + text sniff (see `_sniffTimelineContent`).
   _timelineTryHandle(file) {
     if (!this._isTimelineExt(file)) return false;
+    // Merge branch — when ANY Timeline is already loaded AND the incoming
+    // file kind is merge-eligible (CSV/TSV/log/structured-log/EVTX),
+    // route into `_timelineAddFile` instead of replacing the view. The
+    // check is intentionally `this._timelineCurrent` (not
+    // `this._timelineCurrent._sources`): the first merge onto a legacy
+    // single-file view is handled by `_timelineAddFile`, which
+    // synthesises a SourceRecord from the prior view via
+    // `_singleFileSourceFromView(prior)` before assembling the composite.
+    //
+    // PCAP and SQLite (`sqlite`/`db`/`pcap`/`pcapng`/`cap`) fall through
+    // to the single-file replace path below because their side-channels
+    // don't aggregate cleanly in v1.
+    if (this._timelineCurrent) {
+      const ext = file && file.name
+        ? file.name.split('.').pop().toLowerCase() : '';
+      if (TIMELINE_MERGE_ELIGIBLE_KINDS.has(ext)) {
+        const pm = this._timelineAddFile(file)
+          .catch(() => { /* error already surfaced by _timelineAddFile */ });
+        this._timelineLoadInFlight = pm;
+        pm.then(() => {
+          if (this._timelineLoadInFlight === pm) this._timelineLoadInFlight = null;
+        });
+        return true;
+      }
+      // Incoming file is a legitimate Timeline extension but NOT
+      // merge-eligible (PCAP / SQLite). Surface a targeted toast and
+      // fall through to the normal replace path.
+      this._toast(
+        'PCAP and SQLite files open standalone — existing merged Timeline will be replaced.',
+        'info');
+    }
     // Fire-and-forget: `_loadFile` returns synchronously after we kick
     // the Timeline mount so the drop-zone unblocks. Track the promise
     // on the App so the test API can await full settlement before the
@@ -1256,6 +1287,268 @@ extendApp({
     // btn-close, closes the sidebar, nulls _fileMeta / _navStack /
     // findings, re-renders breadcrumbs, clears search, and resets zoom.
     this._clearFile();
+  },
+
+  // ── Multi-source merge: add a file to the active Timeline ──────────
+  //
+  // Parses `file` as a SourceRecord, assembles a new composite view
+  // from `[existingSources..., newRecord]`, and swaps the mounted
+  // TimelineView. Called from `_timelineTryHandle` when the dropped
+  // file matches one of `TIMELINE_MERGE_ELIGIBLE_KINDS` AND a
+  // Timeline is already loaded.
+  //
+  // Error paths:
+  //   - Cap exceeded (soft warn at 8, hard refuse at 16) → toast only.
+  //   - Mixed numeric / wall-clock time domains → toast only.
+  //   - Cumulative heap budget exceeded → toast only.
+  //   - Parse failure (worker reject / sync fallback exception) →
+  //     toast + log; the existing view stays mounted, no state change.
+  async _timelineAddFile(file, prefetchedBuffer) {
+    const prior = this._timelineCurrent;
+    if (!prior) {
+      // Nothing to merge with — fall through to the regular loader.
+      return this._loadFileInTimeline(file, prefetchedBuffer);
+    }
+    // Build the existing sources list. For a first-time merge (prior
+    // view is single-file, has no `_sources`), synthesise a
+    // SourceRecord from the prior view's fields so the composite path
+    // can build uniformly.
+    const existingSources = prior._sources
+      ? prior._sources.slice()
+      : [this._singleFileSourceFromView(prior)];
+
+    // Soft / hard caps.
+    if (existingSources.length >= RENDER_LIMITS.TIMELINE_SOURCE_CAP_HARD) {
+      this._toast(
+        'Merged Timeline already at max capacity (' +
+        RENDER_LIMITS.TIMELINE_SOURCE_CAP_HARD +
+        ' sources). Remove one via the source chip bar to make room.',
+        'error');
+      return;
+    }
+
+    // Check merge-eligibility + basic sniff on the incoming file.
+    const ext = file && file.name ? file.name.split('.').pop().toLowerCase() : '';
+    if (!TIMELINE_MERGE_ELIGIBLE_KINDS.has(ext)) {
+      this._toast(
+        `'${ext}' files cannot be merged into a Timeline. Use Close to start fresh.`,
+        'error');
+      return;
+    }
+
+    this._setLoading(true);
+    let newSource = null;
+    try {
+      // Read the file buffer (respects watchdog timeout). If the caller
+      // already has the bytes — e.g. `_loadFile`'s extensionless-sniff
+      // branch read them for the sniff pass — reuse instead of a
+      // second fetch so large log drops don't pay the double-read cost.
+      const buffer = prefetchedBuffer
+        || await ParserWatchdog.run(() => file.arrayBuffer());
+      // If the file is extensionless / mislabelled, prefer the sniffed
+      // kind. Structured-log tokeniser routing is driven by
+      // `_sniffTimelineContent`.
+      let kindHint = ext;
+      const sniffed = this._sniffTimelineContent(buffer);
+      if (sniffed && TIMELINE_MERGE_ELIGIBLE_KINDS.has(sniffed)) {
+        kindHint = sniffed;
+      } else if (sniffed === 'log' && ext !== 'log') {
+        kindHint = 'log';
+      }
+
+      // Existing-label set for dedup.
+      const existingLabels = new Set(existingSources.map(s => s.sourceLabel));
+
+      newSource = await timelineSourceFromFile(file, buffer, kindHint, existingLabels);
+
+      // Time-domain + heap preflight using the new source's metadata.
+      if (!!newSource.baseTimeIsNumeric !== !!existingSources[0].baseTimeIsNumeric) {
+        releaseSourceRecord(newSource);
+        this._toast(
+          'Cannot merge a numeric-axis file with a wall-clock Timeline. ' +
+          'The time domains are incompatible.',
+          'error');
+        return;
+      }
+      try {
+        assertCompositeHeapOk(existingSources, newSource);
+      } catch (e) {
+        releaseSourceRecord(newSource);
+        this._toast(e && e.message ? e.message : 'Merged Timeline too large for available memory.',
+          'error');
+        return;
+      }
+
+      // Soft cap — warn but accept.
+      if (existingSources.length + 1 > RENDER_LIMITS.TIMELINE_SOURCE_CAP_SOFT) {
+        this._toast(
+          `Merged Timeline now has ${existingSources.length + 1} sources — ` +
+          'large merges may slow the UI.',
+          'info');
+      }
+
+      // Build composite view from [existing..., new].
+      const nextSources = existingSources.concat([newSource]);
+      const view = TimelineView.fromSources(nextSources);
+
+      this._swapTimelineView(view);
+      this._toast(
+        `Merged ${newSource.sourceLabel} (${newSource.baseStore.rowCount.toLocaleString()} rows) into Timeline`,
+        'info');
+    } catch (e) {
+      console.error('[timeline] add failed:', e);
+      if (newSource) releaseSourceRecord(newSource);
+      this._toast(
+        'Failed to merge file: ' + (e && e.message ? e.message : e),
+        'error');
+    } finally {
+      this._setLoading(false);
+    }
+  },
+
+  // Synthesise a SourceRecord from an already-mounted single-file
+  // TimelineView. Called by `_timelineAddFile` on the first merge to
+  // bring the legacy single-file state into the composite model.
+  _singleFileSourceFromView(view) {
+    const file = view.file || { name: 'source', size: 0, lastModified: 0 };
+    const fileKey = _tlsComputeFileKey(file);
+    const sourceId = 1;   // first source — stable, no collision possible
+    const formatLabelLower = (view.formatLabel || '').toLowerCase();
+    let formatKind = 'csv';
+    if (view._evtxEvents) formatKind = 'evtx';
+    else if (/syslog.*3164/i.test(view.formatLabel)) formatKind = 'syslog3164';
+    else if (/syslog.*5424/i.test(view.formatLabel)) formatKind = 'syslog5424';
+    else if (/zeek/i.test(view.formatLabel)) formatKind = 'zeek';
+    else if (/cloudtrail/i.test(view.formatLabel)) formatKind = 'cloudtrail';
+    else if (/jsonl/i.test(view.formatLabel)) formatKind = 'jsonl';
+    else if (/^cef/i.test(view.formatLabel)) formatKind = 'cef';
+    else if (/^leef/i.test(view.formatLabel)) formatKind = 'leef';
+    else if (/logfmt/i.test(view.formatLabel)) formatKind = 'logfmt';
+    else if (/w3c/i.test(view.formatLabel) || /IIS/i.test(view.formatLabel)) formatKind = 'w3c';
+    else if (/apache error/i.test(view.formatLabel)) formatKind = 'apache-error';
+    else if (/access log/i.test(view.formatLabel)) formatKind = 'access-log';
+    else if (/^csv/i.test(view.formatLabel) || /^tsv/i.test(view.formatLabel)) {
+      formatKind = /tsv/i.test(view.formatLabel) ? 'tsv' : 'csv';
+    } else if (/log/i.test(formatLabelLower)) formatKind = 'log';
+    return {
+      file,
+      fileKey,
+      sourceId,
+      sourceLabel: file.name || 'source 1',
+      formatLabel: view.formatLabel || '',
+      formatKind,
+      baseColumns: Array.from(view._baseColumns || view.columns || []),
+      baseStore: view.store,
+      baseTimeMs: view._timeMs,
+      baseTimeIsNumeric: !!view._timeIsNumeric,
+      timeCol: Number.isInteger(view._timeCol) ? view._timeCol : 0,
+      stackCol: Number.isInteger(view._stackCol) ? view._stackCol : 1,
+      evtxEvents: view._evtxEvents || null,
+      evtxFindings: view._evtxFindings || null,
+      ipColumns: Array.isArray(view._ipColumns) ? view._ipColumns.slice() : [],
+      enabled: true,
+      color: TIMELINE_SOURCE_PALETTE[0],
+      truncated: !!view.truncated,
+      originalRowCount: view.originalRowCount || view.store.rowCount,
+    };
+  },
+
+  // Swap the mounted `TimelineView` with a freshly-built one. Preserves
+  // body class, timeline-root host, and toolbar chrome; destroys the
+  // old view cleanly.
+  _swapTimelineView(newView) {
+    const oldView = this._timelineCurrent;
+    newView._app = this;
+    let host = document.getElementById('timeline-root');
+    if (!host) {
+      host = document.createElement('div');
+      host.id = 'timeline-root';
+      const main = document.getElementById('main-area') || document.body;
+      main.appendChild(host);
+    }
+    host.innerHTML = '';
+    host.appendChild(newView.root());
+    this._timelineCurrent = newView;
+    if (oldView) {
+      // The old view's baseStore / _timeMs references were captured
+      // into the new view's SourceRecord for the FIRST source, so we
+      // must NOT destroy() the old view (that would null those
+      // references). Skip destroy() and just drop the DOM reference.
+      // For composite→composite swaps (subsequent merges), the new
+      // sources list carries the old sources by reference, same
+      // situation.
+      try {
+        // Manually tear down only view-local resources (ResizeObserver,
+        // event listeners) without nulling the data arrays.
+        if (oldView._resizeObs) { try { oldView._resizeObs.disconnect(); } catch (_) { /* noop */ } }
+        if (oldView._queryEditor && typeof oldView._queryEditor.destroy === 'function') {
+          try { oldView._queryEditor.destroy(); } catch (_) { /* noop */ }
+        }
+        if (oldView._grid && typeof oldView._grid.destroy === 'function') {
+          try { oldView._grid.destroy(); } catch (_) { /* noop */ }
+        }
+        if (oldView._onDocClick) document.removeEventListener('mousedown', oldView._onDocClick, true);
+        if (oldView._onDocKey) document.removeEventListener('keydown', oldView._onDocKey, true);
+        if (oldView._onDocScroll) window.removeEventListener('scroll', oldView._onDocScroll, true);
+        if (oldView._onDocKeyUp) document.removeEventListener('keyup', oldView._onDocKeyUp, true);
+        if (typeof oldView._uninstallSourcesKeyShortcuts === 'function') {
+          oldView._uninstallSourcesKeyShortcuts();
+        }
+        oldView._destroyed = true;
+      } catch (_) { /* best-effort teardown */ }
+    }
+    // Ensure body chrome reflects Timeline state.
+    document.body.classList.add('has-timeline');
+    // Refresh the breadcrumb so a merge / remove immediately updates
+    // the chrome. `_fileMeta` remains anchored to whichever file was
+    // last stamped by `_loadFileInTimeline`; the renderer reads
+    // `_timelineCurrent._sources` directly for the merged branch and
+    // falls through to the legacy single-file crumb for n=1 views
+    // (the `_timelineRemountFromSources` path refreshes `_fileMeta`
+    // when n drops to 1 so the single-file crumb shows the surviving
+    // source's name).
+    if (typeof this._renderBreadcrumbs === 'function') {
+      try { this._renderBreadcrumbs(); } catch (_) { /* cosmetic */ }
+    }
+  },
+
+  // Re-mount the Timeline from a reduced `sources` list — used by the
+  // chip-bar's 🗑 remove action.
+  _timelineRemountFromSources(sources, opts) {
+    try {
+      if (!sources || !sources.length) {
+        this._clearTimelineFile();
+        return;
+      }
+      const view = TimelineView.fromSources(sources);
+      // When removing a source drops the count to 1, refresh
+      // `_fileMeta` to point at the surviving source so the legacy
+      // single-source breadcrumb (rendered by `_renderBreadcrumbs`
+      // when `_sources.length < 2`) shows the correct filename. If
+      // the removed source was the original `_fileMeta` owner, not
+      // refreshing here would leave a stale filename in the
+      // breadcrumb + tab title.
+      if (sources.length === 1 && sources[0] && sources[0].file) {
+        const f = sources[0].file;
+        this._fileMeta = {
+          name: f.name || '',
+          size: typeof f.size === 'number' ? f.size : 0,
+          mimeType: f.type || '',
+          lastModified: f.lastModified
+            ? new Date(f.lastModified).toISOString() : '',
+        };
+      }
+      this._swapTimelineView(view);
+      const removed = opts && opts.removed;
+      if (removed && removed.sourceLabel) {
+        this._toast('Removed ' + removed.sourceLabel + ' from Timeline', 'info');
+        // Release the removed source's heavy data.
+        if (typeof releaseSourceRecord === 'function') releaseSourceRecord(removed);
+      }
+    } catch (e) {
+      console.error('[timeline] remount after remove failed:', e);
+      this._toast('Failed to update Timeline after remove', 'error');
+    }
   },
 
 });

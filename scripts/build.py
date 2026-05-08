@@ -1113,6 +1113,18 @@ APP_JS_FILES = [
     # transferables and posts them; the dataset wrapper is consumed
     # only on the main thread when the view is constructed.
     'src/app/timeline/timeline-dataset.js',
+    # timeline-mapper.js — pure per-format canonical column mappers and
+    # the fusion predicate used by `buildCompositeSchema`. Consumed by
+    # `timeline-composite.js`; touches no DOM, no TimelineView. Must
+    # load AFTER `timeline-parser-helpers.js` (reads `_TL_*_COLS`
+    # schema constants) and BEFORE `timeline-composite.js`.
+    'src/app/timeline/timeline-mapper.js',
+    # timeline-composite.js — composite RowStore / sourceOfRow /
+    # enabled-bitmap / chrono-sort builders for merged Timelines.
+    # Consumed by `TimelineView.fromSources` and `_timelineAddFile`.
+    # Must load AFTER `row-store.js` + `timeline-mapper.js` and
+    # BEFORE `timeline-view-factories.js`.
+    'src/app/timeline/timeline-composite.js',
     # timeline-wheel.js — outer-host scroll-continuation handler. Loads
     # before timeline-view.js so the installer (`window.installTimeline-
     # WheelContinuation`) is in scope when `_buildDOM` mounts `.tl-host`.
@@ -1120,9 +1132,23 @@ APP_JS_FILES = [
     'src/app/timeline/timeline-view.js',
     # timeline-view-factories.js — TimelineView static-method mixin
     # (B2a). Hosts `TimelineView.fromCsvAsync` / `fromEvtx` /
-    # `fromSqlite`; attaches via `Object.assign(TimelineView, {...})`.
+    # `fromSqlite` / `fromSources` (multi-source); attaches via
+    # `Object.assign(TimelineView, {...})`.
     # MUST load AFTER timeline-view.js so the class identifier exists.
     'src/app/timeline/timeline-view-factories.js',
+    # timeline-sources.js — SourceRecord factory that wraps the
+    # `TimelineView.fromXxx` parsers, destructures the intermediate
+    # view into a SourceRecord, and releases the heavy data references.
+    # Must load AFTER timeline-view-factories.js (reads the static
+    # factory methods off TimelineView) and BEFORE timeline-router.js
+    # (which calls `timelineSourceFromFile`).
+    'src/app/timeline/timeline-sources.js',
+    # timeline-sources-bar.js — chip-bar mixin for merged timelines.
+    # Renders one chip per SourceRecord with toggle + remove affordances
+    # and Alt+1..9 shortcuts. Gated on `this._sources.length >= 2`.
+    # Must load AFTER timeline-view.js (attaches to prototype) and
+    # AFTER timeline-sources.js (uses the palette constant).
+    'src/app/timeline/timeline-sources-bar.js',
     # timeline-view-persist.js — TimelineView static-method mixin
     # (B2b). Hosts the ~30 `_loadXxx` / `_saveXxx` localStorage
     # helpers (bucket pref, grid/chart heights, sections, per-file

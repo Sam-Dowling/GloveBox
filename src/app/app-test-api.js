@@ -132,7 +132,13 @@ extendApp({
     const file = new File([u8], String(name || 'test.bin'),
       { type: o.type || 'application/octet-stream' });
     if (!o.skipNavReset) this._resetNavStack();
-    this._testApiResetCrossLoadState();
+    // `skipCrossLoadReset` — opt-in escape hatch for tests that WANT
+    // to exercise the multi-source Timeline merge path. The reset
+    // unconditionally destroys `_timelineCurrent` (see
+    // `_testApiResetCrossLoadState` doc-comment), which would defeat
+    // the whole point of a drop-to-add merge assertion. Default stays
+    // false so every existing test keeps its fresh-per-load semantics.
+    if (!o.skipCrossLoadReset) this._testApiResetCrossLoadState();
     await this._loadFile(file);
     await this._testApiWaitForIdle({ timeoutMs: o.timeoutMs || 15000 });
     return this._testApiDumpFindings();

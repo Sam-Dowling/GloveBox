@@ -140,6 +140,7 @@ export async function loadFixture(
   page: Page,
   relPath: string,
   filename?: string,
+  opts?: { skipCrossLoadReset?: boolean },
 ): Promise<FindingsSnapshot> {
   const abs = path.join(REPO_ROOT, relPath);
   if (!fs.existsSync(abs)) {
@@ -148,19 +149,23 @@ export async function loadFixture(
   const bytes = fs.readFileSync(abs);
   const b64 = bytes.toString('base64');
   const name = filename || path.basename(abs);
+  const skipCrossLoadReset = !!opts?.skipCrossLoadReset;
 
-  return page.evaluate(async ({ b64, name }) => {
+  return page.evaluate(async ({ b64, name, skipCrossLoadReset }) => {
     // Decode base64 → Uint8Array inside the page realm.
     const bin = atob(b64);
     const u8 = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
     const w = window as unknown as {
       __loupeTest: {
-        loadBytes(name: string, bytes: Uint8Array): Promise<unknown>;
+        loadBytes(name: string, bytes: Uint8Array, opts?: { skipCrossLoadReset?: boolean }): Promise<unknown>;
       };
     };
-    return (await w.__loupeTest.loadBytes(name, u8)) as unknown;
-  }, { b64, name }) as Promise<FindingsSnapshot>;
+    return (await w.__loupeTest.loadBytes(
+      name, u8,
+      skipCrossLoadReset ? { skipCrossLoadReset: true } : undefined,
+    )) as unknown;
+  }, { b64, name, skipCrossLoadReset }) as Promise<FindingsSnapshot>;
 }
 
 /**

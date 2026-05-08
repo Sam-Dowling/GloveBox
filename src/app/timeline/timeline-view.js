@@ -107,6 +107,43 @@ class TimelineView {
     this._pcapFindings = opts.pcapFindings && typeof opts.pcapFindings === 'object'
       ? opts.pcapFindings : null;
 
+    // ── Multi-source registry (null for legacy single-file loads) ──────
+    // When a composite timeline is mounted (drop-to-add, second+ file
+    // merged in), the router passes:
+    //   sources        — array of SourceRecord (see timeline-sources.js)
+    //   sourceOfRow    — Uint32Array(compositeRowCount) mapping each
+    //                    composite row to the source it came from
+    //   enabledBitmap  — Uint8Array(compositeRowCount), 1 iff the row's
+    //                    source is toggled on
+    //   schemaPlan     — the `buildCompositeSchema` result so merge-add
+    //                    can re-build without re-scanning every source
+    //   evtxFindingsBySource — Map<sourceId, evtxFindings> for the
+    //                    Detections / Entities panels (aggregated across
+    //                    every EVTX source)
+    // These slots are `null` for single-file loads, and every consumer
+    // (`_recomputeFilter`, detections renderer, summarize helper) checks
+    // `this._sources ? ... : ...` so the single-file path is unchanged.
+    this._sources              = Array.isArray(opts.sources) ? opts.sources : null;
+    this._sourceOfRow          = opts.sourceOfRow instanceof Uint32Array ? opts.sourceOfRow : null;
+    this._sourceEnabledBitmap  = opts.sourceEnabledBitmap instanceof Uint8Array ? opts.sourceEnabledBitmap : null;
+    this._schemaPlan           = opts.schemaPlan || null;
+    this._evtxFindingsBySource = opts.evtxFindingsBySource instanceof Map ? opts.evtxFindingsBySource : null;
+    // Validate consistency when any multi-source slot is supplied —
+    // attaching a partial registry would silently disable the chip bar
+    // or the filter AND, so throw early with a precise message.
+    if (this._sources) {
+      if (!this._sourceOfRow || this._sourceOfRow.length !== this.store.rowCount) {
+        throw new Error(
+          'TimelineView: sources provided but sourceOfRow has wrong length (' +
+          (this._sourceOfRow ? this._sourceOfRow.length : 'null') +
+          ' vs rowCount=' + this.store.rowCount + ')');
+      }
+      if (!this._sourceEnabledBitmap || this._sourceEnabledBitmap.length !== this.store.rowCount) {
+        throw new Error(
+          'TimelineView: sources provided but enabledBitmap has wrong length');
+      }
+    }
+
     // Extracted / regex virtual columns — each entry:
 
     //   { name, kind: 'json'|'regex'|'auto', sourceCol, path?, pattern?, flags?,
@@ -415,6 +452,9 @@ class TimelineView {
     if (this._onDocScroll) window.removeEventListener('scroll', this._onDocScroll, true);
     if (this._onDocKeyUp) document.removeEventListener('keyup', this._onDocKeyUp, true);
     this._onDocClick = this._onDocKey = this._onDocScroll = this._onDocKeyUp = null;
+    if (typeof this._uninstallSourcesKeyShortcuts === 'function') {
+      this._uninstallSourcesKeyShortcuts();
+    }
 
     // Reset drag-state flags + strip any document-level cursor classes the
     // active drag installed on <body>. If destroy interrupts a live drag,
@@ -463,6 +503,19 @@ class TimelineView {
     this._evtxFindings = null;
     this._pcapInfo = null;
     this._pcapFindings = null;
+    // Release every SourceRecord — drops their baseStore / baseTimeMs /
+    // evtxEvents references so GC can reclaim bytes. Idempotent;
+    // `releaseSourceRecord` tolerates already-released records.
+    if (this._sources) {
+      for (const rec of this._sources) {
+        if (typeof releaseSourceRecord === 'function') releaseSourceRecord(rec);
+      }
+      this._sources = null;
+    }
+    this._sourceOfRow = null;
+    this._sourceEnabledBitmap = null;
+    this._schemaPlan = null;
+    this._evtxFindingsBySource = null;
     this._app = null;
   }
 
@@ -596,6 +649,17 @@ class TimelineView {
 
     `;
     host.appendChild(toolbar);
+
+    // ── Merged-sources chip bar (visible when ≥2 sources loaded) ───────
+    // Mount point created unconditionally so a mid-session drop-to-add
+    // can reveal the bar without a re-buildDOM. Rendering is gated on
+    // `this._sources.length >= 2` inside `_renderSourcesBar`.
+    if (typeof this._buildSourcesBar === 'function') {
+      this._buildSourcesBar(host);
+      if (typeof this._installSourcesKeyShortcuts === 'function') {
+        this._installSourcesKeyShortcuts();
+      }
+    }
 
     // Scrubber
     const scrubber = this._buildSection('scrubber', null, () => {

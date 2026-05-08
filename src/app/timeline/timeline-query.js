@@ -229,6 +229,10 @@ function _tlParseQuery(tokens, columnsResolver) {
 
   // Resolve a field name to a column index, or -1 for "any column" sentinel.
   // Matching is case-insensitive; exact match wins over prefix match.
+  //
+  // Synthetic alias: `source` resolves to `__source` (the canonical
+  // source-label column in merged Timelines). Typing the leading
+  // underscores is awkward so we accept both forms.
   const resolveField = (name, tok) => {
     const raw = String(name || '').trim();
     if (!raw) err('missing field name', tok);
@@ -236,6 +240,13 @@ function _tlParseQuery(tokens, columnsResolver) {
     if (!columnsResolver) err('no columns available', tok);
     const cols = columnsResolver();
     const lc = raw.toLowerCase();
+    // Synthetic `source` → `__source` alias (canonical composite col).
+    if (lc === 'source') {
+      for (let i = 0; i < cols.length; i++) {
+        if (String(cols[i] || '').toLowerCase() === '__source') return i;
+      }
+      err('source: facet requires a merged Timeline', tok);
+    }
     // Exact match first.
     for (let i = 0; i < cols.length; i++) {
       if (String(cols[i] || '').toLowerCase() === lc) return i;

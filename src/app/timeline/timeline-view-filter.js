@@ -191,12 +191,19 @@ Object.assign(TimelineView.prototype, {
     // tint matching rows red but never filter them out.
     const n = this.store.rowCount;
     const queryPred = this._queryPred;
+    // Multi-source filter — when a merged timeline has any toggled-off
+    // source, AND the per-row enabled bitmap into whatever the query
+    // pred yielded. Single-file views leave `_sourceEnabledBitmap` null
+    // and take the fast identity-index path unchanged.
+    const enabledBm = this._sourceEnabledBitmap;
+    const hasSourceFilter = enabledBm && this._sources
+      && this._sources.some(s => s.enabled === false);
 
-    if (!queryPred) {
-      // Fast path — no active query. Reuse a cached identity index
-      // (0, 1, 2, …, n-1) instead of allocating + filling a fresh
-      // Uint32Array every time. Saves ~4MB allocation + O(n) fill for
-      // 1M rows on every filter-clear.
+    if (!queryPred && !hasSourceFilter) {
+      // Fast path — no active query AND every source is enabled. Reuse
+      // a cached identity index (0, 1, 2, …, n-1) instead of allocating
+      // + filling a fresh Uint32Array every time. Saves ~4MB + O(n)
+      // fill for 1M rows on every filter-clear.
       if (!this._identityIdx || this._identityIdx.length !== n) {
         const id = new Uint32Array(n);
         for (let i = 0; i < n; i++) id[i] = i;
@@ -206,8 +213,19 @@ Object.assign(TimelineView.prototype, {
     } else {
       const buf = new Uint32Array(n);
       let w = 0;
-      for (let i = 0; i < n; i++) {
-        if (queryPred(i)) buf[w++] = i;
+      if (queryPred && hasSourceFilter) {
+        for (let i = 0; i < n; i++) {
+          if (enabledBm[i] && queryPred(i)) buf[w++] = i;
+        }
+      } else if (queryPred) {
+        for (let i = 0; i < n; i++) {
+          if (queryPred(i)) buf[w++] = i;
+        }
+      } else {
+        // hasSourceFilter only
+        for (let i = 0; i < n; i++) {
+          if (enabledBm[i]) buf[w++] = i;
+        }
       }
       this._chipFilteredIdx = buf.subarray(0, w);
     }

@@ -324,7 +324,88 @@ const RENDER_LIMITS = Object.freeze({
   // populating universe of "loadable" files without protecting against
   // additional failure modes.
   ROWSTORE_HEAP_OVERHEAD_FACTOR: 1.6,
+
+  // ── Multi-source Timeline caps ──────────────────────────────────────
+  // A single Timeline view may merge multiple compatible log files
+  // (CSV / TSV / EVTX / all structured-log kinds). Each source keeps
+  // its own `baseStore` resident for fast toggle-off rebuilds, and the
+  // composite store is built on top. These caps bound the linear-across-
+  // sources cost of re-sort, chip-bar render, per-source detections
+  // aggregation, and the "N files in one timeline" working-set size.
+  //
+  //   TIMELINE_SOURCE_CAP_SOFT — beyond this, drop-to-add surfaces an
+  //     informational warn-toast but still accepts the merge.
+  //   TIMELINE_SOURCE_CAP_HARD — beyond this, drop-to-add refuses with
+  //     a blocking error-toast pointing the analyst at Reset / remove.
+  //
+  // Most analyst workflows merge 2-4 files; 8 is generous; 16 is the
+  // bound where O(n) operations across sources start to feel sluggish.
+  TIMELINE_SOURCE_CAP_SOFT: 8,
+  TIMELINE_SOURCE_CAP_HARD: 16,
+  // Composite projected-heap overhead relative to the sum of per-source
+  // `file.size`. Slightly higher than the single-file
+  // `ROWSTORE_HEAP_OVERHEAD_FACTOR` because the composite adds: the
+  // per-source base RowStores kept resident, the canonical column
+  // cells (string duplication for `__source` / `__format` / `Host` /
+  // `User` / ... sparsely populated), and the source-of-row Uint32Array.
+  // 2.2 covers single-source loads too (only the composite view exists
+  // after Commit 5 unification — no dedicated fast path).
+  TIMELINE_COMPOSITE_HEAP_OVERHEAD_FACTOR: 2.2,
 });
+
+// ── Canonical columns shared by every merged Timeline row ─────────────────
+// When two or more sources are loaded into the same Timeline view the grid
+// prepends these columns so queries / top-values / pivots / detections
+// have a uniform schema to pivot on. Per-format mappers in
+// `src/app/timeline/timeline-mapper.js` populate each cell from native
+// fields (EVTX `Computer` → `Host`, syslog `MSG` → `Message`, etc.); rows
+// whose source doesn't carry the field leave the cell empty.
+//
+// Single-source timelines leave these columns hidden by default
+// (canonical-column visibility is `sources.length >= 2`). The mapper
+// still runs in single-source mode so the data is available for
+// `fromSources([one])` round-trip (no single-source fast path after
+// Commit 5). The `__source` / `__format` columns lead so queries like
+// `source:events.csv` read left-to-right.
+const TIMELINE_CANONICAL_COLS = Object.freeze([
+  '__source',
+  '__format',
+  'Timestamp',
+  'Host',
+  'User',
+  'Process',
+  'Message',
+  'EventID',
+  'Severity',
+  'Category',
+  'SourceIP',
+  'DestIP',
+]);
+
+// Extension / sniff-kind values that are ELIGIBLE to be merged into an
+// existing Timeline via drop-to-add. PCAP (`pcap`/`pcapng`/`cap`) and
+// SQLite browser-history (`sqlite`/`db`) still open standalone as
+// first-class timelines, but the composite merge path refuses them
+// (their side-channel shape — `_pcapInfo`, `browserType`-gated dispatch
+// — doesn't aggregate cleanly and deferring them keeps v1 scope
+// bounded). Dropped onto a loaded Timeline they surface a specific
+// refusal toast; dropped fresh they still route through
+// `_timelineTryHandle` as today.
+const TIMELINE_MERGE_ELIGIBLE_KINDS = Object.freeze(new Set([
+  'csv', 'tsv', 'log',
+  'evtx',
+  'syslog3164', 'syslog5424',
+  'zeek', 'jsonl', 'cloudtrail',
+  'cef', 'leef', 'logfmt',
+  'w3c', 'apache-error', 'access-log',
+]));
+
+// Composite `_fileKey` prefix — distinguishes merged timelines from
+// per-source reopen keys (`name|size|lastModified`). Composite keys
+// are session-only in v1 (not written to localStorage); the prefix
+// gates read-side code that must bypass `loupe_timeline_*` storage
+// when the key is composite.
+const TIMELINE_COMPOSITE_KEY_PREFIX = 'composite:';
 
 // ── EVTX column schema ────────────────────────────────────────────────────────
 // Canonical column names for the EVTX timeline view.  Used by

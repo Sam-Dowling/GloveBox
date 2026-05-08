@@ -116,9 +116,34 @@ Object.assign(TimelineView.prototype, {
     const body = this._els.detectionsBody;
     if (!sec || !body) return;
 
-    const refs = this._evtxFindings && Array.isArray(this._evtxFindings.externalRefs)
-      ? this._evtxFindings.externalRefs.filter(r => r && r.type === IOC.PATTERN)
-      : [];
+    // Merged-timeline aggregation: when `_evtxFindingsBySource` is
+    // populated (composite view with ≥1 EVTX source), union every
+    // source's `externalRefs` into a single array. Each ref gets a
+    // `_sourceLabel` / `_sourceId` tag so the render loop below can
+    // decorate the row with a source pill. Single-file EVTX views
+    // fall through to the legacy `_evtxFindings` path.
+    let refs;
+    if (this._evtxFindingsBySource && this._evtxFindingsBySource.size && this._sources) {
+      const acc = [];
+      const byId = new Map();
+      for (const s of this._sources) byId.set(s.sourceId, s);
+      for (const [sid, findings] of this._evtxFindingsBySource.entries()) {
+        if (!findings || !Array.isArray(findings.externalRefs)) continue;
+        const src = byId.get(sid);
+        const label = src ? src.sourceLabel : '';
+        for (const r of findings.externalRefs) {
+          if (r && r.type === IOC.PATTERN) {
+            // Shallow-clone so we can tag without mutating the source's findings.
+            acc.push(Object.assign({}, r, { _sourceLabel: label, _sourceId: sid }));
+          }
+        }
+      }
+      refs = acc;
+    } else {
+      refs = this._evtxFindings && Array.isArray(this._evtxFindings.externalRefs)
+        ? this._evtxFindings.externalRefs.filter(r => r && r.type === IOC.PATTERN)
+        : [];
+    }
     if (!refs.length) {
       sec.wrapper.classList.add('hidden');
       return;

@@ -244,13 +244,24 @@ extendApp({
       // EVTX magic or a CSV/TSV-shaped text head. This catches renamed
       // / extensionless logs that the fast-path `_timelineTryHandle`
       // couldn't spot from the filename alone.
+      //
+      // When a merged Timeline is already mounted AND the sniffed kind
+      // is merge-eligible, route into `_timelineAddFile(file, buffer)`
+      // so the extensionless drop merges instead of replacing. Pass the
+      // already-read buffer through to avoid a second file read.
       if (!this._skipTimelineRoute
         && this._sniffTimelineContent
         && !this._isTimelineExt(file)) {
         const sniffed = this._sniffTimelineContent(buffer);
         if (sniffed) {
           this._setLoading(false);
-          await this._loadFileInTimeline(file, buffer);
+          if (this._timelineCurrent
+              && typeof TIMELINE_MERGE_ELIGIBLE_KINDS !== 'undefined'
+              && TIMELINE_MERGE_ELIGIBLE_KINDS.has(sniffed)) {
+            await this._timelineAddFile(file, buffer);
+          } else {
+            await this._loadFileInTimeline(file, buffer);
+          }
           return;
         }
       }
@@ -1988,6 +1999,97 @@ extendApp({
     this._renderBreadcrumbs();
   },
 
+  // Open a read-only popover anchored under the merged-Timeline
+  // breadcrumb's `▾` button. Lists every source with a colour swatch
+  // (matching the chip-bar palette), label, format, row count, and
+  // file size. Closes on outside-click, Escape, scroll, or resize.
+  //
+  // The menu uses the same `position: fixed` pattern as the archive
+  // drill-down overflow menu (see `buildCollapsedTrail` in
+  // `_renderBreadcrumbs`) so it escapes `#breadcrumbs`'s
+  // `overflow: hidden` clip without fighting the enclosing layout.
+  _openCrumbSourcesMenu(anchor, sources) {
+    // If a menu is already open, close it (click-again toggles).
+    if (this._crumbSourcesClose) {
+      try { this._crumbSourcesClose(); } catch (_) { /* defensive */ }
+      this._crumbSourcesClose = null;
+      return;
+    }
+
+    const menu = document.createElement('div');
+    menu.className = 'crumb-sources-menu';
+    menu.setAttribute('role', 'menu');
+    menu.setAttribute('aria-label', 'Merged Timeline sources');
+
+    for (const s of sources) {
+      const item = document.createElement('div');
+      item.className = 'crumb-sources-menu-item';
+      item.setAttribute('role', 'menuitem');
+
+      const swatch = document.createElement('span');
+      swatch.className = 'crumb-sources-menu-swatch';
+      swatch.style.backgroundColor = s.color || '#999';
+      item.appendChild(swatch);
+
+      const label = document.createElement('span');
+      label.className = 'crumb-sources-menu-label';
+      label.textContent = s.sourceLabel || 'source';
+      item.appendChild(label);
+
+      const fmt = document.createElement('span');
+      fmt.className = 'crumb-sources-menu-fmt';
+      fmt.textContent = (s.formatLabel || s.formatKind || '').toUpperCase();
+      item.appendChild(fmt);
+
+      const metaParts = [];
+      if (s.baseStore) metaParts.push(s.baseStore.rowCount.toLocaleString() + ' rows');
+      if (s.file && typeof s.file.size === 'number' && this._fmtBytes) {
+        metaParts.push(this._fmtBytes(s.file.size));
+      }
+      if (metaParts.length) {
+        const meta = document.createElement('span');
+        meta.className = 'crumb-sources-menu-meta';
+        meta.textContent = metaParts.join(' · ');
+        item.appendChild(meta);
+      }
+
+      menu.appendChild(item);
+    }
+
+    document.body.appendChild(menu);
+
+    const positionMenu = () => {
+      const r = anchor.getBoundingClientRect();
+      menu.style.top = (r.bottom + 4) + 'px';
+      const w = menu.offsetWidth || 280;
+      const maxLeft = Math.max(8, window.innerWidth - w - 8);
+      menu.style.left = Math.max(8, Math.min(r.left, maxLeft)) + 'px';
+    };
+    positionMenu();
+    anchor.setAttribute('aria-expanded', 'true');
+
+    const off = (ev) => {
+      if (ev && ev.type === 'keydown' && ev.key !== 'Escape') return;
+      if (ev && ev.type === 'mousedown'
+          && (anchor.contains(ev.target) || menu.contains(ev.target))) return;
+      if (menu.parentNode) menu.parentNode.removeChild(menu);
+      anchor.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('mousedown', off, true);
+      document.removeEventListener('keydown', off, true);
+      window.removeEventListener('scroll', reposition, true);
+      window.removeEventListener('resize', reposition);
+      if (this._crumbSourcesClose === off) this._crumbSourcesClose = null;
+    };
+    const reposition = () => {
+      if (menu.parentNode) positionMenu();
+    };
+    document.addEventListener('mousedown', off, true);
+    document.addEventListener('keydown', off, true);
+    window.addEventListener('scroll', reposition, true);
+    window.addEventListener('resize', reposition);
+    this._crumbSourcesClose = off;
+  },
+
   // Jump directly to a specific depth in the nav stack — the only entry
   // point for ancestor navigation now that back/forward
   // (Alt-arrow / mouse side-buttons) has been retired in favour of the
@@ -2222,6 +2324,10 @@ extendApp({
       try { this._crumbOverflowClose(); } catch (_) { /* defensive */ }
       this._crumbOverflowClose = null;
     }
+    if (this._crumbSourcesClose) {
+      try { this._crumbSourcesClose(); } catch (_) { /* defensive */ }
+      this._crumbSourcesClose = null;
+    }
 
     // One-shot install of a debounced window-resize listener. Without
     // this, the staged collapse routine only re-measured on the events
@@ -2250,6 +2356,73 @@ extendApp({
       nav.classList.add('hidden');
       nav.innerHTML = '';
       document.title = 'Loupe';
+      return;
+    }
+
+    // ── Merged Timeline crumb ──────────────────────────────────────────
+    // When the Timeline view holds ≥2 sources, the breadcrumb should
+    // reflect the merged view — not pin to any one member file. The
+    // composite crumb shows "first-source + N-1 others" for n=2 or
+    // "N sources merged" for n≥3, carries total-rows / cumulative-size
+    // meta, and exposes a `▾` button that opens a read-only sources
+    // popover. Single-source views (including non-Timeline loads)
+    // fall through to the legacy crumb-build path below.
+    const mergedSources = this._timelineCurrent
+      && Array.isArray(this._timelineCurrent._sources)
+      && this._timelineCurrent._sources.length >= 2
+      ? this._timelineCurrent._sources : null;
+
+    if (mergedSources) {
+      const label = mergedSources.length === 2
+        ? (mergedSources[0].sourceLabel + ' + 1 other')
+        : (mergedSources.length + ' sources merged');
+      let totalRows = 0, totalSize = 0;
+      for (const s of mergedSources) {
+        if (s.baseStore) totalRows += s.baseStore.rowCount;
+        if (s.file && typeof s.file.size === 'number') totalSize += s.file.size;
+      }
+
+      // Tab title — distinct from the crumb label so the tab-switcher
+      // signal is "this tab is a merged view" rather than a single
+      // filename (which would be misleading).
+      document.title = mergedSources.length + ' sources merged — Loupe';
+
+      nav.classList.remove('hidden', 'is-tight', 'is-very-tight');
+      nav.innerHTML = '';
+
+      const el = document.createElement('span');
+      el.className = 'crumb crumb-current crumb-merged';
+      el.setAttribute('aria-current', 'page');
+      const icon = document.createElement('span');
+      icon.className = 'crumb-icon';
+      icon.textContent = '📑';
+      el.appendChild(icon);
+      const lbl = document.createElement('span');
+      lbl.className = 'crumb-label';
+      lbl.textContent = label;
+      el.appendChild(lbl);
+      const metaParts = [];
+      metaParts.push(totalRows.toLocaleString() + ' rows');
+      if (totalSize > 0 && this._fmtBytes) metaParts.push(this._fmtBytes(totalSize));
+      const meta = document.createElement('span');
+      meta.className = 'crumb-meta';
+      meta.textContent = '· ' + metaParts.join(' · ');
+      el.appendChild(meta);
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'crumb-sources-btn';
+      btn.textContent = '▾';
+      btn.title = 'Show merged sources';
+      btn.setAttribute('aria-haspopup', 'true');
+      btn.setAttribute('aria-expanded', 'false');
+      btn.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        this._openCrumbSourcesMenu(btn, mergedSources);
+      });
+      el.appendChild(btn);
+
+      nav.appendChild(el);
       return;
     }
 

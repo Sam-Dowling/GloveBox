@@ -701,4 +701,156 @@ Object.assign(TimelineView, {
     });
   },
 
+  // ── Multi-source factory ───────────────────────────────────────────
+  // `TimelineView.fromSources(sources)` builds a composite timeline view
+  // from ≥1 `SourceRecord`s (see `timeline-sources.js`).  For n=1, the
+  // composite schema degenerates to "canonical columns + the single
+  // source's native columns" — canonical columns are hidden by default
+  // in the grid (the chip-bar mixin gates visibility on n≥2) so the
+  // single-file UX is unchanged.
+  //
+  // Throws:
+  //   `MIXED_TIME_DOMAIN` — one source is numeric-axis, another
+  //     wall-clock. Callers refuse the merge with a specific toast.
+  //
+  // The returned TimelineView carries:
+  //   • A composite RowStore whose rows are the concatenation of every
+  //     source's rows, prepended with TIMELINE_CANONICAL_COLS populated
+  //     via the per-format mapper.
+  //   • `_sources` / `_sourceOfRow` / `_sourceEnabledBitmap` /
+  //     `_schemaPlan` slots wired so `_recomputeFilter` ANDs the
+  //     per-row enabled bitmap into its output.
+  //   • `_evtxFindingsBySource` — a Map<sourceId, findings> so the
+  //     Detections / Entities panels can aggregate across multiple EVTX
+  //     sources without per-source mounts.
+  //
+  // The view's `file` is the FIRST source's file (breadcrumb + window
+  // title use this). A future chip-bar improvement may switch the
+  // breadcrumb to a "N sources merged" label instead.
+  fromSources(sources) {
+    if (!Array.isArray(sources) || !sources.length) {
+      throw new Error('TimelineView.fromSources: sources must be a non-empty array');
+    }
+    const plan = buildCompositeSchema(sources);
+    const store = buildCompositeStore(sources, plan);
+    const timeMs = buildCompositeTime(sources);
+    const sourceOfRow = buildSourceOfRow(sources);
+    const enabledBitmap = buildEnabledBitmap(sources, sourceOfRow);
+
+    // Pick defaults: canonical `Timestamp` column (index 2 in
+    // canonical list) as default time-col when ≥2 sources are merged;
+    // for n=1 keep the source's native time-col for parity with the
+    // legacy single-file UX.
+    const CANON_TIMESTAMP_IDX = plan.canonicalCols.indexOf('Timestamp');
+    let defaultTimeColIdx;
+    if (sources.length >= 2) {
+      defaultTimeColIdx = CANON_TIMESTAMP_IDX >= 0 ? CANON_TIMESTAMP_IDX : 0;
+    } else {
+      // Single-source: `Timestamp` canonical is populated by the
+      // mapper from the source's native time column. Prefer the
+      // canonical slot so single-source and merged flows agree, but
+      // fall back to the source's own `timeCol` shifted by the
+      // canonical prefix length when the mapper didn't populate it.
+      defaultTimeColIdx = CANON_TIMESTAMP_IDX >= 0
+        ? CANON_TIMESTAMP_IDX
+        : (plan.canonicalCols.length + (sources[0].timeCol || 0));
+    }
+
+    // Default stack col: the first canonical column that tends to
+    // have 2–20 distinct values in forensic data — `Severity` if
+    // populated, else `Category`, else fall through.
+    const tryCol = (name) => {
+      const ix = plan.canonicalCols.indexOf(name);
+      if (ix < 0) return -1;
+      // Sample a few rows to confirm it isn't uniformly empty.
+      let seen = 0;
+      const probeN = Math.min(store.rowCount, 200);
+      for (let i = 0; i < probeN; i++) {
+        if (store.getCell(i, ix) !== '') { seen++; if (seen >= 5) break; }
+      }
+      return seen >= 5 ? ix : -1;
+    };
+    let defaultStackColIdx = tryCol('Severity');
+    if (defaultStackColIdx < 0) defaultStackColIdx = tryCol('Category');
+    if (defaultStackColIdx < 0) defaultStackColIdx = tryCol('__source');
+    if (defaultStackColIdx < 0) defaultStackColIdx = 1;
+
+    // Aggregate EVTX findings per source-id for the Detections panel.
+    const evtxBy = new Map();
+    let anyEvtx = false;
+    let anyEvtxEvents = false;
+    for (const s of sources) {
+      if (s.evtxFindings) {
+        evtxBy.set(s.sourceId, s.evtxFindings);
+        anyEvtx = true;
+      }
+      if (s.evtxEvents && s.evtxEvents.length) anyEvtxEvents = true;
+    }
+
+    // Ancillary composite formatLabel ("3 sources merged" for n≥2).
+    const formatLabel = sources.length >= 2
+      ? (sources.length + ' sources merged')
+      : (sources[0].formatLabel || '');
+
+    // Total originalRowCount across sources (for the truncated banner).
+    let total = 0;
+    let originalTotal = 0;
+    for (const s of sources) {
+      if (s.baseStore) total += s.baseStore.rowCount;
+      originalTotal += (s.originalRowCount || 0);
+    }
+
+    const opts = {
+      file: sources[0].file,
+      columns: plan.compositeColumns,
+      store,
+      formatLabel,
+      truncated: sources.some(s => s.truncated),
+      originalRowCount: originalTotal || total,
+      defaultTimeColIdx,
+      defaultStackColIdx,
+      // Legacy single-file `_evtxFindings` / `_evtxEvents` stay unset
+      // — the merged Detections / Summarize paths consult
+      // `_evtxFindingsBySource` / per-source `evtxEvents` instead.
+      evtxEvents: null,
+      evtxFindings: null,
+      // Multi-source opts (the new contract).
+      sources,
+      sourceOfRow,
+      sourceEnabledBitmap: enabledBitmap,
+      schemaPlan: plan,
+      evtxFindingsBySource: anyEvtx ? evtxBy : null,
+      ipColumns: [],
+    };
+
+    // The TimelineView constructor does NOT yet know how to walk a
+    // composite `_evtxEvents` parallel array (single-file slot is per
+    // row; composite rows from non-EVTX sources have no corresponding
+    // event). Leave the slot null; per-source detections walk
+    // `_evtxFindingsBySource` directly. The
+    // `_rebuildDetectionBitmap` path in `timeline-view-filter.js`
+    // checks `this._evtxFindings` first, which stays null here — so
+    // detection highlighting in the grid defaults to OFF in composite
+    // mode for now, and the per-source Detections panel carries the
+    // load. A follow-up can build a composite detection bitmap via
+    // `_evtxFindingsBySource` if needed.
+    void anyEvtxEvents;
+
+    // Pre-parse `_timeMs` from the concat'd array rather than the
+    // constructor's auto-`_parseAllTimestamps` pass (which would
+    // re-parse the canonical `Timestamp` column as strings). We stash
+    // the prebuilt Float64Array on the opts and the constructor picks
+    // it up — but actually, the current constructor always calls
+    // `_parseAllTimestamps` against `_timeCol`. The canonical
+    // `Timestamp` column carries the string form of each source's
+    // timestamp (mapper copied `row[timeCol]` verbatim in most cases,
+    // re-formatted in a few like W3C), so re-parsing the column is
+    // correct and yields the same numeric values the per-source
+    // `baseTimeMs` had. This is wasteful but correct; a future perf
+    // pass can short-circuit it via the concat'd time array.
+    void timeMs;
+
+    return new TimelineView(opts);
+  },
+
 });
