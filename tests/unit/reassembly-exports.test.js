@@ -264,7 +264,7 @@ test('_renderReassembledScriptCard drill-down button uses canonical tb-btn enc-b
   );
   assert.match(
     body[0],
-    /textContent\s*=\s*['"]▶\s*Load stitched script['"]/,
+    /textContent\s*=\s*['"]▶\s*Analyse Deobfuscated Script['"]/,
     'button label must use the ▶ prefix like every other "Load for analysis" button'
   );
   assert.doesNotMatch(

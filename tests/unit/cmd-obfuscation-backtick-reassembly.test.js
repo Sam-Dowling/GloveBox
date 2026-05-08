@@ -1,7 +1,7 @@
 'use strict';
 // ════════════════════════════════════════════════════════════════════════════
 // cmd-obfuscation-backtick-reassembly.test.js — end-to-end regression
-// pin for the user-reported "Load for analysis" + "Load stitched script"
+// pin for the user-reported "Load for analysis" + "Analyse Deobfuscated Script"
 // bug on PowerShell backtick-escape .NET namespace chains.
 //
 // The bug: the backtick decoder's token regex was `[a-zA-Z0-9`]`, which
@@ -19,7 +19,7 @@
 // 10-char `New-Object` into the 16-char raw-backticked source range,
 // leaving the obfuscated tail `" Sy`st`em.Ne`t.We`b`Cl`ie`nt"` in the
 // stitched output. Both "Load for analysis" on the per-finding card
-// and "Load stitched script" surfaced the duplicated / still-obfuscated
+// and "Analyse Deobfuscated Script" surfaced the duplicated / still-obfuscated
 // text.
 //
 // The fix widens the regex char class to include `.` AND extends the
@@ -132,9 +132,9 @@ test('user-fixture: reassembled stitched body has no leftover backticks on line 
   assert.match(stripped, /\$example2\s*=\s*"New-Object\s+System\.Net\.WebClient"/);
 });
 
-test('user-fixture: "Load stitched script" byte-payload equals the previewed stitched body', async () => {
+test('user-fixture: "Analyse Deobfuscated Script" byte-payload equals the previewed stitched body', async () => {
   // The user's diagnosis pairs "preview shows X" with "loader loads Y".
-  // The stitched-script load button encodes `stripSentinels(recon.text)`
+  // The deobfuscated-script load button encodes `stripSentinels(recon.text)`
   // as UTF-8 and hands that buffer to `openInnerFile`. This test pins
   // that the loader-bound bytes round-trip to the same string the
   // preview renders — the two paths must be byte-identical.
@@ -145,7 +145,7 @@ test('user-fixture: "Load stitched script" byte-payload equals the previewed sti
   const loaderBytes = new TextEncoder().encode(previewText);
   const roundTrip = new TextDecoder('utf-8').decode(loaderBytes);
   assert.equal(roundTrip, previewText,
-    '"Load stitched script" bytes must decode to the exact preview string');
+    '"Analyse Deobfuscated Script" bytes must decode to the exact preview string');
   // And the round-trip is the expanded form (no backticks on line 3).
   assert.doesNotMatch(roundTrip, /Sy`st`em/);
   assert.match(roundTrip, /System\.Net\.WebClient/);

@@ -366,7 +366,7 @@ attach to `reconstructedScript.yaraHits`.
 The sidebar paints a single composite card at the top of the
 Deobfuscation section (`_renderReassembledScriptCard` in
 `app-sidebar.js`) — per-finding cards below retain provenance detail.
-The "Load stitched script for analysis" button opens the sentinel-
+The "Analyse Deobfuscated Script" button opens the sentinel-
 stripped body as a synthetic file with `opts._isReassemblyChild = true`,
 which flips `this._isReassemblyChild` in `_loadFile` so the child load
 does NOT recursively reassemble its own reassembled body.

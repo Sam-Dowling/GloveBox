@@ -3303,21 +3303,6 @@ body.dark .enc-yara-chip-more {
   color: rgba(203, 213, 225, .7);
 }
 
-/* ── Primary action button modifier ──────────────────────────────────
-
-   Applied alongside `.enc-btn-alltheway` so the "All the way ⏩" button
-   visually dominates its siblings — it's the recommended action when a
-   multi-layer chain exists. The modifier simply intensifies the purple
-   accent already on `.enc-btn-alltheway`. */
-.enc-btn-primary {
-  font-weight: 700 !important;
-  box-shadow: 0 0 0 1px rgba(124, 58, 237, .4) inset;
-}
-
-body.dark .enc-btn-primary {
-  box-shadow: 0 0 0 1px rgba(167, 139, 250, .5) inset;
-}
-
 
 .enc-finding-note {
   color: #856404;
@@ -3456,7 +3441,7 @@ body.dark .enc-decoded-preview {
 /* ── Decode-depth separators + deepest-layer preview ───────────────────
    The "Deobfuscation" finding card can stack up to three preview blocks:
    grey (raw encoded snippet) → green (.enc-decoded-preview, one layer) →
-   purple (.enc-deepest-preview, "all the way" output). `.enc-decode-depth-
+   purple (.enc-deepest-preview, deepest decoded output). `.enc-decode-depth-
    sep` is the thin labelled divider that sits between each pair. Base
    variant is neutral (grey→green); `.enc-depth-sep-deep` recolours the
    lower divider to match the purple deepest preview. */
@@ -3728,30 +3713,262 @@ body.dark mark.enc-highlight-pulse {
   }
 }
 
-/* ── "All the way" deep decode button ── */
-.enc-btn-alltheway {
+/* ── Layer-picker caret (▾) button ── */
+/* Narrow-width variant of `.tb-btn`, sits next to the primary action button
+   on each Deobfuscation card. Opens a `.tb-menu--layer` popover listing
+   every pickable layer in the innerFindings tree, plus a pinned stitched-
+   script entry when `findings.reconstructedScript` has ≥2 spans. Replaces
+   the legacy "All the way ⏩" button's silent severity-ranked branch pick
+   with an explicit, user-visible menu of destinations. */
+.enc-btn-caret {
   font-size: 10px !important;
-  padding: 4px 10px !important;
-  background: rgba(124, 58, 237, .1) !important;
-  border-color: rgba(124, 58, 237, .25) !important;
-  color: #7c3aed !important;
+  padding: 4px 8px !important;
+  min-width: 0 !important;
   font-weight: 600 !important;
 }
 
-.enc-btn-alltheway:hover {
-  background: rgba(124, 58, 237, .2) !important;
-  border-color: rgba(124, 58, 237, .4) !important;
+.enc-btn-caret[aria-expanded="true"] {
+  background: rgba(0, 0, 0, .06) !important;
 }
 
-body.dark .enc-btn-alltheway {
-  background: rgba(167, 139, 250, .1) !important;
-  border-color: rgba(167, 139, 250, .2) !important;
-  color: #a78bfa !important;
+body.dark .enc-btn-caret[aria-expanded="true"] {
+  background: rgb(var(--accent-rgb) / .12) !important;
 }
 
-body.dark .enc-btn-alltheway:hover {
-  background: rgba(167, 139, 250, .2) !important;
-  border-color: rgba(167, 139, 250, .35) !important;
+/* ── Layer-picker menu (`.tb-menu` variant portalled to document.body) ──
+   Reuses the toolbar's `.tb-menu` skeleton (background/shadow/border)
+   but is PORTALLED to `document.body` and POSITIONED inline by JS via
+   `getBoundingClientRect` in `_openLayerPickerMenu` — so no static
+   `top` / `right` / `left` here. Portalling escapes the sidebar's
+   `overflow: hidden` clipping and lets the menu flip upward when the
+   caret is near the bottom of the viewport.
+   `max-height` is clamped by viewport so a very short screen never
+   produces a menu taller than the window. */
+.tb-menu--layer {
+  min-width: 240px;
+  max-width: min(360px, 90vw);
+  max-height: min(320px, calc(100vh - 20px));
+  overflow-y: auto;
+  font-size: 11px;
+}
+
+.tb-menu--layer .tb-menu-item {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 6px 8px;
+  align-items: baseline;
+  padding: 6px 10px;
+}
+
+.tb-menu--layer .tb-menu-label {
+  grid-column: 2;
+  font-weight: 600;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.tb-menu--layer .tb-menu-sublabel {
+  grid-column: 3;
+  font-size: 10px;
+  color: #6b7280;
+  white-space: nowrap;
+  font-weight: 400;
+}
+
+body.dark .tb-menu--layer .tb-menu-sublabel {
+  color: rgba(255, 255, 255, .45);
+}
+
+.tb-menu--layer .tb-menu-item-stitched {
+  background: rgb(var(--accent-rgb) / .10);
+  /* 4px accent stripe OVERRIDES the severity stripe set by
+     `.tb-menu-item-sev-*` below (both use `box-shadow: inset Npx 0 0 …`,
+     and rules defined later win at equal specificity). Makes the
+     "Deobfuscated Script" row visually dominate over per-layer rows
+     regardless of recon.severity. */
+  box-shadow: inset 4px 0 0 var(--accent);
+  padding: 8px 10px;
+}
+
+.tb-menu--layer .tb-menu-item-stitched:hover {
+  background: rgb(var(--accent-rgb) / .20);
+}
+
+body.dark .tb-menu--layer .tb-menu-item-stitched {
+  background: rgb(var(--accent-rgb) / .14);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+
+body.dark .tb-menu--layer .tb-menu-item-stitched:hover {
+  background: rgb(var(--accent-rgb) / .24);
+}
+
+/* Bold + slightly-larger label for the Deobfuscated Script row. Scoped
+   to the stitched row so per-layer labels stay at the base 11px. */
+.tb-menu--layer .tb-menu-item-stitched .tb-menu-label {
+  font-weight: 700;
+  font-size: 12px;
+}
+
+/* "★ PRIMARY" pseudo-element appended to the label — signals that the
+   Deobfuscated Script is the recommended destination among the ≥2-span
+   layer picks below. Uses `::after` so the JS builder in
+   `_buildLayerPickerEntries` stays unchanged (single source of truth
+   for the `label` string). */
+.tb-menu--layer .tb-menu-item-stitched .tb-menu-label::after {
+  content: '★ PRIMARY';
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  color: var(--accent);
+  background: rgb(var(--accent-rgb) / .18);
+  border-radius: 3px;
+  vertical-align: middle;
+}
+
+body.dark .tb-menu--layer .tb-menu-item-stitched .tb-menu-label::after {
+  background: rgb(var(--accent-rgb) / .22);
+}
+
+/* Severity tint along the left edge of the menu row — matches the card
+   severity stripes so an analyst scanning the list can triage by colour. */
+.tb-menu--layer .tb-menu-item-sev-critical { box-shadow: inset 3px 0 0 #7c3aed; }
+.tb-menu--layer .tb-menu-item-sev-high     { box-shadow: inset 3px 0 0 #dc2626; }
+.tb-menu--layer .tb-menu-item-sev-medium   { box-shadow: inset 3px 0 0 #d97706; }
+.tb-menu--layer .tb-menu-item-sev-info     { box-shadow: inset 3px 0 0 #0891b2; }
+
+/* Separator row between stitched entry and layer entries. */
+.tb-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: rgba(0, 0, 0, .08);
+}
+
+body.dark .tb-menu-sep {
+  background: rgba(255, 255, 255, .08);
+}
+
+/* ── Pinned Deobfuscated Script card (banner variant) ──
+   Rendered by `_renderReassembledScriptCard` at the TOP of the
+   Deobfuscation section when `findings.reconstructedScript` has ≥2
+   spans. Distilled view of every parallel obfuscation technique spliced
+   back into the source — almost always the card an analyst wants to
+   drill into first. The rest of the section lists per-finding cards for
+   individual layer inspection; this banner must read as the primary
+   destination, not a peer of the layer cards beneath it. Selectors here
+   scope purely to `.enc-finding-card-reassembled` / `[data-sb-
+   reassembled="1"]`, so per-finding cards are untouched.
+   Accent-tint card + thick left stripe make the banner obvious; the
+   CTA button inside follows the codebase's `.tb-accent-btn` contrast
+   pattern (pastel bg + deep accent text in light, tinted-glass bg +
+   bright accent text in dark) so it stays readable across every theme
+   — `--accent` ranges from a dark blue (#1a73e8) to bright cyan
+   (#22d3ee) / light lavender (#cba6f7) / ochre (#b58900) across the
+   shipped themes, which rules out solid-accent backgrounds. */
+.enc-finding-card-reassembled {
+  background: rgb(var(--accent-rgb) / .08);
+  border: 1px solid rgb(var(--accent-rgb) / .35);
+  border-left: 4px solid var(--accent);
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  box-shadow: 0 2px 8px rgb(var(--accent-rgb) / .12);
+}
+
+.enc-finding-card-reassembled:hover {
+  border-color: rgb(var(--accent-rgb) / .55);
+}
+
+.enc-finding-card-reassembled .enc-finding-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.enc-finding-card-reassembled .enc-finding-actions {
+  margin-top: 10px;
+}
+
+/* CTA button — mirrors `.tb-accent-btn`'s light-mode colour scheme: a
+   pastel blue-white background with deep-accent text, providing
+   legible contrast in the default theme. Dark-mode + per-theme
+   overrides below retarget to `rgb(var(--accent-rgb) / X)` so every
+   theme stays in-palette and readable. */
+.enc-finding-card-reassembled .enc-btn-load {
+  display: block;
+  width: 100%;
+  padding: 10px 14px !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  background: #e0edff !important;
+  border: 1px solid #93b8e8 !important;
+  color: var(--accent-hover) !important;
+  box-shadow: 0 1px 2px rgb(var(--accent-rgb) / .15);
+  transition: background .15s, border-color .15s, color .15s, box-shadow .15s;
+}
+
+.enc-finding-card-reassembled .enc-btn-load:hover {
+  background: #c8ddfb !important;
+  border-color: #6e9fdb !important;
+  color: #134694 !important;
+  box-shadow: 0 2px 6px rgb(var(--accent-rgb) / .25);
+}
+
+.enc-finding-card-reassembled .enc-btn-load:active {
+  background: #b0ccf5 !important;
+  transform: scale(.98);
+}
+
+body.dark .enc-finding-card-reassembled {
+  background: rgb(var(--accent-rgb) / .10);
+  border-color: rgb(var(--accent-rgb) / .40);
+  border-left-color: var(--accent);
+  box-shadow: 0 2px 8px rgb(var(--accent-rgb) / .15);
+}
+
+body.dark .enc-finding-card-reassembled:hover {
+  border-color: rgb(var(--accent-rgb) / .60);
+}
+
+/* Dark-mode CTA: tinted-glass background + bright accent text.
+   Matches the `body.dark .tb-accent-btn` pattern exactly so the button
+   reads as a peer of the toolbar's flagship '⚡ Copy Analysis' button. */
+body.dark .enc-finding-card-reassembled .enc-btn-load {
+  background: rgb(var(--accent-rgb) / .14) !important;
+  border-color: rgb(var(--accent-rgb) / .35) !important;
+  color: var(--accent) !important;
+  box-shadow: 0 1px 2px rgb(var(--accent-rgb) / .15);
+}
+
+body.dark .enc-finding-card-reassembled .enc-btn-load:hover {
+  background: rgb(var(--accent-rgb) / .24) !important;
+  border-color: rgb(var(--accent-rgb) / .55) !important;
+  color: var(--accent-hover) !important;
+  box-shadow: 0 0 16px rgb(var(--accent-rgb) / .18);
+}
+
+body.dark .enc-finding-card-reassembled .enc-btn-load:active {
+  background: rgb(var(--accent-rgb) / .30) !important;
+  transform: scale(.98);
+}
+
+/* Per-theme overrides — the hard-coded blue pastels `#e0edff` /
+   `#134694` don't work under purple (Latte) or ochre (Solarized)
+   accents, so retarget those themes to the accent-rgb family
+   (matches how each theme redefines `.tb-accent-btn`). */
+body.theme-latte .enc-finding-card-reassembled .enc-btn-load,
+body.theme-solarized .enc-finding-card-reassembled .enc-btn-load {
+  background: rgb(var(--accent-rgb) / .12) !important;
+  border-color: rgb(var(--accent-rgb) / .35) !important;
+  color: var(--accent) !important;
+}
+
+body.theme-latte .enc-finding-card-reassembled .enc-btn-load:hover,
+body.theme-solarized .enc-finding-card-reassembled .enc-btn-load:hover {
+  background: rgb(var(--accent-rgb) / .22) !important;
+  border-color: rgb(var(--accent-rgb) / .55) !important;
+  color: var(--accent-hover) !important;
 }
 
 /* ── IOC click-to-highlight in plaintext view ── */

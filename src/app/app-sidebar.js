@@ -9,11 +9,12 @@ extendApp({
 
   // Shared helper: create a synthetic file from decoded bytes and dispatch
   // it through the unified `App.openInnerFile` drill-down.
-  // Deduplicated from the five "Decode & Analyse" / "Load for analysis" /
-  // "Load embedded ZIP" / "Decompress & Analyse" / "All the way" button
-  // handlers in the encoded-content card. The returnFocus payload tells
-  // `_renderSidebar` to scroll + flash the originating Deobfuscation
-  // finding when the user navigates back from the drill-down.
+  // Deduplicated from the "Decode & Analyse" / "Load for analysis" /
+  // "Load embedded ZIP" / "Decompress & Analyse" button handlers plus the
+  // layer-picker caret (▾) menu entries that expose every pickable
+  // innerFindings layer. The returnFocus payload tells `_renderSidebar`
+  // to scroll + flash the originating Deobfuscation finding when the
+  // user navigates back from the drill-down.
   _drillDownToSynthetic(bytes, synName, mime, fileName, findingOffset) {
     const blob = new Blob([bytes], { type: mime || 'application/octet-stream' });
     const syntheticFile = new File([blob], synName, { type: mime || 'application/octet-stream' });
@@ -21,6 +22,372 @@ extendApp({
       parentName: fileName,
       returnFocus: { section: 'deobfuscation', findingOffset },
     });
+  },
+
+  // Shared helper: dispatch a drill-down into the stitched/reassembled
+  // script. Sentinel-strips the reconstruction, builds the canonical
+  // `.reassembled.<hash>.<ext>` virtual filename, and threads the
+  // `_isReassemblyChild` flag so `app-load.js` skips re-reassembly on
+  // the child load (otherwise an infinite-loop risk when the stitched
+  // body is itself a reassembly candidate).
+  //
+  // Two callers:
+  //   • `_renderReassembledScriptCard` → the stitched-script card's
+  //     primary "▶ Analyse Deobfuscated Script" button.
+  //   • Per-card caret (▾) menu → the pinned "🧩 Deobfuscated Script" entry
+  //     surfaced on every Deobfuscation card when a reconstruction is
+  //     available.
+  _drillDownToStitched(recon, fileName) {
+    const rawText = (window.EncodedReassembler && typeof window.EncodedReassembler.stripSentinels === 'function')
+      ? window.EncodedReassembler.stripSentinels(recon.text)
+      : recon.text;
+    const origExt = (() => {
+      const m = /\.([A-Za-z0-9]{1,8})$/.exec(fileName || '');
+      return m ? m[1].toLowerCase() : 'txt';
+    })();
+    const synName = `${(fileName || 'file').replace(/\.[^.]+$/, '')}.reassembled.${recon.reconstructedHash || 'noh'}.${origExt}`;
+    const bytes = new TextEncoder().encode(rawText);
+    const blob = new Blob([bytes], { type: 'text/plain' });
+    const syntheticFile = new File([blob], synName, { type: 'text/plain' });
+    this.openInnerFile(syntheticFile, null, {
+      parentName: fileName,
+      returnFocus: { section: 'deobfuscation' },
+      _isReassemblyChild: true,
+    });
+  },
+
+  // ── Layer-picker menu item builder ─────────────────────────────────────
+  //
+  // Builds the flat list of menu entries the caret (▾) menu renders next
+  // to each Deobfuscation card's primary action button. Replaces the old
+  // "All the way ⏩" button's silent severity-ranked branch pick with an
+  // explicit, user-chosen drill-down. Two content sources:
+  //
+  //   1. `findings.reconstructedScript` — when the reassembler produced a
+  //      ≥2-span reconstruction, a pinned 🧩 "Deobfuscated Script" entry
+  //      appears at the top of EVERY card's menu (convenience shortcut
+  //      so an analyst four layers deep doesn't have to scroll back up
+  //      to the stitched-script card).
+  //
+  //   2. `_flattenFindingLayers(finding)` — every pickable descendant in
+  //      the outer finding's innerFindings tree, in detector-emitted
+  //      sibling order (synthetic XOR → synthetic decompressed →
+  //      recursive children). Stubs are filtered; the root finding
+  //      itself is NOT included (the primary button already drills
+  //      into it).
+  //
+  // Returns `{ items, hasStitched, hasLayers }`. `items` is an array of
+  //
+  //   { kind: 'stitched' | 'layer' | 'sep',
+  //     label, sublabel?, icon, severity?, action?, depth? }
+  //
+  // Action closures are self-contained — they read no state from the
+  // surrounding card render, so a subsequent re-render (filter toggle,
+  // YARA-scan completion, etc.) doesn't invalidate an open menu. Empty
+  // array when no entries: caller should not render the caret at all.
+  _buildLayerPickerEntries(finding, findings, fileName) {
+    const items = [];
+    let hasStitched = false;
+    let hasLayers = false;
+
+    // 1. Stitched entry (pinned top).
+    const recon = findings && findings.reconstructedScript;
+    if (recon && recon.text && Array.isArray(recon.spans) && recon.spans.length >= 2) {
+      hasStitched = true;
+      const pct = Math.round((recon.coverage && recon.coverage.ratio || 0) * 100);
+      items.push({
+        kind: 'stitched',
+        icon: '🧩',
+        label: 'Deobfuscated Script',
+        sublabel: `${recon.spans.length} spans · ${pct}% coverage`,
+        severity: recon.severity || 'info',
+        action: () => this._drillDownToStitched(recon, fileName),
+      });
+    }
+
+    // 2. Layer entries from the innerFindings tree.
+    const layers = (typeof this._flattenFindingLayers === 'function')
+      ? this._flattenFindingLayers(finding)
+      : [];
+
+    if (hasStitched && layers.length) {
+      items.push({ kind: 'sep' });
+    }
+
+    for (const layer of layers) {
+      hasLayers = true;
+      // Label: encoding label + classification, e.g. "Base64 → PowerShell".
+      const encLbl = layer.encoding || '(unknown)';
+      const classLbl = layer.classification && layer.classification !== encLbl
+        ? layer.classification
+        : '';
+      const label = classLbl ? `${encLbl} → ${classLbl}` : encLbl;
+      // Sublabel: size + synthetic marker. Size is 0 when the finding
+      // is lazy and hasn't been decoded yet — show "(lazy)" instead.
+      const sizeStr = layer.decodedSize > 0
+        ? this._fmtBytes(layer.decodedSize)
+        : (layer.needsLazyDecode ? '(lazy)' : '');
+      const bits = [];
+      if (sizeStr) bits.push(sizeStr);
+      if (layer.isSynthetic) bits.push('synthetic');
+      const sublabel = bits.join(' · ');
+      const icon = layer.isSynthetic ? '⚙' : '↳';
+      const depth = layer.depth;
+
+      items.push({
+        kind: 'layer',
+        icon,
+        label,
+        sublabel,
+        severity: layer.severity,
+        depth,
+        action: async () => {
+          // Lazy-decode on demand (mirrors the primary button's flow).
+          if (layer.needsLazyDecode && !layer.finding.decodedBytes) {
+            try {
+              const detector = new EncodedContentDetector();
+              await detector.lazyDecode(layer.finding);
+            } catch (err) {
+              this._toast('Layer decode failed: ' + err.message, 'error');
+              return;
+            }
+          }
+          const target = layer.finding;
+          if (!target.decodedBytes) {
+            this._toast('Layer produced no bytes', 'error');
+            return;
+          }
+          const ext = target.ext || '.bin';
+          const encLabel = String(target.encoding || 'layer')
+            .toLowerCase().replace(/[^a-z0-9]/g, '_');
+          const synName = `layer_${encLabel}_offset${finding.offset}${ext}`;
+          this._drillDownToSynthetic(
+            target.decodedBytes, synName, 'application/octet-stream',
+            fileName, finding.offset
+          );
+        },
+      });
+    }
+
+    return { items, hasStitched, hasLayers };
+  },
+
+  // ── Layer-picker menu primitive ────────────────────────────────────────
+  //
+  // Popover-style dropdown anchored to a caret (▾) button in a
+  // Deobfuscation card's action row. Adapted from the toolbar's
+  // `_openOpenMenu` / `_closeOpenMenu` / `_toggleOpenMenu` pattern
+  // (app-ui.js): same outside-click + Escape dismissal, same single-
+  // slot tracking. Additions specific to this menu:
+  //
+  //   • Built on demand (not anchored to a static #id in the DOM).
+  //   • Adds keyboard arrow-key navigation (Down/Up/Home/End) —
+  //     required for an accessible picker, intentionally scoped to
+  //     `.tb-menu--layer` instances so existing `.tb-menu` consumers
+  //     (Open, Export, theme) aren't affected until they opt in.
+  //   • Right-edge overflow fallback: if the menu would extend past
+  //     the viewport's right edge, flips to left-anchored.
+  //
+  // Single-slot: `this._layerMenuDismiss` holds the teardown closure
+  // for the currently-open menu. Opening a second menu auto-dismisses
+  // the first (same single-slot contract the toolbar menus use).
+  _openLayerPickerMenu(anchorBtn, items) {
+    this._closeLayerPickerMenu();
+    if (!anchorBtn || !Array.isArray(items) || !items.length) return;
+
+    const menu = document.createElement('div');
+    menu.className = 'tb-menu tb-menu--layer';
+    menu.setAttribute('role', 'menu');
+
+    const itemEls = [];
+    for (const it of items) {
+      if (it.kind === 'sep') {
+        const sep = document.createElement('div');
+        sep.className = 'tb-menu-sep';
+        sep.setAttribute('role', 'separator');
+        menu.appendChild(sep);
+        continue;
+      }
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tb-menu-item';
+      if (it.kind === 'stitched') btn.classList.add('tb-menu-item-stitched');
+      if (it.severity) btn.classList.add(`tb-menu-item-sev-${it.severity}`);
+      btn.setAttribute('role', 'menuitem');
+      btn.tabIndex = -1;
+
+      const iconSpan = document.createElement('span');
+      iconSpan.className = 'tb-menu-icon';
+      iconSpan.textContent = it.icon || '·';
+      btn.appendChild(iconSpan);
+
+      const labelSpan = document.createElement('span');
+      labelSpan.className = 'tb-menu-label';
+      // Depth indentation via leading arrows (visual only — tree
+      // structure for the analyst, not encoded in DOM semantics).
+      const indent = it.depth && it.depth > 1 ? '  '.repeat(it.depth - 1) + '↳ ' : '';
+      labelSpan.textContent = indent + (it.label || '');
+      btn.appendChild(labelSpan);
+
+      if (it.sublabel) {
+        const subSpan = document.createElement('span');
+        subSpan.className = 'tb-menu-sublabel';
+        subSpan.textContent = it.sublabel;
+        btn.appendChild(subSpan);
+      }
+
+      btn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        this._closeLayerPickerMenu();
+        try { it.action && it.action(); }
+        catch (err) {
+          console.error('Layer picker action failed:', err);
+          this._toast('Layer action failed — see console', 'error');
+        }
+      });
+      menu.appendChild(btn);
+      itemEls.push(btn);
+    }
+
+    // Position: PORTAL the menu to `document.body` and position it in
+    // viewport coordinates via `position: fixed`. The menu is NOT a
+    // child of the sidebar — two reasons:
+    //
+    //   1. Clipping. `#sidebar` has `overflow: hidden` and `#sb-body`
+    //      has `overflow: auto`; a menu anchored inside either would
+    //      be cropped when it overflows their rectangles (common with
+    //      a 240-px-min menu in a narrow sidebar gutter).
+    //   2. Bottom-edge overflow. A caret near the bottom of the sidebar
+    //      scroll viewport would have its menu opened off-screen,
+    //      forcing the analyst to scroll the sidebar(!) to see options.
+    //
+    // Portalling to `document.body` + computing `getBoundingClientRect`
+    // of the caret lets us:
+    //   • right-align the menu to the caret's right edge (matches the
+    //     toolbar-dropdown idiom),
+    //   • flip left-aligned if the menu would overflow the viewport's
+    //     left edge (narrow sidebar + wide menu),
+    //   • flip UPWARD (open above the caret) if the menu would overflow
+    //     the viewport's bottom edge,
+    //   • stay clipped-free regardless of ancestor `overflow: *`.
+    //
+    // Trade-off: the menu doesn't scroll with the sidebar. We close it
+    // on any `#sb-body` scroll or window resize to match native
+    // <select> UX (no stale floating menu over a moving card).
+    document.body.appendChild(menu);
+
+    const anchorRect = anchorBtn.getBoundingClientRect();
+    const menuRect = menu.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const GAP = 4;
+
+    // Horizontal: prefer right-aligned to the caret's right edge.
+    // Viewport-edge guards prevent the menu from clipping past either
+    // side of the screen.
+    let menuLeft = anchorRect.right - menuRect.width;
+    if (menuLeft < 4) menuLeft = 4;
+    if (menuLeft + menuRect.width > vw - 4) {
+      menuLeft = vw - menuRect.width - 4;
+    }
+
+    // Vertical: prefer opening downward. If the menu would overflow the
+    // bottom edge AND there's more room above, flip upward.
+    let menuTop = anchorRect.bottom + GAP;
+    const spaceBelow = vh - anchorRect.bottom - GAP;
+    const spaceAbove = anchorRect.top - GAP;
+    if (menuRect.height > spaceBelow && spaceAbove > spaceBelow) {
+      menuTop = anchorRect.top - GAP - menuRect.height;
+      if (menuTop < 4) menuTop = 4;
+    }
+
+    menu.style.position = 'fixed';
+    menu.style.left = menuLeft + 'px';
+    menu.style.top = menuTop + 'px';
+    menu.style.right = 'auto';
+    menu.style.bottom = 'auto';
+
+    anchorBtn.setAttribute('aria-expanded', 'true');
+
+    // Focus the first menu item for keyboard-driven users. Activation
+    // from a pointer click keeps focus on the trigger, so this is a
+    // no-op there (browsers debounce a rAF-delayed focus against the
+    // subsequent mouseup). Deferred via rAF so the newly-attached
+    // element is fully laid out.
+    let focusIdx = 0;
+    const focusAt = (idx) => {
+      if (!itemEls.length) return;
+      // Wrap modulo length. Ignore separators — already excluded.
+      focusIdx = ((idx % itemEls.length) + itemEls.length) % itemEls.length;
+      const el = itemEls[focusIdx];
+      if (el && typeof el.focus === 'function') el.focus();
+    };
+    requestAnimationFrame(() => focusAt(0));
+
+    const onDocDown = (e) => {
+      if (menu.contains(e.target) || anchorBtn.contains(e.target)) return;
+      this._closeLayerPickerMenu();
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        this._closeLayerPickerMenu();
+        if (typeof anchorBtn.focus === 'function') anchorBtn.focus();
+        return;
+      }
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        focusAt(focusIdx + 1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        focusAt(focusIdx - 1);
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        focusAt(0);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        focusAt(itemEls.length - 1);
+      }
+    };
+
+    // Close on sidebar scroll / window resize. The menu is portalled
+    // to `document.body` with `position: fixed`, so it would otherwise
+    // stay pinned to the viewport while the caret moves out from under
+    // it on sidebar scroll. Closing matches native <select> UX — if
+    // the user wants the menu back after scrolling, they click the
+    // caret again.
+    const sbBody = document.getElementById('sb-body');
+    const onScrollOrResize = () => this._closeLayerPickerMenu();
+
+    this._layerMenuDismiss = () => {
+      document.removeEventListener('mousedown', onDocDown, true);
+      document.removeEventListener('keydown', onKey, true);
+      if (sbBody) sbBody.removeEventListener('scroll', onScrollOrResize, true);
+      window.removeEventListener('resize', onScrollOrResize, true);
+      if (menu.parentElement) menu.parentElement.removeChild(menu);
+      anchorBtn.setAttribute('aria-expanded', 'false');
+      this._layerMenuDismiss = null;
+    };
+    // setTimeout 0 so the opening click doesn't immediately dismiss.
+    setTimeout(() => {
+      document.addEventListener('mousedown', onDocDown, true);
+      document.addEventListener('keydown', onKey, true);
+      if (sbBody) sbBody.addEventListener('scroll', onScrollOrResize, true);
+      window.addEventListener('resize', onScrollOrResize, true);
+    }, 0);
+  },
+
+  _closeLayerPickerMenu() {
+    if (this._layerMenuDismiss) this._layerMenuDismiss();
+  },
+
+  _toggleLayerPickerMenu(anchorBtn, items) {
+    // Already open for this anchor? Close it. Different anchor? Swap.
+    if (this._layerMenuDismiss && anchorBtn.getAttribute('aria-expanded') === 'true') {
+      this._closeLayerPickerMenu();
+      return;
+    }
+    this._openLayerPickerMenu(anchorBtn, items);
   },
 
   // ── Reassembled-script composite card ───────────────────────────────────
@@ -69,7 +436,7 @@ extendApp({
     const title = document.createElement('span');
     title.className = 'enc-finding-title';
     const pct = Math.round((recon.coverage && recon.coverage.ratio || 0) * 100);
-    title.textContent = `🧩 Reassembled script — ${recon.spans.length} spans · ${pct}% of source`;
+    title.textContent = `🧩 Deobfuscated Script — ${recon.spans.length} spans · ${pct}% of source`;
     header.appendChild(title);
     card.appendChild(header);
 
@@ -106,7 +473,7 @@ extendApp({
     if (recon.truncated) {
       const note = document.createElement('div');
       note.className = 'enc-finding-note';
-      note.textContent = '⚠ Reconstruction truncated at output ceiling — load for analysis to see the full stitched body.';
+      note.textContent = '⚠ Reconstruction truncated at output ceiling — analyse the deobfuscated script to see the full body.';
       details.appendChild(note);
     }
     if (Array.isArray(recon.collisions) && recon.collisions.length) {
@@ -139,7 +506,7 @@ extendApp({
       const yaraRow = document.createElement('div');
       yaraRow.className = 'enc-finding-yara';
       const lbl = document.createElement('strong');
-      lbl.textContent = '⚡ YARA on stitched script: ';
+      lbl.textContent = '⚡ YARA on deobfuscated script: ';
       yaraRow.appendChild(lbl);
       for (const hit of recon.yaraHits) {
         const chip = document.createElement('span');
@@ -178,7 +545,7 @@ extendApp({
       iocLine.textContent = 'IOCs: ' + Object.entries(counts)
         .map(([k, v]) => `${v} ${k}`)
         .join(', ');
-      iocLine.title = 'Click to highlight reassembly-derived IOC rows in the Signatures & IOCs section';
+      iocLine.title = 'Click to highlight deobfuscation-derived IOC rows in the Signatures & IOCs section';
       iocLine.addEventListener('click', (e) => {
         e.stopPropagation();
         // Delegate to the shared `_flashIocRows` helper by passing a
@@ -200,35 +567,14 @@ extendApp({
     actions.className = 'enc-finding-actions';
     const btn = document.createElement('button');
     btn.className = 'tb-btn enc-btn-load';
-    btn.textContent = '▶ Load stitched script';
-    btn.title = 'Open the reassembled script as a synthetic file — IOC extract + decoded-payload YARA scan run against the stitched body.';
+    btn.textContent = '▶ Analyse Deobfuscated Script';
+    btn.title = 'Open the deobfuscated script as a synthetic file — IOC extract + decoded-payload YARA scan run against the full body.';
     btn.addEventListener('click', () => {
-      const rawText = (window.EncodedReassembler && typeof window.EncodedReassembler.stripSentinels === 'function')
-        ? window.EncodedReassembler.stripSentinels(recon.text)
-        : recon.text;
-      // Extension heuristic for the virtual filename. The parent file
-      // extension is preserved when recognisable; otherwise default to
-      // `.txt` so the plaintext renderer handles it. The reconstructedHash
-      // scopes the virtual name so repeated drill-downs on the same
-      // reconstruction dedupe in the nav stack.
-      const origExt = (() => {
-        const m = /\.([A-Za-z0-9]{1,8})$/.exec(fileName || '');
-        return m ? m[1].toLowerCase() : 'txt';
-      })();
-      const synName = `${(fileName || 'file').replace(/\.[^.]+$/, '')}.reassembled.${recon.reconstructedHash || 'noh'}.${origExt}`;
-      const bytes = new TextEncoder().encode(rawText);
-      // Dispatch via `openInnerFile` directly rather than
-      // `_drillDownToSynthetic` — the reassembly-child flag is specific
-      // to this call site and needs to thread into `openInnerFile`'s
-      // `opts._isReassemblyChild` channel (consumed in `app-load.js`
-      // to skip re-reassembly on the child load).
-      const blob = new Blob([bytes], { type: 'text/plain' });
-      const syntheticFile = new File([blob], synName, { type: 'text/plain' });
-      this.openInnerFile(syntheticFile, null, {
-        parentName: fileName,
-        returnFocus: { section: 'deobfuscation' },
-        _isReassemblyChild: true,
-      });
+      // Delegate to the shared helper — this click path is byte-for-byte
+      // the same drill-down the caret (▾) menu's "🧩 Deobfuscated Script"
+      // entry uses on every Deobfuscation card. See
+      // `_drillDownToStitched` at the top of this file.
+      this._drillDownToStitched(recon, fileName);
     });
     actions.appendChild(btn);
     card.appendChild(actions);
@@ -495,12 +841,13 @@ extendApp({
       this._renderEncodedContentSection(body, f.encodedContent, fileName);
     }
 
-    // ── Return-focus handling ───────────────────────────────────────────
+    // Return-focus handling ───────────────────────────────────────────
     // When the user returns from a drill-down triggered by a Deobfuscation
-    // action (Load for analysis / Decode & Analyse / All the way / etc.),
-    // scroll the originating card into view and flash it so they can resume
-    // iterating through the findings without hunting or scrolling. Wrapped
-    // in rAF so the sidebar layout has settled before we measure/scroll.
+    // action (Load for analysis / Decode & Analyse / layer-picker ▾ menu /
+    // Load embedded ZIP / Decompress & Analyse), scroll the originating
+    // card into view and flash it so they can resume iterating through
+    // the findings without hunting or scrolling. Wrapped in rAF so the
+    // sidebar layout has settled before we measure/scroll.
     if (returnFocus && returnFocus.section === 'deobfuscation') {
       requestAnimationFrame(() => this._applyDeobfuscationReturnFocus(returnFocus));
     }
@@ -1393,7 +1740,7 @@ extendApp({
           details.appendChild(mkSep(sepLabel || '\u2193 deepest layer (encoded)', true));
           const deepEl = document.createElement('div');
           deepEl.className = 'enc-deepest-preview';
-          deepEl.title = 'Deepest layer (still encoded — click "All the way ⏩" to decode)';
+          deepEl.title = 'Deepest layer (still encoded — open it from the ▾ menu next to the primary button to decode)';
           deepEl.textContent = rawText;
           details.appendChild(deepEl);
           purpleRendered = true;
@@ -1794,47 +2141,41 @@ extendApp({
         actions.appendChild(decompBtn);
       }
 
-      // "All the way" — deep decode to innermost layer (for multi-layer encoding)
-      if (finding.innerFindings && finding.innerFindings.length > 0) {
-        const deepest = this._getDeepestFinding(finding);
-        if (deepest && deepest !== finding && (deepest.decodedBytes || deepest.rawCandidate)) {
-          const atwBtn = document.createElement('button');
-          // Primary action for multi-layer findings — "All the way" is
-          // almost always what the analyst wants when a deobfuscation chain
-          // exists. The `enc-btn-primary` modifier makes it visually
-          // dominate over the sibling "Decode & Analyse" / "Load for
-          // analysis" buttons so the happy path is obvious at a glance.
-          atwBtn.className = 'tb-btn enc-btn-alltheway enc-btn-primary';
-          atwBtn.textContent = 'All the way ⏩';
-          atwBtn.title = 'Follow encoding chain to deepest decoded content (recommended)';
-          atwBtn.addEventListener('click', async () => {
-            atwBtn.disabled = true;
-            atwBtn.textContent = '⏳ Decoding…';
-            try {
-              // Lazy decode the deepest finding if needed
-              if (!deepest.decodedBytes && deepest.rawCandidate) {
-                const detector = new EncodedContentDetector();
-                await detector.lazyDecode(deepest);
-              }
-              if (deepest.decodedBytes) {
-                const ext = deepest.ext || '.bin';
-                const chainLabel = deepest.chain ? deepest.chain.join('_').replace(/[^a-z0-9_]/gi, '') : 'deep';
-                const synName = `deep_decoded_${chainLabel}_offset${finding.offset}${ext}`;
-                this._drillDownToSynthetic(deepest.decodedBytes, synName, 'application/octet-stream', fileName, finding.offset);
-
-              } else {
-                this._toast('Deep decode produced no bytes', 'error');
-                atwBtn.disabled = false;
-                atwBtn.textContent = 'All the way ⏩';
-              }
-            } catch (err) {
-              this._toast('Deep decode failed: ' + err.message, 'error');
-              atwBtn.disabled = false;
-              atwBtn.textContent = 'All the way ⏩';
-            }
-          });
-          actions.appendChild(atwBtn);
-        }
+      // ── Layer-picker caret (▾) — alternative drill-down targets ──────
+      // Replaces the old "All the way ⏩" button's silent severity-ranked
+      // branch pick with an explicit, user-visible menu of every layer
+      // the analyst can open. Two sources: the pinned stitched-script
+      // entry (when `findings.reconstructedScript` has ≥2 spans) and
+      // the flattened innerFindings tree. The caret is only rendered
+      // when there's at least one menu entry to show — for single-layer
+      // findings with no stitched reconstruction it's hidden entirely
+      // and the primary button (Decode & Analyse / Load for analysis)
+      // stands alone.
+      const pickerBundle = this._buildLayerPickerEntries(finding, this.findings, fileName);
+      if (pickerBundle.items.length > 0) {
+        const caretBtn = document.createElement('button');
+        caretBtn.type = 'button';
+        caretBtn.className = 'tb-btn enc-btn-caret';
+        caretBtn.textContent = '▾';
+        caretBtn.setAttribute('aria-haspopup', 'menu');
+        caretBtn.setAttribute('aria-expanded', 'false');
+        const entryCount = pickerBundle.items.filter(i => i.kind !== 'sep').length;
+        const tipBits = ['Open a different layer'];
+        if (pickerBundle.hasStitched) tipBits.push('includes stitched script');
+        caretBtn.title = `${tipBits.join(' — ')} (${entryCount} option${entryCount !== 1 ? 's' : ''})`;
+        caretBtn.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          this._toggleLayerPickerMenu(caretBtn, pickerBundle.items);
+        });
+        // Wrap the caret in a `.tb-menu-wrap` so the menu's CSS `right: 0`
+        // anchors to the caret's right edge (not the action-row's right
+        // edge, which spans the full card and would push the menu to the
+        // sidebar's right edge). Same primitive the toolbar's Open /
+        // Export / theme dropdowns use — see src/styles/core.css:335.
+        const caretWrap = document.createElement('span');
+        caretWrap.className = 'tb-menu-wrap enc-btn-caret-wrap';
+        caretWrap.appendChild(caretBtn);
+        actions.appendChild(caretWrap);
       }
 
       if (actions.children.length > 0) card.appendChild(actions);

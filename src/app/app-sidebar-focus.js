@@ -963,15 +963,12 @@ extendApp({
 
       // Build per-row slices the same way _highlightMatchesInline does:
       //   • soft-wrapped renderer → split the span across chunk rows.
-      //   • normal renderer       → one slice = (rowIdx, charInLine, length).
-      // For multi-line spans on normal renderers we still only mark the
-      // first line — the row-band already covers the rest, and computing
-      // per-line character offsets for a multi-line raw-text slice on a
-      // non-soft-wrapped table is the same bookkeeping as the YARA path
-      // does for a single match (which is always one logical line). The
-      // common multi-row deobfuscation case in practice is the soft-wrap
-      // path (single very long line of base64) — that's the path the
-      // chunk math below is doing the heavy lifting for.
+      //   • normal renderer       → split the span across logical lines
+      //     so every row the byte span crosses gets an inline `<mark>`.
+      //     Previously only the first line was marked (the row-band
+      //     covered the rest as a soft tint), but for large wrapped
+      //     Base64 / hex blobs the analyst expects the whole byte span
+      //     to carry the bright accent mark, not just the head row.
       const slices = [];
       if (wrapChunkSize > 0) {
         const firstRow = lineMap[lineIndex];
@@ -989,16 +986,36 @@ extendApp({
           }
         }
       } else {
-        // Normal 1-row-per-line table. Cap the slice at the end of the
-        // first line — the band already covers any spillover rows.
-        const firstRow = lineIndex;
-        if (firstRow < rows.length) {
-          const nlInSpan = sourceText.indexOf('\n', finding.offset);
-          const firstLineEnd = nlInSpan === -1
-            ? finding.offset + finding.length
-            : Math.min(finding.offset + finding.length, nlInSpan);
-          const take = firstLineEnd - finding.offset;
-          if (take > 0) slices.push({ rowIdx: firstRow, charPos: charInLine, length: take });
+        // Normal 1-row-per-line table. Walk the byte span and emit one
+        // slice per logical line covered by the span, so multi-line
+        // wrapped Base64 / hex findings highlight continuously across
+        // every row rather than stopping at the first `\n`. Newlines
+        // themselves are consumed (not marked — the `<mark>` never
+        // wraps the row separator, the next slice starts at col 0 of
+        // the next row).
+        let remaining  = finding.length;
+        let lineCursor = lineIndex;
+        let charCursor = charInLine;
+        let byteCursor = finding.offset;
+        while (remaining > 0) {
+          if (lineCursor >= rows.length) break;
+          const nextNl   = sourceText.indexOf('\n', byteCursor);
+          const spanEnd  = byteCursor + remaining;
+          const lineEnd  = (nextNl === -1 || nextNl >= spanEnd) ? spanEnd : nextNl;
+          const take     = lineEnd - byteCursor;
+          if (take > 0) slices.push({ rowIdx: lineCursor, charPos: charCursor, length: take });
+          // Advance past the take + the newline that terminated this
+          // line's slice (if any). When the span ends before the next
+          // newline, `lineEnd === spanEnd` and `remaining - take === 0`
+          // — the loop exits next iteration.
+          if (lineEnd < spanEnd) {
+            byteCursor = lineEnd + 1;   // skip the '\n'
+            remaining -= take + 1;
+          } else {
+            remaining -= take;
+          }
+          lineCursor++;
+          charCursor = 0;
         }
       }
 
@@ -1151,16 +1168,38 @@ extendApp({
           }
         }
       } else {
-        // Normal 1-row-per-line table. Cap at end of first line — the
-        // row band already covers any spillover rows.
-        const firstRow = lineIndex;
-        if (firstRow < rowCount) {
-          const nlInSpan = sourceText.indexOf('\n', finding.offset);
-          const firstLineEnd = nlInSpan === -1
-            ? finding.offset + finding.length
-            : Math.min(finding.offset + finding.length, nlInSpan);
-          const take = firstLineEnd - finding.offset;
-          if (take > 0) slicesByRow.set(firstRow, [{ charPos: charInLine, length: take }]);
+        // Normal 1-row-per-line view. Walk the byte span and emit one
+        // slice per logical line covered — wrapped Base64 / hex blobs
+        // span many rows, and the analyst expects the whole span to
+        // carry the bright inline mark rather than just the first
+        // line (the row-band covers the full range too, but it's
+        // subtle; see also the legacy-table mirror of this block in
+        // _highlightEncodedInView). Newlines themselves are skipped
+        // — the `<mark>` never wraps the row separator; the next
+        // slice starts at col 0 of the next row.
+        let remaining  = finding.length;
+        let lineCursor = lineIndex;
+        let charCursor = charInLine;
+        let byteCursor = finding.offset;
+        while (remaining > 0) {
+          if (lineCursor >= rowCount) break;
+          const nextNl  = sourceText.indexOf('\n', byteCursor);
+          const spanEnd = byteCursor + remaining;
+          const lineEnd = (nextNl === -1 || nextNl >= spanEnd) ? spanEnd : nextNl;
+          const take    = lineEnd - byteCursor;
+          if (take > 0) {
+            let arr = slicesByRow.get(lineCursor);
+            if (!arr) { arr = []; slicesByRow.set(lineCursor, arr); }
+            arr.push({ charPos: charCursor, length: take });
+          }
+          if (lineEnd < spanEnd) {
+            byteCursor = lineEnd + 1;   // skip the '\n'
+            remaining -= take + 1;
+          } else {
+            remaining -= take;
+          }
+          lineCursor++;
+          charCursor = 0;
         }
       }
     }
@@ -1385,6 +1424,13 @@ extendApp({
   },
 
   // ── Get deepest decoded finding in innerFindings tree ───────────────────
+  //
+  // Still used by the 3-tier preview stack (purple tier) and the chain-pill
+  // walker in app-sidebar.js — both want "the one deepest leaf the UI will
+  // highlight" rather than an enumeration of every pickable layer. The
+  // drill-down CTA no longer consults this heuristic; see
+  // `_flattenFindingLayers` (below) for the explicit tree-walk the caret
+  // menu uses instead.
   _getDeepestFinding(finding, _depth) {
     if (_depth === undefined) _depth = 0;
     if (_depth > 20) return finding; // safety cap — prevent infinite recursion on cyclic graphs
@@ -1397,6 +1443,80 @@ extendApp({
       return this._getDeepestFinding(best, _depth + 1);
     }
     return (best.decodedBytes || best.rawCandidate) ? best : finding;
+  },
+
+  // ── Flatten innerFindings tree into an explicit pickable-layer list ────
+  //
+  // Consumed by the Deobfuscation card's caret (▾) menu — every entry the
+  // analyst can choose becomes a menu row, so there's no silent severity-
+  // ranked branch pick buried in the UI. Preserves detector-emitted sibling
+  // order (`[xorSynthetic?, decompSynthetic?, ...recursiveChildren]`) so
+  // the menu lists "what the pipeline actually found", not a re-sorted
+  // view. Stubs (`finder-budget`, `depth-exceeded`) carry neither
+  // `decodedBytes` nor `rawCandidate` and are filtered out.
+  //
+  // Returned entries:
+  //
+  //   {
+  //     finding,         // tree-node reference (for action closures)
+  //     depth,           // 1 = direct child of root, 2 = grandchild, …
+  //                      //   Root finding is deliberately NOT included
+  //                      //   (the per-card primary button already drills
+  //                      //   into it — the menu is for alternatives).
+  //     isSynthetic,     // XOR- or decompressed-synthetic sibling?
+  //     encoding,        // finding.encoding (e.g. 'Base64', 'XOR (key 0x42)')
+  //     classification,  // finding.classification?.type || ''
+  //     decodedSize,     // bytes — 0 when lazy and not yet decoded
+  //     severity,        // 'critical' | 'high' | 'medium' | 'info'
+  //     needsLazyDecode, // true when rawCandidate present but decodedBytes null
+  //   }
+  //
+  // Depth cap is 20 (matches `_getDeepestFinding`).
+  _flattenFindingLayers(finding) {
+    const out = [];
+    if (!finding || !Array.isArray(finding.innerFindings) || !finding.innerFindings.length) {
+      return out;
+    }
+    const MAX_DEPTH = 20;
+    // Classification labels produced by the detector's synthetic-sibling
+    // paths (encoded-content-detector.js:785/945). Detected by a prefix
+    // match on the encoding label — the detector guarantees these strings.
+    const isSyntheticEncoding = (enc) => {
+      if (!enc) return false;
+      const s = String(enc);
+      return s.startsWith('XOR') || /decompressed|gzip|zlib|deflate|brotli/i.test(s);
+    };
+    const walk = (node, depth) => {
+      if (depth > MAX_DEPTH) return;
+      if (!node || !Array.isArray(node.innerFindings)) return;
+      for (const child of node.innerFindings) {
+        if (!child) continue;
+        const hasDecoded = !!child.decodedBytes;
+        const hasRaw = !!child.rawCandidate;
+        // Pickable = has bytes OR a raw candidate (mirrors the gate the
+        // old "All the way" button used). Stubs have neither.
+        const pickable = hasDecoded || hasRaw;
+        if (pickable) {
+          out.push({
+            finding: child,
+            depth,
+            isSynthetic: isSyntheticEncoding(child.encoding),
+            encoding: child.encoding || '',
+            classification: (child.classification && child.classification.type) || '',
+            decodedSize: child.decodedSize || 0,
+            severity: child.severity || 'info',
+            needsLazyDecode: !hasDecoded && hasRaw,
+          });
+        }
+        // Descend even into non-pickable stubs — a child stub can still
+        // have pickable grandchildren in theory (defensive).
+        if (Array.isArray(child.innerFindings) && child.innerFindings.length) {
+          walk(child, depth + 1);
+        }
+      }
+    };
+    walk(finding, 1);
+    return out;
   },
 
   // ── Binary Metadata section (PE / ELF / Mach-O only) ──────────────────────

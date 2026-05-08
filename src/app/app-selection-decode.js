@@ -12,8 +12,9 @@
 // is the unified drill-down entry — it pushes a nav frame, re-enters
 // `_loadFile`, and flows the full RenderRoute pipeline. Reusing it means the
 // selection decode benefits from the entire deobfuscation card stack, the
-// "Load for analysis" / "All the way" buttons, IOC nicelisting, YARA, and
-// the navigation Back replay — for free. See CONTRIBUTING.md → "Drill-down
+// "Load for analysis" / "Decode & Analyse" primary buttons and the
+// layer-picker ▾ menu, IOC nicelisting, YARA, and the navigation Back
+// replay — for free. See CONTRIBUTING.md → "Drill-down
 // (unified via App.openInnerFile)" for the contract.
 //
 // Trigger surface: any selection anchored inside `#page-container` whose

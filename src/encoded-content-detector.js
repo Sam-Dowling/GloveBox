@@ -737,8 +737,9 @@ class EncodedContentDetector {
     // Instead of replacing decoded in-place (which loses the intermediate
     // compressed layer), keep decoded as the compressed bytes and store the
     // decompressed result as a synthetic inner finding.  This lets the sidebar
-    // offer "Load for analysis" (one layer deep — the compressed blob) and
-    // "All the way" (deepest layer — the decompressed payload) separately.
+    // offer "Load for analysis" (one layer deep — the compressed blob) and,
+    // via the layer-picker ▾ menu, the decompressed payload as a separate
+    // pickable layer.
     let syntheticDecompFinding = null;
     const cType = (classification.type || '').toLowerCase();
     if (cType.includes('gzip') || cType.includes('zlib') || classification.ext === '.gz' || classification.ext === '.zlib') {
@@ -998,7 +999,8 @@ class EncodedContentDetector {
     }
 
     // If we created a synthetic decompressed finding, prepend it to innerFindings
-    // so it appears as the primary "deeper layer" for the sidebar's "All the way" button
+    // so it appears as the primary "deeper layer" in the sidebar's layer-picker
+    // ▾ menu.
     if (syntheticDecompFinding) {
       innerFindings.unshift(syntheticDecompFinding);
     }
@@ -1006,7 +1008,7 @@ class EncodedContentDetector {
     // Same treatment for the synthetic XOR-cleartext finding (PLAN.md → D1).
     // Prepended AFTER the decompressed finding so a Base64 → zlib → XOR
     // chain still surfaces the decompressed layer first; the XOR layer
-    // is the one the analyst clicks "All the way" on.
+    // is the one the analyst picks from the layer-picker ▾ menu.
     if (syntheticXorFinding) {
       innerFindings.unshift(syntheticXorFinding);
     }

@@ -217,12 +217,12 @@ extendApp({
     // Reset the viewer + sidebar scroll position when a *fresh* file is
     // loaded (drop, picker, paste) so the user always starts at the top
     // of a new analysis. Drill-down loads (archive member, decoded
-    // payload, "All the way") push the current frame onto `_navStack`
-    // BEFORE calling `_loadFile` — that frame already captured the
-    // parent's scroll offsets, so we're safe to clear here. Return-
-    // navigation via the breadcrumb trail bypasses `_loadFile` entirely
-    // and routes through `_stickyRestoreScroll` instead, so this reset
-    // cannot clobber a restored scroll position.
+    // payload, layer-picker ▾ menu entry) push the current frame onto
+    // `_navStack` BEFORE calling `_loadFile` — that frame already
+    // captured the parent's scroll offsets, so we're safe to clear
+    // here. Return-navigation via the breadcrumb trail bypasses
+    // `_loadFile` entirely and routes through `_stickyRestoreScroll`
+    // instead, so this reset cannot clobber a restored scroll position.
     const viewerEl = document.getElementById('viewer');
     if (viewerEl) { viewerEl.scrollTop = 0; viewerEl.scrollLeft = 0; }
     const sbBodyEl = document.getElementById('sb-body');
@@ -1638,7 +1638,7 @@ extendApp({
       this._pendingMaxRecursionDepth = opts._maxRecursionDepth;
     }
     // Reassembly-child flag — set by the Deobfuscation section's
-    // "Load stitched script for analysis" button (see `_renderReassembledScriptCard`
+    // "Analyse Deobfuscated Script" button (see `_renderReassembledScriptCard`
     // in app-sidebar.js). Consumed by the encoded-content block in
     // `_loadFile` to skip `EncodedReassembler.build()` on this child
     // load; otherwise a reconstructed script whose own findings overlap

@@ -977,7 +977,7 @@ function pushIOC(findings, opts) {
   // this gate: `OsascriptRenderer::analyzeForSecurity` scans
   // `analysisText` for URLs — a reassembled-script drill-down
   // (`.reassembled.<hash>.<ext>` synthetic file via
-  // `app-sidebar.js::Load stitched script` button) routes the
+  // `app-sidebar.js::Analyse Deobfuscated Script` button) routes the
   // sentinel-bearing decoded text back through the osascript URL
   // regex which has no sentinel filter of its own.
   //

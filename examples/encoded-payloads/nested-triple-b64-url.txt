@@ -1,5 +1,6 @@
 # Triple Base64 encoding: 3 layers deep hiding a malicious URL
-# This tests the "All the way" deep decode button
+# This exercises the Deobfuscation layer-picker (▾) menu — each Base64
+# layer is a pickable entry so the analyst can jump to any depth.
 
 $payload = "WVVoU01HTkViM1pNTWpGb1lraGthR050VlhWYVdHaG9ZbGhDYzFwVE5YWmpiV04yWXpOU2FGb3lWWHBNTWxKNVlqTkNkMXBZU1hWYVdHaHM="
 # Decode layer 1
