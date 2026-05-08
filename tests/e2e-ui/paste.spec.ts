@@ -205,8 +205,8 @@ test.describe('paste ingress', () => {
   test('paste while drilled-in resets the nav stack (no stale parent crumbs)', async ({ page }) => {
     // Regression guard for the bug where pasting a new file while the
     // user was drilled into an inner-child (zip member, decoded
-    // payload, reassembled script, "All the way" chain) replaced the
-    // visible view via `_loadFile` but left `_navStack` populated —
+    // payload, reassembled script, layer-picker ▾ menu entry) replaced
+    // the visible view via `_loadFile` but left `_navStack` populated —
     // so the breadcrumb trail kept linking back to an unrelated
     // parent file whose buffer no longer matched the current
     // findings. Every other top-level ingress (drag-drop, file
@@ -230,8 +230,8 @@ test.describe('paste ingress', () => {
     // 2. Simulate a drill-down by calling `openInnerFile` directly
     //    with a synthetic inner File. This pushes a frame onto
     //    `_navStack` and re-enters `_loadFile` — the same path
-    //    taken by zip-row clicks, Deobfuscation "Load stitched
-    //    script" buttons, etc.
+    //    taken by zip-row clicks, Deobfuscation "Analyse Deobfuscated
+    //    Script" buttons, etc.
     await page.evaluate(async () => {
       const w = window as unknown as {
         app: {
@@ -543,5 +543,98 @@ test.describe('paste ingress', () => {
     // No file was loaded — findings must remain at the empty state.
     const findings = await dumpFindings(page);
     expect(findings.iocCount).toBe(0);
+  });
+
+  test('line-wrapped Base64 payload decodes as a single block (not per-line garbage)', async ({ page }) => {
+    // Regression guard for the bug where a MIME / PEM / here-string
+    // style wrapped Base64 payload (newlines every 50-76 chars)
+    // surfaced as either (a) no Base64 finding at all (every chunk
+    // below the 64-char default floor) or (b) a swarm of per-line
+    // short candidates that each decoded at a misaligned boundary,
+    // producing high-entropy junk and hiding the real PE payload.
+    //
+    // The fix is the `_scanWrappedBlocks` pre-pass in
+    // `src/decoders/base64-hex.js` plus a defensive `\s+` strip in
+    // `_decodeBase64`. When a wrapped block starts with one of the
+    // HIGH_CONFIDENCE_B64 prefixes (`TVqQ` here for PE-MZ), the
+    // candidate is auto-decoded and the Deobfuscation card surfaces
+    // the classification.
+    //
+    // We drive the load via the public `__loupeTest.loadBytes` test
+    // API rather than the synthetic paste path. The handler fork
+    // that builds a `clipboard.txt` File (see the earlier paste
+    // tests in this file) is identical from `_loadFile` onwards —
+    // this test's concern is the detector's wrapped-block pipeline,
+    // not the clipboard event plumbing.
+    await page.evaluate(async () => {
+      // 104-byte PE header + DOS stub. Starts with 4D 5A so the b64
+      // form begins with `TVqQ` (PE high-confidence prefix).
+      const header = new Uint8Array([
+        0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00,
+        0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00, 0x00,
+        0x0E, 0x1F, 0xBA, 0x0E, 0x00, 0xB4, 0x09, 0xCD, 0x21, 0xB8, 0x01, 0x4C, 0xCD, 0x21, 0x54, 0x68,
+        0x69, 0x73, 0x20, 0x70, 0x72, 0x6F, 0x67, 0x72, 0x61, 0x6D, 0x20, 0x63, 0x61, 0x6E, 0x6E, 0x6F,
+        0x74, 0x20, 0x62, 0x65, 0x20, 0x72, 0x75, 0x6E, 0x20, 0x69, 0x6E, 0x20, 0x44, 0x4F, 0x53, 0x20,
+        0x6D, 0x6F, 0x64, 0x65, 0x2E, 0x0D, 0x0D, 0x0A,
+      ]);
+      // Browser btoa over the raw byte string.
+      let bin = '';
+      for (let i = 0; i < header.length; i++) bin += String.fromCharCode(header[i]);
+      const clean = btoa(bin);
+      // Wrap at 60 cols with CRLF — typical here-string / MIME shape.
+      const wrapped = (clean.match(/.{1,60}/g) || []).join('\r\n');
+      const text = `# sample payload\n# pasted from a write-up\n\n${wrapped}\n`;
+
+      // Load the same way the paste handler does — as a `clipboard.txt`
+      // File, but through the public `loadBytes` test API so we don't
+      // race the paste handler's sync-before-async step.
+      const w = window as unknown as {
+        __loupeTest: {
+          loadBytes(name: string, bytes: Uint8Array): Promise<unknown>;
+          waitForIdle(): Promise<void>;
+        };
+      };
+      await w.__loupeTest.loadBytes('clipboard.txt', new TextEncoder().encode(text));
+      await w.__loupeTest.waitForIdle();
+    });
+
+    // Read the encoded-content findings directly from app.findings.
+    // `dumpFindings` doesn't project the full encoded tree, so reach
+    // into the sidebar-facing structure via a page-side evaluate.
+    const enc = await page.evaluate(() => {
+      const w = window as unknown as {
+        app: {
+          findings: { encodedContent?: Array<Record<string, unknown>> };
+        };
+      };
+      const list = w.app.findings.encodedContent || [];
+      return list.map(f => ({
+        encoding: f.encoding,
+        chain: f.chain,
+        classification: f.classification,
+        severity: f.severity,
+        offset: f.offset,
+        length: f.length,
+        decodedSize: f.decodedSize,
+        autoDecoded: f.autoDecoded,
+      }));
+    });
+
+    // Expect at least one Base64 finding whose decoded classification
+    // identifies the PE executable. Without the wrapped-block fix
+    // the detector either emits no finding (sub-64-char chunks) or
+    // emits per-line junk findings (misaligned-boundary garbage
+    // never classifies as PE).
+    const peHit = enc.find(f =>
+      f.encoding === 'Base64' &&
+      f.classification && (f.classification as { type?: string }).type &&
+      String((f.classification as { type?: string }).type).includes('PE')
+    );
+    expect(peHit,
+      `expected a Base64 finding classified as PE Executable; got: ${JSON.stringify(enc)}`
+    ).toBeTruthy();
+    expect((peHit as { autoDecoded: boolean }).autoDecoded).toBe(true);
   });
 });

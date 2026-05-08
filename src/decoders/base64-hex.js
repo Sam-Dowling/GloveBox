@@ -11,6 +11,254 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 Object.assign(EncodedContentDetector.prototype, {
+  // ── Wrapped-block helpers ──────────────────────────────────────────────────
+  //
+  // MIME (RFC 2045), PEM (RFC 7468), PowerShell here-strings, and pretty-
+  // printed shellcode dumps all wrap long encoded payloads across multiple
+  // lines (typically 50 / 60 / 64 / 72 / 76 chars). The primary finders
+  // (`_findBase64Candidates`, `_findHexCandidates`, `_findBase32Candidates`)
+  // use contiguous character-class regexes which stop at the first newline,
+  // so each wrapped fragment is seen as a separate short candidate that
+  // (a) usually falls below the default-mode length floor, and (b) decodes
+  // at a misaligned boundary even if it squeaks through — producing
+  // high-entropy junk and hiding the real payload from the Deobfuscation
+  // card / IOC extractor.
+  //
+  // These helpers detect *blocks* of character-class runs separated only by
+  // inline whitespace, then emit one candidate per block whose `raw` is the
+  // whitespace-free concatenation but whose `offset` / `length` cover the
+  // wrapped span in the source text. The existing per-character loops
+  // consult the returned `blockRanges` to skip overlapping offsets.
+  //
+  // Each helper returns `{ candidates, blockRanges }` where `blockRanges`
+  // is a sorted array of `[start, end]` pairs (end exclusive).
+  //
+  // ── Algorithm: delimiter-first two-pass scan ─────────────────────────────
+  //
+  // Earlier prototype used a single regex that looked like this:
+  //   `(?:[${charClass}]{${minFragmentLen},}[ \t]*\r?\n[ \t]*){1,}…`
+  // On input with long char-class runs and NO delimiters (typical
+  // single-line PowerShell `FromBase64String('…')` with a 165 KB body),
+  // this regex exhibited catastrophic backtracking — O(N²) cost, ~35 s on a
+  // 165 KB fixture. The watchdog would abort the render and the encoded-
+  // content finder would silently fall through with no results. See
+  // `tests/unit/base64-hex-perf.test.js` for a regression guard fixture.
+  //
+  // The fix is a two-pass manual scan that cannot backtrack:
+  //
+  //   1. Multi-line: walk the text via `indexOf('\n')`. For each LF, look
+  //      backward for a char-class fragment of ≥ `minFragmentLen`; look
+  //      forward (after optional leading HWS) for another fragment of ≥ 4.
+  //      If both succeed, extend across consecutive wrapped lines until
+  //      a continuation fragment shorter than `minFragmentLen` (or no LF)
+  //      ends the block. Cost: O(N) per LF, dominated by char-class scans
+  //      that each run until the first non-class char — genuinely linear.
+  //
+  //   2. Single-line: walk the text looking for HWS tokens. Require ≥ 2
+  //      HWS-separated joins (i.e. ≥ 3 fragments) to emit, with the same
+  //      fragment-length gating as above.
+  //
+  // Both passes are bounded by `maxCandidatesPerType`. On the regression
+  // fixture the full pre-pass completes in under 10 ms.
+
+  _stripInnerWhitespace(s) {
+    return (typeof s === 'string') ? s.replace(/\s+/g, '') : '';
+  },
+
+  _offsetInsideRanges(offset, ranges) {
+    // Tiny linear scan — blockRanges is almost always <10 entries.
+    for (const [a, b] of ranges) {
+      if (offset >= a && offset < b) return true;
+    }
+    return false;
+  },
+
+  // Delimiter-first two-pass scan for whitespace-wrapped runs of a given
+  // character class. Returns candidates with `raw` = stripped concatenation,
+  // `offset`/`length` covering the wrapped span. Whitelist / entropy /
+  // confidence gates applied by the caller via `classify(rawStripped)`.
+  //
+  //   charClass      — character-class body (e.g. `A-Za-z0-9+/\\-_`). Must
+  //                    NOT include whitespace.
+  //   minFragmentLen — minimum contiguous run that counts as an "interior"
+  //                    fragment joined by whitespace (e.g. 20). The final
+  //                    fragment only needs ≥ 4 chars (a trailing sliver
+  //                    with padding is expected).
+  //   minStrippedLen — minimum length of the concatenated stripped string
+  //                    for the block to emit a candidate.
+  //   paddingAllowed — when true, emit candidates whose final fragment
+  //                    carries trailing `=` padding. (All three callers
+  //                    accept padding; kept as a param for clarity.)
+  //   classify       — fn(rawStripped, matchStart, rawSpan) => candidate
+  //                    object or null. Runs all whitelist/entropy checks.
+  _scanWrappedBlocks(text, charClass, minFragmentLen, minStrippedLen, paddingAllowed, classify) {
+    const candidates = [];
+    const blockRanges = [];
+    if (!text || text.length < minStrippedLen) return { candidates, blockRanges };
+
+    // Build a per-char-class test closure. A single-character RegExp is
+    // stable and fast across V8's regex engine — the alternative (a
+    // `new Set(charClass)`) would miss the `A-Z` / `0-9` range shorthands.
+    /* safeRegex: builtin */
+    const ccRe = new RegExp(`[${charClass}]`);
+    const isCC = (ch) => ccRe.test(ch);
+    const isHWS = (ch) => ch === ' ' || ch === '\t';
+    // `paddingAllowed` collapses `Base64` (=), `Base32` (=), and `Hex` (no
+    // padding) into a single post-match trim step — the fragment walker
+    // never matches `=` inside char-class runs, but may hit a single `=`
+    // or pair of `=` immediately after the final fragment.
+    const consumePadding = (j) => {
+      if (!paddingAllowed) return j;
+      let k = j;
+      // Base32 permits up to 6 `=`; Base64 up to 2. Accept up to 6 — the
+      // classifier does a stricter round-trip anyway.
+      let n = 0;
+      while (k < text.length && text.charCodeAt(k) === 61 /* '=' */ && n < 6) { k++; n++; }
+      return k;
+    };
+    const N = text.length;
+
+    // ── Pass 1: multi-line (LF-joined) wrapped blocks ───────────────────
+    //
+    // Locate every LF via `indexOf` and extend backward/forward.
+    let searchFrom = 0;
+    while (searchFrom < N) {
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      const lf = text.indexOf('\n', searchFrom);
+      if (lf < 0) break;
+
+      // Back up across optional HWS + optional CR to find the end of the
+      // preceding fragment.
+      let back = lf;
+      while (back > 0 && isHWS(text[back - 1])) back--;
+      if (back > 0 && text.charCodeAt(back - 1) === 13) back--;
+      // Walk char-class run backward.
+      let fragStart = back;
+      while (fragStart > 0 && isCC(text[fragStart - 1])) fragStart--;
+      const firstFragLen = back - fragStart;
+      if (firstFragLen < minFragmentLen) {
+        searchFrom = lf + 1;
+        continue;
+      }
+
+      // Extend forward: each continuation line must begin with optional
+      // HWS then a char-class run of ≥ 4 chars. The LAST continuation
+      // fragment may be shorter than `minFragmentLen` (that's the normal
+      // trailing sliver); interior fragments must meet the floor.
+      let endOfBlock = lf;
+      let strippedLen = firstFragLen;
+      let lastFragEnd = back;
+      while (true) {
+        let j = endOfBlock + 1;
+        while (j < N && isHWS(text[j])) j++;
+        const runStart = j;
+        while (j < N && isCC(text[j])) j++;
+        const runLen = j - runStart;
+        if (runLen < 4) break;
+        strippedLen += runLen;
+        lastFragEnd = j;
+
+        // Peek for another LF (with optional HWS/CR) following this run.
+        let k = j;
+        while (k < N && isHWS(text[k])) k++;
+        if (k < N && text.charCodeAt(k) === 13) k++;
+        if (k >= N || text.charCodeAt(k) !== 10) break;
+        // Interior fragments must meet the full floor to continue.
+        if (runLen < minFragmentLen) break;
+        endOfBlock = k;
+      }
+      // Absorb trailing padding (=, ==, up to 6 for Base32).
+      lastFragEnd = consumePadding(lastFragEnd);
+
+      if (strippedLen >= minStrippedLen) {
+        const rawSpan = text.substring(fragStart, lastFragEnd);
+        const stripped = this._stripInnerWhitespace(rawSpan);
+        if (stripped.length >= minStrippedLen &&
+            !this._offsetInsideRanges(fragStart, blockRanges)) {
+          const cand = classify.call(this, stripped, fragStart, rawSpan);
+          if (cand) {
+            cand.offset = fragStart;
+            cand.length = rawSpan.length;
+            cand._wrapped = true;
+            cand._rawSpan = rawSpan;
+            candidates.push(cand);
+            blockRanges.push([fragStart, fragStart + rawSpan.length]);
+          }
+        }
+      }
+      searchFrom = Math.max(lastFragEnd, lf + 1);
+    }
+
+    // ── Pass 2: single-line (HWS-joined) wrapped blocks ─────────────────
+    //
+    // Walk the text looking for runs of spaces/tabs between char-class
+    // fragments. Require ≥ 2 joins (3+ fragments) to emit — `A B` pairs
+    // are too noisy in natural text.
+    let i = 0;
+    while (i < N) {
+      if (candidates.length >= this.maxCandidatesPerType) break;
+      // Find next HWS.
+      while (i < N && !isHWS(text[i])) i++;
+      if (i >= N) break;
+      // Skip if offset is already claimed by a multi-line block.
+      if (this._offsetInsideRanges(i, blockRanges)) { i++; continue; }
+      // Back up to start of preceding char-class run.
+      let fragStart = i;
+      while (fragStart > 0 && isCC(text[fragStart - 1])) fragStart--;
+      if (i - fragStart < minFragmentLen) { i++; continue; }
+
+      let cursor = i;
+      let strippedLen = i - fragStart;
+      let joins = 0;
+      let lastEnd = i;
+      let interiorShortCircuit = false;
+      while (cursor < N && isHWS(text[cursor])) {
+        let j = cursor;
+        while (j < N && isHWS(text[j])) j++;
+        // A CR or LF here means we're crossing into multi-line territory;
+        // that's Pass 1's domain. Bail out of the single-line walk.
+        if (j < N && (text.charCodeAt(j) === 10 || text.charCodeAt(j) === 13)) {
+          interiorShortCircuit = true;
+          break;
+        }
+        const runStart = j;
+        while (j < N && isCC(text[j])) j++;
+        const runLen = j - runStart;
+        if (runLen < 4) break;
+        joins++;
+        strippedLen += runLen;
+        lastEnd = j;
+        cursor = j;
+        if (runLen < minFragmentLen) break; // final sliver
+      }
+      if (interiorShortCircuit) { i = cursor + 1; continue; }
+
+      if (joins >= 2 && strippedLen >= minStrippedLen) {
+        lastEnd = consumePadding(lastEnd);
+        const rawSpan = text.substring(fragStart, lastEnd);
+        const stripped = this._stripInnerWhitespace(rawSpan);
+        if (stripped.length >= minStrippedLen &&
+            !this._offsetInsideRanges(fragStart, blockRanges)) {
+          const cand = classify.call(this, stripped, fragStart, rawSpan);
+          if (cand) {
+            cand.offset = fragStart;
+            cand.length = rawSpan.length;
+            cand._wrapped = true;
+            cand._rawSpan = rawSpan;
+            candidates.push(cand);
+            blockRanges.push([fragStart, fragStart + rawSpan.length]);
+          }
+        }
+      }
+      i = Math.max(lastEnd, i + 1);
+    }
+
+    blockRanges.sort((a, b) => a[0] - b[0]);
+    return { candidates, blockRanges };
+  },
+});
+
+Object.assign(EncodedContentDetector.prototype, {
   // ── Finders ────────────────────────────────────────────────────────────────
 
   _findBase64Candidates(text, context) {
@@ -31,6 +279,54 @@ Object.assign(EncodedContentDetector.prototype, {
     if (!text || text.length < minLen) return [];
     const candidates = [];
 
+    // ── Wrapped-block pre-pass ────────────────────────────────────────
+    // Detect MIME / PEM / here-string style Base64 wrapped across
+    // whitespace. Emits one candidate per block with `raw` = stripped
+    // concatenation, `offset` + `length` covering the wrapped span in
+    // `text`. The main loop below skips any match whose index falls
+    // inside a block range so we don't double-emit short per-line
+    // candidates on top of the block. See `_scanWrappedBlocks` for the
+    // design rationale.
+    const wrappedMinFrag     = this._bruteforce ? 4  : (this._aggressive ? 12 : 20);
+    const wrappedMinStripped = this._bruteforce ? 4  : (this._aggressive ? 24 : 48);
+    const wrappedResult = this._scanWrappedBlocks(
+      text, 'A-Za-z0-9+\\/\\-_', wrappedMinFrag, wrappedMinStripped, true,
+      function classify(stripped, matchStart /*, rawSpan */) {
+        // Whitelist gates anchored at the block start — PEM / data: /
+        // CSS-font / MIME-body use ±N-char lookback from `offset`.
+        if (!this._bruteforce) {
+          if (this._isDataURI(text, matchStart)) return null;
+          if (this._isPEMBlock(text, matchStart)) return null;
+          if (this._isCSSFontData(text, matchStart)) return null;
+          if (this._isMIMEBody(text, matchStart, context)) return null;
+        }
+        // Identifier-shape reject — same gate as the contiguous loop.
+        if (!/[+\/=]/.test(stripped)) {
+          const sepCount = (stripped.match(/[-_]/g) || []).length;
+          if (sepCount >= 3) return null;
+        }
+        const highConf  = EncodedContentDetector.HIGH_CONFIDENCE_B64.find(h => stripped.startsWith(h.prefix));
+        const psContext = this._isPowerShellEncodedCommand(text, matchStart);
+        const entropy   = this._shannonEntropyString(stripped);
+        if (!highConf && !psContext && !this._bruteforce) {
+          if (entropy < 3.5 || entropy > 5.8) return null;
+        }
+        return {
+          type: 'Base64',
+          raw: stripped,
+          offset: 0, length: 0, // overwritten by _scanWrappedBlocks caller
+          entropy,
+          confidence: (highConf || psContext) ? 'high' : 'normal',
+          hint: highConf ? highConf.desc : (psContext ? 'PowerShell encoded string' : 'Line-wrapped Base64'),
+          // High-conf prefix (TVqQ / H4sI / eJw / …) or PS context
+          // auto-decodes on default loads, matching contiguous behaviour.
+          autoDecoded: !!(highConf || psContext) || this._bruteforce,
+        };
+      }
+    );
+    for (const c of wrappedResult.candidates) candidates.push(c);
+    const wrappedRanges = wrappedResult.blockRanges;
+
     // Standard Base64 (including URL-safe variant). The {N,} length
     // floor is interpolated so bruteforce mode catches `aGk=` (4 chars
     // → "hi") that the default 40-char gate would silently drop.
@@ -42,6 +338,12 @@ Object.assign(EncodedContentDetector.prototype, {
 
       const raw = m[0];
       const offset = m.index;
+
+      // Skip matches that fall inside an already-emitted wrapped block —
+      // the wrapped candidate already covers the full span; a per-line
+      // contiguous match here would duplicate (and decode at a misaligned
+      // boundary, yielding garbled bytes).
+      if (this._offsetInsideRanges(offset, wrappedRanges)) continue;
 
       // ── Whitelist filters ──  (skipped entirely in bruteforce mode)
       if (!this._bruteforce) {
@@ -146,6 +448,9 @@ Object.assign(EncodedContentDetector.prototype, {
       while ((rm = rescueRe.exec(text)) !== null) {
         if (candidates.length >= this.maxCandidatesPerType) break;
         if (seenOffsets.has(rm.index)) continue;
+        // Skip rescue matches that fall inside a wrapped block — the
+        // wrapped candidate already covers this span.
+        if (this._offsetInsideRanges(rm.index, wrappedRanges)) continue;
         const raw = rm[0];
         // Skip runs the main loop would already have emitted — only
         // strictly-shorter rescue candidates make it past.
@@ -254,6 +559,70 @@ Object.assign(EncodedContentDetector.prototype, {
     if (!text || text.length < minLen) return [];
     const candidates = [];
 
+    // ── Wrapped-block pre-pass ────────────────────────────────────────
+    // MIME-style line-wrapped hex dumps (common in shellcode write-ups,
+    // PE-in-comment patterns, and `xxd` output without the address
+    // column). Same design as the Base64 variant — emit one candidate
+    // for the whole wrapped run, skip per-line contiguous matches
+    // inside the block.
+    const whexMinFrag     = this._bruteforce ? 4  : (this._aggressive ? 8  : 16);
+    const whexMinStripped = this._bruteforce ? 6  : (this._aggressive ? 16 : 48);
+    const wrappedHexResult = this._scanWrappedBlocks(
+      text, '0-9a-fA-F', whexMinFrag, whexMinStripped, false,
+      function classify(stripped, matchStart /*, rawSpan */) {
+        if (stripped.length % 2 !== 0) return null;
+        if (!this._bruteforce) {
+          if (this._isHashLength(stripped)) return null;
+          if (this._isGUID(text, matchStart)) return null;
+        }
+        const startsWithMZ = /^4d5a/i.test(stripped);
+        const startsWithShellcode = /^(fc4883|fc4889|e8[0-9a-f]{6}00|31c0|33c0)/i.test(stripped);
+        const isHighConf = startsWithMZ || startsWithShellcode;
+        const entropy = this._shannonEntropyString(stripped);
+        if (!isHighConf && !this._bruteforce && (entropy < 2.5 || entropy > 4.2)) return null;
+        // Default-mode plausibility gate (same as the contiguous loop):
+        // require high-conf prefix, XOR context, exec-intent, or
+        // printable-decode. Wrapped blocks without any signal are
+        // overwhelmingly hash dumps / certificate fingerprints.
+        if (!isHighConf && !this._bruteforce && !this._aggressive) {
+          const winStart = Math.max(0, matchStart - 200);
+          const winEnd   = Math.min(text.length, matchStart + stripped.length + 200);
+          const window   = text.substring(winStart, winEnd);
+          const ctxXor = (typeof this._hasXorContext === 'function')
+            && this._hasXorContext(text, matchStart, stripped);
+          const ctxExec = _EXEC_INTENT_RE.test(window);
+          let decodedTextual = false;
+          if (!ctxXor && !ctxExec) {
+            try {
+              const dec = this._decodeHex(stripped);
+              if (dec && dec.length >= 6) {
+                let printable = 0;
+                for (const b of dec) {
+                  if (b >= 0x20 && b <= 0x7E) printable++;
+                  else if (b === 0x09 || b === 0x0A || b === 0x0D) printable++;
+                }
+                if (printable >= dec.length * 0.85) decodedTextual = true;
+              }
+            } catch (_) { /* ignore */ }
+          }
+          if (!ctxXor && !ctxExec && !decodedTextual) return null;
+        }
+        return {
+          type: 'Hex',
+          raw: stripped,
+          offset: 0, length: 0,
+          entropy,
+          confidence: isHighConf ? 'high' : 'normal',
+          hint: startsWithMZ ? 'PE executable header (4D5A)'
+                             : (startsWithShellcode ? 'Shellcode prologue'
+                                                    : 'Line-wrapped hex'),
+          autoDecoded: isHighConf || this._bruteforce,
+        };
+      }
+    );
+    for (const c of wrappedHexResult.candidates) candidates.push(c);
+    const wrappedHexRanges = wrappedHexResult.blockRanges;
+
     // Continuous hex strings
     /* safeRegex: builtin */
     const hexContRe = new RegExp(`(?:0x)?([0-9a-fA-F]{${minLen},})`, 'g');
@@ -263,6 +632,9 @@ Object.assign(EncodedContentDetector.prototype, {
       const raw = m[1]; // just the hex digits
       const offset = m.index;
       if (raw.length % 2 !== 0) continue; // must be even
+
+      // Skip per-line matches swallowed by a wrapped-block candidate.
+      if (this._offsetInsideRanges(offset, wrappedHexRanges)) continue;
 
       // Whitelist: skip known hash lengths and GUIDs (skipped in
       // bruteforce mode — analyst selecting a UUID-shaped value still
@@ -385,12 +757,41 @@ Object.assign(EncodedContentDetector.prototype, {
     if (!text || text.length < 40) return [];
     const candidates = [];
 
+    // ── Wrapped-block pre-pass ────────────────────────────────────────
+    // RFC 4648 Base32 encoders that emit 80-column-wrapped output (the
+    // canonical GNU `base32` default) produced chunk-per-line text that
+    // the single-line `b32Re` below missed entirely.
+    const w32MinFrag     = this._bruteforce ? 8  : 20;
+    const w32MinStripped = this._bruteforce ? 8  : 40;
+    const wrappedB32Result = this._scanWrappedBlocks(
+      text, 'A-Z2-7', w32MinFrag, w32MinStripped, true,
+      function classify(stripped, matchStart /*, rawSpan */) {
+        if (!this._bruteforce && !this._hasBase32Context(text, matchStart)) return null;
+        const entropy = this._shannonEntropyString(stripped);
+        if (!this._bruteforce && (entropy < 3.0 || entropy > 5.0)) return null;
+        return {
+          type: 'Base32',
+          raw: stripped,
+          offset: 0, length: 0,
+          entropy,
+          confidence: 'normal',
+          hint: 'Line-wrapped Base32',
+          autoDecoded: false,
+        };
+      }
+    );
+    for (const c of wrappedB32Result.candidates) candidates.push(c);
+    const wrappedB32Ranges = wrappedB32Result.blockRanges;
+
     const b32Re = /[A-Z2-7]{40,}={0,6}/g;
     let m;
     while ((m = b32Re.exec(text)) !== null) {
       if (candidates.length >= this.maxCandidatesPerType) break;
       const raw = m[0];
       const offset = m.index;
+
+      // Skip per-line matches swallowed by a wrapped-block candidate.
+      if (this._offsetInsideRanges(offset, wrappedB32Ranges)) continue;
 
       // Base32 is low-frequency — require contextual evidence (skipped
       // in bruteforce mode).
@@ -418,8 +819,16 @@ Object.assign(EncodedContentDetector.prototype, {
 
   _decodeBase64(str) {
     try {
+      // Strip any interior whitespace (LF/CR/TAB/SPACE) so MIME-wrapped,
+      // PEM-wrapped, and PowerShell here-string-wrapped Base64 round-trips
+      // through a single `atob` call. Mirrors `_decodeHex`'s `\s+` strip
+      // on line ~436 below. `atob` in modern browsers tolerates some
+      // whitespace but the length-mod-4 padding calculation below breaks
+      // if `str` contains whitespace — whitespace chars count toward
+      // `normalised.length` and push the `=` padding off by 1-3 bytes.
+      const clean = (typeof str === 'string') ? str.replace(/\s+/g, '') : str;
       // Normalise URL-safe chars
-      const normalised = str.replace(/-/g, '+').replace(/_/g, '/');
+      const normalised = clean.replace(/-/g, '+').replace(/_/g, '/');
       // Pad if needed
       const padded = normalised + '=='.slice(0, (4 - normalised.length % 4) % 4);
       const bin = atob(padded);
@@ -448,7 +857,9 @@ Object.assign(EncodedContentDetector.prototype, {
   _decodeBase32(str) {
     try {
       const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
-      const clean = str.replace(/=+$/, '');
+      // Strip interior whitespace for parity with _decodeHex / _decodeBase64
+      // — RFC 4648 Base32 samples are commonly wrapped at 80 chars.
+      const clean = ((typeof str === 'string') ? str.replace(/\s+/g, '') : str).replace(/=+$/, '');
       const bits = [];
       for (const ch of clean) {
         const val = alphabet.indexOf(ch.toUpperCase());

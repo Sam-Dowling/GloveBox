@@ -1,0 +1,17 @@
+# Sample file containing a LINE-WRAPPED Base64-encoded PE executable header.
+# Simulates a malicious write-up / comment / here-string where the Base64
+# payload has been broken across ≤60 chars per line — the shape that
+# the encoded-content detector previously missed (every chunk below the
+# 64-char default floor, and per-chunk decode produces misaligned garbage).
+#
+# Canonical base64: TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAA
+#                    AAAAAAAAAAAAAAAAAAAA+AAAAA4fug4AtAnNIbgBTM0hVGhpcyBwcm9ncmFt
+#                    IGNhbm5vdCBiZSBydW4gaW4gRE9TIG1vZGUuDQ0KJAAAAAAAAAA=
+#
+# Wrapped form (60 cols, CRLF joins):
+
+TVqQAAMAAAAEAAAA//8AALgAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAA
+AAAAAAAAAAAAAAAAAAAA+AAAAA4fug4AtAnNIbgBTM0hVGhpcyBwcm9ncmFt
+IGNhbm5vdCBiZSBydW4gaW4gRE9TIG1vZGUuDQ0KJAAAAAAAAAA=
+
+End of sample.
