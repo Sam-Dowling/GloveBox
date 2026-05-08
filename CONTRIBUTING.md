@@ -33,6 +33,7 @@ before opening a PR.**
 17. **Worker buffers cross as transferable `ArrayBuffer`.** The worker takes ownership; the main thread loses access. Re-read from the original `File` if needed.
 18. **Build determinism:** no `datetime.now()` (one gated `SOURCE_DATE_EPOCH` exception), no FS iteration order, no random IDs / UUIDs / nonces, no machine-local paths, no dict/set ordering that relies on hash randomisation.
 19. **`_DETECTOR_FILES` order in `scripts/build.py` is load-bearing:** class root first, helpers afterwards. Helpers attach via `Object.assign(EncodedContentDetector.prototype, {...})` and must not depend on each other's load order.
+20. **Merged Timelines: `_sources` is the contract.** A Timeline view holds either `_sources=null` (single-file legacy path) OR a `SourceRecord[]` registry with matching `_sourceOfRow` / `_sourceEnabledBitmap` of `length === store.rowCount`. Touching one without the others silently desyncs the filter pipeline. `TimelineView.fromSources(sources)` is the only constructor that wires all three; `_timelineAddFile(file)` + `_timelineRemountFromSources(sources, opts)` are the only mutators. Per-format canonical column projection lives in `src/app/timeline/timeline-mapper.js`; composite RowStore + time merge + bitmap in `src/app/timeline/timeline-composite.js`. Adding a new Timeline format needs: (a) tokeniser + column list in `timeline-parser-helpers.js`, (b) mapper entry here, (c) register in `TIMELINE_MERGE_ELIGIBLE_KINDS` if merge-capable.
 
 ---
 

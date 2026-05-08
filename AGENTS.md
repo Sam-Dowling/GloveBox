@@ -32,7 +32,7 @@ API + Playwright provisioning.
 ```text
 src/
   app/                 App.prototype mixins; `scripts/build.py` load order matters.
-  app/timeline/        Timeline route; bypasses normal renderer/finding pipeline.
+  app/timeline/        Timeline route; bypasses normal renderer/finding pipeline. Merged-source registry (mapper, composite store, chip bar) enables multi-file coalescing.
   renderers/           Static `render(file, buf, app)` classes plus helpers.
   decoders/            EncodedContentDetector mixins via `_DETECTOR_FILES`.
   workers/             YARA / encoded / timeline / IOC extract bodies + shims.
@@ -134,6 +134,7 @@ All third-party Actions are pinned by full 40-char commit SHA; Dependabot rotate
 - Ingress: drop / picker / iframe `loupe-drop` → `App._handleFiles` → `_loadFile` → Timeline bypass or `RenderRoute.run` → renderer → sidebar → auto-YARA.
 - Drill-down uses bubbling `open-inner-file` → `App.openInnerFile` (push nav frame, re-enter `_loadFile`; unified in `22d1df1`).
 - Timeline CSV / TSV / EVTX / PCAP / SQLite / structured logs bypass normal findings/IOC/encoded recursion. EVTX and PCAP run analyzer side-channels for Summarize.
+- Timeline can hold ≥1 "sources" — a single-file load carries `_sources=null` (legacy path, unchanged); dropping additional CSV/TSV/EVTX/structured-log files on top triggers `_timelineAddFile`, which builds a composite RowStore prefixed with `TIMELINE_CANONICAL_COLS` and a `_sources` / `_sourceOfRow` / `_sourceEnabledBitmap` registry. Per-format projection lives in `src/app/timeline/timeline-mapper.js`; composite build in `src/app/timeline/timeline-composite.js`. PCAP and SQLite are merge-INELIGIBLE (scope decision — their side-channels don't aggregate cleanly). Composite persistence is session-only (`TIMELINE_COMPOSITE_KEY_PREFIX`); per-source `_fileKey`s still work for solo reopen.
 - Renderers mutate `app.findings` and `app.currentResult` in place, fenced by render-epoch.
 
 ---
