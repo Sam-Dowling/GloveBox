@@ -1383,6 +1383,12 @@ Object.assign(EncodedContentDetector.prototype, {
       const callOp = m[0].trim().startsWith('.') ? '.' : '&';
       const deobfuscated = `${callOp} ${resolved}`;
       const clipped = _clipDeobfToAmpBudget(deobfuscated, m[0]);
+      // Structural detection is carried by the YARA rule
+      // `PS_GetCommand_Wildcard_Obfuscation` in script-threats.yar;
+      // this branch is kept for its cleartext resolution only. The
+      // same-severity-class check above is retained because an
+      // ambiguous glob (mixed critical/high hits) is a genuine signal
+      // of a non-malicious introspection pattern.
       candidates.push({
         type: 'cmd-obfuscation',
         technique: 'PowerShell Get-Command Wildcard',
@@ -1390,11 +1396,6 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: m.index,
         length: m[0].length,
         deobfuscated: clipped,
-        _patternIocs: [{
-          url: `Get-Command wildcard \u2014 "${glob}" resolves to ${resolved} (T1027 masquerading; `
-            + `${sev === 'critical' ? 'execution sink' : 'sensitive cmdlet'})`,
-          severity: sev,
-        }],
       });
     }
 
@@ -1490,10 +1491,6 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: m.index,
         length: m[0].length,
         deobfuscated: clipped,
-        _patternIocs: [{
-          url: 'powershell.exe -EncodedCommand \u2014 UTF-16LE base64 argument (T1059.001 / T1027) canonical PowerShell stager',
-          severity: 'high',
-        }],
       });
     }
 
@@ -1554,10 +1551,6 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: encVarM.index,
         length: encVarM[0].length,
         deobfuscated: clipped,
-        _patternIocs: [{
-          url: 'powershell.exe -EncodedCommand $var \u2014 base64 argument stored in variable (T1059.001 / T1027) variable-backed PowerShell stager',
-          severity: 'high',
-        }],
       });
     }
 
@@ -1743,10 +1736,6 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: convVarM.index,
         length: convVarM[0].length,
         deobfuscated: clipped,
-        _patternIocs: [{
-          url: '[Convert]::FromBase64String($var) + Encoding.GetString \u2014 variable-backed base64 decode (T1140 Deobfuscate/Decode)',
-          severity: 'high',
-        }],
       });
     }
 
@@ -1841,10 +1830,6 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: m.index,
         length: rawSpan.length,
         deobfuscated: clipped,
-        _patternIocs: [{
-          url: `PowerShell ${isVarKey ? 'variable-keyed' : 'inline'} XOR-decoded payload (key=0x${key.toString(16).padStart(2, '0')}, ${nums.length} bytes) \u2014 T1027.013 Encrypted/Encoded File`,
-          severity: 'high',
-        }],
       });
     }
 
@@ -1875,10 +1860,6 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: m.index,
         length: m[0].length,
         deobfuscated: clipped,
-        _patternIocs: [{
-          url: '[scriptblock]::Create(\u2026).Invoke() \u2014 canonical iex replacement for AMSI bypass (T1059.001)',
-          severity: 'high',
-        }],
       });
     }
 
@@ -1912,10 +1893,6 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: sbVarM.index,
         length: sbVarM[0].length,
         deobfuscated: clipped,
-        _patternIocs: [{
-          url: '[scriptblock]::Create($var).Invoke() \u2014 variable-held script body invocation (T1059.001 / T1140) variable-backed iex replacement',
-          severity: 'high',
-        }],
       });
     }
 
@@ -1952,10 +1929,6 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: sbReflectM.index,
         length: sbReflectM[0].length,
         deobfuscated: clipped,
-        _patternIocs: [{
-          url: '[ScriptBlock].GetMethod("Create",...).Invoke($null,@(...)) \u2014 reflection-based scriptblock invocation (T1059.001 / T1027) anti-AMSI variant',
-          severity: 'high',
-        }],
       });
     }
 
@@ -2051,137 +2024,22 @@ Object.assign(EncodedContentDetector.prototype, {
           offset: gzM.index,
           length: gzM[0].length,
           deobfuscated: clipped,
-          _patternIocs: [{
-            url: `PowerShell ${fmt === 'gzip' ? 'Gzip' : 'Deflate'}Stream staged payload \u2014 compressed base64 body inflated in-memory (T1027 / T1140 Deobfuscate/Decode)`,
-            severity: 'high',
-          }],
         });
       }
     }
 
-    // ── PowerShell ConvertTo-SecureString with inline key (structural) ──
-    //
-    // Phase D: canonical Empire / CobaltStrike staging primitive. The
-    // `-Key @(<bytes>)` argument is 16 / 24 / 32 bytes; the `-String`
-    // argument is a base64 of an AES-CBC-encrypted UTF-16LE payload.
-    // Real decryption requires async Web Crypto (or Node crypto); we
-    // keep this branch structural — emit a critical-severity pattern
-    // IOC and expose the recovered key + ciphertext in `deobfuscated`
-    // so the analyst can decrypt offline. FP-free by design:
-    // legitimate scripts do not call `ConvertTo-SecureString -Key @(…)`
-    // with inline bytes.
-    const ssKeyRe = /ConvertTo-SecureString\s+(?:-String\s+)?(['"])([A-Za-z0-9+/=]{16,32768})\1\s+-Key\s+@\s*\(\s*((?:0x[0-9a-fA-F]{1,2}|\d{1,3})(?:\s*,\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})){15,31})\s*\)/g;
-    let ssM;
-    while ((ssM = ssKeyRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const b64 = ssM[2];
-      const keySrc = ssM[3];
-      const keyBytes = keySrc.split(/\s*,\s*/).map(t => {
-        return t.toLowerCase().startsWith('0x') ? parseInt(t, 16) : parseInt(t, 10);
-      });
-      if (keyBytes.some(b => !Number.isFinite(b) || b < 0 || b > 255)) continue;
-      // AES key sizes are 16 / 24 / 32 bytes.
-      if (keyBytes.length !== 16 && keyBytes.length !== 24 && keyBytes.length !== 32) continue;
-      // Build a short fingerprint of the key (first + last byte, length)
-      // for the analyst report — the full key is in the raw span.
-      const keyHex = keyBytes.map(b => b.toString(16).padStart(2, '0')).join('');
-      const shortKey = keyHex.length > 16
-        ? (keyHex.slice(0, 8) + '\u2026' + keyHex.slice(-8))
-        : keyHex;
-      const summary = `ConvertTo-SecureString -Key (AES-${keyBytes.length * 8}, ${keyBytes.length} bytes, ${shortKey}) \u2014 ciphertext=${b64.slice(0, 24)}\u2026 (${b64.length} chars, UTF-16LE plaintext)`;
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'PowerShell SecureString Decode',
-        raw: ssM[0],
-        offset: ssM.index,
-        length: ssM[0].length,
-        deobfuscated: summary,
-        _patternIocs: [{
-          url: `ConvertTo-SecureString -Key @(\u2026) \u2014 inline-key AES-${keyBytes.length * 8} decrypt primitive (T1140 Deobfuscate/Decode / T1027 canonical Empire/CobaltStrike staging)`,
-          severity: 'critical',
-        }],
-      });
-    }
-
-    // ── PowerShell AMSI-bypass pattern (structural IOC, not a decode) ──
-    //
-    // The canonical AMSI-disable string:
-    //   [Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').
-    //     GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)
-    //
-    // Adversaries concat/split/escape the `amsiInitFailed` token
-    // aggressively. We catch the pattern via a bounded regex against
-    // `AmsiUtils` + `amsiInitFailed` (with optional concat splits);
-    // emit a `_patternIocs` entry at severity `critical`. The "raw"
-    // value is the full matched span, "deobfuscated" is the recovered
-    // canonical form.
-    //
-    // Structurally recognised shapes (concat-joined from the source):
-    //   'amsi' + 'InitFailed'
-    //   'amsi'+'Init'+'Failed'
-    //   "amsi${null}InitFailed"  (`${null}`-insertion obfuscator trick)
-    //
-    // All flagged as a single technique; the FP rate is essentially
-    // zero (a legitimate script never mentions `AmsiUtils`).
-    const amsiRe = /AmsiUtils[\s\S]{0,400}?(?:amsi|['"]\s*amsi\s*['"]\s*\+\s*['"]|amsi\$\{null\})/gi;
-    while ((m = amsiRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const raw = m[0];
-      if (raw.length > 400) continue;
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'PowerShell AMSI Bypass',
-        raw,
-        offset: m.index,
-        length: raw.length,
-        deobfuscated: 'System.Management.Automation.AmsiUtils.amsiInitFailed \u2190 $true (AMSI disabled)',
-        _patternIocs: [{
-          url: 'AMSI bypass \u2014 AmsiUtils.amsiInitFailed SetValue($null,$true) (T1562.001 Disable or Modify Tools)',
-          severity: 'critical',
-        }],
-      });
-    }
-
-    // ── PowerShell AMSI / ETW reflective patching (broadened family) ──
-    //
-    // Phase D: the narrow `AmsiUtils.amsiInitFailed` branch above only
-    // covers the legacy Matt Graeber bypass. Post-2020 stagers patch
-    // `AmsiScanBuffer` / `EtwEventWrite` directly via reflection +
-    // `VirtualProtect`. Aligns with the YARA rule
-    // `AMSI_ETW_Bypass_Patterns` in src/rules/script-threats.yar.
-    //
-    // Structural, high-confidence — the combination of a reflection
-    // GetType over `amsi` / `ntdll`, an export name
-    // (`AmsiScanBuffer` / `EtwEventWrite`), and a `VirtualProtect` /
-    // `GetDelegateForFunctionPointer` / `patch` token is effectively
-    // impossible in benign scripts.
-    const amsiEtwRe = /(?:AmsiScanBuffer|EtwEventWrite|AmsiOpenSession|AmsiCloseSession)[\s\S]{0,800}?(?:VirtualProtect|GetDelegateForFunctionPointer|GetProcAddress|LoadLibrary|\bpatch\b)|(?:VirtualProtect|GetDelegateForFunctionPointer|GetProcAddress)[\s\S]{0,800}?(?:AmsiScanBuffer|EtwEventWrite|AmsiOpenSession|AmsiCloseSession)/gi;
-    let amsiEtwM;
-    while ((amsiEtwM = amsiEtwRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const raw = amsiEtwM[0];
-      if (raw.length > 800) continue;
-      // Identify which API the patch targets for the technique summary.
-      let target = 'AMSI/ETW';
-      if (/AmsiScanBuffer/i.test(raw)) target = 'AmsiScanBuffer';
-      else if (/EtwEventWrite/i.test(raw)) target = 'EtwEventWrite';
-      else if (/AmsiOpenSession/i.test(raw)) target = 'AmsiOpenSession';
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'PowerShell AMSI/ETW Reflective Patch',
-        raw,
-        offset: amsiEtwM.index,
-        length: raw.length,
-        deobfuscated: `Reflective patch of ${target} via VirtualProtect / GetDelegateForFunctionPointer \u2014 anti-defence primitive`,
-        _patternIocs: [{
-          url: `AMSI/ETW reflective patch \u2014 ${target} memory overwrite via VirtualProtect (T1562.001 / T1620 Reflective Code Loading)`,
-          severity: 'critical',
-        }],
-      });
-    }
+    // NOTE: three structural-only branches were removed in the
+    // Deobfuscation cull:
+    //   • "PowerShell SecureString Decode" — emitted a key fingerprint
+    //     summary, not plaintext. Now covered by the YARA rule
+    //     `PowerShell_SecureString_Inline_Key` in script-threats.yar.
+    //   • "PowerShell AMSI Bypass" — emitted the canonical AMSI-disable
+    //     string restated. Now covered by `AMSI_ETW_Bypass` (merger of
+    //     the former `PowerShell_AMSI_Bypass` + `AMSI_ETW_Bypass_Patterns`).
+    //   • "PowerShell AMSI/ETW Reflective Patch" — same story; merged
+    //     into `AMSI_ETW_Bypass`.
+    // None of these produced decoded cleartext; they were detections
+    // masquerading as Deobfuscations. See the git log for context.
 
     // ── CMD set /a arithmetic-to-character computation ──
     //

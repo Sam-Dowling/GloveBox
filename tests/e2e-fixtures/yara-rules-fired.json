@@ -72,7 +72,6 @@
       "Standalone_HTML_Code_Execution"
     ],
     "examples/encoded-payloads/js-string-array-obfuscation.js": [
-      "Obfuscated_Download_Cradle",
       "PowerShell_Download_Cradle",
       "Standalone_Download_Network_Indicators",
       "Standalone_PowerShell_Indicators"
@@ -87,14 +86,12 @@
       "JS_Proxy_Function_Hiding",
       "JS_ROT13_Cipher_Implementation",
       "JS_Split_Join_Deobfuscation",
-      "Obfuscated_IEX_Invocation",
       "PS_Call_Operator_Obfuscation",
       "PS_EnvVar_Payload_Execution",
       "PS_Hashtable_Command_Construction",
       "PS_ScriptBlock_Reflection_Create",
       "PS_Split_Join_Reassembly",
       "PS_String_Reversal_Obfuscation",
-      "PS_Whitespace_Token_Obfuscation",
       "PowerShell_Reflective_Load",
       "Python_Dynamic_Import_Getattr",
       "Python_Eval_Codec_Obfuscation",
@@ -117,7 +114,6 @@
       "Info_Socket_Connection",
       "Python_Char_Construction",
       "Python_Reverse_Shell",
-      "Python_Socket_Revshell_Primitive",
       "Standalone_Script_Shell_Execution"
     ],
     "examples/images/example.jpg": [
@@ -378,12 +374,10 @@
       "PS_Backtick_Obfuscation",
       "PS_Char_Casting_Obfuscation",
       "PS_Format_Operator_Obfuscation",
-      "PS_Replace_Chain_Obfuscation",
-      "PS_String_Concatenation_Obfuscation"
+      "PS_Replace_Chain_Obfuscation"
     ],
     "examples/windows-scripts/ps-stealth-launcher.ps1": [
       "Info_WMI_Event_Subscription",
-      "PowerShell_AMSI_Bypass",
       "PowerShell_AddType_Inline_CSharp",
       "PowerShell_Certutil_Combo",
       "PowerShell_Credential_Theft",
@@ -396,13 +390,13 @@
   },
   "summary": {
     "anchorFixtures": 70,
-    "rulesFiredInCorpus": 253,
-    "rulesUnanchored": 345,
-    "totalRulesDefined": 598
+    "rulesFiredInCorpus": 247,
+    "rulesUnanchored": 348,
+    "totalRulesDefined": 595
   },
   "unanchoredRules": [
     "AD_Database_Dump",
-    "AMSI_ETW_Bypass_Patterns",
+    "AMSI_ETW_Bypass",
     "Archive_Double_Extension",
     "BAT_Recursive_Copy_Drop",
     "BITSAdmin_Download",
@@ -663,13 +657,16 @@
     "PE_Suspicious_Strings_CnC",
     "PE_Themida_Packed",
     "PE_VMProtect_Packed",
+    "PHP_Stream_Wrapper_Include",
     "PS_Comment_Injection_Obfuscation",
     "PS_GetCommand_Wildcard_Obfuscation",
     "PS_Quote_Interruption_Obfuscation",
     "PasswordManager_DB_Reference",
     "PostEx_Tool_Reference",
+    "PowerShell_SecureString_Inline_Key",
     "PowerShell_TCPClient_RevShell",
     "Punycode_IDN_Homograph",
+    "Python_Subprocess_Shell_Sink",
     "REG_File_Association_Hijack",
     "REG_IFEO_Debugger",
     "REG_Persistence_Winlogon",

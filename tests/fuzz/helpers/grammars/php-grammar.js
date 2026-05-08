@@ -29,9 +29,15 @@ const PHP_TECHNIQUE_CATALOG = Object.freeze([
   'PHP pack(H*) Reassembly',
   'PHP pack(c*) Reassembly',
   'PHP preg_replace /e modifier',
-  'PHP Superglobal Callable',
-  'PHP eval/system on Superglobal',
-  'PHP data:/php:// stream wrapper include',
+  // NOTE: "PHP Superglobal Callable", "PHP eval/system on Superglobal",
+  // and "PHP data:/php:// stream wrapper include" labels were removed
+  // in the Deobfuscation cull — their emissions restated the raw source
+  // or the call shape with no decode. The YARA rules
+  // `PHP_Eval_Superglobal` and the new `PHP_Stream_Wrapper_Include`
+  // carry the detections; the `data:;base64` base64-carrier variant
+  // remains as a real decode (new label `PHP data:;base64 Include
+  // Carrier`).
+  'PHP data:;base64 Include Carrier',
   // ── Phase 4 additions ────────────────────────────────────────
   'PHP create_function Legacy',
   'PHP $GLOBALS Callable',

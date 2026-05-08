@@ -164,9 +164,13 @@ test('phase-B: `. $x` dot-sourcing form resolves', () => {
   assert.ok(hits.length >= 1);
 });
 
-// ── 5. _patternIocs mirrors present on every Phase B candidate ───────────
+// ── 5. _patternIocs stripped in the Deobfuscation cull ───────────────────
 
-test('phase-B: every var-sink carries a _patternIocs mirror', () => {
+test('phase-B: var-sink candidates no longer carry a _patternIocs mirror (moved to YARA)', () => {
+  // Post-cull contract: the decoder still resolves the variable-backed
+  // sink and emits decoded cleartext, but the structural-detection
+  // _patternIocs entry was stripped. YARA rules (PowerShell_Encoded_Command,
+  // PS_ScriptBlock_Reflection_Create) now own detection.
   const inner = 'Invoke-Expression iex';
   const b64 = toB64Utf16LE(inner);
   const cases = [
@@ -176,10 +180,10 @@ test('phase-B: every var-sink carries a _patternIocs mirror', () => {
   for (const text of cases) {
     const cands = d._findCommandObfuscationCandidates(text, {});
     const hits = cands.filter(c => /\(var\)/.test(c.technique));
+    assert.ok(hits.length >= 1, `expected var-sink candidate; got: ${JSON.stringify(host(cands))}`);
     for (const h of hits) {
-      assert.ok(Array.isArray(h._patternIocs) && h._patternIocs.length >= 1,
-        `missing _patternIocs: ${h.technique}`);
-      assert.equal(h._patternIocs[0].severity, 'high');
+      assert.ok(!h._patternIocs || h._patternIocs.length === 0,
+        `_patternIocs must be empty post-cull; got: ${JSON.stringify(h._patternIocs)}`);
     }
   }
 });

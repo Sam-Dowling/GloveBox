@@ -13,17 +13,20 @@ const BASH_TECHNIQUE_CATALOG = Object.freeze([
   'Bash Variable Expansion (partial)',
   'Bash ANSI-C Quoting',
   'Bash printf Chain',
-  'Bash Pipe-to-Shell (live fetch)',
+  // NOTE: "Bash Pipe-to-Shell (live fetch)", "Bash IFS Reassembly
+  // (structural)", and "Bash /dev/tcp Reverse Shell" labels were
+  // removed in the Deobfuscation cull — those branches restated the
+  // raw command with no transformation. Sibling YARA rules
+  // `Bash_Live_Fetch_Pipe_Shell`, `Bash_IFS_Reassembly`, and
+  // `Bash_DevTcp_Reverse_Shell` now carry the detections.
   'Bash base64-pipe-to-Shell',
   'Bash base64-here-string-to-Shell',
   'Bash xxd-here-string-to-Shell',
   'Bash eval $(echo … | base64 -d)',
   'Bash eval $(printf …)',
-  'Bash IFS Reassembly (structural)',
   'Bash IFS Reassembly',
   'Bash Variable Concatenation',
   'Bash Variable Concatenation (partial)',
-  'Bash /dev/tcp Reverse Shell',
   'Bash echo -e Escape Chain',
   'Bash Indirect Variable Expansion',
   'Bash Inline awk Executor',

@@ -206,7 +206,7 @@ test('php-obfuscation: PHP6 data:base64 include amp clamp caps payload preview',
   assert.ok(b64.length < 4000, `b64 length ${b64.length} exceeds PHP6 URL cap`);
   const text = `<?php include('data://text/plain;base64,${b64}'); ?>`;
   const cands = d._findPhpObfuscationCandidates(text, {});
-  const hits = pick(cands, c => c.technique === 'PHP data:/php:// stream wrapper include');
+  const hits = pick(cands, c => c.technique === 'PHP data:;base64 Include Carrier');
   assert.ok(hits.length >= 1, `expected PHP6 hit; got: ${JSON.stringify(host(cands))}`);
   const deobf = hits[0].deobfuscated;
   assert.ok(deobf.length <= 8 * 1024, `deobf length ${deobf.length} exceeds 8 KiB cap`);

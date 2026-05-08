@@ -561,137 +561,17 @@ Object.assign(EncodedContentDetector.prototype, {
     // Both emit extracted-key `deobfuscated` so the sidebar shows the
     // resolved taint path, not the raw source substring.
 
-    const phpSuperglobalCallRe = /\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)\s*\[\s*([^\]]{1,80})\]\s*\(\s*([^)]{0,400})\)/g;
-    while ((m = phpSuperglobalCallRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const raw = m[0];
-      // Skip benign read patterns where the call is `(int)`/`(string)`
-      // (false-positive guard; cast-then-call doesn't exist in PHP).
-      if (raw.length > 600) continue;
-      const sgName = m[1];
-      const rawKey = (m[2] || '').trim();
-      const rawArgs = (m[3] || '').trim();
-      // Normalise key rendering: preserve existing quotes if present,
-      // otherwise wrap identifier / numeric keys in their source form.
-      const keyDisp = rawKey.length ? rawKey : '""';
-      const argsDisp = rawArgs.length > 120 ? rawArgs.slice(0, 117) + '\u2026' : rawArgs;
-      const resolved = `call $_${sgName}[${keyDisp}] with args: (${argsDisp || ''})`;
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'PHP Superglobal Callable',
-        raw,
-        offset: m.index,
-        length: raw.length,
-        deobfuscated: _phpClipDeobfToAmpBudget(resolved, raw),
-        _executeOutput: true,
-        _patternIocs: [{
-          url: `PHP taint-flow: $_${sgName}[${keyDisp}] used as callable \u2014 user-input function dispatch (T1059.004)`,
-          severity: 'critical',
-        }],
-      });
-    }
+    // NOTE: the "PHP Superglobal Callable" (5a) and "PHP eval/system on
+    // Superglobal" (5b) branches were removed in the Deobfuscation cull
+    // — both produced synthetic labels (`call $_GET[k] with args: …` /
+    // `sink($_SG[k]...)`) that restated the raw source with no
+    // cleartext recovery. The YARA rule `PHP_Eval_Superglobal` in
+    // src/rules/suspicious-patterns.yar is now the sole signal source
+    // for the single-line shapes. The cross-line "PHP Superglobal Taint
+    // (local-var flow)" branch below (5c) is kept — YARA is single-line
+    // only, and the bridge between assignment and sink is genuine
+    // analysis that YARA cannot provide.
 
-    // 5b: sink-on-superglobal with optional bounded wrapper chain.
-    //
-    // Allow-list of inner-wrapper identifiers. Three intent classes:
-    //   • ineffective-sanitiser  (escapeshellarg, htmlspecialchars, …)
-    //   • identity-ish-transform (trim, urldecode, strtolower, …)
-    //   • amplifying-decoder     (base64_decode, gzinflate, …)
-    //
-    // Classifying wrappers lets us uplift severity when the chain's
-    // intent is actively dangerous (decoders turn a literal superglobal
-    // read into arbitrary-code execution; escapeshell* creates a false
-    // sense of security around option-injection vectors).
-    /* safeRegex: builtin */
-    const PHP_SG_WRAPPER_RE = new RegExp(
-      '(?:escapeshellarg|escapeshellcmd|htmlspecialchars|htmlentities|filter_var|strip_tags|addslashes' +
-      '|trim|ltrim|rtrim|strtolower|strtoupper|urldecode|rawurldecode|stripslashes' +
-      '|htmlspecialchars_decode|html_entity_decode' +
-      '|base64_decode|hex2bin|gzinflate|gzuncompress|gzdecode|str_rot13|convert_uudecode)'
-    );
-    const PHP_SG_AMPLIFIERS = /^(?:base64_decode|hex2bin|gzinflate|gzuncompress|gzdecode|str_rot13|convert_uudecode)$/;
-    const PHP_SG_ESCAPESHELL = /^(?:escapeshellarg|escapeshellcmd)$/;
-    // Core regex: sink `(` then 0–3 wrapper `(` openings, then the
-    // superglobal access, then its `]` close. We do NOT try to match
-    // the trailing close-parens in regex (open/close counting is regex-
-    // hostile); we re-compute the raw span length from the open count
-    // + a bounded inner-arg window.
-    /* safeRegex: builtin */
-    const phpEvalSuperglobalRe = new RegExp(
-      '\\b(eval|assert|system|shell_exec|exec|passthru|popen|proc_open|create_function)' +
-      '\\s*\\(\\s*' +
-      '((?:' + PHP_SG_WRAPPER_RE.source + '\\s*\\(\\s*){0,3})' +
-      '\\$_(GET|POST|REQUEST|COOKIE|SERVER|FILES)\\s*\\[\\s*' +
-      "(['\"][^'\"\\r\\n]{0,80}['\"]|[^\\]\\r\\n]{0,80})" +
-      '\\s*\\]',
-      'g'
-    );
-    while ((m = phpEvalSuperglobalRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const sink = m[1];
-      const wrapperBlob = (m[2] || '').trim();
-      const sgName = m[3];
-      const rawKey = (m[4] || '').trim();
-      // Extract wrapper names in source order (outer-first).
-      const wrappers = [];
-      if (wrapperBlob.length) {
-        const nameRe = /([A-Za-z_][A-Za-z_0-9]{2,30})\s*\(/g;
-        let wm;
-        while ((wm = nameRe.exec(wrapperBlob)) !== null) {
-          if (wrappers.length >= 3) break;
-          wrappers.push(wm[1]);
-        }
-      }
-      // Severity classification:
-      //   high (default, via _executeOutput)
-      //   critical when any wrapper is:
-      //     • amplifying (b64/gz/hex2bin/rot13) — these turn a
-      //       literal-text sink read into RCE by design;
-      //     • escapeshellarg/escapeshellcmd   — false-sense mitigation
-      //       that still allows option-injection;
-      //   critical when bare (no wrapper) and sink is eval/assert —
-      //       the canonical webshell one-liner.
-      let critical = false;
-      const criticalReason = [];
-      for (const w of wrappers) {
-        if (PHP_SG_AMPLIFIERS.test(w)) { critical = true; criticalReason.push(`amplifying decoder ${w}`); }
-        else if (PHP_SG_ESCAPESHELL.test(w)) { critical = true; criticalReason.push(`ineffective sanitiser ${w} (option-injection reachable)`); }
-      }
-      if (!wrappers.length && (sink === 'eval' || sink === 'assert')) {
-        critical = true;
-        criticalReason.push('direct eval/assert on user-input superglobal');
-      }
-      // Build a readable resolved form reconstructing the call chain.
-      // Outer-first (as the reader sees source): sink(w1(w2(w3($_SG[KEY]))))
-      const innerAccess = `$_${sgName}[${rawKey || '""'}]`;
-      const resolved = wrappers.length
-        ? `${sink}(${wrappers.join('(')}(${innerAccess})${')'.repeat(wrappers.length + 1)}`
-        : `${sink}(${innerAccess}...)`;
-      const raw = m[0];
-      const patternIocs = [];
-      patternIocs.push({
-        url: `PHP sink-on-superglobal: ${sink}() reads $_${sgName}[${rawKey || '?'}]${wrappers.length ? ' via ' + wrappers.join(' \u2192 ') : ''}`,
-        severity: critical ? 'critical' : 'high',
-      });
-      if (criticalReason.length) {
-        patternIocs.push({
-          url: `PHP webshell primitive \u2014 ${criticalReason.join('; ')}`,
-          severity: 'critical',
-        });
-      }
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'PHP eval/system on Superglobal',
-        raw,
-        offset: m.index,
-        length: raw.length,
-        deobfuscated: _phpClipDeobfToAmpBudget(resolved, raw),
-        _executeOutput: true,
-        _patternIocs: patternIocs,
-      });
-    }
 
     // 5c: local-var taint flow (Layer-2) ─────────────────────────────
     //
@@ -758,45 +638,35 @@ Object.assign(EncodedContentDetector.prototype, {
               length: raw.length,
               deobfuscated: _phpClipDeobfToAmpBudget(resolved, raw),
               _executeOutput: true,
-              _patternIocs: [{
-                url: `PHP second-order taint: $${varName} carries superglobal data into ${sink}() (assignment \u2192 sink)`,
-                severity: 'critical',
-              }],
             });
           }
         }
       }
     }
 
-    // ── PHP6: data: URL include / file_get_contents ──
+    // ── PHP6: data:…;base64 include carrier ──
     //
-    //   include('data://text/plain;base64,…')
-    //   file_get_contents('data:text/plain;base64,…')
-    //   file_get_contents('php://input')
-    //   include('php://filter/convert.base64-decode/resource=…')
+    //   include('data://text/plain;base64,<B64>')
+    //   file_get_contents('data:text/plain;base64,<B64>')
     //
-    // The data: scheme is only useful as a code-injection sink when
-    // `allow_url_include = On` (which is the case in every documented
-    // webshell-loaded environment). We surface the carrier; if it
-    // contains base64, decode it for inspection.
-    const phpDataIncludeRe = /\b(?:include|include_once|require|require_once|file_get_contents|fopen|readfile)\s*\(\s*['"]((?:data|php|expect|phar|zip|compress\.zlib|compress\.bzip2):\/\/[^'"\r\n]{1,4096})['"]\s*\)/g;
-    while ((m = phpDataIncludeRe.exec(text)) !== null) {
+    // Only the base64-bearing `data:` form is kept after the cull — it
+    // is a genuine decode (base64 → payload preview). The non-base64
+    // stream-wrapper shapes (`php://input`, `php://filter/...`,
+    // `phar://…`, `expect://…`) are left to the new
+    // `PHP_Stream_Wrapper_Include` YARA rule and the URL IOC extractor;
+    // the decoder re-emitting the raw URL added no cleartext.
+    const phpDataB64IncludeRe = /\b(?:include|include_once|require|require_once|file_get_contents|fopen|readfile)\s*\(\s*['"](data:[^,'"\r\n]{0,200};base64,([A-Za-z0-9+/=]{8,4096}))['"]\s*\)/g;
+    while ((m = phpDataB64IncludeRe.exec(text)) !== null) {
       throwIfAborted();
       if (candidates.length >= this.maxCandidatesPerType) break;
-      const url = m[1];
-      let preview = url;
-      // data:…;base64,… — decode the base64 payload
-      const dataB64 = /^data:[^,]*;base64,([A-Za-z0-9+/=]{8,})/.exec(url);
-      if (dataB64) {
-        const bytes = _phpB64ToBytes(dataB64[1]);
-        if (bytes) {
-          const decoded = _phpBytesPreview(bytes);
-          if (decoded) preview = `data: \u2192 ${decoded}`;
-        }
-      }
+      const bytes = _phpB64ToBytes(m[2]);
+      if (!bytes) continue;
+      const decoded = _phpBytesPreview(bytes);
+      if (!decoded || decoded.length < 3) continue;
+      const preview = `data:;base64 \u2192 ${decoded}`;
       candidates.push({
         type: 'cmd-obfuscation',
-        technique: 'PHP data:/php:// stream wrapper include',
+        technique: 'PHP data:;base64 Include Carrier',
         raw: m[0],
         offset: m.index,
         length: m[0].length,

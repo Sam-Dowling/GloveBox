@@ -202,7 +202,7 @@ test('decoded-yara-filter: stamps _yaraHits on matched findings only', async () 
         // id 0 (finding 'a') matches two rules.
         { id: 0, results: [
           { ruleName: 'PowerShell_Encoded_Command', meta: { severity: 'high' }, tags: 'pwsh' },
-          { ruleName: 'Obfuscated_IEX_Invocation',  meta: { severity: 'medium' }, tags: '' },
+          { ruleName: 'PowerShell_Download_Cradle', meta: { severity: 'medium' }, tags: '' },
         ]},
         // id 2 (finding 'c') matches one rule. id 1 doesn't appear ⇒ no match.
         { id: 2, results: [
@@ -217,7 +217,7 @@ test('decoded-yara-filter: stamps _yaraHits on matched findings only', async () 
   // fail prototype-identity checks against host-realm Array. JSON-roundtrip
   // via `host()` projects them into the test realm for deepEqual.
   assert.deepEqual(host(findings[0]._yaraHits.map(h => h.ruleName)),
-    ['PowerShell_Encoded_Command', 'Obfuscated_IEX_Invocation']);
+    ['PowerShell_Encoded_Command', 'PowerShell_Download_Cradle']);
   assert.equal(findings[0]._retainedByYara, true);
   assert.equal(findings[1]._yaraHits, undefined, 'unmatched finding stays untouched');
   assert.equal(findings[1]._retainedByYara, undefined);

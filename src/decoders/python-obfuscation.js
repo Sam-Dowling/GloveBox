@@ -530,104 +530,28 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
 
-    // ── P6: command-execution sinks ──
+    // ── P6: command-execution sinks (removed) ──
     //
-    //   subprocess.{run,Popen,check_output,check_call,call,getoutput}(['sh','-c','…'])
-    //   subprocess.{...}('cmd …', shell=True)
-    //   os.system('…')
-    //   os.popen('…').read()
-    //   os.{execv,execvp,execl,execlp,spawnv,spawnvp,…}('/bin/sh', …)
-    //   pty.spawn('/bin/sh')  — interactive-shell upgrade primitive
+    // NOTE: four detection-only branches were removed in the
+    // Deobfuscation cull. All four re-emitted their input (or a trivial
+    // synthetic label) and did no transformation:
     //
-    // Detection-only when the command is non-literal. Literal-arg
-    // variants surface the cleartext (sensitivity gate via
-    // dangerousPatterns in the post-processor).
-    const p6SubRe = /\bsubprocess\s*\.\s*(?:run|Popen|check_output|check_call|call|getoutput)\s*\(\s*(?:\[\s*)?(b?['"][^'"\r\n]{2,400}['"])(?:\s*,\s*(?:b?['"][^'"\r\n]{0,400}['"](?:\s*,\s*)?){0,8})?(?:\s*\])?(?:\s*,\s*shell\s*=\s*True)?/g;
-    while ((m = p6SubRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const lit = _dequotePyLiteral(m[1]);
-      if (lit === null) continue;
-      // Strip the "['/bin/sh', '-c', …]" wrapper to reveal the actual
-      // command. The full match captures any subsequent quoted args;
-      // re-collect them all and pick the longest (typically the -c arg).
-      const allLits = [...m[0].matchAll(/(b?)(['"])([^'"\r\n]{0,400})\2/g)].map(x => x[3]);
-      const longest = allLits.length ? allLits.reduce((a, b) => a.length >= b.length ? a : b) : lit;
-      if (longest.length < 3) continue;
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'Python subprocess Sink',
-        raw: m[0],
-        offset: m.index,
-        length: m[0].length,
-        deobfuscated: longest,
-        _executeOutput: true,
-      });
-    }
+    //   • "Python subprocess Sink"     (→ emitted longest literal arg,
+    //                                      usually identical to raw)
+    //   • "Python os.system Sink"      (→ emitted the literal arg)
+    //   • "Python pty.spawn Shell-Upgrade" (→ emitted `pty.spawn("…")`)
+    //   • "Python Socket Reverse-Shell"    (→ emitted `socket connect
+    //                                         HOST:PORT → dup2/…`)
+    //
+    // YARA coverage:
+    //   • Sink family → new `Python_Subprocess_Shell_Sink` rule in
+    //     script-threats.yar.
+    //   • Revshell / pty → consolidated `Python_Reverse_Shell` rule
+    //     (the former `Python_Socket_Revshell_Primitive` is folded in).
+    //
+    // IOC.IP / IOC.URL for the host:port continue to flow through the
+    // existing IOC extractors — the cull does not regress IOC coverage.
 
-    const p6OsRe = /\bos\s*\.\s*(?:system|popen|exec[vl][pe]?|spawn[vl][pe]?)\s*\(\s*(b?['"][^'"\r\n]{2,400}['"])/g;
-    while ((m = p6OsRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const lit = _dequotePyLiteral(m[1]);
-      if (lit === null) continue;
-      if (lit.length < 3) continue;
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'Python os.system Sink',
-        raw: m[0],
-        offset: m.index,
-        length: m[0].length,
-        deobfuscated: lit,
-        _executeOutput: true,
-      });
-    }
-
-    // pty.spawn('/bin/sh') — the canonical interactive-shell upgrade
-    // primitive after a reverse-shell catch.
-    const p6PtyRe = /\bpty\s*\.\s*spawn\s*\(\s*(b?['"][^'"\r\n]{2,200}['"])/g;
-    while ((m = p6PtyRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const lit = _dequotePyLiteral(m[1]);
-      if (lit === null) continue;
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'Python pty.spawn Shell-Upgrade',
-        raw: m[0],
-        offset: m.index,
-        length: m[0].length,
-        deobfuscated: `pty.spawn(${JSON.stringify(lit)})`,
-        _executeOutput: true,
-      });
-    }
-
-    // socket reverse-shell shape: socket.socket() + connect((HOST,PORT))
-    // + os.dup2(s.fileno(),N) + pty.spawn / subprocess.call. We model
-    // a more compact heuristic: socket.connect((<ip-or-host>, <port>))
-    // within ~1 KB of an os.dup2 call. Detection-only; no decode.
-    const p6RevShellRe = /socket\s*\.\s*socket\s*\([^\r\n)]{0,200}\)[\s\S]{0,1000}?\.\s*connect\s*\(\s*\(\s*(['"]?)([\w.\-]{3,80})\1\s*,\s*(\d{1,5})\s*\)[\s\S]{0,1000}?(?:os\s*\.\s*dup2|pty\s*\.\s*spawn|subprocess\s*\.\s*(?:call|Popen|run))/g;
-    while ((m = p6RevShellRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const host = m[2];
-      const port = m[3];
-      const raw = m[0];
-      if (raw.length > 2000) continue;
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'Python Socket Reverse-Shell',
-        raw,
-        offset: m.index,
-        length: raw.length,
-        deobfuscated: `socket connect ${host}:${port} \u2192 dup2/pty.spawn`,
-        _executeOutput: true,
-        _patternIocs: [{
-          url: `Python reverse-shell primitive \u2014 TCP connect-back to ${host}:${port} with os.dup2 / pty.spawn / subprocess.call (T1059.006)`,
-          severity: 'critical',
-        }],
-      });
-    }
 
     // ── P7: exec(pickle.loads(base64.b64decode('…'))) ──
     //

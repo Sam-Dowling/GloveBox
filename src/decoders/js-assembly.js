@@ -581,77 +581,22 @@
     },
 
     /**
-     * Find aaencode / jjencode payloads. Both encode arbitrary JS into
-     * pure-symbol strings (aaencode uses Japanese kaomoji, jjencode uses
-     * a small alphabet of `[]{}()+!_`). We can't statically execute these
-     * (they recover the source via JS-engine semantics), so this branch
-     * is detection-only — we emit a candidate naming the carrier so the
-     * post-processor can flag it `_executeOutput: true` (the construct
-     * itself is the IOC).
+     * Formerly: find aaencode / jjencode payloads.
+     *
+     * Both branches were removed in the Deobfuscation cull — they
+     * emitted a synthetic `"<encoder> payload — statically opaque;
+     * sandbox required to recover JS"` label that added no cleartext.
+     * The YARA rules `JS_Aaencode_Kaomoji_Carrier` and
+     * `JS_Jjencode_Symbol_Carrier` in src/rules/script-threats.yar
+     * now carry the detection (and always did — the decoder was
+     * duplicating their work).
+     *
+     * Kept as an always-empty stub so the `_runFinder` mixin hook in
+     * encoded-content-detector.js continues to resolve without a
+     * defensive `typeof` check.
      */
-    _findJsAaJjEncodeCandidates(text, _context) {
-      if (!text || text.length < 60 || text.length > MAX_SOURCE_BYTES) return [];
-      const candidates = [];
-      // aaencode signature: opens with `ﾟωﾟﾉ= /｀ｍ´）ﾉ ~┻━┻` (or similar
-      // kaomoji burst). The exact opening varies but every aaencode
-      // dump contains a long run of dense Hangul/Greek/Cyrillic/halfwidth
-      // chars followed by `(ﾟДﾟ)[ﾟεﾟ]+` style signature tokens. The
-      // canonical aaencode token alphabet uses U+0370-U+03FF (Greek),
-      // U+0400-U+04FF (Cyrillic), and U+30A0-U+30FF / U+FF00-U+FFEF
-      // (katakana / halfwidth-fullwidth). We accept all four ranges so
-      // a `(ﾟДﾟ)` token (where `Д` is Cyrillic and `ﾟ` is halfwidth)
-      // matches.
-      // The prefix-to-token gap may span newlines (real aaencode dumps
-      // are typically a single very long line, but synthetic / pretty-
-      // printed samples can split). Use `[\s\S]*?` instead of `.*?` so
-      // the connector spans line breaks.
-      const aaCharClass = '[\\u0370-\\u03FF\\u0400-\\u04FF\\u30A0-\\u30FF\\uFF00-\\uFFEF]';
-      const aaSig = new RegExp(`${aaCharClass}{4,}[\\s\\S]{0,2048}?\\(\\s*${aaCharClass}+\\s*\\)`); /* safeRegex: builtin */
-      if (aaSig.test(text)) {
-        const m = aaSig.exec(text);
-        if (m) {
-          const start = Math.max(0, m.index - 20);
-          const end = Math.min(text.length, m.index + 200);
-          candidates.push({
-            type: 'cmd-obfuscation',
-            technique: 'JS aaencode (Hasegawa kaomoji obfuscation)',
-            raw: text.slice(start, end),
-            offset: start,
-            length: end - start,
-            deobfuscated: 'aaencode payload \u2014 statically opaque; sandbox required to recover JS',
-            _executeOutput: true,
-          });
-        }
-      }
-      // jjencode signature: a single long line where >=80% of chars are
-      // in the small jjencode alphabet (`[]{}()+!_/$.\\`) and the line
-      // is ≥200 chars long. We also require the canonical opening
-      // `<NAME>=~[]; <NAME>={…}` shape so a legitimate minified file
-      // doesn't fire.
-      const jjSig = /([A-Za-z_$][A-Za-z0-9_$]{0,40})\s*=\s*~\s*\[\s*\]\s*;\s*\1\s*=\s*\{/;
-      const jm = jjSig.exec(text);
-      if (jm) {
-        // Confirm the dense-symbol ratio of the next ~500 chars to cut
-        // FPs against minifier output that happens to start `x=~[];`.
-        const window2 = text.slice(jm.index, Math.min(text.length, jm.index + 500));
-        let symbol = 0;
-        for (let i = 0; i < window2.length; i++) {
-          const c = window2[i];
-          if ('[]{}()+!_/$.\\'.indexOf(c) >= 0) symbol++;
-        }
-        if (symbol / window2.length > 0.4) {
-          candidates.push({
-            type: 'cmd-obfuscation',
-            technique: 'JS jjencode (Hasegawa symbol-only obfuscation)',
-            raw: window2.slice(0, 200),
-            offset: jm.index,
-            length: Math.min(200, window2.length),
-            deobfuscated: 'jjencode payload \u2014 statically opaque; sandbox required to recover JS',
-            _executeOutput: true,
-          });
-        }
-      }
-      return candidates;
+    _findJsAaJjEncodeCandidates(_text, _context) {
+      return [];
     },
 
     /**

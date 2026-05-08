@@ -924,53 +924,12 @@ test('applescript-obfuscation: AS2 escapes embedded quotes in AS-quoted output',
   assert.equal(hits[0].deobfuscated, '"she said \\"hi\\""');
 });
 
-test('applescript-obfuscation: Pass 4 lone-primitive catches trailing (ASCII character 47)', () => {
-  // Real-world pattern: obfuscated chain followed by a single
-  // trailing primitive the AS1 regex misses because its chain body
-  // requires a chain structure. Our lone-primitive finder must
-  // catch `... & _other & (ASCII character 47)` at the end of an
-  // anonymous expression (here embedded in a `display dialog` call
-  // so it doesn't become a binding).
-  const text =
-    `do shell script "echo hi"\n` +
-    `display dialog ("prefix " & _other & (ASCII character 47))`;
-  const cands = d._findAppleScriptObfuscationCandidates(text, {});
-  const lone = pick(cands, c => c.technique === 'AppleScript Lone Primitive');
-  assert.ok(lone.length >= 1, `expected lone-primitive hit; got: ${JSON.stringify(host(cands))}`);
-  assert.equal(lone[0].deobfuscated, '"/"');
-  assert.equal(lone[0]._resolvedValue, '/');
-});
-
-test('applescript-obfuscation: Pass 4 lone-primitive requires expression context', () => {
-  // A bare `(ASCII character 10)` sitting on its own line, with no
-  // `&` / `"` / `(` context in the surrounding 12 chars, might be
-  // innocuous documentation or non-obfuscation use. Skip.
-  const text =
-    `do shell script "echo hi"\n` +
-    `\n` +
-    `(ASCII character 10)\n` +
-    `\n`;
-  const cands = d._findAppleScriptObfuscationCandidates(text, {});
-  const lone = pick(cands, c => c.technique === 'AppleScript Lone Primitive');
-  assert.equal(lone.length, 0,
-    `bare lone-primitive without expression context must be skipped; got: ${JSON.stringify(host(cands))}`);
-});
-
-test('applescript-obfuscation: Pass 4 lone-primitive de-dups with AS1 chain coverage', () => {
-  // A primitive that's part of an AS1 chain must NOT be re-emitted
-  // separately by the lone-primitive finder. `isCovered` + candidate-
-  // coverage check handles this. Using `display dialog` so the chain
-  // is anonymous (not captured by a binding).
-  const text =
-    `do shell script "echo hi"\n` +
-    `display dialog ((ASCII character 104) & (ASCII character 116) & (ASCII character 116) & (ASCII character 112))`;
-  const cands = d._findAppleScriptObfuscationCandidates(text, {});
-  const lone = pick(cands, c => c.technique === 'AppleScript Lone Primitive');
-  const chain = pick(cands, c => c.technique === 'AppleScript Char-Code Reassembly');
-  assert.ok(chain.length >= 1, 'expected AS1 chain candidate');
-  assert.equal(lone.length, 0,
-    `primitives inside AS1 chain must not emit separate lone-primitive candidates; got: ${JSON.stringify(host(cands))}`);
-});
+// NOTE: the three "Pass 4 lone-primitive" tests were removed in the
+// Deobfuscation cull. The `AppleScript Lone Primitive` branch in
+// src/decoders/applescript-obfuscation.js was deleted — a single
+// `(ASCII character N)` decoding to one quoted character is not a
+// payload. AS1 / AS2 (chain + binding reassembly, tested above) remain
+// the meaningful multi-primitive recovery paths.
 
 // ── Partial-resolution propagation through ref chains ─────────────────────
 
@@ -1182,8 +1141,8 @@ test('applescript-obfuscation: partially-reassembled shell command with sentinel
 // against sentinel-bearing values (`⟨unresolved:NAME⟩`,
 // `⟨VAR:~start,len⟩`, `⟨…⟩` — U+27E8 / U+27E9).
 //
-// The specific leak that prompted this gate: clicking "Load stitched
-// script" on a reassembled AppleScript opens a synthetic
+// The specific leak that prompted this gate: clicking "Analyse
+// Deobfuscated Script" on a reassembled AppleScript opens a synthetic
 // `.reassembled.<hash>.<ext>` file whose text contains decoder-embedded
 // sentinels. The child load routes to `OsascriptRenderer` via
 // `_sniffAppleScript`, and the renderer's own URL regex

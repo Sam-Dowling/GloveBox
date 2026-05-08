@@ -529,55 +529,6 @@ rule Unicode_Escape_Obfuscation
         $uesc and any of ($eval, $func, $iex)
 }
 
-rule Obfuscated_IEX_Invocation
-{
-    meta:
-        description = "PowerShell uses obfuscated Invoke-Expression (IEX) patterns"
-        severity    = "high"
-        category    = "execution"
-        mitre       = "T1059.001"
-        applies_to  = "any, decoded-payload"
-
-    strings:
-        $iex1 = /\.\s*\(\s*\$[a-zA-Z]*[eE][nN][vV]:[a-zA-Z]+\[/ ascii
-        $iex2 = /[iI][eE][xX]\s*\(\s*\$/ ascii
-        $iex4 = /\.\(\s*'[iI]'\s*\+\s*'[eE]'\s*\+\s*'[xX]'\s*\)/ ascii
-        $iex5 = /\$\w+\s*=\s*\[type\]\s*\(\s*'[^']+'\s*\)/ ascii
-        $sal = /[sS][aA][lL]\s+\w{1,5}\s+[iI][eE][xX]/ ascii
-
-    condition:
-        any of them
-}
-
-rule Obfuscated_Download_Cradle
-{
-    meta:
-        description = "File contains obfuscated download cradle patterns"
-        severity    = "high"
-        category    = "execution"
-        mitre       = "T1059.001"
-        applies_to  = "any, decoded-payload"
-
-    strings:
-        $dl1 = "DownloadString" nocase
-        $dl2 = "DownloadFile" nocase
-        $dl3 = "DownloadData" nocase
-        $dl4 = "Invoke-WebRequest" nocase
-        $dl5 = "Start-BitsTransfer" nocase
-        $dl6 = "Net.WebClient" nocase
-        $dl7 = "wget " nocase
-        $dl8 = "curl " nocase
-        $obf1 = "FromBase64String" nocase
-        $obf2 = "-EncodedCommand" nocase
-        $obf3 = /\s-enc\s/ nocase
-        $obf4 = "-w hidden" nocase
-        $obf5 = "-WindowStyle Hidden" nocase
-        $obf6 = "-nop" nocase
-
-    condition:
-        any of ($dl*) and any of ($obf*)
-}
-
 rule Space_Delimited_Hex_Payload
 {
     meta:

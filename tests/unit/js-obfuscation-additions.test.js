@@ -88,44 +88,26 @@ test('js-additions: non-packer text returns empty', () => {
   assert.deepEqual(host(d._findJsPackerCandidates(text, {})), []);
 });
 
-// ── aaencode / jjencode ─────────────────────────────────────────────────────
+// ── aaencode / jjencode — decoder branches removed in the cull ─────────────
+//
+// Both branches emitted `"<encoder> payload — statically opaque;
+// sandbox required to recover JS"` as `deobfuscated` — a synthetic
+// label, not cleartext. The YARA rules `JS_Aaencode_Kaomoji_Carrier`
+// and `JS_Jjencode_Symbol_Carrier` in src/rules/script-threats.yar
+// now own the detection. The `_findJsAaJjEncodeCandidates` function
+// is kept as an always-empty stub so the mixin hook continues to
+// resolve.
 
-test('js-additions: aaencode kaomoji burst flagged as detection-only', () => {
-  // Synthetic aaencode-shaped opening — long Japanese-kana / fullwidth
-  // run followed by `(ﾟДﾟ)` token. Real samples are ~2-5 KB; we only
-  // need the signature to fire.
+test('js-additions: aaencode/jjencode finder is a no-op stub post-cull', () => {
   const text =
     `var ﾟωﾟﾉ = /｀ｍ´）ﾉ ~┻━┻;\n` +
     `(ﾟДﾟ)['ﾟεﾟ'] = '\\\\';\n` +
-    `(ﾟДﾟ)[ﾟωﾟ] = (ﾟДﾟ);` +
-    `// payload follows…`;
-  const cands = d._findJsAaJjEncodeCandidates(text, {});
-  const hits = pick(cands, c => /aaencode/.test(c.technique));
-  assert.ok(hits.length >= 1, `expected aaencode hit; got: ${JSON.stringify(host(cands))}`);
-  assert.match(hits[0].deobfuscated, /sandbox required/);
-  assert.equal(hits[0]._executeOutput, true);
-});
-
-test('js-additions: jjencode opener with dense-symbol body flagged', () => {
-  // jjencode body is an explosion of `[]{}()+!_/$.\\` — synthesise 500
-  // chars of those, prefixed with the canonical opener.
-  const symbols = '[]{}()+!_/$.\\';
-  let body = '';
-  for (let i = 0; i < 500; i++) body += symbols[i % symbols.length];
-  const text = `$=~[];$={___:++$,$$$$:(![]+'')[$],__$:++$,${body}`;
-  const cands = d._findJsAaJjEncodeCandidates(text, {});
-  const hits = pick(cands, c => /jjencode/.test(c.technique));
-  assert.ok(hits.length >= 1, `expected jjencode hit; got: ${JSON.stringify(host(cands))}`);
-});
-
-test('js-additions: minified-JS that *looks* like jjencode opener but is dense in alphanums is rejected', () => {
-  // `x=~[];x={a:1,b:2,c:3}` — has the opening shape but the body is
-  // mostly identifiers, not jjencode symbols. The 0.4 ratio gate must
-  // suppress it.
-  const text = `var x=~[];x={a:1,b:2,c:3,d:4,e:5,foo:6,bar:7,baz:8}; for (let i=0;i<100;i++) doSomething(i);`;
-  const cands = d._findJsAaJjEncodeCandidates(text, {});
-  const hits = pick(cands, c => /jjencode/.test(c.technique));
-  assert.equal(hits.length, 0, 'minified JS must not fire jjencode');
+    `(ﾟДﾟ)[ﾟωﾟ] = (ﾟДﾟ);`;
+  assert.deepEqual(host(d._findJsAaJjEncodeCandidates(text, {})), [],
+    'aaencode/jjencode finder must return empty post-cull');
+  const jj = `$=~[];$={___:++$,$$$$:(![]+'')[$],__$:++$,` + '[]{}()+!_/$.\\'.repeat(50);
+  assert.deepEqual(host(d._findJsAaJjEncodeCandidates(jj, {})), [],
+    'aaencode/jjencode finder must return empty post-cull');
 });
 
 // ── Function-wrapper carriers ───────────────────────────────────────────────

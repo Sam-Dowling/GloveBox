@@ -93,11 +93,16 @@ def main() -> int:
                       key=lambda r: (r['category'], r['file']))
 
     # First-anchor pass: for each rule, the *first* fixture that fires
-    # it claims it.
+    # it claims it. Rules observed in the stale fixture-report but no
+    # longer present in `src/rules/*.yar` (because they were
+    # consolidated / cut in a rule-cleanup pass) are dropped silently —
+    # the warning below surfaces them for the operator.
     rule_anchor: dict[str, str] = {}
     for row in fixtures:
         rel = f"examples/{row['category']}/{row['file']}"
         for rule in row.get('yaraRules', []):
+            if rule not in defined:
+                continue
             if rule not in rule_anchor:
                 rule_anchor[rule] = rel
 

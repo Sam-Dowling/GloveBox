@@ -28,10 +28,14 @@ const PYTHON_TECHNIQUE_CATALOG = Object.freeze([
   'Python bytes-list Reassembly',
   'Python chr-concat Reassembly',
   'Python Builtin String-Concat',
-  'Python subprocess Sink',
-  'Python os.system Sink',
-  'Python pty.spawn Shell-Upgrade',
-  'Python Socket Reverse-Shell',
+  // NOTE: the "Python subprocess Sink" / "Python os.system Sink" /
+  // "Python pty.spawn Shell-Upgrade" / "Python Socket Reverse-Shell"
+  // technique labels were removed in the Deobfuscation cull — those
+  // four branches restated the raw command (no decode) and are now
+  // carried by the YARA rules `Python_Subprocess_Shell_Sink` and
+  // `Python_Reverse_Shell`. Fuzz seeds that exercise these shapes
+  // still flow through the corpus via other generators; the tracker
+  // just no longer expects a technique emission.
   // ── Phase 3 additions ────────────────────────────────────────
   'Python pickle.loads(b64)',
   'Python lambda-wrapped exec',

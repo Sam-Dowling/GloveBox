@@ -69,7 +69,9 @@ test('phase-D: GzipStream + FromBase64String (literal) inflates real payload', (
   const hits = pick(cands, c => /Gzip Stager/.test(c.technique));
   assert.ok(hits.length >= 1, `expected gzip hit; got: ${JSON.stringify(host(cands))}`);
   assert.match(hits[0].deobfuscated, /Invoke-Expression/);
-  assert.equal(hits[0]._patternIocs[0].severity, 'high');
+  // Post-cull: _patternIocs stripped; decoder still produces cleartext.
+  assert.ok(!hits[0]._patternIocs || hits[0]._patternIocs.length === 0,
+    '_patternIocs must be empty post-cull');
 });
 
 test('phase-D: DeflateStream + FromBase64String (literal) inflates real payload', () => {
@@ -105,72 +107,16 @@ test('phase-D: Gzip stager with $var-held base64 resolves via symbol table', () 
   assert.match(hits[0].deobfuscated, /Invoke-Expression/);
 });
 
-// ── 2. SecureString with inline key (structural) ──────────────────────────
-
-test('phase-D: ConvertTo-SecureString -Key @(...) with 32-byte key fires', () => {
-  // Pre-compute a 32-byte key array (AES-256 size) and a realistic-length
-  // ciphertext base64 (>= 16 chars). The branch is structural so the
-  // contents don't have to decrypt to anything meaningful.
-  const key = Array.from({length: 32}, (_, i) => 0x30 + (i % 10));
-  const keyArr = key.join(',');
-  const ct = Buffer.alloc(48, 0xaa).toString('base64');
-  const text = `ConvertTo-SecureString -String '${ct}' -Key @(${keyArr})`;
-  const cands = d._findCommandObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /SecureString Decode/.test(c.technique));
-  assert.ok(hits.length >= 1, `expected SecureString hit; got: ${JSON.stringify(host(cands))}`);
-  assert.equal(hits[0]._patternIocs[0].severity, 'critical');
-  assert.match(hits[0].deobfuscated, /AES-256.*32 bytes/);
-});
-
-test('phase-D: SecureString -Key @(16 bytes) AES-128 form fires', () => {
-  const key = Array.from({length: 16}, (_, i) => 0x42 + i);
-  const keyArr = key.join(',');
-  const ct = Buffer.alloc(32, 0x33).toString('base64');
-  const text = `ConvertTo-SecureString '${ct}' -Key @(${keyArr})`;
-  const cands = d._findCommandObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /SecureString Decode/.test(c.technique));
-  assert.ok(hits.length >= 1);
-  assert.match(hits[0].deobfuscated, /AES-128.*16 bytes/);
-});
-
-test('phase-D: SecureString -Key with non-AES-size (20 bytes) does NOT fire', () => {
-  const key = Array.from({length: 20}, (_, i) => 0x42 + i);
-  const ct = Buffer.alloc(32, 0x33).toString('base64');
-  const text = `ConvertTo-SecureString '${ct}' -Key @(${key.join(',')})`;
-  const cands = d._findCommandObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /SecureString Decode/.test(c.technique));
-  // 20 is not a valid AES key length — the key-array regex enforces the
-  // byte count via `{15,31}` and then the size check rejects non-
-  // 16/24/32 totals.
-  assert.equal(hits.length, 0);
-});
-
-// ── 3. Broadened AMSI / ETW reflective patching ───────────────────────────
-
-test('phase-D: `AmsiScanBuffer` + `VirtualProtect` fires the broadened branch', () => {
-  const text = [
-    '$proc = [System.Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer(',
-    '  [System.Runtime.InteropServices.Marshal]::GetProcAddress($amsi, "AmsiScanBuffer"),',
-    '  [VirtualProtect])',
-    '$proc.Invoke()',
-  ].join('\n');
-  const cands = d._findCommandObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /AMSI\/ETW Reflective Patch/.test(c.technique));
-  assert.ok(hits.length >= 1, `expected AMSI/ETW hit; got: ${JSON.stringify(host(cands))}`);
-  assert.equal(hits[0]._patternIocs[0].severity, 'critical');
-  assert.match(hits[0].deobfuscated, /AmsiScanBuffer/);
-});
-
-test('phase-D: `EtwEventWrite` + `GetDelegateForFunctionPointer` fires', () => {
-  const text = [
-    '$addr = [Runtime.InteropServices.Marshal]::GetProcAddress($ntdll, "EtwEventWrite")',
-    '$deleg = [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer($addr, [PatcherDelegate])',
-  ].join('\n');
-  const cands = d._findCommandObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /AMSI\/ETW Reflective Patch/.test(c.technique));
-  assert.ok(hits.length >= 1);
-  assert.match(hits[0].deobfuscated, /EtwEventWrite/);
-});
+// ── 2. SecureString / AMSI / ETW — tests removed in the cull ──────────────
+//
+// The "PowerShell SecureString Decode" and "PowerShell AMSI/ETW
+// Reflective Patch" decoder branches were deleted — both emitted
+// synthetic labels (key fingerprint / "Reflective patch of X via …")
+// that restated the input with no cleartext recovery. Detections
+// migrated to the new YARA rules:
+//   • AMSI_ETW_Bypass (consolidation of PowerShell_AMSI_Bypass +
+//     AMSI_ETW_Bypass_Patterns)
+//   • PowerShell_SecureString_Inline_Key (new)
 
 // ── 4. Reflective [ScriptBlock].GetMethod("Create", ...).Invoke ───────────
 

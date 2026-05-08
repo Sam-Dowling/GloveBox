@@ -1805,64 +1805,11 @@ Object.assign(EncodedContentDetector.prototype, {
       });
     }
 
-    // AS3: lone parenthesised primitive NOT caught by AS1 (which
-    // requires ≥1 `&` operator). Real-world obfuscated droppers often
-    // mix a single trailing `(ASCII character 47)` onto the end of a
-    // chain expression — e.g. `(chain) & _X & (ASCII character 47)` —
-    // where the trailing primitive sits outside the AS1 match. Also
-    // covers standalone `(ASCII character 10)` / `(character id 47)`
-    // inside function-argument expressions like `display dialog foo &
-    // (ASCII character 10)`.
-    //
-    // Expression-context gate: only emit if the primitive lives in an
-    // expression (nearby `&`, `"`, `(`, `,`, identifier). Skip bare
-    // primitives that might be benign (e.g. inside a comment-like
-    // context or as a standalone statement). The gate inspects 12
-    // chars before and after the match; presence of `&` in either
-    // direction is the strongest signal of concatenation context.
-    /* safeRegex: builtin */
-    const lonePrimRe = /\(\s*ASCII\s+character\s+(\d{1,6})\s*\)|\(\s*character\s+id\s+(\d{1,6})\s*\)/gi;
-    while ((m = lonePrimRe.exec(text)) !== null) {
-      throwIfAborted();
-      if (candidates.length >= this.maxCandidatesPerType) break;
-      const raw = m[0];
-      if (isCovered(m.index, raw.length)) continue;
-      // Already claimed by AS1 / AS2 / binding / sink?
-      let claimed = false;
-      for (const c of candidates) {
-        if (c.offset <= m.index && m.index + raw.length <= c.offset + c.length) {
-          claimed = true;
-          break;
-        }
-      }
-      if (claimed) continue;
-      // Expression-context gate: the primitive must be immediately
-      // adjacent to an AppleScript concatenation operator `&` (the
-      // only syntactic position where a `(ASCII character N)` or
-      // `(character id N)` primitive legitimately appears in an
-      // obfuscated expression). Look 8 chars before and after — just
-      // enough to span `" ) & ` / ` & ` / `, & ` patterns from a
-      // preceding/following operand. Rejects standalone primitives
-      // that might be benign (comment / documentation / trailing
-      // diagnostic `(ASCII character 10)` on its own line).
-      const before = text.substring(Math.max(0, m.index - 8), m.index);
-      const after = text.substring(m.index + raw.length, m.index + raw.length + 8);
-      if (!/&/.test(before) && !/&/.test(after)) continue;
-      const n = parseInt(m[1] || m[2], 10);
-      if (!Number.isFinite(n) || n < 0 || n > 0x10FFFF) continue;
-      let resolved;
-      try { resolved = String.fromCodePoint(n); } catch (_) { continue; }
-      const quoted = _asAppleScriptQuote(resolved);
-      const clipped = _clipDeobfToAmpBudget(quoted, raw);
-      candidates.push({
-        type: 'cmd-obfuscation',
-        technique: 'AppleScript Lone Primitive',
-        raw,
-        offset: m.index,
-        length: raw.length,
-        deobfuscated: clipped,
-        _resolvedValue: resolved,
-      });
-    }
+    // NOTE: AS3 "AppleScript Lone Primitive" was removed in the
+    // Deobfuscation cull — a single `(ASCII character N)` decoded to
+    // one quoted character is not a payload. AS1 / AS2 already capture
+    // meaningful multi-primitive reassemblies. No YARA sibling needed;
+    // the osascript_char_code_obfuscation rule continues to flag the
+    // multi-primitive shape.
   },
 });

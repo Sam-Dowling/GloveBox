@@ -1,19 +1,3 @@
-rule PS_Whitespace_Token_Obfuscation
-{
-    meta:
-        description = "Detects PowerShell token obfuscation via excessive whitespace between characters"
-        severity = "medium"
-        category = "obfuscation"
-        mitre       = "T1027"
-        applies_to  = "ps1, plaintext, decoded-payload"
-    strings:
-        $ws_pattern = /[A-Za-z]\s{2,}[A-Za-z]\s{2,}[A-Za-z]\s{2,}[A-Za-z]\s{2,}[A-Za-z]/ nocase
-        $ws_cmdlet = /[Ww]\s{2,}[Rr]\s{2,}[Ii]\s{2,}[Tt]\s{2,}[Ee]/ nocase
-        $ws_iex = /[Ii]\s{2,}[Ee]\s{2,}[Xx]/ nocase
-    condition:
-        any of them
-}
-
 rule PS_ScriptBlock_Reflection_Create
 {
     meta:
@@ -305,23 +289,6 @@ rule PowerShell_Download_Cradle
 
     condition:
         ($iex1 or $iex2 or $iex3) and ($dl1 or $dl2 or $dl3 or $dl4 or $dl5 or $dl6)
-}
-
-rule PowerShell_AMSI_Bypass
-{
-    meta:
-        description = "PowerShell attempts to bypass AMSI (Antimalware Scan Interface)"
-        severity    = "critical"
-        category    = "defense-evasion"
-        mitre       = "T1562.001"
-        applies_to  = "ps1, plaintext, decoded-payload"
-    strings:
-        $a = "AmsiUtils" nocase
-        $b = "amsiInitFailed" nocase
-        $c = "AmsiScanBuffer" nocase
-
-    condition:
-        any of them
 }
 
 rule PowerShell_Reflective_Load
@@ -651,25 +618,30 @@ rule PowerShell_WMI_Event_Persistence
         2 of them
 }
 
-rule AMSI_ETW_Bypass_Patterns
+rule AMSI_ETW_Bypass
 {
     meta:
-        description = "File attempts to patch AMSI or disable ETW tracing"
+        description = "PowerShell attempts to disable or patch AMSI / ETW telemetry — the canonical AmsiUtils.amsiInitFailed SetValue bypass OR a reflective patch of AmsiScanBuffer / EtwEventWrite via VirtualProtect / GetDelegateForFunctionPointer / GetProcAddress"
         severity    = "critical"
         category    = "defense-evasion"
         mitre       = "T1562.001"
         applies_to  = "ps1, bat, plaintext, decoded-payload"
     strings:
-        $a     = "AmsiScanBuffer" nocase
-        $b     = "amsiInitFailed" nocase
-        $c     = "EtwEventWrite" nocase
-        $d     = "ntdll" nocase
-        $e     = { C3 }
-        $f     = "VirtualProtect" nocase
-        $g     = "patch" nocase
+        $amsi_utils             = "AmsiUtils" nocase
+        $amsi_init_failed       = "amsiInitFailed" nocase
+        $amsi_scan_buffer       = "AmsiScanBuffer" nocase
+        $etw_event_write        = "EtwEventWrite" nocase
+        $amsi_open_session      = "AmsiOpenSession" nocase
+        $virtual_protect        = "VirtualProtect" nocase
+        $get_delegate           = "GetDelegateForFunctionPointer" nocase
+        $get_proc_address       = "GetProcAddress" nocase
 
     condition:
-        ($a or $b or $c) and ($f or $g)
+        ($amsi_utils and $amsi_init_failed)
+        or (
+            ($amsi_scan_buffer or $etw_event_write or $amsi_open_session)
+            and ($virtual_protect or $get_delegate or $get_proc_address)
+        )
 }
 
 rule CMD_Caret_Obfuscation
@@ -727,23 +699,6 @@ rule CMD_Environment_Substring_Abuse
 
     condition:
         $substr or (#comspec > 2) or (#path_sub > 2)
-}
-
-rule PS_String_Concatenation_Obfuscation
-{
-    meta:
-        description = "PowerShell uses excessive string concatenation to evade keyword detection"
-        severity    = "medium"
-        category    = "defense-evasion"
-        mitre       = "T1027"
-        applies_to  = "ps1, plaintext, decoded-payload"
-    strings:
-        $concat_single = /('[a-zA-Z]{1,4}'\s*\+\s*){4,}'[a-zA-Z]{1,4}'/ ascii
-        $concat_double = /("[a-zA-Z]{1,4}"\s*\+\s*){4,}"[a-zA-Z]{1,4}"/ ascii
-        $iex_concat = /[iI][eE][xX]\s*\(\s*['"][a-zA-Z]{1,3}['"]\s*\+/ ascii
-
-    condition:
-        any of them
 }
 
 rule PS_Backtick_Obfuscation
@@ -1189,7 +1144,7 @@ rule Bash_Variable_Obfuscation
 rule Python_Reverse_Shell
 {
     meta:
-        description = "Detects Python reverse shell patterns — socket connect with subprocess/pty"
+        description = "Detects Python reverse shell patterns — socket.socket() + connect((host, port)) paired with subprocess / pty / os.dup2 / /bin/sh. Canonical pentester and dropper shape for Linux-target Python stagers"
         severity = "critical"
         category = "execution"
         mitre       = "T1059.006"
@@ -1198,8 +1153,10 @@ rule Python_Reverse_Shell
         $socket_import = "import socket" nocase
         $subprocess    = "import subprocess" nocase
         $pty           = "import pty" nocase
-        $os_dup2       = "os.dup2(" nocase
+        $sock_create   = /socket\s*\.\s*socket\s*\(/ nocase
         $connect       = ".connect((" nocase
+        $sock_connect_tight = /\.\s*connect\s*\(\s*\(\s*['"]?[\w.\-]{3,80}['"]?\s*,\s*\d{1,5}\s*\)/ nocase
+        $os_dup2       = "os.dup2(" nocase
         $popen         = "subprocess.Popen(" nocase
         $call          = "subprocess.call(" nocase
         $pty_spawn     = "pty.spawn(" nocase
@@ -1207,7 +1164,8 @@ rule Python_Reverse_Shell
         $bin_bash      = "/bin/bash" nocase
 
     condition:
-        $socket_import and $connect and ($subprocess or $pty) and ($os_dup2 or $popen or $call or $pty_spawn or $bin_sh or $bin_bash)
+        ($socket_import and $connect and ($subprocess or $pty) and ($os_dup2 or $popen or $call or $pty_spawn or $bin_sh or $bin_bash))
+        or ($sock_create and $sock_connect_tight and ($os_dup2 or $pty_spawn or $popen or $call))
 }
 
 rule NodeJS_Child_Process_Execution
@@ -1901,20 +1859,59 @@ rule JS_Jjencode_Symbol_Carrier
         $jj_opener and ($jj_toString or $jj_alphabet)
 }
 
-rule Python_Socket_Revshell_Primitive
+rule Python_Subprocess_Shell_Sink
 {
     meta:
-        description = "Detects Python reverse-shell primitive — socket.socket() + connect((host, port)) paired with os.dup2() / pty.spawn() / subprocess.call() within a small proximity. The canonical pentester / dropper shape for Linux-target Python stagers"
-        severity = "critical"
-        category = "execution"
-        mitre = "T1059.006"
-        applies_to = "python, plaintext, decoded-payload"
+        description = "Detects Python command-execution sinks fed a user-reachable argument — subprocess.run / Popen / check_output with shell=True, os.system / os.popen / os.exec* / os.spawn*, or subprocess.getoutput. The sink construct is the signal; literal-arg vs dynamic-arg disambiguation is outside YARA's reach"
+        severity    = "high"
+        category    = "execution"
+        mitre       = "T1059.006"
+        applies_to  = "py, plaintext, decoded-payload"
     strings:
-        $sock_create = /socket\s*\.\s*socket\s*\(/ nocase
-        $sock_connect = /\.\s*connect\s*\(\s*\(\s*['"]?[\w.\-]{3,80}['"]?\s*,\s*\d{1,5}\s*\)/ nocase
-        $os_dup2 = /os\s*\.\s*dup2\s*\(/ nocase
-        $pty_spawn = /pty\s*\.\s*spawn\s*\(/ nocase
-        $subprocess_call = /subprocess\s*\.\s*(?:call|Popen|run)\s*\(/ nocase
+        $sp_shell_true   = /subprocess\s*\.\s*(?:run|Popen|call|check_output|check_call|getoutput)\s*\([^)]{0,400}shell\s*=\s*True/ nocase
+        $sp_getoutput    = /subprocess\s*\.\s*getoutput\s*\(/ nocase
+        $os_system       = /os\s*\.\s*system\s*\(/ nocase
+        $os_popen        = /os\s*\.\s*popen\s*\(/ nocase
+        $os_exec_family  = /os\s*\.\s*exec[vl][pe]?\s*\(/ nocase
+        $os_spawn_family = /os\s*\.\s*spawn[vl][pe]?\s*\(/ nocase
+
     condition:
-        $sock_create and $sock_connect and any of ($os_dup2, $pty_spawn, $subprocess_call)
+        any of them
+}
+
+rule PHP_Stream_Wrapper_Include
+{
+    meta:
+        description = "Detects PHP include / require / file_get_contents / fopen / readfile fed a stream-wrapper URL — php://input, php://filter/..., expect://, phar://, zip://, compress.zlib://. Canonical RCE carrier when allow_url_include is enabled; phar:// also triggers unsafe object deserialisation"
+        severity    = "high"
+        category    = "execution"
+        mitre       = "T1059.004"
+        applies_to  = "php, plaintext, decoded-payload"
+    strings:
+        $sw_php_input    = /\b(?:include|include_once|require|require_once|file_get_contents|fopen|readfile)\s*\(\s*['"]php:\/\/input['"]/ nocase
+        $sw_php_filter   = /\b(?:include|include_once|require|require_once|file_get_contents|fopen|readfile)\s*\(\s*['"]php:\/\/filter\//  nocase
+        $sw_expect       = /\b(?:include|include_once|require|require_once|file_get_contents|fopen|readfile)\s*\(\s*['"]expect:\/\//ascii nocase
+        $sw_phar         = /\b(?:include|include_once|require|require_once|file_get_contents|fopen|readfile)\s*\(\s*['"]phar:\/\//ascii nocase
+        $sw_zip          = /\b(?:include|include_once|require|require_once|file_get_contents|fopen|readfile)\s*\(\s*['"]zip:\/\//ascii nocase
+        $sw_compress     = /\b(?:include|include_once|require|require_once|file_get_contents|fopen|readfile)\s*\(\s*['"]compress\.(?:zlib|bzip2):\/\//ascii nocase
+
+    condition:
+        any of them
+}
+
+rule PowerShell_SecureString_Inline_Key
+{
+    meta:
+        description = "Detects PowerShell ConvertTo-SecureString invoked with an inline AES key — the canonical Empire / CobaltStrike staging primitive. Legitimate scripts use a DPAPI-bound key or fetch the key from a protected store; a hard-coded 16 / 24 / 32-byte key array next to an AES-CBC-encrypted UTF-16LE payload is effectively a signed confession"
+        severity    = "critical"
+        category    = "defense-evasion"
+        mitre       = "T1140"
+        applies_to  = "ps1, plaintext, decoded-payload"
+    strings:
+        $cts_key_16 = /ConvertTo-SecureString\s+(?:-String\s+)?['"][A-Za-z0-9+\/=]{16,32768}['"]\s+-Key\s+@\s*\(\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})(?:\s*,\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})){15}\s*\)/ nocase
+        $cts_key_24 = /ConvertTo-SecureString\s+(?:-String\s+)?['"][A-Za-z0-9+\/=]{16,32768}['"]\s+-Key\s+@\s*\(\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})(?:\s*,\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})){23}\s*\)/ nocase
+        $cts_key_32 = /ConvertTo-SecureString\s+(?:-String\s+)?['"][A-Za-z0-9+\/=]{16,32768}['"]\s+-Key\s+@\s*\(\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})(?:\s*,\s*(?:0x[0-9a-fA-F]{1,2}|\d{1,3})){31}\s*\)/ nocase
+
+    condition:
+        any of them
 }

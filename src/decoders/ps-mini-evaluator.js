@@ -439,10 +439,6 @@ Object.assign(EncodedContentDetector.prototype, {
         offset: verbStart,
         length: stmtEnd - verbStart,
         deobfuscated: clippedDeobf,
-        _patternIocs: [{
-          url: 'PowerShell invocation of variable-held command name \u2014 T1059.001 (call-operator / iex / Invoke-Expression indirection)',
-          severity: 'high',
-        }],
       });
     }
 

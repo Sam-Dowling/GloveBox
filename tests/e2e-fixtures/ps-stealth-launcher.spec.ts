@@ -49,7 +49,7 @@ import {
 // anchor. Ordering matches the rule definitions in
 // `src/rules/script-threats.yar` for ease of cross-reference.
 const TARGETED_RULES = [
-  'PowerShell_AMSI_Bypass',
+  'AMSI_ETW_Bypass',
   'PowerShell_Reflective_Load',
   'PowerShell_Execution_Policy_Bypass',
   'PowerShell_Hidden_Window',

