@@ -154,6 +154,21 @@ class GridViewer {
     // filtering or layout.
     this._rowClassFn = typeof opts.rowClass === 'function' ? opts.rowClass : null;
 
+    // Optional per-header class callback. Returns a space-separated class
+    // string (or empty/null) that is added to the header cell's
+    // `.grid-header-cell` div at build time. Mirrors the shape of
+    // `cellClass` / `rowClass` but runs once per column at header
+    // (re-)build. Used by Timeline mode to tag canonical bookkeeping
+    // columns (`__source`) with `grid-header-canonical` so CSS can
+    // apply a subtle dashed-accent differentiator distinct from the
+    // Stack-by palette's solid bars. Signature:
+    //   headerClass(colIdx, colName) → string|null
+    // Called once per visible column inside `_buildHeaderCells`, and
+    // re-called whenever the header rebuilds (sort / hide / reorder /
+    // resize — every code path that calls `_buildHeaderCells`). Pure
+    // decoration — does not affect click-handlers or layout.
+    this._headerClassFn = typeof opts.headerClass === 'function' ? opts.headerClass : null;
+
     // Timeline layout. Opt-in per-caller:
     //   timeColumn       : number|null     — index of the timestamp column.
     //                                          null / omitted → auto-sniff:
@@ -710,6 +725,22 @@ class GridViewer {
       cell.className = 'grid-header-cell grid-header-clickable';
       cell.dataset.col = i;
       const name = this.columns[i] || `Column ${i + 1}`;
+
+      // Caller-supplied per-header class — appended AFTER the base
+      // `grid-header-clickable` class so CSS selectors matching
+      // either class still work. Used for canonical-column tagging
+      // in the merged Timeline (`grid-header-canonical`).
+      if (this._headerClassFn) {
+        try {
+          const extra = this._headerClassFn(i, name);
+          if (extra) {
+            const parts = String(extra).trim().split(/\s+/);
+            for (let pi = 0; pi < parts.length; pi++) {
+              if (parts[pi]) cell.classList.add(parts[pi]);
+            }
+          }
+        } catch (_) { /* decorative — never break header render */ }
+      }
 
       const label = document.createElement('span');
       label.className = 'grid-header-label';

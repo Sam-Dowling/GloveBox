@@ -1609,6 +1609,21 @@ const TIMELINE_BUCKET_OPTIONS = [
 // Stack palette — 36 perceptually distinct colours that stay legible on both
 // light and dark backgrounds.  Every unique stack value gets its own colour;
 // when more values exist than palette entries the index wraps via modulo.
+//
+// 72 entries (doubled from the original 36) — wrap-collision risk halves
+// for schemas with many distinct stack values (e.g. EVTX Channel, Okta
+// eventType). The second block of 36 (indices 36..71) extends the
+// chromatic coverage with additional hues at varied lightness /
+// saturation points so stacks with 37–72 distinct values still get a
+// distinguishable colour per value before any modulo wrap.  Keeping
+// all 72 in the JS array means the chart legend + grid-row tints
+// + stack-column text colour all share the SAME index → colour
+// mapping with zero drift.
+//
+// The CSS `.tl-stack-N` / `.tl-stack-text-N` rules in `viewers.css`
+// MIRROR this array (same length, same hue per index); both must be
+// extended in lockstep or the chart legend drifts from the grid tint.
+// A source-regex parity test pins the two in sync.
 const TIMELINE_STACK_PALETTE = [
   '#4f8cff', '#f59e0b', '#22c55e', '#ef4444', '#a855f7',
   '#06b6d4', '#ec4899', '#84cc16', '#64748b', '#f97316',
@@ -1618,6 +1633,21 @@ const TIMELINE_STACK_PALETTE = [
   '#ea580c', '#0d9488', '#9333ea', '#0284c7', '#be185d',
   '#4d7c0f', '#b45309', '#6d28d9', '#047857', '#a21caf',
   '#9f1239',
+  // ── Extended block (indices 36..71) ──────────────────────────────
+  // Filled-in hues between the original entries + additional tones
+  // (slate variants, warm greys, desaturated olives) so schemas with
+  // >36 distinct stack values still get colour-per-value before the
+  // modulo wrap kicks in.  Ordered so adjacent indices in USAGE order
+  // (not palette order) still contrast well when a stack has only a
+  // handful of values that happen to land on neighbouring indices.
+  '#3b82f6', '#fb923c', '#4ade80', '#f87171', '#c084fc',
+  '#22d3ee', '#f472b6', '#a3e635', '#94a3b8', '#fdba74',
+  '#5eead4', '#fb7185', '#a78bfa', '#38bdf8', '#e879f9',
+  '#bef264', '#67e8f9', '#f9a8d4', '#c4b5fd', '#34d399',
+  '#facc15', '#fca5a5', '#93c5fd', '#f0abfc', '#86efac',
+  '#fdba74', '#99f6e4', '#d8b4fe', '#7dd3fc', '#fbcfe8',
+  '#a7f3d0', '#fed7aa', '#c7d2fe', '#bbf7d0', '#e9d5ff',
+  '#fecdd3',
 ];
 const TIMELINE_GRID_DEFAULT_H = 320;
 const TIMELINE_GRID_MIN_H = 160;

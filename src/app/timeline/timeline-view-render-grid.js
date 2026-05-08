@@ -147,14 +147,72 @@ Object.assign(TimelineView.prototype, {
     };
 
     // Color the text in the stack column's cells to match the legend.
-    const cellClass = (dataIdx, colIdx) => {
+    // Also tag the canonical `__source` column's cells with
+    // `tl-canonical-cell` so the dashed-border differentiator kicks in
+    // — merged-Timeline visual signal that this column is Loupe-
+    // provided bookkeeping, not source data. Plus `tl-source-bg-N`
+    // where N is the row's source index (mod TIMELINE_SOURCE_PALETTE
+    // length) so each source's rows carry the same chip-bar / breadcrumb
+    // swatch colour as a cell background tint. Check uses strict
+    // equality against `__source` (not an `__` prefix check) because:
+    //   (a) `__format` intentionally does NOT get the treatment per
+    //       product decision,
+    //   (b) a user CSV with a header that happens to start with `__`
+    //       shouldn't be silently re-styled.
+    // Composition: all three signals can co-occur (a stack-text row
+    // on the `__source` column) — concatenate with spaces to preserve
+    // every class.
+    //
+    // Derivation of the per-source index uses the CELL TEXT, not
+    // `_sourceOfRow`. Reason: `_sourceOfRow` is keyed on raw composite
+    // rows, but the cellClass callback receives `dataIdx` in the grid's
+    // display-row space. Mapping through `origIdx[dataIdx]` LOOKS like
+    // the right inverse, but under concurrent re-renders / closure-
+    // capture / grid-internal sort changes, the same `dataIdx` can
+    // yield different `orig` values at different moments while the
+    // DOM freezes whatever the GRID most recently computed. Using the
+    // cell text (which the grid itself renders via the same rowView
+    // it passes to cellClass) means text and class are ALWAYS derived
+    // from the same resolved row, no matter how the filter /
+    // sort / rowView indirection evolves. The text-to-source-index
+    // lookup is O(1) via a pre-built Map.
+    const baseColumns = this._baseColumns;
+    const sources = this._sources;
+    const SRC_BG_PALETTE_SIZE = (typeof TIMELINE_SOURCE_PALETTE !== 'undefined'
+      && TIMELINE_SOURCE_PALETTE && TIMELINE_SOURCE_PALETTE.length)
+      ? TIMELINE_SOURCE_PALETTE.length : 32;
+    const sourceIdxByLabel = sources ? (() => {
+      const m = new Map();
+      for (let i = 0; i < sources.length; i++) {
+        const lbl = sources[i] && sources[i].sourceLabel;
+        if (lbl != null) m.set(String(lbl), i);
+      }
+      return m;
+    })() : null;
+    const cellClass = (dataIdx, colIdx, rawCell) => {
+      let cls = null;
       if (colorMap && colIdx === stackCol) {
         const orig = origIdx[dataIdx];
         const val = self._cellAt(orig, stackCol);
         const ci = colorMap.get(val);
-        if (ci !== undefined) return 'tl-stack-text-' + (ci % TIMELINE_STACK_PALETTE.length);
+        if (ci !== undefined) cls = 'tl-stack-text-' + (ci % TIMELINE_STACK_PALETTE.length);
       }
-      return null;
+      if (baseColumns && baseColumns[colIdx] === '__source') {
+        let canonCls = 'tl-canonical-cell';
+        // Resolve the source via CELL TEXT (the sourceLabel the
+        // composite builder stamped at row-build time). This is
+        // robust to any filter / sort / rowView indirection because
+        // `rawCell` is the exact string the grid will also display
+        // in this cell.
+        if (sourceIdxByLabel && rawCell != null) {
+          const sIdx = sourceIdxByLabel.get(String(rawCell));
+          if (sIdx !== undefined && sIdx >= 0) {
+            canonCls += ' tl-source-bg-' + (sIdx % SRC_BG_PALETTE_SIZE);
+          }
+        }
+        cls = cls ? (cls + ' ' + canonCls) : canonCls;
+      }
+      return cls;
     };
 
     // Drawer highlight: tint the specific key/val pairs that triggered a
@@ -285,6 +343,16 @@ Object.assign(TimelineView.prototype, {
         cellAugment,
         detailAugment,
         detailCellClass,
+        // Canonical-column header tag. Only `__source` gets the
+        // differentiator — `__format` intentionally stays plain per
+        // product decision, and every other canonical column
+        // (`Timestamp` / `Host` / `User` / etc.) carries source data,
+        // not Loupe bookkeeping. The callback is invoked once per
+        // visible column on every header rebuild (sort / hide /
+        // reorder / resize / `_setColumnOrder`).
+        headerClass: (colIdx, colName) => {
+          return colName === '__source' ? 'grid-header-canonical' : null;
+        },
 
         // In Timeline Mode the embedded grid's built-in "Use as timeline"
         // and "Stack timeline by this column" column-header actions must
@@ -668,6 +736,14 @@ Object.assign(TimelineView.prototype, {
         card.classList.add('tl-col-card-extracted');
         const e = this._extractedColFor(c);
         if (e && e.kind) card.classList.add('tl-col-card-kind-' + e.kind);
+      }
+      // Canonical merged-Timeline bookkeeping column — apply the
+      // dashed-border differentiator that mirrors the grid header +
+      // cell treatment (`grid-header-canonical` / `tl-canonical-cell`).
+      // Scoped to `__source` only; see the rationale on `cellClass`
+      // and `headerClass` above.
+      if (cols[c] === '__source') {
+        card.classList.add('tl-col-card-canonical');
       }
       card.dataset.colIdx = String(c);
       card.dataset.role = role;

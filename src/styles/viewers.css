@@ -12950,6 +12950,81 @@ body.grid-timeline-dragging * {
   white-space: nowrap;
 }
 
+/* ── Merged-sources chip bar ────────────────────────────────────────────── */
+.timeline-view .tl-sources-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--panel-bg);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.timeline-view .tl-sources-bar.hidden {
+  display: none;
+}
+.timeline-view .tl-source-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 14px;
+  background: var(--panel-bg-section);
+  font-size: 12px;
+  line-height: 1.2;
+  max-width: 360px;
+}
+.timeline-view .tl-source-chip-off {
+  opacity: 0.45;
+  background: transparent;
+}
+.timeline-view .tl-source-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.timeline-view .tl-source-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+.timeline-view .tl-source-meta {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  letter-spacing: .03em;
+}
+.timeline-view .tl-source-count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+.timeline-view .tl-source-toggle,
+.timeline-view .tl-source-trash {
+  background: none;
+  border: 0;
+  padding: 0 2px;
+  cursor: pointer;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+}
+.timeline-view .tl-source-toggle:hover,
+.timeline-view .tl-source-trash:hover {
+  color: var(--accent);
+}
+.timeline-view .tl-source-hint {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-style: italic;
+  margin-left: auto;
+}
+
 .timeline-view .tl-sep {
   width: 1px;
   height: 22px;
@@ -14211,6 +14286,138 @@ body.tl-splitter-dragging * {
   background: rgb(var(--risk-high-rgb) / .025);
 }
 
+/* ── Canonical column differentiator (merged-Timeline `__source`) ────────
+   The `__source` canonical column is Loupe-provided schema bookkeeping,
+   stamping each row with its originating filename.  It gets TWO
+   independent visual signals:
+
+     1. Column-level marker — dashed 2px left border on the header and
+        every data cell (classes `grid-header-canonical` /
+        `tl-canonical-cell`).  Marks the column as Loupe-provided, not
+        user-data-from-the-file.  DASHED is a categorical geometric
+        distinction from Stack-by's 3px SOLID left bar — the two can
+        never be confused even when both are active on the same row.
+
+     2. Per-row source tint — the cell BACKGROUND is tinted with the
+        row's source palette colour (class `tl-source-bg-N` where N is
+        the source index modulo TIMELINE_SOURCE_PALETTE.length).  This
+        mirrors the chip-bar / breadcrumb-popover swatch colour for
+        each source, so one filename shows a consistent colour across
+        the chrome + the grid.  Background-only (not text) so
+        filenames stay readable; tint alpha is .12 light / .18 dark
+        because a single narrow cell needs more concentration than
+        Stack-by's whole-row `.08` to read.
+
+   Header + card remain plain-text (no italic, no muted colour) so the
+   canonical column's header reads like any other column's — the
+   dashed left border alone carries the "this is Loupe bookkeeping"
+   signal, and per-row per-source colouring lives in the DATA
+   cells where the per-row variation is meaningful.
+
+   Scope: ONLY `__source` (strict equality).  See the `headerClass` /
+   `cellClass` callbacks in `timeline-view-render-grid.js`.           */
+.tl-grid .grid-header-cell.grid-header-canonical {
+  background: rgb(var(--accent-rgb) / .06);
+  border-left: 2px dashed rgb(var(--accent-rgb) / .35);
+  padding-left: 6px;  /* compensate for the new border (base is 8px) */
+}
+.tl-grid .grid-cell.tl-canonical-cell {
+  border-left: 2px dashed rgb(var(--accent-rgb) / .22);
+  padding-left: 6px;
+}
+.timeline-view .tl-col-card-canonical {
+  border-style: dashed;
+  border-color: rgb(var(--accent-rgb) / .28);
+  background: rgb(var(--accent-rgb) / .02);
+}
+/* Dark-mode override — the light accent-rgb tints read too warm
+   against Midnight-OLED; flatten to neutral whites so the canonical
+   treatment stays distinguishable without competing with any saturated
+   theme-accent glow. */
+body.dark .tl-grid .grid-header-cell.grid-header-canonical {
+  background: rgb(255 255 255 / .04);
+  border-left-color: rgb(255 255 255 / .38);
+}
+body.dark .tl-grid .grid-cell.tl-canonical-cell {
+  border-left-color: rgb(255 255 255 / .22);
+}
+body.dark .timeline-view .tl-col-card-canonical {
+  border-color: rgb(255 255 255 / .28);
+  background: rgb(255 255 255 / .015);
+}
+
+/* ── Per-source cell background tints for the `__source` column ──────────
+   Indices 0..31 map 1-to-1 onto TIMELINE_SOURCE_PALETTE in
+   `timeline-sources.js` (same hexes, same order).  Alpha .12 / .18
+   chosen to be readable at single-cell width without saturating.
+   Composes additively with `tl-canonical-cell` — the dashed border
+   sits INSIDE the tinted background. */
+.tl-grid .grid-cell.tl-source-bg-0 { background: rgb(78 121 167 / .12); }
+.tl-grid .grid-cell.tl-source-bg-1 { background: rgb(242 142 43 / .12); }
+.tl-grid .grid-cell.tl-source-bg-2 { background: rgb(89 161 79 / .12); }
+.tl-grid .grid-cell.tl-source-bg-3 { background: rgb(225 87 89 / .12); }
+.tl-grid .grid-cell.tl-source-bg-4 { background: rgb(118 183 178 / .12); }
+.tl-grid .grid-cell.tl-source-bg-5 { background: rgb(237 201 72 / .12); }
+.tl-grid .grid-cell.tl-source-bg-6 { background: rgb(176 122 161 / .12); }
+.tl-grid .grid-cell.tl-source-bg-7 { background: rgb(255 157 167 / .12); }
+.tl-grid .grid-cell.tl-source-bg-8 { background: rgb(156 117 95 / .12); }
+.tl-grid .grid-cell.tl-source-bg-9 { background: rgb(186 176 172 / .12); }
+.tl-grid .grid-cell.tl-source-bg-10 { background: rgb(31 119 180 / .12); }
+.tl-grid .grid-cell.tl-source-bg-11 { background: rgb(214 39 40 / .12); }
+.tl-grid .grid-cell.tl-source-bg-12 { background: rgb(44 160 44 / .12); }
+.tl-grid .grid-cell.tl-source-bg-13 { background: rgb(255 127 14 / .12); }
+.tl-grid .grid-cell.tl-source-bg-14 { background: rgb(148 103 189 / .12); }
+.tl-grid .grid-cell.tl-source-bg-15 { background: rgb(140 86 75 / .12); }
+.tl-grid .grid-cell.tl-source-bg-16 { background: rgb(23 190 207 / .12); }
+.tl-grid .grid-cell.tl-source-bg-17 { background: rgb(57 59 121 / .12); }
+.tl-grid .grid-cell.tl-source-bg-18 { background: rgb(214 39 137 / .12); }
+.tl-grid .grid-cell.tl-source-bg-19 { background: rgb(140 109 49 / .12); }
+.tl-grid .grid-cell.tl-source-bg-20 { background: rgb(49 163 84 / .12); }
+.tl-grid .grid-cell.tl-source-bg-21 { background: rgb(189 158 57 / .12); }
+.tl-grid .grid-cell.tl-source-bg-22 { background: rgb(231 150 156 / .12); }
+.tl-grid .grid-cell.tl-source-bg-23 { background: rgb(123 65 115 / .12); }
+.tl-grid .grid-cell.tl-source-bg-24 { background: rgb(165 81 148 / .12); }
+.tl-grid .grid-cell.tl-source-bg-25 { background: rgb(107 110 207 / .12); }
+.tl-grid .grid-cell.tl-source-bg-26 { background: rgb(158 202 225 / .12); }
+.tl-grid .grid-cell.tl-source-bg-27 { background: rgb(253 141 60 / .12); }
+.tl-grid .grid-cell.tl-source-bg-28 { background: rgb(117 107 177 / .12); }
+.tl-grid .grid-cell.tl-source-bg-29 { background: rgb(188 189 34 / .12); }
+.tl-grid .grid-cell.tl-source-bg-30 { background: rgb(189 154 40 / .12); }
+.tl-grid .grid-cell.tl-source-bg-31 { background: rgb(227 119 194 / .12); }
+
+body.dark .tl-grid .grid-cell.tl-source-bg-0 { background: rgb(78 121 167 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-1 { background: rgb(242 142 43 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-2 { background: rgb(89 161 79 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-3 { background: rgb(225 87 89 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-4 { background: rgb(118 183 178 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-5 { background: rgb(237 201 72 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-6 { background: rgb(176 122 161 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-7 { background: rgb(255 157 167 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-8 { background: rgb(156 117 95 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-9 { background: rgb(186 176 172 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-10 { background: rgb(31 119 180 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-11 { background: rgb(214 39 40 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-12 { background: rgb(44 160 44 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-13 { background: rgb(255 127 14 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-14 { background: rgb(148 103 189 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-15 { background: rgb(140 86 75 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-16 { background: rgb(23 190 207 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-17 { background: rgb(57 59 121 / .35); }
+body.dark .tl-grid .grid-cell.tl-source-bg-18 { background: rgb(214 39 137 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-19 { background: rgb(140 109 49 / .28); }
+body.dark .tl-grid .grid-cell.tl-source-bg-20 { background: rgb(49 163 84 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-21 { background: rgb(189 158 57 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-22 { background: rgb(231 150 156 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-23 { background: rgb(123 65 115 / .35); }
+body.dark .tl-grid .grid-cell.tl-source-bg-24 { background: rgb(165 81 148 / .28); }
+body.dark .tl-grid .grid-cell.tl-source-bg-25 { background: rgb(107 110 207 / .25); }
+body.dark .tl-grid .grid-cell.tl-source-bg-26 { background: rgb(158 202 225 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-27 { background: rgb(253 141 60 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-28 { background: rgb(117 107 177 / .25); }
+body.dark .tl-grid .grid-cell.tl-source-bg-29 { background: rgb(188 189 34 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-30 { background: rgb(189 154 40 / .22); }
+body.dark .tl-grid .grid-cell.tl-source-bg-31 { background: rgb(227 119 194 / .22); }
+
 .timeline-view .tl-col-badge {
   display: inline-block;
   font-size: 9.5px;
@@ -14853,7 +15060,8 @@ body.tl-col-dragging * {
 
 /* ── Stack-by legend color tints on grid rows ────────────────────────────
    Applied via rowClass('tl-stack-N') when a Stack-by column is active.
-   Colors mirror TIMELINE_STACK_PALETTE in app-timeline.js (36 entries).
+   Colors mirror TIMELINE_STACK_PALETTE in timeline-helpers.js (72 entries
+   total — split across two blocks of 36 for readability).
    Indices wrap via modulo in JS; CSS classes cover the full palette.
    Uses !important-free rules so .tl-row-sus always wins.               */
 .grid-row.tl-stack-0 {
@@ -15180,6 +15388,197 @@ body.tl-col-dragging * {
   background: rgb(159 18 57 / .14);
 }
 
+/* ── Extended stack palette (indices 36..71) ──────────────────────────
+   Second block of 36 entries mirroring the extended JS palette in
+   `timeline-helpers.js::TIMELINE_STACK_PALETTE`. These rules MUST
+   stay in lockstep with the JS array — the grid-row tint reads
+   `tl-stack-N` where N is the index into the JS array, so a CSS
+   block that runs short would render uncoloured rows for the high
+   indices. Keep the same geometry (`.08` background, `3px inset
+   .55` accent, `.14` hover) so behavioural contrast between
+   indices 0..35 and 36..71 is purely hue, not geometry. */
+.grid-row.tl-stack-36 {
+  background: rgb(59 130 246 / .08);
+  box-shadow: inset 3px 0 0 rgb(59 130 246 / .55);
+}
+.grid-row.tl-stack-37 {
+  background: rgb(251 146 60 / .08);
+  box-shadow: inset 3px 0 0 rgb(251 146 60 / .55);
+}
+.grid-row.tl-stack-38 {
+  background: rgb(74 222 128 / .08);
+  box-shadow: inset 3px 0 0 rgb(74 222 128 / .55);
+}
+.grid-row.tl-stack-39 {
+  background: rgb(248 113 113 / .08);
+  box-shadow: inset 3px 0 0 rgb(248 113 113 / .55);
+}
+.grid-row.tl-stack-40 {
+  background: rgb(192 132 252 / .08);
+  box-shadow: inset 3px 0 0 rgb(192 132 252 / .55);
+}
+.grid-row.tl-stack-41 {
+  background: rgb(34 211 238 / .08);
+  box-shadow: inset 3px 0 0 rgb(34 211 238 / .55);
+}
+.grid-row.tl-stack-42 {
+  background: rgb(244 114 182 / .08);
+  box-shadow: inset 3px 0 0 rgb(244 114 182 / .55);
+}
+.grid-row.tl-stack-43 {
+  background: rgb(163 230 53 / .08);
+  box-shadow: inset 3px 0 0 rgb(163 230 53 / .55);
+}
+.grid-row.tl-stack-44 {
+  background: rgb(148 163 184 / .08);
+  box-shadow: inset 3px 0 0 rgb(148 163 184 / .55);
+}
+.grid-row.tl-stack-45 {
+  background: rgb(253 186 116 / .08);
+  box-shadow: inset 3px 0 0 rgb(253 186 116 / .55);
+}
+.grid-row.tl-stack-46 {
+  background: rgb(94 234 212 / .08);
+  box-shadow: inset 3px 0 0 rgb(94 234 212 / .55);
+}
+.grid-row.tl-stack-47 {
+  background: rgb(251 113 133 / .08);
+  box-shadow: inset 3px 0 0 rgb(251 113 133 / .55);
+}
+.grid-row.tl-stack-48 {
+  background: rgb(167 139 250 / .08);
+  box-shadow: inset 3px 0 0 rgb(167 139 250 / .55);
+}
+.grid-row.tl-stack-49 {
+  background: rgb(56 189 248 / .08);
+  box-shadow: inset 3px 0 0 rgb(56 189 248 / .55);
+}
+.grid-row.tl-stack-50 {
+  background: rgb(232 121 249 / .08);
+  box-shadow: inset 3px 0 0 rgb(232 121 249 / .55);
+}
+.grid-row.tl-stack-51 {
+  background: rgb(190 242 100 / .08);
+  box-shadow: inset 3px 0 0 rgb(190 242 100 / .55);
+}
+.grid-row.tl-stack-52 {
+  background: rgb(103 232 249 / .08);
+  box-shadow: inset 3px 0 0 rgb(103 232 249 / .55);
+}
+.grid-row.tl-stack-53 {
+  background: rgb(249 168 212 / .08);
+  box-shadow: inset 3px 0 0 rgb(249 168 212 / .55);
+}
+.grid-row.tl-stack-54 {
+  background: rgb(196 181 253 / .08);
+  box-shadow: inset 3px 0 0 rgb(196 181 253 / .55);
+}
+.grid-row.tl-stack-55 {
+  background: rgb(52 211 153 / .08);
+  box-shadow: inset 3px 0 0 rgb(52 211 153 / .55);
+}
+.grid-row.tl-stack-56 {
+  background: rgb(250 204 21 / .08);
+  box-shadow: inset 3px 0 0 rgb(250 204 21 / .55);
+}
+.grid-row.tl-stack-57 {
+  background: rgb(252 165 165 / .08);
+  box-shadow: inset 3px 0 0 rgb(252 165 165 / .55);
+}
+.grid-row.tl-stack-58 {
+  background: rgb(147 197 253 / .08);
+  box-shadow: inset 3px 0 0 rgb(147 197 253 / .55);
+}
+.grid-row.tl-stack-59 {
+  background: rgb(240 171 252 / .08);
+  box-shadow: inset 3px 0 0 rgb(240 171 252 / .55);
+}
+.grid-row.tl-stack-60 {
+  background: rgb(134 239 172 / .08);
+  box-shadow: inset 3px 0 0 rgb(134 239 172 / .55);
+}
+.grid-row.tl-stack-61 {
+  background: rgb(253 186 116 / .08);
+  box-shadow: inset 3px 0 0 rgb(253 186 116 / .55);
+}
+.grid-row.tl-stack-62 {
+  background: rgb(153 246 228 / .08);
+  box-shadow: inset 3px 0 0 rgb(153 246 228 / .55);
+}
+.grid-row.tl-stack-63 {
+  background: rgb(216 180 254 / .08);
+  box-shadow: inset 3px 0 0 rgb(216 180 254 / .55);
+}
+.grid-row.tl-stack-64 {
+  background: rgb(125 211 252 / .08);
+  box-shadow: inset 3px 0 0 rgb(125 211 252 / .55);
+}
+.grid-row.tl-stack-65 {
+  background: rgb(251 207 232 / .08);
+  box-shadow: inset 3px 0 0 rgb(251 207 232 / .55);
+}
+.grid-row.tl-stack-66 {
+  background: rgb(167 243 208 / .08);
+  box-shadow: inset 3px 0 0 rgb(167 243 208 / .55);
+}
+.grid-row.tl-stack-67 {
+  background: rgb(254 215 170 / .08);
+  box-shadow: inset 3px 0 0 rgb(254 215 170 / .55);
+}
+.grid-row.tl-stack-68 {
+  background: rgb(199 210 254 / .08);
+  box-shadow: inset 3px 0 0 rgb(199 210 254 / .55);
+}
+.grid-row.tl-stack-69 {
+  background: rgb(187 247 208 / .08);
+  box-shadow: inset 3px 0 0 rgb(187 247 208 / .55);
+}
+.grid-row.tl-stack-70 {
+  background: rgb(233 213 255 / .08);
+  box-shadow: inset 3px 0 0 rgb(233 213 255 / .55);
+}
+.grid-row.tl-stack-71 {
+  background: rgb(254 205 211 / .08);
+  box-shadow: inset 3px 0 0 rgb(254 205 211 / .55);
+}
+
+.grid-row.tl-stack-36:hover { background: rgb(59 130 246 / .14); }
+.grid-row.tl-stack-37:hover { background: rgb(251 146 60 / .14); }
+.grid-row.tl-stack-38:hover { background: rgb(74 222 128 / .14); }
+.grid-row.tl-stack-39:hover { background: rgb(248 113 113 / .14); }
+.grid-row.tl-stack-40:hover { background: rgb(192 132 252 / .14); }
+.grid-row.tl-stack-41:hover { background: rgb(34 211 238 / .14); }
+.grid-row.tl-stack-42:hover { background: rgb(244 114 182 / .14); }
+.grid-row.tl-stack-43:hover { background: rgb(163 230 53 / .14); }
+.grid-row.tl-stack-44:hover { background: rgb(148 163 184 / .14); }
+.grid-row.tl-stack-45:hover { background: rgb(253 186 116 / .14); }
+.grid-row.tl-stack-46:hover { background: rgb(94 234 212 / .14); }
+.grid-row.tl-stack-47:hover { background: rgb(251 113 133 / .14); }
+.grid-row.tl-stack-48:hover { background: rgb(167 139 250 / .14); }
+.grid-row.tl-stack-49:hover { background: rgb(56 189 248 / .14); }
+.grid-row.tl-stack-50:hover { background: rgb(232 121 249 / .14); }
+.grid-row.tl-stack-51:hover { background: rgb(190 242 100 / .14); }
+.grid-row.tl-stack-52:hover { background: rgb(103 232 249 / .14); }
+.grid-row.tl-stack-53:hover { background: rgb(249 168 212 / .14); }
+.grid-row.tl-stack-54:hover { background: rgb(196 181 253 / .14); }
+.grid-row.tl-stack-55:hover { background: rgb(52 211 153 / .14); }
+.grid-row.tl-stack-56:hover { background: rgb(250 204 21 / .14); }
+.grid-row.tl-stack-57:hover { background: rgb(252 165 165 / .14); }
+.grid-row.tl-stack-58:hover { background: rgb(147 197 253 / .14); }
+.grid-row.tl-stack-59:hover { background: rgb(240 171 252 / .14); }
+.grid-row.tl-stack-60:hover { background: rgb(134 239 172 / .14); }
+.grid-row.tl-stack-61:hover { background: rgb(253 186 116 / .14); }
+.grid-row.tl-stack-62:hover { background: rgb(153 246 228 / .14); }
+.grid-row.tl-stack-63:hover { background: rgb(216 180 254 / .14); }
+.grid-row.tl-stack-64:hover { background: rgb(125 211 252 / .14); }
+.grid-row.tl-stack-65:hover { background: rgb(251 207 232 / .14); }
+.grid-row.tl-stack-66:hover { background: rgb(167 243 208 / .14); }
+.grid-row.tl-stack-67:hover { background: rgb(254 215 170 / .14); }
+.grid-row.tl-stack-68:hover { background: rgb(199 210 254 / .14); }
+.grid-row.tl-stack-69:hover { background: rgb(187 247 208 / .14); }
+.grid-row.tl-stack-70:hover { background: rgb(233 213 255 / .14); }
+.grid-row.tl-stack-71:hover { background: rgb(254 205 211 / .14); }
+
 /* ── Stack-color swatch dot inside top-values card rows ──────────────── */
 .timeline-view .tl-col-swatch {
   display: inline-block;
@@ -15194,7 +15593,7 @@ body.tl-col-dragging * {
 
 /* ── Stack-by legend text color on the stacked column's grid cells ─────
    Slightly darkened variants for colours that lack contrast on white.
-   Mirrors TIMELINE_STACK_PALETTE (36 entries) in app-timeline.js.      */
+   Mirrors TIMELINE_STACK_PALETTE (72 entries) in timeline-helpers.js.  */
 .grid-cell.tl-stack-text-0 {
   color: #3b74e0;
   font-weight: 600;
@@ -15375,6 +15774,48 @@ body.tl-col-dragging * {
   font-weight: 600;
 }
 
+/* ── Extended stack-text palette (indices 36..71) ─────────────────────
+   Mirrors the extended JS TIMELINE_STACK_PALETTE block.  Light-mode
+   variants of the same hues, darkened slightly where the base hex
+   was too light for contrast on #fff.  Dark-mode variants further
+   below. */
+.grid-cell.tl-stack-text-36 { color: #3b82f6; font-weight: 600; }
+.grid-cell.tl-stack-text-37 { color: #c2410c; font-weight: 600; }
+.grid-cell.tl-stack-text-38 { color: #22c55e; font-weight: 600; }
+.grid-cell.tl-stack-text-39 { color: #dc2626; font-weight: 600; }
+.grid-cell.tl-stack-text-40 { color: #9333ea; font-weight: 600; }
+.grid-cell.tl-stack-text-41 { color: #0891b2; font-weight: 600; }
+.grid-cell.tl-stack-text-42 { color: #db2777; font-weight: 600; }
+.grid-cell.tl-stack-text-43 { color: #65a30d; font-weight: 600; }
+.grid-cell.tl-stack-text-44 { color: #475569; font-weight: 600; }
+.grid-cell.tl-stack-text-45 { color: #b45309; font-weight: 600; }
+.grid-cell.tl-stack-text-46 { color: #0d9488; font-weight: 600; }
+.grid-cell.tl-stack-text-47 { color: #be123c; font-weight: 600; }
+.grid-cell.tl-stack-text-48 { color: #7c3aed; font-weight: 600; }
+.grid-cell.tl-stack-text-49 { color: #0369a1; font-weight: 600; }
+.grid-cell.tl-stack-text-50 { color: #c026d3; font-weight: 600; }
+.grid-cell.tl-stack-text-51 { color: #4d7c0f; font-weight: 600; }
+.grid-cell.tl-stack-text-52 { color: #0e7490; font-weight: 600; }
+.grid-cell.tl-stack-text-53 { color: #be185d; font-weight: 600; }
+.grid-cell.tl-stack-text-54 { color: #6d28d9; font-weight: 600; }
+.grid-cell.tl-stack-text-55 { color: #059669; font-weight: 600; }
+.grid-cell.tl-stack-text-56 { color: #a16207; font-weight: 600; }
+.grid-cell.tl-stack-text-57 { color: #b91c1c; font-weight: 600; }
+.grid-cell.tl-stack-text-58 { color: #1d4ed8; font-weight: 600; }
+.grid-cell.tl-stack-text-59 { color: #86198f; font-weight: 600; }
+.grid-cell.tl-stack-text-60 { color: #15803d; font-weight: 600; }
+.grid-cell.tl-stack-text-61 { color: #c2410c; font-weight: 600; }
+.grid-cell.tl-stack-text-62 { color: #0f766e; font-weight: 600; }
+.grid-cell.tl-stack-text-63 { color: #7e22ce; font-weight: 600; }
+.grid-cell.tl-stack-text-64 { color: #0369a1; font-weight: 600; }
+.grid-cell.tl-stack-text-65 { color: #9d174d; font-weight: 600; }
+.grid-cell.tl-stack-text-66 { color: #047857; font-weight: 600; }
+.grid-cell.tl-stack-text-67 { color: #92400e; font-weight: 600; }
+.grid-cell.tl-stack-text-68 { color: #4338ca; font-weight: 600; }
+.grid-cell.tl-stack-text-69 { color: #15803d; font-weight: 600; }
+.grid-cell.tl-stack-text-70 { color: #6b21a8; font-weight: 600; }
+.grid-cell.tl-stack-text-71 { color: #9f1239; font-weight: 600; }
+
 body.dark .grid-cell.tl-stack-text-0 {
   color: #6da3ff;
 }
@@ -15518,6 +15959,44 @@ body.dark .grid-cell.tl-stack-text-34 {
 body.dark .grid-cell.tl-stack-text-35 {
   color: #fb7185;
 }
+
+/* Dark-mode variants for the extended stack-text palette (36..71). */
+body.dark .grid-cell.tl-stack-text-36 { color: #60a5fa; }
+body.dark .grid-cell.tl-stack-text-37 { color: #fb923c; }
+body.dark .grid-cell.tl-stack-text-38 { color: #4ade80; }
+body.dark .grid-cell.tl-stack-text-39 { color: #f87171; }
+body.dark .grid-cell.tl-stack-text-40 { color: #c084fc; }
+body.dark .grid-cell.tl-stack-text-41 { color: #22d3ee; }
+body.dark .grid-cell.tl-stack-text-42 { color: #f472b6; }
+body.dark .grid-cell.tl-stack-text-43 { color: #a3e635; }
+body.dark .grid-cell.tl-stack-text-44 { color: #94a3b8; }
+body.dark .grid-cell.tl-stack-text-45 { color: #fdba74; }
+body.dark .grid-cell.tl-stack-text-46 { color: #5eead4; }
+body.dark .grid-cell.tl-stack-text-47 { color: #fb7185; }
+body.dark .grid-cell.tl-stack-text-48 { color: #a78bfa; }
+body.dark .grid-cell.tl-stack-text-49 { color: #38bdf8; }
+body.dark .grid-cell.tl-stack-text-50 { color: #e879f9; }
+body.dark .grid-cell.tl-stack-text-51 { color: #bef264; }
+body.dark .grid-cell.tl-stack-text-52 { color: #67e8f9; }
+body.dark .grid-cell.tl-stack-text-53 { color: #f9a8d4; }
+body.dark .grid-cell.tl-stack-text-54 { color: #c4b5fd; }
+body.dark .grid-cell.tl-stack-text-55 { color: #34d399; }
+body.dark .grid-cell.tl-stack-text-56 { color: #facc15; }
+body.dark .grid-cell.tl-stack-text-57 { color: #fca5a5; }
+body.dark .grid-cell.tl-stack-text-58 { color: #93c5fd; }
+body.dark .grid-cell.tl-stack-text-59 { color: #f0abfc; }
+body.dark .grid-cell.tl-stack-text-60 { color: #86efac; }
+body.dark .grid-cell.tl-stack-text-61 { color: #fdba74; }
+body.dark .grid-cell.tl-stack-text-62 { color: #99f6e4; }
+body.dark .grid-cell.tl-stack-text-63 { color: #d8b4fe; }
+body.dark .grid-cell.tl-stack-text-64 { color: #7dd3fc; }
+body.dark .grid-cell.tl-stack-text-65 { color: #fbcfe8; }
+body.dark .grid-cell.tl-stack-text-66 { color: #a7f3d0; }
+body.dark .grid-cell.tl-stack-text-67 { color: #fed7aa; }
+body.dark .grid-cell.tl-stack-text-68 { color: #c7d2fe; }
+body.dark .grid-cell.tl-stack-text-69 { color: #bbf7d0; }
+body.dark .grid-cell.tl-stack-text-70 { color: #e9d5ff; }
+body.dark .grid-cell.tl-stack-text-71 { color: #fecdd3; }
 
 /* ── Toolbar buttons (primary + danger variants) ────────────────────────
    Used both in the top toolbar and inside dialogs / popovers. Matches

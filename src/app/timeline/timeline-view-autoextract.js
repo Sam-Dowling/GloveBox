@@ -507,6 +507,23 @@ Object.assign(TimelineView.prototype, {
       && this.formatLabel.indexOf('History') !== -1;
 
     for (let c = 0; c < cols; c++) {
+      // Canonical bookkeeping columns (`__source` / `__format`, added
+      // to every merged Timeline by `buildCompositeSchema`) are schema
+      // tags, not user data — skip them. Filenames like `events.csv`
+      // carried in `__source` look hostname-shaped to
+      // `TL_HOSTNAME_INLINE_RE` (short alphabetic "TLD" token, dots
+      // elsewhere) and would produce a spurious `__source (host)`
+      // regex-extract column on every merged Timeline. The `__`
+      // prefix is reserved for canonical columns (see
+      // `TIMELINE_CANONICAL_COLS`), so a prefix-based skip is safe
+      // and forward-compatible — any future canonical bookkeeping
+      // column added to the list inherits the skip automatically.
+      const _colName = this._baseColumns[c] || '';
+      if (_colName.length >= 2 && _colName.charCodeAt(0) === 0x5F /* _ */
+          && _colName.charCodeAt(1) === 0x5F) {
+        continue;
+      }
+
       // Browser-history: emit url-part proposals for the `url` column
       // before the generic branches, so they appear at the top of the
       // list sorted by match %.
