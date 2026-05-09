@@ -134,7 +134,7 @@ All third-party Actions are pinned by full 40-char commit SHA; Dependabot rotate
 - Ingress: drop / picker / iframe `loupe-drop` → `App._handleFiles` → `_loadFile` → Timeline bypass or `RenderRoute.run` → renderer → sidebar → auto-YARA.
 - Drill-down uses bubbling `open-inner-file` → `App.openInnerFile` (push nav frame, re-enter `_loadFile`; unified in `22d1df1`).
 - Timeline CSV / TSV / EVTX / PCAP / SQLite / structured logs bypass normal findings/IOC/encoded recursion. EVTX and PCAP run analyzer side-channels for Summarize.
-- Timeline can hold ≥1 "sources" — a single-file load carries `_sources=null` (legacy path, unchanged); dropping additional CSV/TSV/EVTX/structured-log files on top triggers `_timelineAddFile`, which builds a composite RowStore prefixed with `TIMELINE_CANONICAL_COLS` and a `_sources` / `_sourceOfRow` / `_sourceEnabledBitmap` registry. Per-format projection lives in `src/app/timeline/timeline-mapper.js`; composite build in `src/app/timeline/timeline-composite.js`. PCAP and SQLite are merge-INELIGIBLE (scope decision — their side-channels don't aggregate cleanly). Composite persistence is session-only (`TIMELINE_COMPOSITE_KEY_PREFIX`); per-source `_fileKey`s still work for solo reopen.
+- Timeline can hold ≥1 "sources". A single-file load carries `_sources=null` and takes the legacy single-file path; dropping additional CSV/TSV/EVTX/structured-log files on top triggers `_timelineAddFile`, which builds a composite RowStore prefixed with `TIMELINE_CANONICAL_COLS` (the 10-entry trimmed schema: `__source`, `__format`, `Timestamp`, `Host`, `User`, `EventID`, `Severity`, `Category`, `SourceIP`, `DestIP` — short identifier-shape values only, no `Process` / `Message` slots; wide-narrative columns stay on each source's native plane) and a `_sources` / `_sourceOfRow` / `_sourceEnabledBitmap` registry. Per-format projection lives in `src/app/timeline/timeline-mapper.js`; composite build in `src/app/timeline/timeline-composite.js`. PCAP and SQLite are merge-INELIGIBLE (scope decision — their side-channels don't aggregate cleanly). Composite persistence is session-only (`TIMELINE_COMPOSITE_KEY_PREFIX`); per-source `_fileKey`s still work for solo reopen.
 - Renderers mutate `app.findings` and `app.currentResult` in place, fenced by render-epoch.
 
 ---
@@ -208,6 +208,10 @@ Full skeleton details live in `CONTRIBUTING.md § Renderer Contract` (detection 
 - User-visible behaviour changes update `FEATURES.md` + `README.md`; CSP / parser-limit / sandbox changes update `SECURITY.md`; vendor changes update `VENDORED.md`.
 - License is **MPL-2.0**; do not introduce GPL / LGPL / proprietary deps.
 - Doc-only commits skip CI (`paths-ignore: '**/*.md', LICENSE`); use `gh workflow run ci.yml --ref main` to force Pages deploy after doc-only edits.
+
+### Docs reflect the live state
+
+Loupe is in development. There are no shipped users, no upgrade paths, no migration windows, no deprecation cycles. **Documentation describes what the code does today** — drop "previously…", "was…", "in earlier versions…", "for backwards compatibility…", "Commit X retired…" framing whenever you find it. If a feature is gone, the docs simply describe the current shape; if a constant changed, the docs name the current value. Refresh docs in the same commit as the code change so the two never drift. Source-comment headers describing per-module rationale follow the same rule: explain why the current design is correct, not why some prior design was wrong.
 
 ---
 

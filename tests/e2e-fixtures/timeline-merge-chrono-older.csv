@@ -1,0 +1,6 @@
+timestamp,hostname,severity,message
+2025-04-02T09:00:00Z,web01,info,early healthcheck ok
+2025-04-02T09:05:00Z,web02,warn,early rate limit
+2025-04-02T09:10:00Z,web01,error,early upstream 502
+2025-04-02T09:15:00Z,web03,info,early restart
+2025-04-02T09:20:00Z,web02,info,early settle

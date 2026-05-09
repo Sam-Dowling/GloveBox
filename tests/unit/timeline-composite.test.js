@@ -321,13 +321,15 @@ test('culls canonical columns populated by zero rows across every source', () =>
   // Always-kept canonicals.
   assert.ok(plan.canonicalCols.includes('__source'));
   assert.ok(plan.canonicalCols.includes('__format'));
-  // Populated canonicals.
+  // Populated canonicals — only `Timestamp` is hit by the `timestamp`
+  // probe alias. The CSV mapper does NOT project `raw` into a
+  // canonical slot any more (wide-narrative columns stay on the
+  // native plane), so every other canonical is culled.
   assert.ok(plan.canonicalCols.includes('Timestamp'));
-  assert.ok(plan.canonicalCols.includes('Message'));
-  // Culled canonicals.
+  // Culled canonicals — neither source matches any non-Timestamp
+  // probe.
   assert.equal(plan.canonicalCols.includes('Host'), false);
   assert.equal(plan.canonicalCols.includes('User'), false);
-  assert.equal(plan.canonicalCols.includes('Process'), false);
   assert.equal(plan.canonicalCols.includes('EventID'), false);
   assert.equal(plan.canonicalCols.includes('Severity'), false);
   assert.equal(plan.canonicalCols.includes('Category'), false);
@@ -364,7 +366,7 @@ test('does NOT cull for single-source views (n=1)', () => {
     rows: [['2024-01-01', 'entry A']],
   });
   const plan = buildCompositeSchema([a]);
-  assert.equal(plan.canonicalCols.length, 12);
+  assert.equal(plan.canonicalCols.length, 10);
   assert.ok(plan.canonicalCols.includes('Host'));
   assert.ok(plan.canonicalCols.includes('DestIP'));
 });
@@ -390,10 +392,16 @@ test('M365-audit-schema CSVs produce a zero-empty-canonical composite', () => {
   // Regression guard for the dist/test1-1k.csv + dist/test2-1k.csv
   // merge pair: schema is Timestamp / UserId / EventName / Workload
   // / ClientIP / UserAgent / Outcome / TargetResource / Raw.
-  // After the mapper-alias and cull fixes, 6 canonicals survive:
-  // __source, __format, Timestamp, User, Process, Message, EventID,
-  // Severity, Category, SourceIP. (Host + DestIP get culled because
-  // no column maps to them.)
+  //
+  // Survivors after the cull (canonicals only — native columns sit
+  // in `nativeCols`, not `canonicalCols`):
+  //   __source, __format, Timestamp, User, EventID, Severity,
+  //   Category, SourceIP.
+  // Culled: Host + DestIP (neither source carries a hostname or
+  // destination IP).
+  // Not canonical (live on the native plane):
+  //   UserAgent, TargetResource, Raw — no canonical slot, the
+  //   analyst pivots on them by their original column name.
   const a = stubSource({
     id: 1, label: 'a.csv', formatKind: 'csv',
     columns: ['Timestamp', 'UserId', 'EventName', 'Workload', 'ClientIP',
@@ -425,9 +433,17 @@ test('M365-audit-schema CSVs produce a zero-empty-canonical composite', () => {
   assert.ok(plan.canonicalCols.includes('Severity'));   // Outcome alias
   assert.ok(plan.canonicalCols.includes('Category'));   // Workload alias
   assert.ok(plan.canonicalCols.includes('SourceIP'));   // ClientIP alias
-  assert.ok(plan.canonicalCols.includes('Process'));    // UserAgent alias
-  assert.ok(plan.canonicalCols.includes('Message'));    // Raw alias
   // Culled: no column in this schema produces Host or DestIP.
   assert.equal(plan.canonicalCols.includes('Host'), false);
   assert.equal(plan.canonicalCols.includes('DestIP'), false);
+  // Wide-narrative columns stay on the native plane.
+  assert.equal(plan.canonicalCols.includes('Process'), false);
+  assert.equal(plan.canonicalCols.includes('Message'), false);
+  // The native columns still surface — UserAgent and Raw are
+  // pivotable by their original header name.
+  const nativeNames = plan.nativeCols.map(nc => nc.name.toLowerCase());
+  assert.ok(nativeNames.includes('useragent'),
+    'UserAgent must survive as a native composite column');
+  assert.ok(nativeNames.includes('raw'),
+    'Raw must survive as a native composite column');
 });

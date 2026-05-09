@@ -5,11 +5,30 @@
 //
 // When a Timeline view hosts ≥2 sources, the composite RowStore prepends
 // the `TIMELINE_CANONICAL_COLS` (`__source`, `__format`, `Timestamp`,
-// `Host`, `User`, `Process`, `Message`, `EventID`, `Severity`,
-// `Category`, `SourceIP`, `DestIP`) so queries / top-values / pivots /
-// detections see a uniform schema regardless of the file's native
-// columns. This file owns the projection from each source's native row
-// shape into those canonical cells.
+// `Host`, `User`, `EventID`, `Severity`, `Category`, `SourceIP`,
+// `DestIP`) so queries / top-values / pivots / detections see a uniform
+// schema regardless of the file's native columns. This file owns the
+// projection from each source's native row shape into those canonical
+// cells.
+//
+// The canonical schema is intentionally narrow — every entry holds
+// short identifier-shape values (filenames, hostnames, usernames, event
+// IDs, severities, IPs). Wide-narrative columns (process command lines,
+// full message bodies, user-agent strings, EVTX Event Data blobs) are
+// NOT projected into canonical slots. They live on each source's
+// native column plane where the original column name preserves the
+// semantic. Three reasons:
+//   1. Multi-KB blobs would balloon the composite store, slow
+//      top-values sweeps (O(rows×cols)), and saturate the
+//      row-search-text cache.
+//   2. Forcing every shape through one synthetic column produces
+//      misclassifications (e.g. a CSV's `userAgent` column being
+//      pulled into a canonical `Process` slot — UA strings aren't
+//      processes).
+//   3. The cross-source pivot affordance is preserved by the auto-
+//      extract pump's KV-field pass, which surfaces the same fields
+//      as named virtual columns (e.g. EVTX `TargetUserName` /
+//      `Image`) the analyst can pivot on by name.
 //
 // ─── MAPPER API ───────────────────────────────────────────────────────────
 // Each entry in `TIMELINE_MAPPERS` is a function:
@@ -119,69 +138,139 @@ const TIMELINE_MAPPERS = {
   // and wrong-column pulls gracefully surface as empty canonical cells
   // rather than silent misclassification — users can still pivot on
   // the native columns by name.
+  //
+  // EDR / endpoint-export aliases: the probe lists below also recognise
+  // the column-name conventions used by CrowdStrike Falcon (`aid`,
+  // `ComputerName`, `event_simpleName`, `LocalAddressIP4`,
+  // `RemoteAddressIP4`), Microsoft Defender for Endpoint / Advanced
+  // Hunting (`DeviceName`, `ActionType`, `AccountName`, `RemoteIP`),
+  // SentinelOne Deep Visibility (dotted `agent.name`, `event.type`,
+  // `src.ip.address`, `dst.ip.address`, `src.process.user`), Cortex
+  // XDR (`_time`, `agent_hostname`, `event_type`, `action_local_ip`,
+  // `action_remote_ip`), and Elastic ECS (`@timestamp`, `host.name`,
+  // `user.name`, `event.action`, `event.category`, `source.ip`,
+  // `destination.ip`). Probe order is specific-before-generic so a
+  // vendor-specific alias never gets shadowed by a coincidental match
+  // earlier in the list (e.g. `device_name` before `name`-shaped
+  // generics).
+  //
+  // Wide-narrative columns (`message` / `body` / `description` /
+  // process command lines like `ProcessCommandLine` /
+  // `process.command_line` / `actor_process_command_line`) are
+  // intentionally NOT projected into canonical slots: the canonical
+  // schema (see `TIMELINE_CANONICAL_COLS`) is for short identifier-
+  // shape values that justify cross-source pivots. Long-form text
+  // stays on the source's native column where the original header
+  // preserves the semantic, preventing multi-KB blobs from being
+  // duplicated row-for-row in a synthetic column and avoiding the
+  // "useragent shows up under Process" misclassification that comes
+  // from forcing every shape through a one-size-fits-all schema.
   csv: (source, row) => {
     const out = {};
-    const ts = _tlmFirst(source, row, ['timestamp', 'time', '@timestamp', 'datetime', 'date', 'creationtime', 'eventtime', 'published']);
+    // Timestamp probe. EDR-additive: `_time` (Cortex XDR),
+    // `device_timestamp` (CBC + some Falcon), `event_timestamp`,
+    // `agent_time`. ECS `@timestamp` already covered.
+    const ts = _tlmFirst(source, row, [
+      'timestamp', 'time', '@timestamp', 'datetime', 'date',
+      'creationtime', 'eventtime', 'published',
+      '_time', 'device_timestamp', 'event_timestamp', 'agent_time',
+    ]);
     if (ts) out.Timestamp = ts;
-    const host = _tlmFirst(source, row, ['host', 'hostname', 'computer', 'computername', 'devicename', 'machine', 'server', 's-computername']);
+    // Host probe. EDR-additive: `device_name` (MDE / CBC),
+    // `agent_hostname` (Cortex), `agent.name` / `agent.hostname` (S1),
+    // `host.name` (ECS), `endpoint.name`. `devicename` /
+    // `computername` already covered.
+    const host = _tlmFirst(source, row, [
+      'host', 'hostname', 'computer', 'computername', 'devicename',
+      'machine', 'server', 's-computername',
+      'device_name', 'agent_hostname', 'agent.name', 'agent.hostname',
+      'host.name', 'endpoint.name',
+    ]);
     if (host) out.Host = host;
     // User-surrogate probe list. `userid` / `principal` / `upn` / `actor`
     // / `alternateid` / `email` cover M365 audit, Okta system log,
     // Salesforce audit trail, and generic SIEM shapes.
+    //
+    // EDR-additive: `accountname` (MDE), `account_name`, `user.name`
+    // (ECS), `process_username` (CBC), `actor_user`,
+    // `src.process.user.name` (S1), `src.process.user` (S1 alt),
+    // `initiatingprocessaccountname` (MDE — distinct from
+    // `accountname` so cross-vendor merges where MDE rows carry both
+    // resolve to the simpler `accountname` first).
     const user = _tlmFirst(source, row, [
       'user', 'username', 'userid', 'user_id', 'account', 'user_name',
       'cs-username', 'suser', 'principal', 'actor', 'upn', 'email',
       'displayname', 'alternateid',
+      'accountname', 'account_name', 'user.name',
+      'process_username', 'actor_user',
+      'src.process.user.name', 'src.process.user',
+      'initiatingprocessaccountname',
     ]);
     if (user) out.User = user;
-    // Process-surrogate probe list. For web / audit logs without a
-    // true process field, `useragent` is the closest analogue (the
-    // client that performed the action) and lets analysts pivot on
-    // "which tool did this" across merged M365 + Okta + custom logs.
-    const proc = _tlmFirst(source, row, [
-      'process', 'proc', 'image', 'exe', 'executable', 'command',
-      'sproc', 'useragent', 'user_agent', 'user-agent',
-    ]);
-    if (proc) out.Process = proc;
-    const msg = _tlmFirst(source, row, [
-      'message', 'msg', 'raw', 'body', 'description', 'text', 'event',
-      'displaymessage', 'details', 'reason', 'operationname',
-      'targetresource', 'target_resource',
-    ]);
-    if (msg) out.Message = msg;
     // EventID-surrogate probe list. `eventname` / `operation` / `action`
     // / `verb` / `activity` catch M365, AWS CloudTrail (as CSV export),
     // Salesforce, and generic action-log CSVs where the event
     // identifier is a short verb rather than a numeric id.
+    //
+    // EDR-additive: `actiontype` / `action_type` (MDE — primary action
+    // discriminator, e.g. `ProcessCreated` / `FileCreated`),
+    // `event_simplename` (Falcon — case-insensitive match covers the
+    // canonical `event_simpleName`), `event.action` (ECS), `event.type`
+    // (S1, ECS).
     const eid = _tlmFirst(source, row, [
       'eventid', 'event_id', 'event id', 'signatureid', 'event_type',
       'eventname', 'event_name', 'operation', 'action', 'verb',
       'activity', 'eventtype',
+      'actiontype', 'action_type', 'event_simplename',
+      'event.action', 'event.type',
     ]);
     if (eid) out.EventID = eid;
     // Severity-surrogate probe list. `outcome` / `result` / `status`
     // / `resultstatus` catch M365 audit, Salesforce, and generic
     // success/failure log shapes where the "severity" is really the
     // outcome of the action.
+    //
+    // EDR-additive: `event.severity` (ECS), `alert_severity` (Cortex /
+    // various), `threat.severity` (Defender alerts).
     const sev = _tlmFirst(source, row, [
       'severity', 'level', 'priority', 'loglevel',
       'outcome', 'result', 'status', 'resultstatus',
+      'event.severity', 'alert_severity', 'threat.severity',
     ]);
     if (sev) out.Severity = sev;
     // Category-surrogate probe list. `workload` / `recordtype`
     // / `service` / `application` catch M365 audit (Workload tells you
     // SharePoint vs AzureAD vs Exchange), AWS service names, and
     // generic service-tier logs.
+    //
+    // EDR-additive: `event.category` (ECS), `event.kind` (ECS),
+    // `event_category`.
     const cat = _tlmFirst(source, row, [
       'category', 'channel', 'facility', 'source', 'component', 'module',
       'workload', 'recordtype', 'record_type', 'service', 'application',
+      'event.category', 'event.kind', 'event_category',
     ]);
     if (cat) out.Category = cat;
-    const sip = _tlmFirst(source, row, ['src_ip', 'source_ip', 'client_ip', 'clientip', 'srcip', 'sourceip', 'src', 'c-ip', 'client', 'ip']);
+    // SourceIP probe. EDR-additive: `source.ip` (ECS),
+    // `src.ip.address` (S1), `localaddressip4` (Falcon — agent-
+    // perspective: local end of a network connection IS the source),
+    // `local_ip`, `action_local_ip` (Cortex).
+    const sip = _tlmFirst(source, row, [
+      'src_ip', 'source_ip', 'client_ip', 'clientip', 'srcip', 'sourceip',
+      'src', 'c-ip', 'client', 'ip',
+      'source.ip', 'src.ip.address',
+      'localaddressip4', 'local_ip', 'action_local_ip',
+    ]);
     if (sip) out.SourceIP = sip;
+    // DestIP probe. EDR-additive: `destination.ip` (ECS),
+    // `dst.ip.address` (S1), `remoteaddressip4` (Falcon), `remoteip`
+    // (MDE — the column is literally `RemoteIP`), `remote_ip`,
+    // `action_remote_ip` (Cortex).
     const dip = _tlmFirst(source, row, [
       'dst_ip', 'dest_ip', 'destination_ip', 'dstip', 'destip', 'dst',
       's-ip', 'server_ip', 'targetip', 'target_ip', 'dstaddr', 'destaddr',
+      'destination.ip', 'dst.ip.address',
+      'remoteaddressip4', 'remoteip', 'remote_ip', 'action_remote_ip',
     ]);
     if (dip) out.DestIP = dip;
     return out;
@@ -192,14 +281,17 @@ const TIMELINE_MAPPERS = {
   // Columns (indices into the canonical 9-col list):
   //    0 ip       → SourceIP
   //    3 time     → Timestamp (CLF bracketed form)
-  //    4 request  → Message (full "GET /x HTTP/1.1")
   //    5 status   → Severity (2xx/3xx/4xx/5xx category)
   //    2 auth     → User (Apache `%u` — authenticated user when present)
+  //
+  // The `request` field (`row[4]`, "GET /x HTTP/1.1") and the
+  // `user_agent` field (`row[8]` when present) stay on the source's
+  // native columns — they're long-form text that doesn't belong in the
+  // canonical cross-source pivot schema.
   'log': (source, row) => {
     const out = {};
     if (row[0]) out.SourceIP = String(row[0]);
     if (row[3]) out.Timestamp = String(row[3]);
-    if (row[4]) out.Message = String(row[4]);
     if (row[5]) out.Severity = String(row[5]);
     const auth = row[2];
     if (auth && auth !== '-') out.User = String(auth);
@@ -209,10 +301,21 @@ const TIMELINE_MAPPERS = {
 
   // ── EVTX (Windows Event Log — canonical schema fixed by parser) ──────
   // Columns: `Timestamp, Event ID, Level, Provider, Channel, Computer, Event Data`.
-  // Canonical `User` is mined out of the Event Data blob by the evtx
-  // renderer when present (attribute `TargetUserName` /
-  // `SubjectUserName`); we project the whole Event Data into Message
-  // since it's the authoritative narrative.
+  //
+  // The Event Data blob (`row[6]`) carries multi-KB rendered XML / KV
+  // text per row. We deliberately do NOT project it into a canonical
+  // column — duplicating it would balloon the composite store, slow
+  // top-values sweeps, and saturate the row-search-text cache. The
+  // blob stays on its native `Event Data` column where the analyst can
+  // open the row drawer to read it.
+  //
+  // Forensically-important fields inside the blob (`TargetUserName`,
+  // `SubjectUserName`, `Image`, `NewProcessName`, `LogonType`, …) are
+  // surfaced as virtual columns by the auto-extract pump's KV-field
+  // pass (~60 ms post-mount, gated on `TIMELINE_FORENSIC_EVTX_FIELDS_SET`)
+  // rather than mined eagerly here — the auto-extract path produces
+  // visible columns the analyst can pivot on by name, which is the
+  // same affordance the eager regex used to provide.
   evtx: (source, row) => {
     const out = {};
     if (row[0]) out.Timestamp = String(row[0]);
@@ -227,50 +330,36 @@ const TIMELINE_MAPPERS = {
       out.Category = ch && pr ? (ch + ' / ' + pr) : (ch || pr);
     }
     if (row[5]) out.Host = String(row[5]);
-    if (row[6]) {
-      const ed = String(row[6]);
-      out.Message = ed;
-      // Best-effort User mining — the `TargetUserName`/`SubjectUserName`
-      // attributes commonly appear as `key=value` or `key: value` or
-      // inside a stringified structure. A tight regex here keeps the
-      // mapper pure (no DOM-XMLish parse). If no hit, User stays
-      // empty — consumer's problem.
-      //
-      // /* safeRegex: literal short pattern */
-      const um = /(?:TargetUserName|SubjectUserName|UserName)\s*[:=]\s*([^\s,;|]+)/.exec(ed);
-      if (um && um[1] && um[1] !== '-') out.User = um[1];
-      // /* safeRegex: literal short pattern */
-      const pm = /(?:ProcessName|Image|NewProcessName)\s*[:=]\s*([^\s,;|]+)/.exec(ed);
-      if (pm && pm[1]) out.Process = pm[1];
-    }
     return out;
   },
 
   // ── Syslog RFC 3164 ──────────────────────────────────────────────────
   // Columns: `Timestamp, Severity, Facility, Host, Program, PID, Message`.
+  // The native `Program` (`row[4]`) and `Message` (`row[6]`) columns
+  // stay on the source's native plane — analysts pivot on them by
+  // name. The canonical schema is for short identifier-shape values.
   syslog3164: (source, row) => {
     const out = {};
     if (row[0]) out.Timestamp = String(row[0]);
     if (row[1]) out.Severity  = String(row[1]);
     if (row[2]) out.Category  = String(row[2]);
     if (row[3]) out.Host      = String(row[3]);
-    if (row[4]) out.Process   = String(row[4]);
-    if (row[6]) out.Message   = String(row[6]);
     return out;
   },
 
   // ── Syslog RFC 5424 ──────────────────────────────────────────────────
   // Columns: `Timestamp, Severity, Facility, Host, App, ProcID, MsgID,
   //           StructuredData, Message`.
+  // The native `App` / `Message` / `StructuredData` columns stay on
+  // the source's native plane. `MsgID` is a short identifier so it
+  // earns its slot as canonical `EventID`.
   syslog5424: (source, row) => {
     const out = {};
     if (row[0]) out.Timestamp = String(row[0]);
     if (row[1]) out.Severity  = String(row[1]);
     if (row[2]) out.Category  = String(row[2]);
     if (row[3]) out.Host      = String(row[3]);
-    if (row[4]) out.Process   = String(row[4]);
     if (row[6]) out.EventID   = String(row[6]);
-    if (row[8]) out.Message   = String(row[8]);
     return out;
   },
 
@@ -289,7 +378,12 @@ const TIMELINE_MAPPERS = {
     if (dip) out.DestIP = dip;
     const host = _tlmFirst(source, row, ['host', 'server_name', 'query']);
     if (host) out.Host = host;
-    const user = _tlmFirst(source, row, ['user', 'username', 'user_agent']);
+    // User probe — Zeek's `user` field is a real username (FTP / SMB
+    // auth, HTTP basic-auth). The `user_agent` column is intentionally
+    // NOT probed here: UA strings are not user identifiers and stay
+    // on the native `user_agent` column where their semantic is
+    // preserved.
+    const user = _tlmFirst(source, row, ['user', 'username']);
     if (user) out.User = user;
     // Zeek tokeniser stamps `#path` as the format label; we also
     // project it into Category so users can `category:http` /
@@ -310,6 +404,10 @@ const TIMELINE_MAPPERS = {
   // userIdentity.arn, userIdentity.accountId, userAgent, eventID,
   // eventType, recipientAccountId, requestID, errorCode, errorMessage,
   // readOnly, managementEvent` (plus any source-supplied extras).
+  //
+  // The native `userAgent`, `errorMessage`, and `errorCode` columns
+  // stay on the source's native plane — UA strings aren't process
+  // identifiers, and error narratives are long-form text.
   cloudtrail: (source, row) => {
     const out = {};
     const ts = _tlmFirst(source, row, ['eventtime']);
@@ -322,22 +420,17 @@ const TIMELINE_MAPPERS = {
     if (sip) out.SourceIP = sip;
     const user = _tlmFirst(source, row, ['useridentity.username', 'useridentity.arn']);
     if (user) out.User = user;
-    const ua = _tlmFirst(source, row, ['useragent']);
-    if (ua) out.Process = ua;
-    const err = _tlmFirst(source, row, ['errormessage', 'errorcode']);
-    if (err) out.Message = err;
-    else if (name) out.Message = name;
     return out;
   },
 
   // ── CEF (Common Event Format) ────────────────────────────────────────
   // Header columns: `Version, Vendor, Product, ProductVersion,
   // SignatureID, Name, Severity` plus dynamic `key=value` extensions.
-  // The extensions we care about: `shost`/`suser`/`src`/`dst`/`msg`/`cat`.
+  // Native columns (`Name`, `msg`, `sproc`/`dproc`) stay on the source
+  // plane — they're either long-form text or already named clearly.
   cef: (source, row) => {
     const out = {};
     if (row[4]) out.EventID  = String(row[4]);   // SignatureID
-    if (row[5]) out.Message  = String(row[5]);   // Name (human label)
     if (row[6]) out.Severity = String(row[6]);
     const vendor = row[1] ? String(row[1]) : '';
     const product = row[2] ? String(row[2]) : '';
@@ -346,14 +439,10 @@ const TIMELINE_MAPPERS = {
     if (host) out.Host = host;
     const user = _tlmFirst(source, row, ['suser', 'duser']);
     if (user) out.User = user;
-    const proc = _tlmFirst(source, row, ['sproc', 'dproc']);
-    if (proc) out.Process = proc;
     const sip = _tlmFirst(source, row, ['src']);
     if (sip) out.SourceIP = sip;
     const dip = _tlmFirst(source, row, ['dst']);
     if (dip) out.DestIP = dip;
-    const msgExt = _tlmFirst(source, row, ['msg']);
-    if (msgExt) out.Message = msgExt;
     // CEF may not carry an explicit Timestamp field in its header —
     // the wall-clock is usually in the syslog wrapper. The tokeniser
     // materialises it into a `Timestamp` column when present; probe
@@ -364,6 +453,7 @@ const TIMELINE_MAPPERS = {
   },
 
   // ── LEEF (Log Event Extended Format — QRadar) ────────────────────────
+  // Native `msg` extension stays on the source's native plane.
   leef: (source, row) => {
     // LEEF is structurally similar to CEF: a fixed header (Version,
     // Vendor, Product, ProductVersion, EventID) + `key=value` ext.
@@ -382,14 +472,13 @@ const TIMELINE_MAPPERS = {
     if (dip) out.DestIP = dip;
     const sev = _tlmFirst(source, row, ['sev', 'severity']);
     if (sev) out.Severity = sev;
-    const msg = _tlmFirst(source, row, ['msg']);
-    if (msg) out.Message = msg;
     const ts = _tlmFirst(source, row, ['devtime', 'timestamp']);
     if (ts) out.Timestamp = ts;
     return out;
   },
 
   // ── logfmt ───────────────────────────────────────────────────────────
+  // Native `msg` / `message` / `event` columns stay on the source plane.
   logfmt: (source, row) => {
     const out = {};
     const ts = _tlmFirst(source, row, ['ts', 'timestamp', 'time', '@timestamp']);
@@ -400,8 +489,6 @@ const TIMELINE_MAPPERS = {
     if (user) out.User = user;
     const sev = _tlmFirst(source, row, ['level', 'severity', 'priority']);
     if (sev) out.Severity = sev;
-    const msg = _tlmFirst(source, row, ['msg', 'message', 'event']);
-    if (msg) out.Message = msg;
     const cat = _tlmFirst(source, row, ['component', 'service', 'module', 'app']);
     if (cat) out.Category = cat;
     const sip = _tlmFirst(source, row, ['src_ip', 'client_ip', 'ip']);
@@ -410,6 +497,9 @@ const TIMELINE_MAPPERS = {
   },
 
   // ── W3C Extended Log Format (IIS, AWS ELB/ALB/CloudFront) ────────────
+  // Native `cs-method` / `cs-uri-stem` / `request_method` / `request_url`
+  // columns stay on the source plane — long-form text doesn't belong
+  // in the canonical pivot schema.
   w3c: (source, row) => {
     // Column names are dictated by the `#Fields:` directive. When the
     // log emits split `date` + `time` columns (the IIS default),
@@ -435,9 +525,6 @@ const TIMELINE_MAPPERS = {
     if (dip) out.DestIP = dip;
     const status = _tlmFirst(source, row, ['sc-status', 'elb_status_code', 'http_status']);
     if (status) out.Severity = status;
-    const method = _tlmFirst(source, row, ['cs-method', 'request_method']);
-    const uri = _tlmFirst(source, row, ['cs-uri-stem', 'request_url']);
-    if (method || uri) out.Message = (method + ' ' + uri).trim();
     out.Category = 'access';
     return out;
   },
@@ -445,13 +532,14 @@ const TIMELINE_MAPPERS = {
   // ── Apache error_log ─────────────────────────────────────────────────
   'apache-error': (source, row) => {
     // Columns: Timestamp, Module, Severity, PID, TID, Client, ErrorCode, Message.
+    // The native `Message` (`row[7]`) column stays on the source plane
+    // — it's the long-form error narrative.
     const out = {};
     if (row[0]) out.Timestamp = String(row[0]);
     if (row[1]) out.Category  = String(row[1]);
     if (row[2]) out.Severity  = String(row[2]);
     if (row[5]) out.SourceIP  = String(row[5]);
     if (row[6]) out.EventID   = String(row[6]);
-    if (row[7]) out.Message   = String(row[7]);
     return out;
   },
 

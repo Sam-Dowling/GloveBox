@@ -6,9 +6,11 @@
 // Covers:
 //   • `TIMELINE_MAPPERS.csv`      — header-name probing for Host / User /
 //                                   SourceIP / DestIP / Severity / etc.
-//   • `TIMELINE_MAPPERS.evtx`     — fixed 7-col schema projection plus
-//                                   best-effort User / Process mining
-//                                   from the Event Data blob.
+//   • `TIMELINE_MAPPERS.evtx`     — fixed 7-col schema projection (the
+//                                   Event Data blob stays on its native
+//                                   column; forensic KV fields surface
+//                                   as auto-extract virtual columns
+//                                   instead of being mined here).
 //   • `TIMELINE_MAPPERS.syslog3164` / `.syslog5424` / `.cef` / `.leef` /
 //     `.w3c` / `.apache-error` / `.cloudtrail` / `.logfmt` / `.zeek` /
 //     `.log`                      — one happy-path projection per kind.
@@ -69,26 +71,37 @@ test('TIMELINE_MAPPERS is frozen and carries every expected kind', () => {
   }
 });
 
-test('canonical column list exposes the expected 12 fields in fixed order', () => {
+test('canonical column list exposes the expected 10 fields in fixed order', () => {
   assert.deepEqual(Array.from(TIMELINE_CANONICAL_COLS), [
     '__source', '__format', 'Timestamp', 'Host', 'User',
-    'Process', 'Message', 'EventID', 'Severity', 'Category',
-    'SourceIP', 'DestIP',
+    'EventID', 'Severity', 'Category', 'SourceIP', 'DestIP',
   ]);
+});
+
+test('canonical column list excludes wide-narrative slots (Process / Message)', () => {
+  // Process and Message previously held wide-narrative text (UA strings,
+  // multi-KB Event Data blobs). They are intentionally NOT canonical
+  // — the data lives on each source's native column where the original
+  // header preserves the semantic. Pin the absence so a future
+  // re-introduction is caught at unit-test time.
+  assert.equal(TIMELINE_CANONICAL_COLS.includes('Process'), false);
+  assert.equal(TIMELINE_CANONICAL_COLS.includes('Message'), false);
 });
 
 // ── CSV mapper — header-name probe ─────────────────────────────────────────
 
 test('csv mapper resolves Host / User / SourceIP via case-insensitive headers', () => {
   const src = stubSource('csv',
-    ['timestamp', 'HOSTNAME', 'user_name', 'client_ip', 'message']);
+    ['timestamp', 'HOSTNAME', 'user_name', 'client_ip']);
   const out = TIMELINE_MAPPERS.csv(src,
-    ['2024-01-01T00:00:00Z', 'web01', 'alice', '10.0.0.5', 'login ok']);
+    ['2024-01-01T00:00:00Z', 'web01', 'alice', '10.0.0.5']);
   assert.equal(out.Timestamp, '2024-01-01T00:00:00Z');
   assert.equal(out.Host, 'web01');
   assert.equal(out.User, 'alice');
   assert.equal(out.SourceIP, '10.0.0.5');
-  assert.equal(out.Message, 'login ok');
+  // `Message` is not canonical — a `message` column stays on the
+  // native plane.
+  assert.equal(out.Message, undefined);
 });
 
 test('csv mapper silently drops missing fields (no throws, no undefined cells)', () => {
@@ -132,20 +145,34 @@ test('csv mapper resolves ClientIP → SourceIP (case-insensitive)', () => {
   assert.equal(out.SourceIP, '10.0.0.1');
 });
 
-test('csv mapper resolves UserAgent → Process (web-audit surrogate)', () => {
+test('csv mapper does NOT pull UserAgent into a canonical slot', () => {
+  // UA strings are not user identifiers, not process names, and not
+  // narrative text — they live on the native `userAgent` column where
+  // analysts pivot on them by header name. Pin the no-projection
+  // behaviour so a future "let me add useragent back to the Process
+  // probe" regression lights up.
   const src = stubSource('csv', ['Timestamp', 'UserAgent']);
   const out = TIMELINE_MAPPERS.csv(src, ['2026-01-01', 'curl/8.0']);
-  assert.equal(out.Process, 'curl/8.0');
+  assert.equal(out.Process, undefined);
+  assert.equal(out.User, undefined);
+  assert.equal(out.Message, undefined);
 });
 
-test('csv mapper resolves TargetResource → Message when raw/msg absent', () => {
-  const src = stubSource('csv', ['Timestamp', 'TargetResource']);
-  const out = TIMELINE_MAPPERS.csv(src, ['2026-01-01', '/docs/budget.xlsx']);
-  assert.equal(out.Message, '/docs/budget.xlsx');
+test('csv mapper does NOT project a `message` / `body` / `raw` column into a canonical slot', () => {
+  // Wide-narrative columns stay on the native plane to avoid
+  // duplicating multi-KB blobs row-for-row in a synthetic canonical.
+  const src = stubSource('csv', ['Timestamp', 'message', 'body', 'raw']);
+  const out = TIMELINE_MAPPERS.csv(src,
+    ['2026-01-01', 'login ok', '{"req":{...}}', '<huge json>']);
+  assert.equal(out.Message, undefined);
 });
 
-test('csv mapper: M365 audit 9-col schema populates 9 canonicals', () => {
-  // End-to-end regression for the dist/test1-1k.csv shape.
+test('csv mapper: M365 audit 9-col schema populates 7 canonicals', () => {
+  // End-to-end regression for the dist/test1-1k.csv shape. After the
+  // canonical-set trim, UserAgent / Raw / TargetResource columns stay
+  // on the native plane — the canonical surface only holds the short
+  // identifier-shape values (Timestamp, User, EventID, Workload→Category,
+  // ClientIP→SourceIP, Outcome→Severity).
   const src = stubSource('csv',
     ['Timestamp', 'UserId', 'EventName', 'Workload', 'ClientIP',
      'UserAgent', 'Outcome', 'TargetResource', 'Raw']);
@@ -159,16 +186,21 @@ test('csv mapper: M365 audit 9-col schema populates 9 canonicals', () => {
   assert.equal(out.EventID, 'UserLoggedIn');
   assert.equal(out.Category, 'AzureActiveDirectory');
   assert.equal(out.SourceIP, '10.67.139.172');
-  assert.equal(out.Process, 'Office/16.0');
   assert.equal(out.Severity, 'Success');
-  // `Raw` wins over `TargetResource` because `raw` is earlier in the
-  // Message probe list (authoritative narrative for structured logs).
-  assert.equal(out.Message, '{"Id":"ba83"}');
+  // UserAgent / Raw / TargetResource intentionally do NOT land in
+  // canonical Process / Message slots.
+  assert.equal(out.Process, undefined);
+  assert.equal(out.Message, undefined);
 });
 
 // ── EVTX mapper — fixed schema ─────────────────────────────────────────────
 
-test('evtx mapper projects the fixed 7-col schema into canonical cells', () => {
+test('evtx mapper projects the fixed schema into canonical cells (Event Data stays native)', () => {
+  // The Event Data blob is intentionally NOT projected into a canonical
+  // Message column — duplicating multi-KB rendered KV text per row
+  // would bloat the composite store. Forensic KV fields
+  // (`TargetUserName`, `Image`, `LogonType`, …) are surfaced as
+  // virtual columns by the auto-extract pump rather than mined here.
   const src = stubSource('evtx',
     ['Timestamp', 'Event ID', 'Level', 'Provider', 'Channel', 'Computer', 'Event Data']);
   const row = [
@@ -186,15 +218,16 @@ test('evtx mapper projects the fixed 7-col schema into canonical cells', () => {
   assert.equal(out.Severity, 'Information');
   assert.equal(out.Host, 'DC01');
   assert.match(out.Category, /Security.*Microsoft-Windows-Security-Auditing/);
-  assert.equal(out.User, 'alice');
-  // Process mining grabs the value after ProcessName=.
-  assert.equal(out.Process, 'C:\\Windows\\System32\\svchost.exe');
-  assert.match(out.Message, /TargetUserName=alice/);
+  // No eager User / Process / Message projection — those slots come
+  // from auto-extract or the native Event Data column.
+  assert.equal(out.User, undefined);
+  assert.equal(out.Process, undefined);
+  assert.equal(out.Message, undefined);
 });
 
 // ── Syslog mappers ─────────────────────────────────────────────────────────
 
-test('syslog3164 mapper maps 7 positional cells to canonical', () => {
+test('syslog3164 mapper maps positional cells to canonical (Program / Message stay native)', () => {
   const src = stubSource('syslog3164',
     ['Timestamp', 'Severity', 'Facility', 'Host', 'Program', 'PID', 'Message']);
   const out = TIMELINE_MAPPERS.syslog3164(src,
@@ -203,11 +236,13 @@ test('syslog3164 mapper maps 7 positional cells to canonical', () => {
   assert.equal(out.Severity, 'warning');
   assert.equal(out.Category, 'auth');
   assert.equal(out.Host, 'web01');
-  assert.equal(out.Process, 'sshd');
-  assert.equal(out.Message, 'failed login');
+  // Program (`sshd`) and Message (`failed login`) stay on the native
+  // plane.
+  assert.equal(out.Process, undefined);
+  assert.equal(out.Message, undefined);
 });
 
-test('syslog5424 mapper maps 9 positional cells to canonical', () => {
+test('syslog5424 mapper maps positional cells to canonical (App / Message stay native)', () => {
   const src = stubSource('syslog5424',
     ['Timestamp', 'Severity', 'Facility', 'Host', 'App', 'ProcID', 'MsgID', 'StructuredData', 'Message']);
   const out = TIMELINE_MAPPERS.syslog5424(src,
@@ -216,24 +251,29 @@ test('syslog5424 mapper maps 9 positional cells to canonical', () => {
   assert.equal(out.Severity, 'err');
   assert.equal(out.Category, 'local0');
   assert.equal(out.Host, 'web01');
-  assert.equal(out.Process, 'app');
-  assert.equal(out.EventID, 'ID47');
-  assert.equal(out.Message, 'boom');
+  assert.equal(out.EventID, 'ID47');   // MsgID is short identifier — earns a canonical slot
+  // App / Message stay on the native plane.
+  assert.equal(out.Process, undefined);
+  assert.equal(out.Message, undefined);
 });
 
 // ── CLF .log mapper ────────────────────────────────────────────────────────
 
-test('log (CLF) mapper reads ip/time/request/status from fixed positions', () => {
+test('log (CLF) mapper reads ip/time/status from fixed positions (request / UA stay native)', () => {
   const src = stubSource('log',
     ['ip', 'ident', 'auth', 'time', 'request', 'status', 'bytes', 'referer', 'user_agent']);
   const out = TIMELINE_MAPPERS.log(src,
     ['1.2.3.4', '-', 'bob', '10/Oct/2024:10:10:10 +0000', 'GET /', '200', '512', '-', 'curl/8.0']);
   assert.equal(out.SourceIP, '1.2.3.4');
   assert.equal(out.Timestamp, '10/Oct/2024:10:10:10 +0000');
-  assert.equal(out.Message, 'GET /');
   assert.equal(out.Severity, '200');
   assert.equal(out.User, 'bob');
   assert.equal(out.Category, 'access');
+  // `request` (column 4) and `user_agent` (column 8) intentionally
+  // stay on the native plane — `Message` and `Process` are not
+  // canonical slots.
+  assert.equal(out.Message, undefined);
+  assert.equal(out.Process, undefined);
 });
 
 test('log mapper treats "-" auth as empty User', () => {
@@ -270,8 +310,10 @@ test('w3c mapper concatenates split date+time when unified Timestamp absent', ()
   assert.equal(out.SourceIP, '1.2.3.4');
   assert.equal(out.Severity, '200');
   assert.equal(out.User, 'alice');
-  assert.equal(out.Message, 'GET /login');
   assert.equal(out.Category, 'access');
+  // `cs-method` and `cs-uri-stem` stay on the native plane — they're
+  // request descriptors, not short canonical identifiers.
+  assert.equal(out.Message, undefined);
 });
 
 // ── Unknown kind fallback ──────────────────────────────────────────────────
@@ -280,10 +322,10 @@ test('timelineMapperFor(unknown) falls through to CSV-style probe', () => {
   const fn = timelineMapperFor('some-new-format-kind-that-does-not-exist');
   assert.equal(typeof fn, 'function');
   // CSV semantics: probe by header name.
-  const src = stubSource('unknown', ['hostname', 'message']);
-  const out = fn(src, ['host01', 'hello']);
+  const src = stubSource('unknown', ['hostname', 'severity']);
+  const out = fn(src, ['host01', 'INFO']);
   assert.equal(out.Host, 'host01');
-  assert.equal(out.Message, 'hello');
+  assert.equal(out.Severity, 'INFO');
 });
 
 // ── Fusion predicate ───────────────────────────────────────────────────────

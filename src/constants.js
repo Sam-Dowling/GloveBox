@@ -358,23 +358,31 @@ const RENDER_LIMITS = Object.freeze({
 // prepends these columns so queries / top-values / pivots / detections
 // have a uniform schema to pivot on. Per-format mappers in
 // `src/app/timeline/timeline-mapper.js` populate each cell from native
-// fields (EVTX `Computer` → `Host`, syslog `MSG` → `Message`, etc.); rows
-// whose source doesn't carry the field leave the cell empty.
+// fields (EVTX `Computer` → `Host`, CSV `userid` → `User`, syslog
+// `severity` → `Severity`, …); rows whose source doesn't carry the field
+// leave the cell empty.
+//
+// The set is intentionally narrow: every entry holds short
+// identifier-shape values (filenames, hostnames, usernames, event IDs,
+// severities, IPs). Wide-narrative slots (process command lines, full
+// message bodies, user-agent strings) are NOT canonical — they live in
+// each source's native column plane where their original column name
+// preserves the semantic. This keeps the cross-source pivot uniform
+// without duplicating multi-KB blobs into a synthetic column and avoids
+// the "useragent shows up under Process" misclassification that comes
+// from forcing every row through a one-size-fits-all schema.
 //
 // Single-source timelines leave these columns hidden by default
 // (canonical-column visibility is `sources.length >= 2`). The mapper
 // still runs in single-source mode so the data is available for
-// `fromSources([one])` round-trip (no single-source fast path after
-// Commit 5). The `__source` / `__format` columns lead so queries like
-// `source:events.csv` read left-to-right.
+// `fromSources([one])` round-trip. The `__source` / `__format` columns
+// lead so queries like `source:events.csv` read left-to-right.
 const TIMELINE_CANONICAL_COLS = Object.freeze([
   '__source',
   '__format',
   'Timestamp',
   'Host',
   'User',
-  'Process',
-  'Message',
   'EventID',
   'Severity',
   'Category',

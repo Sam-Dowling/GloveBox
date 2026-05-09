@@ -29,10 +29,32 @@ const FIXTURE_B = 'tests/e2e-fixtures/timeline-merge-second.csv';
 // guard for the empty-column-cull pass: the post-merge composite
 // must not carry any 100%-empty canonical column (Host / DestIP),
 // and the mapper's M365-aware aliases must populate User / EventID
-// / Severity / Category / Process from UserId / EventName / Outcome
-// / Workload / UserAgent respectively.
+// / Severity / Category from UserId / EventName / Outcome / Workload
+// respectively. Wide-narrative columns (UserAgent / Raw /
+// TargetResource) stay on each source's native plane — they don't
+// belong in the canonical cross-source pivot schema.
 const FIXTURE_M365_A = 'tests/e2e-fixtures/m365-audit-a.csv';
 const FIXTURE_M365_B = 'tests/e2e-fixtures/m365-audit-b.csv';
+// Disjoint-time-range fixtures — `chrono-newer.csv` spans 12:00–12:20,
+// `chrono-older.csv` spans 09:00–09:20. Loading newer first then
+// merging older produces source-concat order [12:00..12:20,
+// 09:00..09:20] which is NOT chronological — exercises the regression
+// where the grid header advertised "asc by Timestamp" while rows
+// painted in source-concat order. Used by the chrono-order pin below.
+const FIXTURE_CHRONO_NEWER = 'tests/e2e-fixtures/timeline-merge-chrono-newer.csv';
+const FIXTURE_CHRONO_OLDER = 'tests/e2e-fixtures/timeline-merge-chrono-older.csv';
+// Synthetic EDR / endpoint-export fixtures, one per Tier-1 vendor.
+// Each fixture's column header set matches the vendor's real export
+// shape so the CSV mapper's probe-list aliases (in
+// `src/app/timeline/timeline-mapper.js`) populate the canonical
+// columns from vendor-specific names. Hand-crafted (~10 rows each),
+// privacy-safe placeholder identities. Timestamps are intentionally
+// disjoint per fixture so the chrono-sort path also gets exercised
+// when all four are merged.
+const FIXTURE_EDR_FALCON = 'tests/e2e-fixtures/edr-falcon.csv';
+const FIXTURE_EDR_MDE = 'tests/e2e-fixtures/edr-mde.csv';
+const FIXTURE_EDR_SENTINELONE = 'tests/e2e-fixtures/edr-sentinelone.csv';
+const FIXTURE_EDR_CORTEX = 'tests/e2e-fixtures/edr-cortex.csv';
 
 test.describe('Timeline — merged sources', () => {
   const ctx = useSharedBundlePage();
@@ -356,10 +378,11 @@ test.describe('Timeline — merged sources', () => {
     // ZERO empty columns is the whole point of the cull pass.
     expect(result!.empties).toEqual([]);
     // Canonical columns expected for M365-audit schema: mapper aliases
-    // now catch UserId / EventName / Workload / Outcome / ClientIP /
-    // UserAgent / Raw → User / EventID / Category / Severity / SourceIP
-    // / Process / Message. Host + DestIP have no source column so get
-    // culled.
+    // catch UserId / EventName / Workload / Outcome / ClientIP →
+    // User / EventID / Category / Severity / SourceIP. Host + DestIP
+    // have no source column so get culled. UserAgent / Raw /
+    // TargetResource stay on each source's native plane (not
+    // canonical).
     expect(result!.columns).toContain('__source');
     expect(result!.columns).toContain('__format');
     expect(result!.columns).toContain('Timestamp');
@@ -368,8 +391,12 @@ test.describe('Timeline — merged sources', () => {
     expect(result!.columns).toContain('Severity');
     expect(result!.columns).toContain('Category');
     expect(result!.columns).toContain('SourceIP');
-    expect(result!.columns).toContain('Process');
-    expect(result!.columns).toContain('Message');
+    // Wide-narrative columns (UserAgent / Raw / TargetResource) stay
+    // on the source's native plane — the canonical schema only holds
+    // short identifier-shape values. `Process` and `Message` are
+    // intentionally NOT canonical.
+    expect(result!.columns).not.toContain('Process');
+    expect(result!.columns).not.toContain('Message');
     expect(result!.columns).not.toContain('Host');
     expect(result!.columns).not.toContain('DestIP');
   });
@@ -582,5 +609,348 @@ test.describe('Timeline — merged sources', () => {
     });
     expect(computed).not.toBeNull();
     expect(computed!.fontStyle).toBe('normal');
+  });
+
+  test('REGRESSION: merged Timeline grid paints rows chronologically (not source-concat order)', async () => {
+    // Guard for the user-reported bug: after merging a second file,
+    // the grid header advertised "sorted ascending by Timestamp" but
+    // rows displayed in source-concat order ([source-A rows…,
+    // source-B rows…]) until manual re-sort.
+    //
+    // Root cause: `_rebuildExtractedStateAndRender`'s in-place fast
+    // path (called once per applied auto-extract proposal, ~60 ms
+    // post-mount) ran `_recomputeFilter()` which reset `_filteredIdx`
+    // to the unsorted identity index, then handed that to
+    // `GridViewer.setRows(rowView, …, { preSorted: true })`.
+    // `setRows` preserved the asc-Timestamp `_sortSpec` but stamped
+    // an identity `_sortOrder` against the now-unsorted rowView, so
+    // the grid painted in source-concat order while the indicator
+    // claimed chronological.
+    //
+    // Fix: a shared `_chronoSortIdx` helper that the fast path now
+    // calls before constructing the rowView. The helper reuses the
+    // cached `_sortedFullIdx` populated on first paint (O(1) hit on
+    // every subsequent auto-extract tick).
+    //
+    // The fixtures used here have DISJOINT time ranges
+    // (newer = 12:00-12:20, older = 09:00-09:20) so the bug is
+    // unmistakable: identity order shows newer-then-older, chrono
+    // order shows older-then-newer. The existing FIXTURE_A/B pair
+    // has interleaved ranges where a partial regression could
+    // accidentally satisfy a monotonic check; disjoint ranges make
+    // the assertion bulletproof.
+
+    // Reset the shared page so we land on a clean single-source view.
+    await ctx.page.evaluate(() => {
+      const w = window as unknown as { app: { _clearTimelineFile?: () => void } };
+      if (w.app._clearTimelineFile) w.app._clearTimelineFile();
+    });
+    // Load NEWER file first, then merge OLDER on top — composite
+    // store row order is [newer A1…A5, older B1…B5], deliberately
+    // anti-chronological.
+    await loadFixture(ctx.page, FIXTURE_CHRONO_NEWER);
+    await loadFixture(ctx.page, FIXTURE_CHRONO_OLDER, undefined, { skipCrossLoadReset: true });
+
+    // Wait for the auto-extract pump to settle. Even a single
+    // proposal trips the regression because `_rebuildExtractedStateAndRender`
+    // runs once per proposal and resets `_filteredIdx` each time.
+    // The pump terminus clears `_autoExtractApplying`; poll on that
+    // flag (and the post-pump RAF) so we assert against the FINAL
+    // grid state, not a mid-pump snapshot.
+    await ctx.page.waitForFunction(() => {
+      const w = window as unknown as {
+        app: {
+          _timelineCurrent: {
+            _autoExtractApplying?: boolean;
+            _sources?: unknown;
+          } | null;
+        };
+      };
+      const v = w.app._timelineCurrent;
+      return !!(v && v._sources && v._autoExtractApplying === false);
+    }, { timeout: 10_000 });
+    // One more RAF + microtask tick so any post-pump deferred-surface
+    // schedules (`['columns', 'chart', 'scrubber', 'chips']`) have
+    // landed before we read the grid.
+    await ctx.page.evaluate(() => new Promise<void>(r => requestAnimationFrame(() => r())));
+
+    // Read the chrono-relevant state directly off `_timelineCurrent`:
+    //   - `_filteredIdx`: the permutation handed to the GridViewer's
+    //     rowView. After the fix, this MUST be chrono-sorted.
+    //   - `_timeMs[_filteredIdx[i]]` for i ∈ [0, n): must be
+    //     monotonically non-decreasing (NaN-last is permitted at the
+    //     tail; these fixtures have no NaN timestamps).
+    //   - `_grid._sortSpec`: header indicator state. Must declare
+    //     `dir: 'asc'` against `_timeCol`.
+    const snapshot = await ctx.page.evaluate(() => {
+      const w = window as unknown as {
+        app: {
+          _timelineCurrent: {
+            _timeMs: Float64Array;
+            _timeCol: number;
+            _filteredIdx: Uint32Array | null;
+            _sources: Array<{ sourceLabel: string }> | null;
+            store: { rowCount: number };
+            _grid: {
+              _sortSpec: { colIdx: number; dir: 'asc' | 'desc' } | null;
+              _sortOrder: number[] | null;
+            } | null;
+          };
+        };
+      };
+      const v = w.app._timelineCurrent;
+      const idx = v._filteredIdx;
+      if (!idx) return { ready: false };
+      const times: number[] = new Array(idx.length);
+      for (let i = 0; i < idx.length; i++) times[i] = v._timeMs[idx[i]];
+      return {
+        ready: true,
+        sourceLabels: (v._sources || []).map(s => s.sourceLabel),
+        rowCount: v.store.rowCount,
+        timeCol: v._timeCol,
+        filteredLen: idx.length,
+        times,
+        sortSpec: v._grid ? v._grid._sortSpec : null,
+      };
+    });
+
+    expect(snapshot.ready).toBe(true);
+    // Sanity: both sources merged.
+    expect(snapshot.sourceLabels).toEqual([
+      'timeline-merge-chrono-newer.csv',
+      'timeline-merge-chrono-older.csv',
+    ]);
+    expect(snapshot.rowCount).toBe(10);
+    expect(snapshot.filteredLen).toBe(10);
+
+    // PRIMARY ASSERTION: the visible row order is chronological.
+    // Identity (source-concat) order would yield
+    //   times = [12:00, 12:05, 12:10, 12:15, 12:20, 09:00, 09:05, …]
+    // which fails monotonicity at the 5→6 boundary.
+    for (let i = 1; i < snapshot.times!.length; i++) {
+      const prev = snapshot.times![i - 1];
+      const curr = snapshot.times![i];
+      expect(
+        prev <= curr,
+        `row ${i}: _timeMs[_filteredIdx[${i - 1}]]=${prev} must be <= _timeMs[_filteredIdx[${i}]]=${curr} ` +
+        `(grid painted in source-concat order — chrono-sort regression)`,
+      ).toBe(true);
+    }
+
+    // Secondary assertion: the header advertises asc-Timestamp.
+    // A regression that fixes the order but flips the indicator
+    // (or clears `_sortSpec` entirely) would also break the
+    // user-visible contract.
+    expect(snapshot.sortSpec).not.toBeNull();
+    expect(snapshot.sortSpec!.dir).toBe('asc');
+    expect(snapshot.sortSpec!.colIdx).toBe(snapshot.timeCol);
+
+    // Tertiary assertion: the FIRST row carries the OLDER source's
+    // earliest timestamp (09:00:00Z), not the NEWER source's
+    // earliest (12:00:00Z). Belt-and-braces — same condition as
+    // the monotonicity loop, but anchored on a known cell value
+    // so a future refactor that changed `_filteredIdx` semantics
+    // (e.g. window-clip in place of chrono-sort) lights up
+    // separately.
+    const firstRowTs = await ctx.page.evaluate(() => {
+      const w = window as unknown as {
+        app: {
+          _timelineCurrent: {
+            _filteredIdx: Uint32Array;
+            store: {
+              colIndex: (n: string) => number;
+              getCell: (r: number, c: number) => string;
+            };
+          };
+        };
+      };
+      const v = w.app._timelineCurrent;
+      const tsCol = v.store.colIndex('Timestamp');
+      const dataIdx = v._filteredIdx[0];
+      return v.store.getCell(dataIdx, tsCol);
+    });
+    expect(firstRowTs).toMatch(/^2025-04-02T09:00:00/);
+  });
+
+  test('EDR vendor merge: canonical columns populate from CrowdStrike + MDE + SentinelOne + Cortex headers', async () => {
+    // Pin the EDR / endpoint-export alias coverage end-to-end. Each
+    // vendor's CSV uses a different column-naming convention for the
+    // same conceptual fields:
+    //   - CrowdStrike Falcon:   ComputerName / event_simpleName / UserName
+    //                           / LocalAddressIP4 / RemoteAddressIP4
+    //   - Microsoft Defender:   DeviceName / ActionType / AccountName
+    //                           / RemoteIP
+    //   - SentinelOne:          dotted agent.name / event.type
+    //                           / src.process.user / src.ip.address
+    //                           / dst.ip.address
+    //   - Cortex XDR:           agent_hostname / event_type / actor_user
+    //                           / action_local_ip / action_remote_ip
+    // After the alias expansion in `timeline-mapper.js`, all four
+    // populate the canonical Host / EventID / User / SourceIP / DestIP
+    // columns regardless of which vendor each row originated from. A
+    // regression that drops any vendor's alias would surface as an
+    // empty canonical cell on rows from that vendor.
+
+    // Reset the shared page so we start from a clean state.
+    await ctx.page.evaluate(() => {
+      const w = window as unknown as { app: { _clearTimelineFile?: () => void } };
+      if (w.app._clearTimelineFile) w.app._clearTimelineFile();
+    });
+    // Load the four fixtures sequentially. First load takes the
+    // single-file path; subsequent loads merge via `_timelineAddFile`
+    // (skipCrossLoadReset preserves the existing view).
+    await loadFixture(ctx.page, FIXTURE_EDR_FALCON);
+    await loadFixture(ctx.page, FIXTURE_EDR_MDE, undefined, { skipCrossLoadReset: true });
+    await loadFixture(ctx.page, FIXTURE_EDR_SENTINELONE, undefined, { skipCrossLoadReset: true });
+    await loadFixture(ctx.page, FIXTURE_EDR_CORTEX, undefined, { skipCrossLoadReset: true });
+
+    // Read the canonical projection per source. For each source we
+    // sample the first row that originated there (via `_sourceOfRow`)
+    // and read the canonical Host / User / EventID / SourceIP cells
+    // off the composite store. None of them must be empty.
+    const snapshot = await ctx.page.evaluate(() => {
+      const w = window as unknown as {
+        app: {
+          _timelineCurrent: {
+            _sources: Array<{ sourceLabel: string }> | null;
+            _sourceOfRow: Uint32Array | null;
+            store: {
+              rowCount: number;
+              colIndex: (n: string) => number;
+              getCell: (r: number, c: number) => string;
+            };
+          } | null;
+        };
+      };
+      const v = w.app._timelineCurrent;
+      if (!v || !v._sources || !v._sourceOfRow) return { ready: false };
+      const iHost = v.store.colIndex('Host');
+      const iUser = v.store.colIndex('User');
+      const iEid = v.store.colIndex('EventID');
+      const iSip = v.store.colIndex('SourceIP');
+      const iDip = v.store.colIndex('DestIP');
+      // For each source, find the first row index that came from it
+      // and read the canonical cells.
+      const perSource: Array<{
+        label: string;
+        host: string; user: string; eid: string; sip: string; dip: string;
+      }> = [];
+      for (let s = 0; s < v._sources.length; s++) {
+        let firstRow = -1;
+        for (let r = 0; r < v.store.rowCount; r++) {
+          if (v._sourceOfRow[r] === s) { firstRow = r; break; }
+        }
+        if (firstRow < 0) continue;
+        perSource.push({
+          label: v._sources[s].sourceLabel,
+          host: iHost >= 0 ? v.store.getCell(firstRow, iHost) : '',
+          user: iUser >= 0 ? v.store.getCell(firstRow, iUser) : '',
+          eid: iEid >= 0 ? v.store.getCell(firstRow, iEid) : '',
+          sip: iSip >= 0 ? v.store.getCell(firstRow, iSip) : '',
+          dip: iDip >= 0 ? v.store.getCell(firstRow, iDip) : '',
+        });
+      }
+      return {
+        ready: true,
+        sourceCount: v._sources.length,
+        rowCount: v.store.rowCount,
+        canonicalsPresent: {
+          host: iHost >= 0,
+          user: iUser >= 0,
+          eid: iEid >= 0,
+          sip: iSip >= 0,
+          dip: iDip >= 0,
+        },
+        perSource,
+      };
+    });
+
+    expect(snapshot.ready).toBe(true);
+    expect(snapshot.sourceCount).toBe(4);
+    expect(snapshot.rowCount).toBe(40); // 4 × 10 rows
+
+    // Every canonical column we care about must survive the cull —
+    // each is populated by ≥1 source.
+    expect(snapshot.canonicalsPresent!.host).toBe(true);
+    expect(snapshot.canonicalsPresent!.user).toBe(true);
+    expect(snapshot.canonicalsPresent!.eid).toBe(true);
+    expect(snapshot.canonicalsPresent!.sip).toBe(true);
+    // DestIP may be empty on some rows (e.g. local-only events) but
+    // the column must exist because at least Falcon's first row
+    // populates it (`203.0.113.7`).
+    expect(snapshot.canonicalsPresent!.dip).toBe(true);
+
+    // Per-source: every source contributed at least one row whose
+    // canonical Host / User / EventID cells are populated by the
+    // vendor's distinctive column. The first row of each fixture is
+    // hand-crafted to populate these.
+    expect(snapshot.perSource).toHaveLength(4);
+    for (const s of snapshot.perSource!) {
+      expect(s.host, `Host empty for source ${s.label}`).not.toBe('');
+      expect(s.user, `User empty for source ${s.label}`).not.toBe('');
+      expect(s.eid, `EventID empty for source ${s.label}`).not.toBe('');
+    }
+    // SourceIP / DestIP coverage is per-vendor: Falcon / SentinelOne /
+    // Cortex carry an agent-perspective LocalIP column on every event,
+    // while MDE's `RemoteIP` only fills DestIP (no LocalIP equivalent
+    // ships in the standard Advanced Hunting export). Assert the
+    // expected partial coverage explicitly so a future regression that
+    // dropped, say, Falcon's `LocalAddressIP4` alias would light up.
+    const populatedSip = snapshot.perSource!.filter(s => s.sip !== '').map(s => s.label).sort();
+    expect(populatedSip).toEqual(
+      ['edr-cortex.csv', 'edr-falcon.csv', 'edr-sentinelone.csv'].sort(),
+    );
+    const populatedDip = snapshot.perSource!.filter(s => s.dip !== '').map(s => s.label).sort();
+    // All four populate DestIP on row 0 in the synthetic fixtures.
+    expect(populatedDip).toEqual(
+      ['edr-cortex.csv', 'edr-falcon.csv', 'edr-mde.csv', 'edr-sentinelone.csv'].sort(),
+    );
+
+    // Spot-check the vendor-specific values to prove the alias
+    // routing is what's actually doing the work. Order follows the
+    // load sequence (Falcon → MDE → SentinelOne → Cortex).
+    const byLabel = Object.fromEntries(
+      snapshot.perSource!.map(s => [s.label, s]),
+    );
+    expect(byLabel['edr-falcon.csv']!.host).toBe('WIN-DC01');               // ComputerName
+    expect(byLabel['edr-falcon.csv']!.eid).toBe('ProcessRollup2');          // event_simpleName
+    expect(byLabel['edr-falcon.csv']!.user).toBe('alice@example.invalid'); // UserName
+    expect(byLabel['edr-falcon.csv']!.sip).toBe('10.0.0.5');                // LocalAddressIP4
+    expect(byLabel['edr-falcon.csv']!.dip).toBe('203.0.113.7');             // RemoteAddressIP4
+
+    expect(byLabel['edr-mde.csv']!.host).toBe('WIN-WS-007');                // DeviceName
+    expect(byLabel['edr-mde.csv']!.eid).toBe('ProcessCreated');             // ActionType
+    expect(byLabel['edr-mde.csv']!.user).toBe('bob');                       // AccountName
+    expect(byLabel['edr-mde.csv']!.dip).toBe('198.51.100.42');              // RemoteIP
+
+    expect(byLabel['edr-sentinelone.csv']!.host).toBe('mac-laptop-13');     // agent.name
+    expect(byLabel['edr-sentinelone.csv']!.eid).toBe('Process Creation');   // event.type
+    expect(byLabel['edr-sentinelone.csv']!.user).toBe('carol');             // src.process.user
+    expect(byLabel['edr-sentinelone.csv']!.sip).toBe('10.0.0.42');          // src.ip.address
+    expect(byLabel['edr-sentinelone.csv']!.dip).toBe('203.0.113.99');       // dst.ip.address
+
+    expect(byLabel['edr-cortex.csv']!.host).toBe('host-cortex-01');         // agent_hostname
+    expect(byLabel['edr-cortex.csv']!.eid).toBe('NETWORK_CONNECTION');      // event_type
+    expect(byLabel['edr-cortex.csv']!.user).toBe('NT AUTHORITY\\SYSTEM');   // actor_user
+    expect(byLabel['edr-cortex.csv']!.sip).toBe('10.0.0.77');               // action_local_ip
+    expect(byLabel['edr-cortex.csv']!.dip).toBe('203.0.113.21');            // action_remote_ip
+
+    // Wide-narrative columns survive on the source's native plane —
+    // the canonical schema doesn't carry a Process / Message slot
+    // (per the trim), so each vendor's command-line column is still
+    // pivotable by its original header name.
+    const nativeCols = await ctx.page.evaluate(() => {
+      const w = window as unknown as {
+        app: { _timelineCurrent: { store: { columns: string[] } } };
+      };
+      return w.app._timelineCurrent.store.columns;
+    });
+    expect(nativeCols).toContain('CommandLine');                  // Falcon
+    expect(nativeCols).toContain('ProcessCommandLine');           // MDE
+    expect(nativeCols).toContain('src.process.cmdline');          // SentinelOne
+    expect(nativeCols).toContain('actor_process_command_line');   // Cortex
+    // And the canonical schema does NOT carry Process or Message:
+    expect(nativeCols).not.toContain('Process');
+    expect(nativeCols).not.toContain('Message');
   });
 });

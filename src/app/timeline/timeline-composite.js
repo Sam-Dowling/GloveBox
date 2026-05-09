@@ -173,13 +173,13 @@ function buildCompositeSchema(sources) {
 
   // ── Empty-canonical-column cull (merged views only) ──────────────────
   //
-  // `TIMELINE_CANONICAL_COLS` is a fixed 12-entry list — but for any
+  // `TIMELINE_CANONICAL_COLS` is a fixed 10-entry list — but for any
   // given set of sources only a subset of canonical columns will
   // actually be populated by the per-format mappers. Keeping empty
   // canonicals in the composite schema wastes grid real-estate and
   // makes the "merged Timeline" view visibly cluttered with 100%-empty
-  // columns (bug reported against the CSV/CSV merge path where the
-  // CSV mapper could only populate 5 of 12 canonicals).
+  // columns (e.g. a CSV/CSV merge where neither side carries IPs
+  // would otherwise show empty `SourceIP` / `DestIP` columns).
   //
   // For merged views (n≥2) we run a bounded sample-probe: for each
   // canonical column (other than `__source` / `__format` — always kept
@@ -195,7 +195,7 @@ function buildCompositeSchema(sources) {
   // merge that adds a source capable of populating a canonical
   // brings it back cleanly without needing schema surgery.
   //
-  // Sample size (50 rows) is bounded so this is O(sources × 50 × 12)
+  // Sample size (50 rows) is bounded so this is O(sources × 50 × 10)
   // ≈ O(thousands of ops) regardless of total row count. False-negative
   // risk: a source that populates canonical `Host` only for rows >50
   // would have `Host` culled; the failure mode is benign (an
