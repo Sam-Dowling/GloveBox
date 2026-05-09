@@ -1304,6 +1304,18 @@ extendApp({
   //   - Parse failure (worker reject / sync fallback exception) →
   //     toast + log; the existing view stays mounted, no state change.
   async _timelineAddFile(file, prefetchedBuffer) {
+    // Perf marker — top of the merge path. Stamped from production
+    // code so the perf harness can attribute swap cost end-to-end
+    // without depending on host-side `Date.now()` (which doesn't
+    // share an origin with the page-realm `performance.now()` clock
+    // the rest of the marker bag uses). Overwritten on every merge;
+    // the harness reads it immediately after each `await
+    // _timelineAddFile()` so the value always reflects THIS merge.
+    // No-op in release builds (`__loupePerfMark` is undefined unless
+    // `--test-api` is set).
+    if (typeof window !== 'undefined' && window.__loupePerfMark) {
+      window.__loupePerfMark('mergeAddStart');
+    }
     const prior = this._timelineCurrent;
     if (!prior) {
       // Nothing to merge with — fall through to the regular loader.
@@ -1494,6 +1506,40 @@ extendApp({
         if (typeof oldView._uninstallSourcesKeyShortcuts === 'function') {
           oldView._uninstallSourcesKeyShortcuts();
         }
+        // Aggressively release per-view caches that aren't part of any
+        // SourceRecord (so freeing them is safe — composites don't
+        // reference them). On a multi-source merge sequence the
+        // CUMULATIVE heap from prior views' auto-extract output +
+        // JSON parse cache crosses ~500 MB, which trips V8's major-GC
+        // threshold during the new view's auto-extract pump and
+        // produces 12–22× wall-time spikes (idle scheduler starves
+        // while GC walks). Nulling here eliminates the cliff:
+        //   • `_extractedCols`        — Array<{values: string[N]}>;
+        //                                ~rowCount × N strings.
+        //   • `_jsonCache`            — Map<(col<<20)|row, parsed>;
+        //                                up to rowCount × jsonCols
+        //                                parsed objects.
+        //   • `_susBitmap` / `_filteredIdx` / `_chipFilteredIdx` /
+        //     `_identityIdx`         — Uint32Array(rowCount). Not
+        //                                referenced by SourceRecord.
+        //   • `_timeStrCache`         — per-row formatted timestamps.
+        // The composite TimelineView gets these slots fresh from its
+        // own ctor, so we don't compromise any data the new view
+        // needs.
+        oldView._extractedCols = null;
+        if (oldView._jsonCache && typeof oldView._jsonCache.clear === 'function') {
+          try { oldView._jsonCache.clear(); } catch (_) { /* noop */ }
+        }
+        oldView._jsonCache = null;
+        oldView._susBitmap = null;
+        oldView._filteredIdx = null;
+        oldView._chipFilteredIdx = null;
+        oldView._identityIdx = null;
+        oldView._timeStrCache = null;
+        // Also drop the dataset wrapper — it carries an
+        // `_extractedCols` reference of its own (same array), but
+        // the wrapper itself + its caches add more heap.
+        oldView._dataset = null;
         oldView._destroyed = true;
       } catch (_) { /* best-effort teardown */ }
     }
@@ -1509,6 +1555,18 @@ extendApp({
     // source's name).
     if (typeof this._renderBreadcrumbs === 'function') {
       try { this._renderBreadcrumbs(); } catch (_) { /* cosmetic */ }
+    }
+    // Perf marker — view swap complete (DOM appended, breadcrumb
+    // refreshed). The new view's first GridViewer mount happens
+    // synchronously inside `newView.root()` above, so this stamp
+    // captures the post-paint moment. Same overwrite-per-merge
+    // contract as `mergeAddStart`. Stamped on every swap (initial
+    // load doesn't pass through `_swapTimelineView`, only merges /
+    // remove-source) so the harness can use the pair
+    // `[mergeAddStart, mergeSwapPaint]` to size the merge's mount
+    // cost. No-op in release builds.
+    if (typeof window !== 'undefined' && window.__loupePerfMark) {
+      window.__loupePerfMark('mergeSwapPaint');
     }
   },
 
