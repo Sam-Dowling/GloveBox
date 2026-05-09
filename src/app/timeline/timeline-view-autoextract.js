@@ -272,8 +272,77 @@ Object.assign(TimelineView.prototype, {
       let cachedSrcCol = -1;
       let cachedSrcValues = null;
 
+      // ── Perf-marker counters (test-API only; no-op in release) ──────
+      // The auto-extract apply pump is the dominant phase 2 cost on
+      // both single-file and merged-Timeline loads. To diagnose the
+      // stochastic 12–22× spikes the multi-file perf harness surfaced
+      // on the LAST merge of a sequence, stamp counters that the
+      // harness can read post-merge:
+      //
+      //   • `autoExtractApplyStart`        — wall-time at pump start.
+      //   • `autoExtractApplyEnd`          — wall-time at pump terminus.
+      //   • `autoExtractIterations`        — count of `applyStep` calls.
+      //   • `autoExtractScheduleCount`     — count of
+      //                                       `schedule(applyStep)`
+      //                                       (the requestIdleCallback /
+      //                                       setTimeout(0) reschedule).
+      //   • `autoExtractMaxGapMs`          — longest wall-clock gap
+      //                                       between consecutive
+      //                                       applyStep firings; tells
+      //                                       us whether the idle
+      //                                       scheduler starved.
+      //
+      // All four are stamped via `__loupePerfMark(name, value)` with
+      // an explicit numeric value (no host clock) — the harness reads
+      // them after each merge resolves. The whole block compiles to
+      // dead code in release builds because `__loupePerfMark` is
+      // undefined unless `--test-api` is set; one property lookup per
+      // marker (~one cycle).
+      //
+      // The scheduler-count increment is colocated with each
+      // `schedule(applyStep)` site (rather than wrapping `schedule`
+      // itself) so the parity tests in
+      // `tests/unit/timeline-view-autoextract-*.test.js` continue to
+      // see the literal `schedule(applyStep)` call shape. Wrapping
+      // would change the source-text contract those tests pin.
+      const _perfMark = (typeof window !== 'undefined' && window.__loupePerfMark)
+        ? window.__loupePerfMark : null;
+      let _perfIterations = 0;
+      let _perfScheduleCount = 0;
+      let _perfLastStepAt = 0;
+      let _perfMaxGapMs = 0;
+      const _perfApplyStart = (typeof performance !== 'undefined' && performance.now)
+        ? performance.now() : 0;
+      if (_perfMark) {
+        _perfMark('autoExtractApplyStart', _perfApplyStart);
+      }
+      const _perfBumpScheduleCount = () => {
+        if (!_perfMark) return;
+        _perfScheduleCount++;
+        _perfMark('autoExtractScheduleCount', _perfScheduleCount);
+      };
+
       const applyStep = () => {
         this._autoExtractIdleHandle = null;
+        // Per-iteration perf bookkeeping. Track gaps between
+        // consecutive applyStep firings — a gap > 1 s is strong
+        // evidence the idle scheduler was starved (the pump uses
+        // requestIdleCallback with a 1000 ms timeout, so each step
+        // SHOULD fire within ~1 s of the prior schedule).
+        if (_perfMark) {
+          const _now = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now() : 0;
+          if (_perfLastStepAt > 0) {
+            const gap = _now - _perfLastStepAt;
+            if (gap > _perfMaxGapMs) {
+              _perfMaxGapMs = gap;
+              _perfMark('autoExtractMaxGapMs', gap);
+            }
+          }
+          _perfLastStepAt = _now;
+          _perfIterations++;
+          _perfMark('autoExtractIterations', _perfIterations);
+        }
         if (this._destroyed) {
           // Defensive: if a destroy raced the idle tick the flag would
           // otherwise stay true on this (now-orphaned) view. The flag
@@ -284,7 +353,19 @@ Object.assign(TimelineView.prototype, {
         }
 
         if (idx >= ranked.length) {
-          // Apply pump finished. Drop the suppression flag so any
+          // Apply pump finished. Stamp the perf marker BEFORE the
+          // GeoIP retry below so the harness can distinguish pump
+          // cost from retry cost when triaging a spike. (`Apply pump
+          // proper` = autoExtractApplyEnd − autoExtractApplyStart;
+          // any extra wall-time in the merge's swap→fully-idle
+          // beyond that delta is the GeoIP retry / scheduled refresh
+          // sweep.)
+          if (_perfMark) {
+            const _now = (typeof performance !== 'undefined' && performance.now)
+              ? performance.now() : 0;
+            _perfMark('autoExtractApplyEnd', _now);
+          }
+          // Drop the suppression flag so any
           // `_rebuildExtractedStateAndRender` from here onwards (e.g.
           // the GeoIP retry below, or a user clicking through the
           // Extract Values dialog) goes back to its normal task list.
@@ -405,6 +486,7 @@ Object.assign(TimelineView.prototype, {
         // an O(rows) hot loop and will register as a LongTask on big
         // files, but the browser gets a paint frame and idle-callback
         // drain between them so the UI stays interactive.
+        _perfBumpScheduleCount();
         this._autoExtractIdleHandle = schedule(applyStep);
       };
 
@@ -417,6 +499,7 @@ Object.assign(TimelineView.prototype, {
       // sweeps mid-pump. Set here, AFTER the early-exit
       // `if (!eligible.length) return;` above, so a file with no
       // eligible proposals doesn't leave the flag stuck `true`.
+      _perfBumpScheduleCount();
       this._autoExtractApplying = true;
       this._autoExtractIdleHandle = schedule(applyStep);
     };

@@ -1,44 +1,62 @@
 # Loupe Timeline performance harness
 
-Opt-in performance test for the Timeline route on a generated CSV
-fixture. The harness drives an end-to-end load through the production
-file-picker path, splits the wall-time into four phases, samples
-Chromium CDP heap / DOM metrics at each phase boundary, and emits a
-JSON report plus a Markdown summary.
+Opt-in performance tests for the Timeline route. Two suites:
 
-This is **not** a CI gate. It exists to drive optimisation work on
-large-CSV ingestion and to make perf regressions diff-able across
-commits. Numbers are reported, not asserted.
+- **Single-file** (`timeline-100k.spec.ts`) — drives an end-to-end load
+  through the production file-picker path on a generated CSV fixture,
+  splits the wall-time into four phases, samples Chromium CDP heap /
+  DOM metrics at each phase boundary, and emits a JSON report plus a
+  Markdown summary. The 95% case.
+
+- **Multi-source merge** (`timeline-multi-file.spec.ts`) — exercises
+  the merged-Timeline path. Loads a primary CSV (same four-phase
+  model) then merges N additional CSVs on top via the same
+  `__loupeTest.loadBytes` path a real user drop hits, recording the
+  per-merge swap / auto-extract / fully-idle cost.
+
+Neither suite is a CI gate. They exist to drive optimisation work and
+to make perf regressions diff-able across commits. Numbers are
+reported, not asserted.
 
 ## Running
 
 ```bash
-# Default: 100 K rows, 3 runs, seed=42
-python scripts/run_perf.py
+# Single-file (default — backwards-compatible)
+python scripts/run_perf.py                                 # 100 K rows × 3
+python scripts/run_perf.py --rows 10000 --runs 1           # smoke
+python scripts/run_perf.py --rows 1000000 --runs 2         # stress
 
-# Smoke run (fastest)
-python scripts/run_perf.py --rows 10000 --runs 1
+# Multi-source merge (1× primary + N additional sources)
+python scripts/run_perf.py --mode multi                    # 1×100K + 4×5K
+python scripts/run_perf.py --mode multi --multi-sources 8 --multi-rows-each 2500
+python scripts/run_perf.py --mode multi --runs 1 --multi-primary-rows 5000 --multi-sources 2 --multi-rows-each 1000  # smoke
 
-# Stress (high RAM — generates a ~1.6 GB CSV)
-python scripts/run_perf.py --rows 1000000 --runs 2
+# Both back-to-back (writes dist/perf-report.json + dist/perf-report-multi.json)
+python scripts/run_perf.py --mode both --runs 5
 
-# Save report somewhere other than dist/perf-report.json
+# Custom report paths
 python scripts/run_perf.py --report dist/perf-after.json
+python scripts/run_perf.py --mode multi --multi-report dist/perf-multi-after.json
 ```
 
 `scripts/run_perf.py` is a thin wrapper around
 `scripts/run_tests_e2e.py` that sets `LOUPE_PERF=1` (the gate the
-spec self-checks) and forwards CLI flags as env vars
+specs self-check) and forwards CLI flags as env vars
 (`LOUPE_PERF_ROWS`, `LOUPE_PERF_RUNS`, `LOUPE_PERF_SEED`,
-`LOUPE_PERF_REPORT`). The same Playwright pin / Chromium /
-`docs/index.test.html` bundle as the rest of the e2e suite is reused;
-the harness adds nothing to the runtime cost of
-`python make.py test-e2e`.
+`LOUPE_PERF_REPORT`). `--mode multi` additionally sets
+`LOUPE_PERF_MULTI=1` and forwards multi-file knobs
+(`LOUPE_PERF_MULTI_PRIMARY_ROWS`, `LOUPE_PERF_MULTI_SOURCES`,
+`LOUPE_PERF_MULTI_ROWS_EACH`, `LOUPE_PERF_MULTI_SEED_BASE`). The same
+Playwright pin / Chromium / `docs/index.test.html` bundle as the
+rest of the e2e suite is reused; the harness adds nothing to the
+runtime cost of `python make.py test-e2e`.
 
 `python make.py perf` is the equivalent invocation through the
 make.py orchestrator (mirrors the opt-in `sbom` step).
 
 ## What gets measured
+
+### Single-file (`timeline-100k.spec.ts`)
 
 | Phase | What it covers |
 |---|---|
@@ -61,12 +79,45 @@ the per-run baseline (captured after `App.init()` but before the file
 loads), so a single phase can be attributed without doing arithmetic
 by hand.
 
+### Multi-source merge (`timeline-multi-file.spec.ts`)
+
+The spec drives a primary CSV through the regular file-picker path
+(producing the same four phases above) and then merges N additional
+CSVs on top via `__loupeTest.loadBytes(..., {skipCrossLoadReset: true})`
+— the same code path a real user drop-to-add hits, going through
+`App._loadFile` → `_timelineTryHandle` → `_timelineAddFile`.
+
+For every merged source (sources 2..N) the harness records:
+
+| Sub-phase | What it covers |
+|---|---|
+| `add→swap-paint` | `_timelineAddFile` start → `_swapTimelineView` end. Captures buffer read, parse, composite-schema rebuild, view-ctor, DOM swap, first grid paint. Computed from production-code markers `mergeAddStart` / `mergeSwapPaint` (stamped via `__loupePerfMark`, no-op in release builds). |
+| `swap→autoextract` | swap-paint → auto-extract pump drained for the post-merge view. |
+| `swap→fully-idle` | swap-paint → fully idle (`pendingTasksSize === 0` etc., debounced 250 ms). |
+
+Plus a per-merge heap snapshot (`jsHeapUsedMb`) so cumulative cost
+is visible at a glance — a linear-growth curve is good, super-linear
+is a red flag.
+
+The first source's load-cost is measured the same way as the
+single-file spec (four phases against `setInputFiles`) so a
+"primary load on a multi-file run" can be diffed against a pure
+single-file run with `scripts/perf_diff.py` directly.
+
+Defaults: 1× 100K + 4× 5K (= 5 sources, 120K total rows). Tunable
+via `--multi-primary-rows`, `--multi-sources`, `--multi-rows-each`.
+
 ## Reading the report
 
 The Markdown summary printed to stdout is the human-readable view.
-The JSON report at `dist/perf-report.json` is the source of truth for
-diffing across commits — schema is `tests/perf/perf-helpers.ts ::
-PerfReport` (versioned via `schemaVersion`).
+The JSON report at `dist/perf-report.json` (or
+`dist/perf-report-multi.json` for `--mode multi`) is the source of
+truth for diffing across commits — schema is
+`tests/perf/perf-helpers.ts :: PerfReport` (versioned via
+`schemaVersion`). The multi-file run adds an optional
+`runs[*].mergeSamples: MergeSample[]` array; existing consumers (the
+single-file diff path, the markdown renderer's existing tables)
+ignore the field when absent, so the schema version stays at 1.
 
 Quick before/after diff of the dominant phase wall-time:
 
@@ -81,6 +132,18 @@ Per-run trajectory of heap usage:
 jq '.runs[] | { run: .index, phases: (.phases | to_entries | map({phase: .key, heapMb: .value.metrics.jsHeapUsedMb})) }' \
   dist/perf-report.json
 ```
+
+Multi-file: per-merge swap cost across runs:
+
+```bash
+jq '.runs[].mergeSamples[] | { idx: .index, addToSwapMs: .addToSwapPaintMs, label: .sourceLabel }' \
+  dist/perf-report-multi.json
+```
+
+`scripts/perf_diff.py` works against either report shape (it reads
+the four-phase summary, which both single and multi-file runs
+produce). For multi-only deltas, diff the `mergeSamples` arrays
+manually with `jq`.
 
 ## Troubleshooting
 

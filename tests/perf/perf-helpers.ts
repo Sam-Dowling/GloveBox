@@ -262,6 +262,27 @@ export const PERF_MARKER_ORDER = [
   'parseTimestampsStart',
   'parseTimestampsEnd',
   'firstGridPaint',
+  // Multi-source merge markers — stamped only on the merge path
+  // (`_timelineAddFile` / `_swapTimelineView`). Overwritten on every
+  // merge; the multi-file perf spec reads them immediately after
+  // each `await _timelineAddFile()` so the values always reflect
+  // THAT merge. Single-file loads never stamp these markers.
+  'mergeAddStart',
+  'mergeSwapPaint',
+  // Auto-extract apply pump diagnostic markers — stamped from
+  // `timeline-view-autoextract.js#applyStep` on every Timeline load
+  // (single-file AND merge path). The first two are
+  // `performance.now()` wall-times; the latter three are running
+  // counters surfaced through the same marks bag because
+  // `__loupePerfMark(name, value)` accepts arbitrary numeric values.
+  // Overwritten on every load; the harness reads them after each
+  // merge to attribute spike causes (idle-scheduler starvation vs.
+  // genuine extra iterations vs. single-iteration hangs).
+  'autoExtractApplyStart',
+  'autoExtractApplyEnd',
+  'autoExtractIterations',
+  'autoExtractScheduleCount',
+  'autoExtractMaxGapMs',
 ] as const;
 
 export type PerfMarker = (typeof PERF_MARKER_ORDER)[number];
@@ -516,6 +537,49 @@ export interface PhaseSample {
   metricsDelta: MetricBag;
 }
 
+// ── Multi-file merge sample ────────────────────────────────────────────────
+// One per merged-in source (i.e. sources 2..N — the FIRST source goes
+// through the regular four-phase load and is captured as `phases`
+// above). Each merge contributes three sub-phases:
+//
+//   • merge-add-to-swap-paint    — `_timelineAddFile` start →
+//                                   `_swapTimelineView` end (production
+//                                   markers stamped via
+//                                   `__loupePerfMark`).
+//   • merge-swap-to-autoextract  — swap-paint → auto-extract pump
+//                                   drained for the post-merge view.
+//   • merge-swap-to-fully-idle   — swap-paint → fully idle (debounced).
+//
+// The fixture descriptor (rows, sourceLabel) is captured so the
+// summary table can label rows meaningfully.
+export interface MergeSample {
+  index: number;             // 1-based — matches "source #2" in the UI
+  sourceLabel: string;       // file name shown in chip bar
+  rows: number;              // row count of THIS source (not cumulative)
+  cumulativeRows: number;    // total rows across all sources after merge
+  addToSwapPaintMs: number;  // production marker delta
+  swapToAutoextractMs: number;
+  swapToFullyIdleMs: number;
+  metricsAfter: MetricBag;
+  metricsAfterDelta: MetricBag;
+  // Auto-extract pump diagnostic counters — stamped by
+  // `timeline-view-autoextract.js#applyStep` (test-API builds only).
+  // Optional / additive: older bundles or single-file specs leave
+  // them undefined. The multi-file spec reads them post-merge to
+  // distinguish idle-scheduler starvation from genuine extra work.
+  //   • applyMs: end - start (pure pump cost; excludes GeoIP retry).
+  //   • iterations: count of `applyStep` invocations.
+  //   • scheduleCount: count of `schedule(applyStep)` calls.
+  //   • maxGapMs: longest wall-time gap between consecutive
+  //               applyStep calls. >1000 ms suggests scheduler
+  //               starvation (the pump uses requestIdleCallback
+  //               with timeout: 1000).
+  autoExtractApplyMs?: number;
+  autoExtractIterations?: number;
+  autoExtractScheduleCount?: number;
+  autoExtractMaxGapMs?: number;
+}
+
 export interface RunReport {
   index: number;
   fixturePath: string;
@@ -540,6 +604,14 @@ export interface RunReport {
   // tolerate missing keys (older bundles emit no worker markers).
   workerMarks?: Record<string, number>;
   workerCounters?: Record<string, number>;
+  // Multi-file merge samples — `undefined` for single-file runs (the
+  // existing `timeline-100k.spec.ts`); populated by
+  // `timeline-multi-file.spec.ts`. Optional / additive: existing
+  // consumers (perf-diff.py, the markdown renderer) ignore the field
+  // when absent. One entry per merged-in source (sources 2..N —
+  // source #1 goes through the regular four-phase load and is
+  // captured in `phases`).
+  mergeSamples?: MergeSample[];
 }
 
 export interface PerfReport {
@@ -730,6 +802,106 @@ export function markdownSummary(report: PerfReport): string {
         lines.push(`| ${k} | ${fmtCnt(s.median)} | ${fmtCnt(s.min)} | ${fmtCnt(s.max)} | ${s.n} |`);
       }
       lines.push('');
+    }
+  }
+
+  // ── Merge cost per additional source (multi-file runs only) ────────────
+  // Only emitted when at least one run carries a `mergeSamples` array.
+  // Each row aggregates across runs by merge-index — i.e. the median
+  // wall-time for "source #2 across all runs" is on its own line.
+  // Output the three sub-phase columns side-by-side so a regression
+  // in one phase doesn't obscure improvements in another.
+  const anyMerge = report.runs.some(
+    r => r.mergeSamples && r.mergeSamples.length > 0);
+  if (anyMerge) {
+    // Determine the maximum merge-index across all runs (some early
+    // runs may have aborted partway through). Group sample arrays
+    // by `index`.
+    let maxIdx = 0;
+    for (const r of report.runs) {
+      if (r.mergeSamples) {
+        for (const m of r.mergeSamples) {
+          if (m.index > maxIdx) maxIdx = m.index;
+        }
+      }
+    }
+    if (maxIdx > 0) {
+      lines.push('## Merge cost per additional source (median across runs)');
+      lines.push('');
+      lines.push('| Source # | label | rows | cum rows | add→swap-paint | swap→autoextract | swap→fully-idle | heap (MB) |');
+      lines.push('|---|---|---:|---:|---:|---:|---:|---:|');
+      for (let idx = 1; idx <= maxIdx; idx++) {
+        const samples: MergeSample[] = [];
+        for (const r of report.runs) {
+          if (r.mergeSamples) {
+            const m = r.mergeSamples.find(s => s.index === idx);
+            if (m) samples.push(m);
+          }
+        }
+        if (!samples.length) continue;
+        // Use the first sample's static fields (label, rows) — they're
+        // identical across runs by construction.
+        const s0 = samples[0];
+        const addToSwap = summarise(samples.map(s => s.addToSwapPaintMs));
+        const swapToAuto = summarise(samples.map(s => s.swapToAutoextractMs));
+        const swapToIdle = summarise(samples.map(s => s.swapToFullyIdleMs));
+        const heap = summarise(samples.map(s => s.metricsAfter.jsHeapUsedMb));
+        lines.push(
+          `| #${idx} | ${s0.sourceLabel} | ` +
+          `${s0.rows.toLocaleString()} | ${s0.cumulativeRows.toLocaleString()} | ` +
+          `${fmtMs(addToSwap.median)} | ${fmtMs(swapToAuto.median)} | ` +
+          `${fmtMs(swapToIdle.median)} | ${fmtMb(heap.median)} |`);
+      }
+      lines.push('');
+
+      // Auto-extract diagnostic counters per merge — only emitted
+      // when at least one sample carries the new fields. Helps
+      // attribute spike causes:
+      //   • applyMs ≈ swap→autoextract → pump dominated by genuine
+      //     work
+      //   • applyMs ≪ swap→autoextract → time spent OUTSIDE the
+      //     pump (chip-bar render, GeoIP retry, GC)
+      //   • maxGapMs >>> 1000 → idle scheduler starvation
+      //   • scheduleCount >>> iterations → pump rescheduling
+      //     itself without making progress
+      const haveCounters = report.runs.some(r => r.mergeSamples
+        && r.mergeSamples.some(m => typeof m.autoExtractApplyMs === 'number'));
+      if (haveCounters) {
+        lines.push('## Auto-extract pump per merge (median across runs)');
+        lines.push('');
+        lines.push('| Source # | applyMs | iterations | scheduleCount | maxGapMs |');
+        lines.push('|---|---:|---:|---:|---:|');
+        const fmtCnt = (n: number) =>
+          Number.isFinite(n) ? Math.round(n).toLocaleString() : '—';
+        for (let idx = 1; idx <= maxIdx; idx++) {
+          const samples: MergeSample[] = [];
+          for (const r of report.runs) {
+            if (r.mergeSamples) {
+              const m = r.mergeSamples.find(s => s.index === idx);
+              if (m) samples.push(m);
+            }
+          }
+          if (!samples.length) continue;
+          const apply = summarise(samples
+            .map(s => s.autoExtractApplyMs)
+            .filter((v): v is number => typeof v === 'number'));
+          const iters = summarise(samples
+            .map(s => s.autoExtractIterations)
+            .filter((v): v is number => typeof v === 'number'));
+          const sched = summarise(samples
+            .map(s => s.autoExtractScheduleCount)
+            .filter((v): v is number => typeof v === 'number'));
+          const gap = summarise(samples
+            .map(s => s.autoExtractMaxGapMs)
+            .filter((v): v is number => typeof v === 'number'));
+          lines.push(
+            `| #${idx} | ${apply.n ? fmtMs(apply.median) : '—'} | ` +
+            `${iters.n ? fmtCnt(iters.median) : '—'} | ` +
+            `${sched.n ? fmtCnt(sched.median) : '—'} | ` +
+            `${gap.n ? fmtMs(gap.median) : '—'} |`);
+        }
+        lines.push('');
+      }
     }
   }
 
