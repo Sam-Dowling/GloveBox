@@ -6,12 +6,17 @@
 // One chip per SourceRecord:
 //   [⬤ events.csv · CSV · 12,345 rows · ☑]  [⬤ sec.evtx · EVTX · 4,567 · ☑]  [🗑]
 //
-// The color swatch (⬤) uses the source's stable palette entry
-// (`TIMELINE_SOURCE_PALETTE`). Clicking the checkbox toggles
-// `source.enabled`, rebuilds the enabled bitmap, and re-runs
-// `_recomputeFilter` so the grid / chart / top values / detections all
-// update to reflect the new active set. Clicking the 🗑 removes the
-// source — composite schema is re-built, view re-mounted.
+// The color swatch (⬤) is taken from `TIMELINE_SOURCE_PALETTE` indexed
+// by the chip's CURRENT position in the live `_sources` array (via
+// `timelineSourceColor`). The same index drives the `tl-source-bg-N`
+// tint applied to that source's `__source` cells in the grid, so a
+// chip and its rows always share a hue. Adding or removing a source
+// reshuffles the palette in lockstep across both surfaces.
+// Clicking the checkbox toggles `source.enabled`, rebuilds the
+// enabled bitmap, and re-runs `_recomputeFilter` so the grid / chart
+// / top values / detections all update to reflect the new active
+// set. Clicking the 🗑 removes the source — composite schema is
+// re-built, view re-mounted.
 //
 // Visibility rule: the chip bar renders iff `this._sources` is
 // non-null AND `this._sources.length >= 2`. Single-file views leave
@@ -66,7 +71,11 @@ Object.assign(TimelineView.prototype, {
 
       const swatch = document.createElement('span');
       swatch.className = 'tl-source-swatch';
-      swatch.style.backgroundColor = s.color || '#999';
+      // Colour is derived from CURRENT array position, not a stored
+      // `s.color` field — keeps the chip swatch in lockstep with the
+      // `__source` cell tint (which uses the same index) when sources
+      // are added or removed.
+      swatch.style.backgroundColor = timelineSourceColor(i);
       chip.appendChild(swatch);
 
       const label = document.createElement('span');

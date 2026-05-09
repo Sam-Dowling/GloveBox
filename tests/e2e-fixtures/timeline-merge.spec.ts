@@ -1,15 +1,15 @@
 // ════════════════════════════════════════════════════════════════════════════
 // timeline-merge.spec.ts — End-to-end coverage for the merged-Timeline
 // feature: drop-to-add on an already-loaded Timeline, source chip bar
-// rendering, toggle-off filtering, canonical columns (`__source` /
-// `__format`), and source: query facet.
+// rendering, toggle-off filtering, canonical columns (`__source`),
+// and source: query facet.
 //
 // What this spec proves:
 //   1. Loading a first CSV opens a single-source Timeline (no chip bar).
 //   2. Loading a second CSV onto the existing view triggers the merge
 //      path — `_timelineCurrent._sources.length === 2`, composite row
 //      count == sum of per-source rows, chip bar is visible.
-//   3. Canonical columns (`__source`, `__format`, etc.) exist in
+//   3. Canonical columns (`__source`, etc.) exist in
 //      `timelineColumns` and carry per-row values.
 //   4. Toggling a source off via the API dims its rows — the filtered
 //      grid row count drops to the kept source's rows.
@@ -192,6 +192,8 @@ test.describe('Timeline — merged sources', () => {
         sourceLabels: v._sources.map(s => s.sourceLabel),
         totalRows: v.store.rowCount,
         hasSourceCol: v.store.colIndex('__source') >= 0,
+        // `__format` was retired — pin its absence so a future
+        // accidental re-introduction surfaces here.
         hasFormatCol: v.store.colIndex('__format') >= 0,
       };
     }, {
@@ -207,7 +209,7 @@ test.describe('Timeline — merged sources', () => {
     expect(merged.sourceLabels[1]).toBe('timeline-merge-second.csv');
     expect(merged.totalRows).toBe(15);   // 10 + 5
     expect(merged.hasSourceCol).toBe(true);
-    expect(merged.hasFormatCol).toBe(true);
+    expect(merged.hasFormatCol).toBe(false);
   });
 
   test('chip bar is rendered when sources.length >= 2', async () => {
@@ -384,7 +386,11 @@ test.describe('Timeline — merged sources', () => {
     // TargetResource stay on each source's native plane (not
     // canonical).
     expect(result!.columns).toContain('__source');
-    expect(result!.columns).toContain('__format');
+    // `__format` is intentionally NOT a canonical column — pin its
+    // absence (the source filename + per-chip format badge cover the
+    // information without burning grid width on a near-constant
+    // column).
+    expect(result!.columns).not.toContain('__format');
     expect(result!.columns).toContain('Timestamp');
     expect(result!.columns).toContain('User');
     expect(result!.columns).toContain('EventID');
@@ -489,10 +495,9 @@ test.describe('Timeline — merged sources', () => {
     await loadFixture(ctx.page, FIXTURE_A);
     // Single-source: no canonical classes anywhere (the __source
     // column is hidden by default for n=1 views via the composite
-    // schema's "only keep __source+__format always" rule, so the
-    // column exists but carries no differentiator regressively
-    // because n<2. Assert the CSS class is absent to pin that
-    // invariant.
+    // schema's "always keep __source" rule, so the column exists
+    // but carries no differentiator regressively because n<2.
+    // Assert the CSS class is absent to pin that invariant.
     expect(await ctx.page.locator('.tl-grid .grid-header-canonical').count()).toBe(0);
     expect(await ctx.page.locator('.tl-grid .tl-canonical-cell').count()).toBe(0);
 
@@ -527,7 +532,7 @@ test.describe('Timeline — merged sources', () => {
 
     // Negative assertion: a non-canonical column's header must NOT
     // carry the differentiator. Find ANY `.grid-header-cell` whose
-    // label is NOT `__source` / `__format` and assert it lacks the
+    // label is NOT `__source` and assert it lacks the
     // canonical class.
     const nonCanonicalClassCount = await ctx.page.evaluate(() => {
       const cells = document.querySelectorAll(
@@ -609,6 +614,144 @@ test.describe('Timeline — merged sources', () => {
     });
     expect(computed).not.toBeNull();
     expect(computed!.fontStyle).toBe('normal');
+  });
+
+  test('chip swatch colour matches __source cell tint for every source', async () => {
+    // Pin: the chip-bar swatch and the per-row `__source` cell tint
+    // must both derive from the same palette index (current array
+    // position in `_sources`). User contract: a chip and the rows it
+    // labels share a hue, and that hue can shift as long as the
+    // chip + rows shift together.
+    //
+    // Reset to a clean state and re-merge.
+    await ctx.page.evaluate(() => {
+      const w = window as unknown as { app: { _clearTimelineFile?: () => void } };
+      if (w.app._clearTimelineFile) w.app._clearTimelineFile();
+    });
+    await loadFixture(ctx.page, FIXTURE_A);
+    await loadFixture(ctx.page, FIXTURE_B, undefined, { skipCrossLoadReset: true });
+
+    // Wait for the chip bar AND for at least one canonical cell with a
+    // source-bg class to render before sampling — the grid is virtual-
+    // scrolled and class application happens after the row enters the
+    // viewport.
+    await expect(ctx.page.locator('.tl-source-chip')).toHaveCount(2);
+    await expect(
+      ctx.page.locator('.tl-grid .grid-cell.tl-canonical-cell').first(),
+    ).toBeVisible();
+    // At least one cell must carry a `tl-source-bg-` class (defensive
+    // wait: classList lookup below depends on it).
+    await ctx.page.waitForFunction(() => {
+      const cells = document.querySelectorAll(
+        '#timeline-root .tl-grid .grid-cell.tl-canonical-cell');
+      for (const el of Array.from(cells)) {
+        for (const cls of Array.from(el.classList)) {
+          if (cls.indexOf('tl-source-bg-') === 0) return true;
+        }
+      }
+      return false;
+    }, { timeout: 5000 });
+
+    const parity = await ctx.page.evaluate(() => {
+      // Helper: convert any CSS color string ('rgb(78, 121, 167)' /
+      // '#4e79a7') to a normalised lower-case 6-digit hex via a
+      // throwaway element + getComputedStyle.
+      function toHex(input: string): string {
+        const probe = document.createElement('span');
+        probe.style.color = input;
+        document.body.appendChild(probe);
+        const cs = getComputedStyle(probe).color;
+        document.body.removeChild(probe);
+        const m = cs.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+        if (!m) return '';
+        const r = parseInt(m[1], 10);
+        const g = parseInt(m[2], 10);
+        const b = parseInt(m[3], 10);
+        return '#' + [r, g, b].map(n => n.toString(16).padStart(2, '0')).join('');
+      }
+      const w = window as unknown as {
+        TIMELINE_SOURCE_PALETTE: readonly string[];
+        timelineSourceColor?: (i: number) => string;
+        app: {
+          _timelineCurrent: {
+            _sources: Array<{ sourceLabel: string }>;
+          } | null;
+        };
+      };
+      const v = w.app._timelineCurrent;
+      if (!v || !v._sources) return null;
+      const sources = v._sources;
+      const palette = Array.from(w.TIMELINE_SOURCE_PALETTE).map(c => toHex(c));
+
+      // 1. Chip swatches — read inline `background-color` per chip.
+      const chips = Array.from(document.querySelectorAll('.tl-source-chip'));
+      const swatchHexByLabel: Record<string, string> = {};
+      for (let i = 0; i < chips.length; i++) {
+        const chip = chips[i];
+        const swatch = chip.querySelector('.tl-source-swatch') as HTMLElement | null;
+        const label = (chip.querySelector('.tl-source-label')?.textContent || '').trim();
+        if (!label || !swatch) continue;
+        swatchHexByLabel[label] = toHex(swatch.style.backgroundColor || '');
+      }
+
+      // 2. Cell-tint base hex — for each canonical cell, read its
+      //    `tl-source-bg-N` class then resolve N → palette[N].
+      const root = document.getElementById('timeline-root');
+      const cellHexByLabel: Record<string, string> = {};
+      if (root) {
+        const cells = root.querySelectorAll('.tl-grid .grid-cell.tl-canonical-cell');
+        for (const el of Array.from(cells)) {
+          const name = (el.textContent || '').trim();
+          if (!name || cellHexByLabel[name]) continue;
+          for (const cls of Array.from(el.classList)) {
+            if (cls.indexOf('tl-source-bg-') === 0) {
+              const n = parseInt(cls.slice('tl-source-bg-'.length), 10);
+              if (Number.isFinite(n) && palette[n]) {
+                cellHexByLabel[name] = palette[n];
+              }
+              break;
+            }
+          }
+        }
+      }
+
+      // 3. Expected hex from helper — `timelineSourceColor(i)` per
+      //    source position.
+      const helperHexByLabel: Record<string, string> = {};
+      if (typeof w.timelineSourceColor === 'function') {
+        for (let i = 0; i < sources.length; i++) {
+          helperHexByLabel[sources[i].sourceLabel] =
+            toHex(w.timelineSourceColor(i));
+        }
+      }
+
+      return {
+        sourceLabels: sources.map(s => s.sourceLabel),
+        swatchHexByLabel,
+        cellHexByLabel,
+        helperHexByLabel,
+      };
+    });
+
+    expect(parity).not.toBeNull();
+    expect(parity!.sourceLabels).toEqual([
+      'timeline-geoip.csv', 'timeline-merge-second.csv',
+    ]);
+    // Each surface (chip swatch, cell tint, helper) must produce the
+    // same hex per source.
+    for (const label of parity!.sourceLabels) {
+      const swatch = parity!.swatchHexByLabel[label];
+      const cell = parity!.cellHexByLabel[label];
+      const helper = parity!.helperHexByLabel[label];
+      expect(swatch, `chip swatch hex for ${label}`).toBeTruthy();
+      expect(cell, `cell tint hex for ${label}`).toBeTruthy();
+      expect(helper, `helper hex for ${label}`).toBeTruthy();
+      expect(swatch).toBe(helper);
+      expect(cell).toBe(helper);
+    }
+    // Distinctness — the two sources get different hues.
+    expect(parity!.swatchHexByLabel['timeline-geoip.csv'])
+      .not.toBe(parity!.swatchHexByLabel['timeline-merge-second.csv']);
   });
 
   test('REGRESSION: merged Timeline grid paints rows chronologically (not source-concat order)', async () => {

@@ -3,11 +3,11 @@
 // timeline-view-autoextract-canonical-skip.test.js — regression guard for
 // merged-Timeline canonical columns.
 //
-// `TIMELINE_CANONICAL_COLS` prefixes every merged Timeline with two
-// bookkeeping columns (`__source`, `__format`) that carry the source
-// filename and format label. When those filenames look hostname-shaped
-// (common case: `events.csv` / `test1-1k.csv` / `m365-audit-a.csv` — a
-// short alphabetic "TLD" token plus a dot) the unanchored
+// `TIMELINE_CANONICAL_COLS` prefixes every merged Timeline with the
+// `__source` bookkeeping column that carries the source filename.
+// When those filenames look hostname-shaped (common case:
+// `events.csv` / `test1-1k.csv` / `m365-audit-a.csv` — a short
+// alphabetic "TLD" token plus a dot) the unanchored
 // `TL_HOSTNAME_INLINE_RE` matches them and `_autoExtractScan` emits a
 // `text-host` proposal. The auto-apply pump then creates a spurious
 // `__source (host)` regex-extracted column — a literal copy of
@@ -15,7 +15,9 @@
 //
 // The fix lives in `_autoExtractScan`: skip any base column whose name
 // starts with `__` (the canonical prefix). This test pins that guard
-// so nobody silently removes it during a future refactor.
+// so nobody silently removes it during a future refactor, and so any
+// future canonical bookkeeping column added to the schema inherits
+// the skip automatically.
 // ════════════════════════════════════════════════════════════════════════════
 
 const test = require('node:test');
@@ -120,18 +122,21 @@ test('_autoExtractScan skips hostname-shaped __source column (no spurious (host)
     JSON.stringify(anyForCanonical.map(p => ({k: p.kind, n: p.proposedName}))));
 });
 
-test('_autoExtractScan also skips __format canonical column', () => {
-  // Same guard covers `__format` (format label, e.g. "CSV" / "EVTX").
-  // Less likely to false-hit the hostname regex but still not data
-  // the analyst should ever need to extract from.
+test('_autoExtractScan also skips any future __-prefixed canonical column', () => {
+  // The `__source` skip is implemented as a `__` prefix check rather
+  // than a strict-equality match against a closed set, so any future
+  // canonical bookkeeping column added to `TIMELINE_CANONICAL_COLS`
+  // (any name starting with double-underscore) inherits the skip
+  // automatically. This test pins the prefix-based contract using a
+  // hypothetical canonical column name.
   const sandbox = loadScannerSandbox();
   const fmts = [];
   for (let i = 0; i < 50; i++) fmts.push('CSV');
-  const view = buildView(sandbox, { 0: fmts }, ['__format']);
+  const view = buildView(sandbox, { 0: fmts }, ['__future']);
   const proposals = sandbox.TimelineView.prototype._autoExtractScan.call(view);
   const anyForCanonical = proposals.filter(p => p && p.sourceCol === 0);
   assert.equal(anyForCanonical.length, 0,
-    'canonical __format column must produce ZERO proposals');
+    'any `__`-prefixed canonical column must produce ZERO proposals');
 });
 
 test('_autoExtractScan still emits proposals for non-canonical columns in same scan', () => {

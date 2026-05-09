@@ -6,8 +6,12 @@
 // against. It carries: parsed data (baseStore / baseTimeMs / optional
 // evtxEvents), schema hints (formatKind / formatLabel / baseColumns /
 // timeCol / stackCol), side-channels (evtxFindings), and UI state
-// (enabled / color / sourceLabel). See full shape + invariants in the
-// "SourceRecord shape" section of the merged-Timeline plan.
+// (enabled / sourceLabel). Per-source colour is NOT stored here —
+// it's derived from the live `_sources` array position via
+// `timelineSourceColor()` at render time so chip swatches and
+// `__source` cell tints always agree even after add/remove. See
+// full shape + invariants in the "SourceRecord shape" section of
+// the merged-Timeline plan.
 //
 // Factories here wrap the existing per-format parsers — they don't
 // duplicate parse logic. Every factory returns a Promise<SourceRecord>
@@ -28,18 +32,22 @@
 // `_root` never materialises because we never call `view.root()`.
 // ════════════════════════════════════════════════════════════════════════════
 
-// Stable source-color palette. Picked to be colour-blind friendly and
-// distinguishable under Loupe's six themes. The chip bar cycles
-// through this list by source index; when `length > palette.length` we
-// wrap and rely on the source label for disambiguation.
+// Per-source colour palette. Picked to be colour-blind friendly and
+// distinguishable under Loupe's six themes. The chip bar, breadcrumb
+// popover, and `__source` cell tint all share this palette indexed by
+// CURRENT POSITION in the live `_sources` array (`timelineSourceColor`
+// below). Adding or removing a source can shift colours for the
+// remaining sources, but every surface that displays per-source
+// identity (chip swatch, breadcrumb dot, cell tint) re-derives from
+// the same array position on every re-mount, so they stay in
+// lockstep — a chip and its rows are guaranteed to share a hue.
 //
 // 32 entries (doubled from the original 16) — wrap-collision risk is
-// now effectively zero for realistic analyst workflows (hard cap of
-// 16 merged sources; soft cap of 8). Keeping 32 here gives a
-// comfortable headroom if the caps are ever raised, and every chip +
-// breadcrumb popover swatch + chart legend entry for a given source
-// always lands on the SAME colour for the session because the
-// monotonic source-id indexes directly into this array via modulo.
+// effectively zero for realistic analyst workflows (hard cap of 16
+// merged sources; soft cap of 8). The CSS table in viewers.css
+// (`tl-source-bg-0` … `tl-source-bg-31`) mirrors this list 1-to-1
+// (same hexes, same order); a unit test pins the parity so silent
+// drift fails at test time.
 const TIMELINE_SOURCE_PALETTE = Object.freeze([
   // Original 16 — Tableau 20 / Category 10 inspired, muted saturations
   // that work on both light and dark panel backgrounds.
@@ -56,6 +64,15 @@ const TIMELINE_SOURCE_PALETTE = Object.freeze([
   '#9ecae1', '#fd8d3c', '#756bb1', '#bcbd22', '#bd9a28',
   '#e377c2',
 ]);
+
+// Resolve the palette colour for the source at array position `idx`
+// in the live `_sources` list. Pure, allocation-free, safe for any
+// integer (negatives or NaN are normalised to a valid index).
+function timelineSourceColor(idx) {
+  const n = TIMELINE_SOURCE_PALETTE.length;
+  const i = ((idx | 0) % n + n) % n;
+  return TIMELINE_SOURCE_PALETTE[i];
+}
 
 function _tlsMonotonicId() {
   if (_tlsMonotonicId._next == null) _tlsMonotonicId._next = 1;
@@ -95,8 +112,10 @@ function _tlsFromView(file, formatKind, view, existingLabels) {
   const sourceId = _tlsMonotonicId();
   const baseLabel = file && file.name ? file.name : ('source ' + sourceId);
   const sourceLabel = _tlsDedupLabel(baseLabel, existingLabels);
-  const color = TIMELINE_SOURCE_PALETTE[
-    (sourceId - 1) % TIMELINE_SOURCE_PALETTE.length];
+  // Per-source colour is derived from CURRENT array position in
+  // `view._sources` (via `timelineSourceColor`) at render time, not
+  // baked into the record — that way a remove-and-remount reshuffles
+  // every surface (chip, breadcrumb dot, cell tint) in lockstep.
   const record = {
     file,
     fileKey:   _tlsComputeFileKey(file),
@@ -114,7 +133,6 @@ function _tlsFromView(file, formatKind, view, existingLabels) {
     evtxFindings: view._evtxFindings || null,
     ipColumns:    Array.isArray(view._ipColumns) ? view._ipColumns.slice() : [],
     enabled:      true,
-    color,
     truncated:    !!view.truncated,
     originalRowCount: view.originalRowCount || view.store.rowCount,
     _zeekPath:    view.formatLabel && /^Zeek/.test(view.formatLabel) ? view.formatLabel.replace(/^Zeek\s*/, '') : null,
@@ -173,6 +191,7 @@ function releaseSourceRecord(record) {
 
 if (typeof window !== 'undefined') {
   window.TIMELINE_SOURCE_PALETTE = TIMELINE_SOURCE_PALETTE;
+  window.timelineSourceColor = timelineSourceColor;
   window.timelineSourceFromFile = timelineSourceFromFile;
   window.releaseSourceRecord = releaseSourceRecord;
   window._tlsComputeFileKey = _tlsComputeFileKey;

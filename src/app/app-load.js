@@ -2021,14 +2021,18 @@ extendApp({
     menu.setAttribute('role', 'menu');
     menu.setAttribute('aria-label', 'Merged Timeline sources');
 
-    for (const s of sources) {
+    for (let i = 0; i < sources.length; i++) {
+      const s = sources[i];
       const item = document.createElement('div');
       item.className = 'crumb-sources-menu-item';
       item.setAttribute('role', 'menuitem');
 
       const swatch = document.createElement('span');
       swatch.className = 'crumb-sources-menu-swatch';
-      swatch.style.backgroundColor = s.color || '#999';
+      // Match the chip-bar / `__source` cell-tint palette by deriving
+      // colour from CURRENT array position (not a stored `s.color`).
+      swatch.style.backgroundColor = (typeof timelineSourceColor === 'function')
+        ? timelineSourceColor(i) : '#999';
       item.appendChild(swatch);
 
       const label = document.createElement('span');

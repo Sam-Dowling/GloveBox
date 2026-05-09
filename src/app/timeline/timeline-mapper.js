@@ -4,10 +4,10 @@
 // predicate for merged Timelines.
 //
 // When a Timeline view hosts ≥2 sources, the composite RowStore prepends
-// the `TIMELINE_CANONICAL_COLS` (`__source`, `__format`, `Timestamp`,
-// `Host`, `User`, `EventID`, `Severity`, `Category`, `SourceIP`,
-// `DestIP`) so queries / top-values / pivots / detections see a uniform
-// schema regardless of the file's native columns. This file owns the
+// the `TIMELINE_CANONICAL_COLS` (`__source`, `Timestamp`, `Host`,
+// `User`, `EventID`, `Severity`, `Category`, `SourceIP`, `DestIP`) so
+// queries / top-values / pivots / detections see a uniform schema
+// regardless of the file's native columns. This file owns the
 // projection from each source's native row shape into those canonical
 // cells.
 //
@@ -124,9 +124,11 @@ function _tlmFirst(source, baseCellArr, names) {
 // present keys are copied into the composite row. Missing keys → empty
 // string in the composite.
 //
-// `source.sourceLabel` / `source.formatLabel` are injected as
-// `__source` / `__format` uniformly for every format by the composite
-// builder — mappers don't repeat that work.
+// `source.sourceLabel` is injected as `__source` uniformly for every
+// format by the composite builder — mappers don't repeat that work.
+// Format identity is NOT a canonical column; the source filename
+// already conveys it and the per-chip format badge in the source-bar
+// covers the explicit case.
 
 const TIMELINE_MAPPERS = {
 

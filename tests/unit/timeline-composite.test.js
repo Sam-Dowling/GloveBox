@@ -8,8 +8,8 @@
 //     same-name columns, namespaced conflicting columns, time-domain
 //     mismatch throw.
 //   • `buildCompositeStore(sources, plan)` — cells populated via mapper,
-//     canonical `__source` / `__format` stamped, native cells occupy
-//     the right composite columns, empty rows for other sources.
+//     canonical `__source` stamped, native cells occupy the right
+//     composite columns, empty rows for other sources.
 //   • `buildCompositeTime(sources)` — concat preserves length + ordering.
 //   • `buildSourceOfRow(sources)` — per-row source-index mapping.
 //   • `buildEnabledBitmap(sources, sourceOfRow)` — toggle-off flips bits.
@@ -70,7 +70,6 @@ function stubSource(opts) {
     evtxFindings: null,
     ipColumns: [],
     enabled: opts.enabled === false ? false : true,
-    color: '#000',
     truncated: false,
     originalRowCount: opts.rows.length,
   };
@@ -152,7 +151,7 @@ test('buildCompositeSchema throws on mixed time domains', () => {
 
 // ── Composite store builder ────────────────────────────────────────────────
 
-test('buildCompositeStore stamps __source / __format for every row', () => {
+test('buildCompositeStore stamps __source for every row', () => {
   const s = stubSource({
     id: 1, label: 'events.csv', formatKind: 'csv',
     formatLabel: 'CSV',
@@ -163,10 +162,11 @@ test('buildCompositeStore stamps __source / __format for every row', () => {
   const store = buildCompositeStore([s], plan);
   assert.equal(store.rowCount, 2);
   const iSrc = plan.canonicalCols.indexOf('__source');
-  const iFmt = plan.canonicalCols.indexOf('__format');
   assert.equal(store.getCell(0, iSrc), 'events.csv');
-  assert.equal(store.getCell(0, iFmt), 'CSV');
   assert.equal(store.getCell(1, iSrc), 'events.csv');
+  // Format identity is intentionally NOT a canonical column —
+  // the source filename plus the per-chip format badge cover it.
+  assert.equal(plan.canonicalCols.indexOf('__format'), -1);
 });
 
 test('buildCompositeStore invokes the mapper and populates canonical Host cell', () => {
@@ -320,7 +320,7 @@ test('culls canonical columns populated by zero rows across every source', () =>
   const plan = buildCompositeSchema([a, b]);
   // Always-kept canonicals.
   assert.ok(plan.canonicalCols.includes('__source'));
-  assert.ok(plan.canonicalCols.includes('__format'));
+  assert.equal(plan.canonicalCols.includes('__format'), false);
   // Populated canonicals — only `Timestamp` is hit by the `timestamp`
   // probe alias. The CSV mapper does NOT project `raw` into a
   // canonical slot any more (wide-narrative columns stay on the
@@ -337,9 +337,9 @@ test('culls canonical columns populated by zero rows across every source', () =>
   assert.equal(plan.canonicalCols.includes('DestIP'), false);
 });
 
-test('keeps __source and __format unconditionally when n>=2', () => {
+test('keeps __source unconditionally when n>=2', () => {
   // Pathological pair: columns that match NO canonical probe at all.
-  // Only `__source` + `__format` should survive in the canonical set.
+  // Only `__source` should survive in the canonical set.
   const a = stubSource({
     id: 1, label: 'a.csv', formatKind: 'csv',
     columns: ['zzq', 'qqq'],
@@ -352,8 +352,7 @@ test('keeps __source and __format unconditionally when n>=2', () => {
   });
   const plan = buildCompositeSchema([a, b]);
   assert.ok(plan.canonicalCols.includes('__source'));
-  assert.ok(plan.canonicalCols.includes('__format'));
-  assert.equal(plan.canonicalCols.length, 2);
+  assert.equal(plan.canonicalCols.length, 1);
 });
 
 test('does NOT cull for single-source views (n=1)', () => {
@@ -366,7 +365,7 @@ test('does NOT cull for single-source views (n=1)', () => {
     rows: [['2024-01-01', 'entry A']],
   });
   const plan = buildCompositeSchema([a]);
-  assert.equal(plan.canonicalCols.length, 10);
+  assert.equal(plan.canonicalCols.length, 9);
   assert.ok(plan.canonicalCols.includes('Host'));
   assert.ok(plan.canonicalCols.includes('DestIP'));
 });
@@ -395,7 +394,7 @@ test('M365-audit-schema CSVs produce a zero-empty-canonical composite', () => {
   //
   // Survivors after the cull (canonicals only — native columns sit
   // in `nativeCols`, not `canonicalCols`):
-  //   __source, __format, Timestamp, User, EventID, Severity,
+  //   __source, Timestamp, User, EventID, Severity,
   //   Category, SourceIP.
   // Culled: Host + DestIP (neither source carries a hostname or
   // destination IP).
@@ -426,7 +425,7 @@ test('M365-audit-schema CSVs produce a zero-empty-canonical composite', () => {
   // Every canonical survivor must have a non-empty value in at least
   // the first sample row — proves the cull predicate is sane.
   assert.ok(plan.canonicalCols.includes('__source'));
-  assert.ok(plan.canonicalCols.includes('__format'));
+  assert.equal(plan.canonicalCols.includes('__format'), false);
   assert.ok(plan.canonicalCols.includes('Timestamp'));
   assert.ok(plan.canonicalCols.includes('User'));       // UserId alias
   assert.ok(plan.canonicalCols.includes('EventID'));    // EventName alias

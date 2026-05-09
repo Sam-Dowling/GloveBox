@@ -347,10 +347,11 @@ test('Pre-existing aliases retain their priority (M365 UserId before MDE Account
 
 // ── Sanity: TIMELINE_CANONICAL_COLS unchanged by this expansion ───────────
 
-test('TIMELINE_CANONICAL_COLS is still the trimmed 10-entry list', () => {
+test('TIMELINE_CANONICAL_COLS is still the trimmed 9-entry list', () => {
   // The EDR alias expansion is purely additive to probe lists; it
-  // must NOT have re-introduced Process / Message canonicals.
-  assert.equal(TIMELINE_CANONICAL_COLS.length, 10);
+  // must NOT have re-introduced Process / Message / __format canonicals.
+  assert.equal(TIMELINE_CANONICAL_COLS.length, 9);
   assert.equal(TIMELINE_CANONICAL_COLS.includes('Process'), false);
   assert.equal(TIMELINE_CANONICAL_COLS.includes('Message'), false);
+  assert.equal(TIMELINE_CANONICAL_COLS.includes('__format'), false);
 });

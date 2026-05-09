@@ -590,9 +590,9 @@ Object.assign(TimelineView.prototype, {
       && this.formatLabel.indexOf('History') !== -1;
 
     for (let c = 0; c < cols; c++) {
-      // Canonical bookkeeping columns (`__source` / `__format`, added
-      // to every merged Timeline by `buildCompositeSchema`) are schema
-      // tags, not user data — skip them. Filenames like `events.csv`
+      // Canonical bookkeeping columns (`__source`, added to every
+      // merged Timeline by `buildCompositeSchema`) are schema tags,
+      // not user data — skip them. Filenames like `events.csv`
       // carried in `__source` look hostname-shaped to
       // `TL_HOSTNAME_INLINE_RE` (short alphabetic "TLD" token, dots
       // elsewhere) and would produce a spurious `__source (host)`

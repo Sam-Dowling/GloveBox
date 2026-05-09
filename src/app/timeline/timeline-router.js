@@ -1459,7 +1459,6 @@ extendApp({
       evtxFindings: view._evtxFindings || null,
       ipColumns: Array.isArray(view._ipColumns) ? view._ipColumns.slice() : [],
       enabled: true,
-      color: TIMELINE_SOURCE_PALETTE[0],
       truncated: !!view.truncated,
       originalRowCount: view.originalRowCount || view.store.rowCount,
     };

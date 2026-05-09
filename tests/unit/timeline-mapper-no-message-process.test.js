@@ -23,8 +23,8 @@
 //      virtual columns the analyst pivots on by name.
 //
 // What this test pins:
-//   • `TIMELINE_CANONICAL_COLS` is exactly the 10 expected entries, in
-//     order, with `Process` / `Message` absent.
+//   • `TIMELINE_CANONICAL_COLS` is exactly the 9 expected entries, in
+//     order, with `Process` / `Message` / `__format` absent.
 //   • `src/app/timeline/timeline-mapper.js` does not emit
 //     `out.Message = …` or `out.Process = …` anywhere — a static-source
 //     scan against the file source.
@@ -67,15 +67,15 @@ function stripCommentsAndStrings(src) {
 
 // ── Constants surface ──────────────────────────────────────────────────────
 
-test('TIMELINE_CANONICAL_COLS is exactly the trimmed 10-entry list, in order', () => {
+test('TIMELINE_CANONICAL_COLS is exactly the trimmed 9-entry list, in order', () => {
   const ctx = loadModules(['src/constants.js'], {
     expose: ['TIMELINE_CANONICAL_COLS'],
   });
   assert.deepEqual(Array.from(ctx.TIMELINE_CANONICAL_COLS), [
-    '__source', '__format', 'Timestamp', 'Host', 'User',
+    '__source', 'Timestamp', 'Host', 'User',
     'EventID', 'Severity', 'Category', 'SourceIP', 'DestIP',
   ]);
-  assert.equal(ctx.TIMELINE_CANONICAL_COLS.length, 10);
+  assert.equal(ctx.TIMELINE_CANONICAL_COLS.length, 9);
 });
 
 test('TIMELINE_CANONICAL_COLS does NOT include Process or Message', () => {

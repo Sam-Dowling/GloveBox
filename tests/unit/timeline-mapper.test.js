@@ -71,9 +71,9 @@ test('TIMELINE_MAPPERS is frozen and carries every expected kind', () => {
   }
 });
 
-test('canonical column list exposes the expected 10 fields in fixed order', () => {
+test('canonical column list exposes the expected 9 fields in fixed order', () => {
   assert.deepEqual(Array.from(TIMELINE_CANONICAL_COLS), [
-    '__source', '__format', 'Timestamp', 'Host', 'User',
+    '__source', 'Timestamp', 'Host', 'User',
     'EventID', 'Severity', 'Category', 'SourceIP', 'DestIP',
   ]);
 });

@@ -180,12 +180,15 @@ Object.assign(TimelineView.prototype, {
     // `tl-canonical-cell` so the dashed-border differentiator kicks in
     // — merged-Timeline visual signal that this column is Loupe-
     // provided bookkeeping, not source data. Plus `tl-source-bg-N`
-    // where N is the row's source index (mod TIMELINE_SOURCE_PALETTE
-    // length) so each source's rows carry the same chip-bar / breadcrumb
-    // swatch colour as a cell background tint. Check uses strict
-    // equality against `__source` (not an `__` prefix check) because:
-    //   (a) `__format` intentionally does NOT get the treatment per
-    //       product decision,
+    // where N is the row's source index in the live `_sources` array
+    // (mod TIMELINE_SOURCE_PALETTE length) so each source's rows carry
+    // the same chip-bar / breadcrumb swatch colour as a cell background
+    // tint. The chip swatch and the cell tint share this index so they
+    // are always visually consistent for a given source — and both
+    // shift together if a source is added or removed (palette is
+    // re-derived from array position on every re-mount). Check uses
+    // strict equality against `__source` because:
+    //   (a) `__source` is the only canonical bookkeeping column,
     //   (b) a user CSV with a header that happens to start with `__`
     //       shouldn't be silently re-styled.
     // Composition: all three signals can co-occur (a stack-text row
@@ -372,13 +375,12 @@ Object.assign(TimelineView.prototype, {
         cellAugment,
         detailAugment,
         detailCellClass,
-        // Canonical-column header tag. Only `__source` gets the
-        // differentiator — `__format` intentionally stays plain per
-        // product decision, and every other canonical column
-        // (`Timestamp` / `Host` / `User` / etc.) carries source data,
-        // not Loupe bookkeeping. The callback is invoked once per
-        // visible column on every header rebuild (sort / hide /
-        // reorder / resize / `_setColumnOrder`).
+        // Canonical-column header tag. Only `__source` is a canonical
+        // bookkeeping column; every other canonical (`Timestamp` /
+        // `Host` / `User` / etc.) carries source data, not Loupe
+        // bookkeeping. The callback is invoked once per visible column
+        // on every header rebuild (sort / hide / reorder / resize /
+        // `_setColumnOrder`).
         headerClass: (colIdx, colName) => {
           return colName === '__source' ? 'grid-header-canonical' : null;
         },

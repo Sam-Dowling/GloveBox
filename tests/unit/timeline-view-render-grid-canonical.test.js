@@ -114,10 +114,13 @@ test('top-values card render tags __source card with tl-col-card-canonical', () 
 });
 
 test('canonical check uses STRICT equality, not an __-prefix match', () => {
-  // Product decision: only `__source` gets the differentiator,
-  // `__format` intentionally does NOT.  A future refactor that
-  // broadens the check to `.startsWith("__")` would silently
-  // change the user-visible behaviour and must surface here.
+  // Only `__source` is a canonical bookkeeping column today; the
+  // strict-equality check guards against a future refactor that
+  // broadens the differentiator to any `__`-prefixed column. The
+  // canonical-cell tint and source-bg shading are tied specifically
+  // to `__source`'s row-origin semantics, so a prefix-broadening
+  // would silently apply the treatment to any future `__`-prefixed
+  // schema column and must surface here.
   //
   // Positive pin — the strict comparison MUST be present.
   assert.match(

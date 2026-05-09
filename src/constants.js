@@ -346,8 +346,8 @@ const RENDER_LIMITS = Object.freeze({
   // `file.size`. Slightly higher than the single-file
   // `ROWSTORE_HEAP_OVERHEAD_FACTOR` because the composite adds: the
   // per-source base RowStores kept resident, the canonical column
-  // cells (string duplication for `__source` / `__format` / `Host` /
-  // `User` / ... sparsely populated), and the source-of-row Uint32Array.
+  // cells (string duplication for `__source` / `Host` / `User` / ...
+  // sparsely populated), and the source-of-row Uint32Array.
   // 2.2 covers single-source loads too (only the composite view exists
   // after Commit 5 unification — no dedicated fast path).
   TIMELINE_COMPOSITE_HEAP_OVERHEAD_FACTOR: 2.2,
@@ -375,11 +375,13 @@ const RENDER_LIMITS = Object.freeze({
 // Single-source timelines leave these columns hidden by default
 // (canonical-column visibility is `sources.length >= 2`). The mapper
 // still runs in single-source mode so the data is available for
-// `fromSources([one])` round-trip. The `__source` / `__format` columns
-// lead so queries like `source:events.csv` read left-to-right.
+// `fromSources([one])` round-trip. The `__source` column leads so
+// queries like `source:events.csv` read left-to-right. Format identity
+// is NOT a canonical column — the source filename in `__source` plus
+// the per-chip format badge in the source-bar already convey it
+// without burning grid width on a near-constant column.
 const TIMELINE_CANONICAL_COLS = Object.freeze([
   '__source',
-  '__format',
   'Timestamp',
   'Host',
   'User',

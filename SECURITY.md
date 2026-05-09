@@ -108,7 +108,7 @@ tunables in `RENDER_LIMITS`:
 |---|---|---|
 | `ROWSTORE_HEAP_BUDGET_FRACTION` | `0.6` | Maximum fraction of `jsHeapSizeLimit` the projected RowStore is allowed to occupy. |
 | `ROWSTORE_HEAP_OVERHEAD_FACTOR` | `1.6` | Multiplier on the raw decoded-text byte size used to project the RowStore footprint (covers UTF-16 expansion + per-cell offset table). |
-| `TIMELINE_COMPOSITE_HEAP_OVERHEAD_FACTOR` | `2.2` | Multiplier on the sum-of-`file.size` used to project the cumulative heap footprint of a merged Timeline (`_timelineAddFile` pre-flight). Higher than the single-file factor because each source keeps its own `baseStore` resident for fast toggle-off alongside the composite `store`, plus canonical column cells (string duplication for `__source` / `__format` / …) and the `_sourceOfRow` / `_sourceEnabledBitmap` parallel arrays. |
+| `TIMELINE_COMPOSITE_HEAP_OVERHEAD_FACTOR` | `2.2` | Multiplier on the sum-of-`file.size` used to project the cumulative heap footprint of a merged Timeline (`_timelineAddFile` pre-flight). Higher than the single-file factor because each source keeps its own `baseStore` resident for fast toggle-off alongside the composite `store`, plus canonical column cells (string duplication for `__source` / …) and the `_sourceOfRow` / `_sourceEnabledBitmap` parallel arrays. |
 | `TIMELINE_SOURCE_CAP_SOFT` / `TIMELINE_SOURCE_CAP_HARD` | `8` / `16` | Drop-to-add emits an advisory toast beyond soft; refuses beyond hard. Bounds the linear-across-sources cost of re-sort, chip-bar render, and per-source detections aggregation. |
 
 The gate is **Chromium-only**: Firefox and Safari don't ship

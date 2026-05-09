@@ -173,7 +173,7 @@ function buildCompositeSchema(sources) {
 
   // ── Empty-canonical-column cull (merged views only) ──────────────────
   //
-  // `TIMELINE_CANONICAL_COLS` is a fixed 10-entry list — but for any
+  // `TIMELINE_CANONICAL_COLS` is a fixed 9-entry list — but for any
   // given set of sources only a subset of canonical columns will
   // actually be populated by the per-format mappers. Keeping empty
   // canonicals in the composite schema wastes grid real-estate and
@@ -182,11 +182,11 @@ function buildCompositeSchema(sources) {
   // would otherwise show empty `SourceIP` / `DestIP` columns).
   //
   // For merged views (n≥2) we run a bounded sample-probe: for each
-  // canonical column (other than `__source` / `__format` — always kept
-  // when n≥2; they discriminate rows by origin which is the whole
-  // point of the merged surface), check whether ANY source's mapper
-  // emits a non-empty value in a 50-row sample. Canonicals whose
-  // sample yields zero hits across every source get dropped from
+  // canonical column (other than `__source` — always kept when n≥2;
+  // it discriminates rows by origin which is the whole point of the
+  // merged surface), check whether ANY source's mapper emits a
+  // non-empty value in a 50-row sample. Canonicals whose sample
+  // yields zero hits across every source get dropped from
   // `canonicalCols` entirely — they never enter the RowStore, never
   // surface in the grid, never clutter the column picker.
   //
@@ -195,7 +195,7 @@ function buildCompositeSchema(sources) {
   // merge that adds a source capable of populating a canonical
   // brings it back cleanly without needing schema surgery.
   //
-  // Sample size (50 rows) is bounded so this is O(sources × 50 × 10)
+  // Sample size (50 rows) is bounded so this is O(sources × 50 × 9)
   // ≈ O(thousands of ops) regardless of total row count. False-negative
   // risk: a source that populates canonical `Host` only for rows >50
   // would have `Host` culled; the failure mode is benign (an
@@ -205,7 +205,7 @@ function buildCompositeSchema(sources) {
   // column name), so the first-50-rows probe is essentially a
   // schema-check.
   const CULL_SAMPLE_ROWS = 50;
-  const ALWAYS_KEEP_CANONICAL = new Set(['__source', '__format']);
+  const ALWAYS_KEEP_CANONICAL = new Set(['__source']);
   const culledCanonicalCols = [];
   if (sources.length >= 2) {
     for (let i = 0; i < canonicalCols.length; i++) {
@@ -322,10 +322,8 @@ function buildCompositeStore(sources, plan) {
     const baseColCount = store.colCount;
     baseRowBuf.length = baseColCount;
     const sourceLabel = src.sourceLabel || '';
-    const formatLabel = src.formatLabel || '';
     // Pre-resolve canonical indices so the inner loop is straight-line.
     const iSource = canonicalIdx.get('__source');
-    const iFormat = canonicalIdx.get('__format');
 
     for (let r = 0; r < rc; r++) {
       // Fresh per-row cell buffer — see note above on builder batching.
@@ -333,9 +331,11 @@ function buildCompositeStore(sources, plan) {
       for (let c = 0; c < totalCols; c++) cellBuf[c] = '';
       store.getRowInto(r, baseRowBuf);
 
-      // Stamp `__source` / `__format` for every row (uniform).
+      // Stamp `__source` for every row (uniform). Format identity is
+      // intentionally NOT a canonical column — the source filename
+      // already conveys it and the per-chip format badge in the
+      // source-bar covers the explicit case.
       if (iSource != null) cellBuf[iSource] = sourceLabel;
-      if (iFormat != null) cellBuf[iFormat] = formatLabel;
 
       // Project canonical cells via the format-specific mapper.
       const mapped = mapper(src, baseRowBuf);
