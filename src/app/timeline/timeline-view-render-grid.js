@@ -61,6 +61,47 @@ Object.assign(TimelineView.prototype, {
     this._sortedFullIdx = null;
   },
 
+  /** Return a chrono-sorted permutation of `idx` (ascending by
+   *  `this._timeMs`, NaN-last, stable tie-break on the original row
+   *  index). Used by `_renderGridInto` and by every fast-path caller
+   *  that hands a fresh `idx` to `GridViewer.setRows({ preSorted:
+   *  true })` — without this pre-sort the merged-Timeline grid (and
+   *  any single-file Timeline whose source row order isn't
+   *  chronological) paints rows in source-concat order while the
+   *  header indicator advertises ascending Timestamp.
+   *
+   *  Cache: when `idx.length === store.rowCount` (full dataset, no
+   *  query) the sorted permutation is memoised on `_sortedFullIdx`
+   *  and reused on subsequent full-dataset renders. The cache is
+   *  invalidated by `_parseAllTimestamps` (via `_invalidateGridCache`)
+   *  whenever `_timeMs` content changes.
+   *
+   *  Returns `idx` unchanged when there is no time column, no
+   *  `_timeMs`, or fewer than two rows to sort. */
+  _chronoSortIdx(idx) {
+    const timeCol = this._timeCol;
+    const timeMs = this._timeMs;
+    if (timeCol == null || !timeMs || !idx || idx.length <= 1) return idx;
+    const isFullDataset = idx.length === this.store.rowCount;
+    if (isFullDataset && this._sortedFullIdx
+      && this._sortedFullIdx.length === idx.length) {
+      return this._sortedFullIdx;
+    }
+    // Allocate a mutable copy so callers' arrays (notably
+    // `_chipFilteredIdx` / `_identityIdx`) are never disturbed.
+    const sorted = new Uint32Array(idx);
+    sorted.sort((a, b) => {
+      const ta = timeMs[a], tb = timeMs[b];
+      const af = Number.isFinite(ta), bf = Number.isFinite(tb);
+      if (!af && !bf) return a - b;
+      if (!af) return 1;
+      if (!bf) return -1;
+      return (ta - tb) || (a - b);
+    });
+    if (isFullDataset) this._sortedFullIdx = sorted;
+    return sorted;
+  },
+
   _renderGridInto(wrap, idx, role) {
     // ── Pre-sort idx by timestamp ──────────────────────────────────────
     // Sort the filtered index array by the pre-parsed _timeMs values so
@@ -76,30 +117,18 @@ Object.assign(TimelineView.prototype, {
     // This turns filter-clear from an O(n log n) re-sort into an O(1)
     // cache hit; the per-row materialisation cost vanished entirely
     // with the Phase 4 `TimelineRowView` adapter.
-    const timeCol = this._timeCol;
-    const timeMs = this._timeMs;
-    const isFullDataset = idx.length === this.store.rowCount;
-    if (timeCol != null && timeMs && idx.length > 1) {
-      if (isFullDataset && this._sortedFullIdx &&
-        this._sortedFullIdx.length === idx.length) {
-        // Cache hit — reuse the previously sorted full-dataset index.
-        idx = this._sortedFullIdx;
-      } else {
-        // Work on a mutable copy so we don't disturb _chipFilteredIdx.
-        const sorted = new Uint32Array(idx);
-        sorted.sort((a, b) => {
-          const ta = timeMs[a], tb = timeMs[b];
-          const af = Number.isFinite(ta), bf = Number.isFinite(tb);
-          if (!af && !bf) return a - b;
-          if (!af) return 1;
-          if (!bf) return -1;
-          return (ta - tb) || (a - b);
-        });
-        idx = sorted;
-        // Cache the sorted order for the full (unfiltered) dataset so
-        // subsequent filter-clears skip the O(n log n) re-sort.
-        if (isFullDataset) this._sortedFullIdx = sorted;
-      }
+    //
+    // The sort + cache logic is shared with `_rebuildExtractedStateAndRender`
+    // via `_chronoSortIdx` so the in-place fast path (which calls
+    // `GridViewer.setRows({ preSorted: true })`) sees the same chrono
+    // permutation as the cold mount path. Without that sharing, the
+    // merged-Timeline grid (and single files whose row order isn't
+    // already chronological) would paint in source-concat order while
+    // the indicator advertised ascending — the exact desync the user
+    // reported when dropping additional files onto the Timeline.
+    const sorted = this._chronoSortIdx(idx);
+    if (sorted !== idx) {
+      idx = sorted;
       // Update _filteredIdx so click-handlers, scroll-cursor and
       // right-click menus resolve virtual → original-row correctly.
       if (role === 'main') this._filteredIdx = idx;

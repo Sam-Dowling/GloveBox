@@ -447,13 +447,34 @@ Object.assign(TimelineView.prototype, {
       // a few field assignments. `idx` is the same one the cold path
       // would use (`_filteredIdx`); `preSorted: true` skips a Date.parse
       // re-sort because the existing idx is already chrono-sorted.
+      //
+      // CHRONO RE-SORT: `_recomputeFilter` (called above) resets
+      // `_filteredIdx` to the unsorted identity index when no query is
+      // active. Without re-sorting here, `setRows({ preSorted: true })`
+      // preserves the asc-Timestamp `_sortSpec` but stamps an identity
+      // `_sortOrder`, so the grid paints rows in `rowView.idx` order
+      // (source-concat for merged Timelines, file order for single
+      // files) while the header indicator still advertises ascending.
+      // `_chronoSortIdx` reuses the cached `_sortedFullIdx` when the
+      // idx covers the full dataset, so this is an O(1) cache hit on
+      // every auto-extract proposal after the first. Assigning back
+      // to `_filteredIdx` keeps the cursor / right-click menus / scroll
+      // resolver aligned with what the grid is showing.
       try {
         const ds = this._dataset;
+        let idx = this._filteredIdx || null;
+        if (idx && typeof this._chronoSortIdx === 'function') {
+          const sorted = this._chronoSortIdx(idx);
+          if (sorted !== idx) {
+            idx = sorted;
+            this._filteredIdx = idx;
+          }
+        }
         const rowView = new TimelineRowView({
           baseStore: ds ? ds.store : this.store,
           extractedCols: ds ? ds.extractedCols : this._extractedCols,
           baseLen: ds ? ds.baseColCount : this._baseColumns.length,
-          idx: this._filteredIdx || null,
+          idx,
         });
         this._grid.setRows(rowView, null, null, { preSorted: true });
       } catch (_) { /* fall through to scheduled render */ }
