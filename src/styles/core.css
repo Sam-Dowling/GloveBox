@@ -3953,6 +3953,73 @@ body.dark .tb-menu-sep {
   background: rgba(255, 255, 255, .08);
 }
 
+/* Trailing non-clickable overflow row. Rendered when the flatten cap
+   truncated the innerFindings tree (bruteforce-mode decode of a
+   benign source-code blob can produce O(10^5) descendants — every
+   short alphanumeric word in the decoded text matches the lowered-
+   floor Base64 / Hex / ROT13 finders). Visually distinct so the
+   analyst sees it's a status row, not a layer to open. No hover
+   highlight; no pointer cursor.
+
+   Layout-wise the row REPLACES the inherited grid (set by
+   `.tb-menu--layer .tb-menu-item` two rules up: `display: grid;
+   grid-template-columns: 18px 1fr auto`) with a plain block stack.
+   Reason: the sublabel inherits `white-space: nowrap` from
+   `.tb-menu-sublabel`, and the overflow row's sublabel is a full
+   sentence ("Tree too large … narrow your selection and try again");
+   in the grid layout that nowrap forces column 3 to claim the full
+   menu width and collapses the label column (`1fr`) to ~0 px, which
+   then wraps the label character-by-character via the inherited
+   `word-break: break-word`. Resetting to `display: block` plus
+   `white-space: normal` on the sublabel lays both lines out as
+   regular flowing inline content. */
+.tb-menu--layer .tb-menu-item-overflow {
+  display: block;
+  cursor: default;
+  opacity: 0.85;
+  font-style: italic;
+  border-top: 1px dashed rgba(0, 0, 0, .12);
+  background: rgba(217, 119, 6, .06);
+  padding: 6px 10px;
+}
+
+.tb-menu--layer .tb-menu-item-overflow:hover {
+  background: rgba(217, 119, 6, .06);
+}
+
+.tb-menu--layer .tb-menu-item-overflow .tb-menu-icon {
+  display: inline-block;
+  margin-right: 6px;
+}
+
+.tb-menu--layer .tb-menu-item-overflow .tb-menu-label {
+  display: inline;
+  font-weight: 600;
+  white-space: normal;
+  word-break: normal;
+}
+
+.tb-menu--layer .tb-menu-item-overflow .tb-menu-sublabel {
+  display: block;
+  white-space: normal;
+  margin-top: 2px;
+  font-size: 10px;
+  color: #6b7280;
+}
+
+body.dark .tb-menu--layer .tb-menu-item-overflow {
+  border-top-color: rgba(255, 255, 255, .12);
+  background: rgba(217, 119, 6, .12);
+}
+
+body.dark .tb-menu--layer .tb-menu-item-overflow:hover {
+  background: rgba(217, 119, 6, .12);
+}
+
+body.dark .tb-menu--layer .tb-menu-item-overflow .tb-menu-sublabel {
+  color: rgba(255, 255, 255, .45);
+}
+
 /* ── Pinned Deobfuscated Script card (banner variant) ──
    Rendered by `_renderReassembledScriptCard` at the TOP of the
    Deobfuscation section when `findings.reconstructedScript` has ≥2

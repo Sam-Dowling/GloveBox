@@ -1545,3 +1545,21 @@ class App {
   }
 
 }
+
+// ── Layer-picker hard cap (Deobfuscation card ▾ menu) ──────────────────────
+// Hard upper bound on the number of pickable innerFindings entries the
+// caret menu will surface to the analyst. The encoded-content detector
+// in bruteforce / kitchen-sink mode can produce O(10^5) recursive
+// descendants on benign source-code inputs (every short alphanumeric
+// word in the decoded text matches the lowered-floor Base64 / Hex /
+// ROT13 finders, each then recurses four to six levels). Without a
+// cap, `_flattenFindingLayers` would return an array of that size and
+// `_openLayerPickerMenu` would synchronously create one <button> per
+// item, hanging the renderer thread for several seconds and ultimately
+// crashing the tab.
+//
+// 200 is far above the practical upper bound for a real obfuscated
+// payload (typically 3–20 layers) but low enough to render instantly.
+// Anything beyond the cap is summarised by a single non-clickable
+// overflow row that tells the analyst to narrow the selection.
+App.LAYER_PICKER_MAX_ITEMS = 200;

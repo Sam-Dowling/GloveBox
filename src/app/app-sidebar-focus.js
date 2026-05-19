@@ -1471,13 +1471,27 @@ extendApp({
   //     needsLazyDecode, // true when rawCandidate present but decodedBytes null
   //   }
   //
-  // Depth cap is 20 (matches `_getDeepestFinding`).
+  // PLUS one optional trailing overflow sentinel of shape
+  //   { kind: 'overflow', truncatedCount, totalPickable }
+  // appended when the pre-cap tree contains more pickable nodes than the
+  // hard cap (`App.LAYER_PICKER_MAX_ITEMS`, 200). The sentinel exists so
+  // the caret menu can render a non-clickable "… and N more (truncated)"
+  // row instead of synchronously building a runaway DOM (bruteforce-mode
+  // decode of a benign source-code blob can produce O(10^5) pickable
+  // descendants — every short alphanumeric word in the decoded text
+  // matches the lowered-floor Base64 / Hex / ROT13 finders, each
+  // recursing four to six levels — and rendering one <button> per node
+  // hangs the renderer thread).
+  //
+  // Depth cap is 20 (matches `_getDeepestFinding`); item cap is 200.
   _flattenFindingLayers(finding) {
     const out = [];
     if (!finding || !Array.isArray(finding.innerFindings) || !finding.innerFindings.length) {
       return out;
     }
     const MAX_DEPTH = 20;
+    const MAX_ITEMS = (typeof App !== 'undefined' && App.LAYER_PICKER_MAX_ITEMS)
+      || 200;
     // Classification labels produced by the detector's synthetic-sibling
     // paths (encoded-content-detector.js:785/945). Detected by a prefix
     // match on the encoding label — the detector guarantees these strings.
@@ -1486,6 +1500,12 @@ extendApp({
       const s = String(enc);
       return s.startsWith('XOR') || /decompressed|gzip|zlib|deflate|brotli/i.test(s);
     };
+    // Two-phase walk: phase 1 fills `out` up to MAX_ITEMS, phase 2 (if
+    // the cap was hit) keeps counting pickable nodes so the overflow
+    // sentinel can carry an accurate `truncatedCount`. Phase 2 is cheap
+    // because we never allocate the dropped entries — just increment a
+    // counter.
+    let totalPickable = 0;
     const walk = (node, depth) => {
       if (depth > MAX_DEPTH) return;
       if (!node || !Array.isArray(node.innerFindings)) return;
@@ -1497,16 +1517,19 @@ extendApp({
         // old "All the way" button used). Stubs have neither.
         const pickable = hasDecoded || hasRaw;
         if (pickable) {
-          out.push({
-            finding: child,
-            depth,
-            isSynthetic: isSyntheticEncoding(child.encoding),
-            encoding: child.encoding || '',
-            classification: (child.classification && child.classification.type) || '',
-            decodedSize: child.decodedSize || 0,
-            severity: child.severity || 'info',
-            needsLazyDecode: !hasDecoded && hasRaw,
-          });
+          totalPickable++;
+          if (out.length < MAX_ITEMS) {
+            out.push({
+              finding: child,
+              depth,
+              isSynthetic: isSyntheticEncoding(child.encoding),
+              encoding: child.encoding || '',
+              classification: (child.classification && child.classification.type) || '',
+              decodedSize: child.decodedSize || 0,
+              severity: child.severity || 'info',
+              needsLazyDecode: !hasDecoded && hasRaw,
+            });
+          }
         }
         // Descend even into non-pickable stubs — a child stub can still
         // have pickable grandchildren in theory (defensive).
@@ -1516,6 +1539,13 @@ extendApp({
       }
     };
     walk(finding, 1);
+    if (totalPickable > out.length) {
+      out.push({
+        kind: 'overflow',
+        truncatedCount: totalPickable - out.length,
+        totalPickable,
+      });
+    }
     return out;
   },
 

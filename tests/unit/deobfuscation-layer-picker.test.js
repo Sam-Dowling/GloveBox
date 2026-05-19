@@ -246,6 +246,177 @@ test('_flattenFindingLayers carries severity through verbatim', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
+// _flattenFindingLayers — runaway-tree cap + overflow sentinel
+//
+// The detector in bruteforce / kitchen-sink mode can produce a tree
+// with O(10^5) pickable descendants on benign source-code inputs
+// (every short alphanumeric word in the decoded text matches the
+// lowered-floor finders, each recursing). Without a hard cap on
+// `_flattenFindingLayers` output, the caret menu builds one DOM
+// <button> per node and hangs the renderer thread. The cap lives at
+// `App.LAYER_PICKER_MAX_ITEMS` (200) and is enforced inside the
+// flatten walker; anything beyond the cap is summarised by a single
+// trailing { kind: 'overflow' } sentinel.
+// ────────────────────────────────────────────────────────────────────────────
+
+test('App.LAYER_PICKER_MAX_ITEMS is defined and reasonable', () => {
+  assert.equal(typeof App.LAYER_PICKER_MAX_ITEMS, 'number',
+    'App.LAYER_PICKER_MAX_ITEMS must be defined as a tunable static field');
+  assert.ok(App.LAYER_PICKER_MAX_ITEMS >= 50,
+    'cap must be high enough to not truncate realistic trees');
+  assert.ok(App.LAYER_PICKER_MAX_ITEMS <= 1000,
+    'cap must be low enough to render instantly');
+});
+
+test('_flattenFindingLayers caps wide trees at App.LAYER_PICKER_MAX_ITEMS + overflow sentinel', () => {
+  const app = new App();
+  // Build a fan-out tree: root has N direct children, each pickable.
+  // This is the shape bruteforce mode produces when scanning text
+  // with many short candidate substrings.
+  const CAP = App.LAYER_PICKER_MAX_ITEMS;
+  const FANOUT = CAP + 50;
+  const children = [];
+  for (let i = 0; i < FANOUT; i++) {
+    children.push({
+      encoding: `Cand${i}`, severity: 'info',
+      decodedBytes: new Uint8Array([i & 0xff]), decodedSize: 1,
+      innerFindings: [],
+    });
+  }
+  const root = { encoding: 'Root', innerFindings: children };
+  const out = app._flattenFindingLayers(root);
+  // Exactly CAP regular entries + 1 overflow sentinel.
+  assert.equal(out.length, CAP + 1,
+    `must return CAP (${CAP}) entries + 1 overflow sentinel (got ${out.length})`);
+  // Last entry is the sentinel.
+  const sentinel = out[out.length - 1];
+  assert.equal(sentinel.kind, 'overflow',
+    'last entry must be an overflow sentinel');
+  assert.equal(sentinel.truncatedCount, FANOUT - CAP,
+    'truncatedCount must equal pre-cap total minus surfaced count');
+  assert.equal(sentinel.totalPickable, FANOUT,
+    'totalPickable must equal the full pre-cap pickable count');
+  // None of the surfaced entries are overflow sentinels.
+  for (let i = 0; i < CAP; i++) {
+    assert.notEqual(out[i].kind, 'overflow',
+      `entry ${i} must be a real layer, not an overflow sentinel`);
+  }
+});
+
+test('_flattenFindingLayers does NOT emit overflow sentinel when tree fits within cap', () => {
+  const app = new App();
+  const children = [];
+  for (let i = 0; i < 10; i++) {
+    children.push({
+      encoding: `Cand${i}`, severity: 'info',
+      decodedBytes: new Uint8Array([i & 0xff]), decodedSize: 1,
+      innerFindings: [],
+    });
+  }
+  const root = { encoding: 'Root', innerFindings: children };
+  const out = app._flattenFindingLayers(root);
+  assert.equal(out.length, 10, 'small tree must surface every layer');
+  for (const e of out) {
+    assert.notEqual(e.kind, 'overflow',
+      'no overflow sentinel when tree fits within the cap');
+  }
+});
+
+test('_flattenFindingLayers counts truncated descendants across recursion (not just direct children)', () => {
+  const app = new App();
+  // Two-level tree: 50 mid-level nodes, each with CAP/4 children. Total
+  // pickable = 50 + 50 * (CAP/4); the cap must trim while still counting
+  // every truncated grandchild for the sentinel total.
+  const CAP = App.LAYER_PICKER_MAX_ITEMS;
+  const PER_BRANCH = Math.floor(CAP / 4);
+  const branches = [];
+  for (let i = 0; i < 50; i++) {
+    const grandchildren = [];
+    for (let j = 0; j < PER_BRANCH; j++) {
+      grandchildren.push({
+        encoding: `G${i}_${j}`, severity: 'info',
+        decodedBytes: new Uint8Array([1]), decodedSize: 1, innerFindings: [],
+      });
+    }
+    branches.push({
+      encoding: `B${i}`, severity: 'info',
+      decodedBytes: new Uint8Array([1]), decodedSize: 1,
+      innerFindings: grandchildren,
+    });
+  }
+  const root = { encoding: 'Root', innerFindings: branches };
+  const out = app._flattenFindingLayers(root);
+  const sentinel = out[out.length - 1];
+  assert.equal(sentinel.kind, 'overflow');
+  const expectedTotal = 50 + 50 * PER_BRANCH;
+  assert.equal(sentinel.totalPickable, expectedTotal,
+    `totalPickable must include every pickable descendant across recursion (expected ${expectedTotal})`);
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// _buildLayerPickerEntries — overflow sentinel handling
+// ────────────────────────────────────────────────────────────────────────────
+
+test('_buildLayerPickerEntries handles trailing overflow sentinel from flatten', () => {
+  // Pin that the overflow sentinel emitted by _flattenFindingLayers is
+  // detected, pulled out of the layers list, and re-emitted as a
+  // distinct kind:'overflow' menu row with a localised label.
+  const body = SIDEBAR_SRC.match(/_buildLayerPickerEntries\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
+  assert.ok(body, '_buildLayerPickerEntries body must be locatable');
+  const src = body[0];
+  assert.match(src, /kind\s*===\s*['"]overflow['"]/,
+    'must detect the trailing overflow sentinel');
+  assert.match(src, /kind:\s*['"]overflow['"]/,
+    'must emit a kind:"overflow" menu row');
+  assert.match(src, /truncatedCount/,
+    'must surface the truncatedCount in the overflow label');
+});
+
+test('_openLayerPickerMenu renders the overflow row as non-clickable', () => {
+  const body = SIDEBAR_SRC.match(/_openLayerPickerMenu\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
+  assert.ok(body, '_openLayerPickerMenu body must be locatable');
+  const src = body[0];
+  assert.match(src, /it\.kind\s*===\s*['"]overflow['"]/,
+    'must branch on kind:"overflow"');
+  assert.match(src, /tb-menu-item-overflow/,
+    'must apply the .tb-menu-item-overflow CSS class to the row');
+});
+
+test('_openLayerPickerMenu has a defensive DOM-render cap', () => {
+  const body = SIDEBAR_SRC.match(/_openLayerPickerMenu\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
+  assert.ok(body);
+  // Pin the belt-and-braces guard so a future bypass of the flatten
+  // cap can't synchronously build tens of thousands of buttons.
+  assert.match(body[0], /HARD_DOM_CAP|LAYER_PICKER_MAX_ITEMS/,
+    'must reference the hard DOM-render cap');
+});
+
+test('.tb-menu-item-overflow rule exists in core.css', () => {
+  assert.match(CSS_SRC, /\.tb-menu-item-overflow\s*\{/);
+});
+
+test('.tb-menu-item-overflow overrides the inherited grid layout with a block stack', () => {
+  // The base `.tb-menu--layer .tb-menu-item` rule uses `display: grid`
+  // with `grid-template-columns: 18px 1fr auto`. The overflow row's
+  // sublabel inherits `white-space: nowrap` from `.tb-menu-sublabel`;
+  // in the grid layout the nowrap forces column 3 to claim the full
+  // menu width, collapsing the label column to ~0 px and wrapping the
+  // label character-by-character via the inherited `word-break:
+  // break-word`. The overflow row resets both: `display: block` on
+  // the row, plus `white-space: normal` on the sublabel.
+  const rule = CSS_SRC.match(/\.tb-menu--layer\s+\.tb-menu-item-overflow\s*\{[^}]*\}/);
+  assert.ok(rule, '.tb-menu-item-overflow rule must exist');
+  assert.match(rule[0], /display\s*:\s*block/,
+    'overflow row must reset display to block (overrides the inherited grid)');
+  const subRule = CSS_SRC.match(
+    /\.tb-menu--layer\s+\.tb-menu-item-overflow\s+\.tb-menu-sublabel\s*\{[^}]*\}/
+  );
+  assert.ok(subRule, 'overflow-row sublabel override rule must exist');
+  assert.match(subRule[0], /white-space\s*:\s*normal/,
+    'overflow-row sublabel must reset white-space to normal so the text wraps');
+});
+
+// ────────────────────────────────────────────────────────────────────────────
 // _buildLayerPickerEntries — structural source-level pins
 // These pin the stitched-first-then-separator-then-layers assembly
 // contract by regex-anchoring the method body. The method body runs
@@ -292,16 +463,25 @@ test('_buildLayerPickerEntries inserts a separator between stitched and layers',
   const src = body[0];
   assert.match(src, /kind:\s*['"]sep['"]/,
     'must emit at least one kind:"sep" entry');
-  // Separator must be gated on hasStitched AND layers present.
-  assert.match(src, /hasStitched\s*&&\s*layers\.length/,
-    'separator must be gated on both stitched-present and layers-present');
+  // Separator must be gated on hasStitched AND (layers present OR
+  // an overflow sentinel present — the trailing truncation row also
+  // benefits from visual separation from the stitched entry).
+  assert.match(src, /hasStitched\s*&&\s*\(hasLayerRows\s*\|\|\s*overflow\)|hasStitched\s*&&\s*layers\.length/,
+    'separator must be gated on stitched-present and (layer-rows-or-overflow-present)');
 });
 
 test('_buildLayerPickerEntries returns { items, hasStitched, hasLayers }', () => {
   const body = SIDEBAR_SRC.match(/_buildLayerPickerEntries\s*\([^)]*\)\s*\{[\s\S]*?\n  \},/);
   assert.ok(body);
-  assert.match(body[0], /return\s*\{\s*items\s*,\s*hasStitched\s*,\s*hasLayers\s*\}/,
-    'return shape must include items + hasStitched + hasLayers');
+  // Return shape includes items + hasStitched + hasLayers (and may
+  // include an optional `overflow` sentinel — added when the flatten
+  // cap truncated the tree). Match permissively so adding optional
+  // fields doesn't break this pin.
+  assert.match(
+    body[0],
+    /return\s*\{\s*items\s*,\s*hasStitched\s*,\s*hasLayers\b/,
+    'return shape must include items + hasStitched + hasLayers (overflow optional)'
+  );
 });
 
 // ────────────────────────────────────────────────────────────────────────────

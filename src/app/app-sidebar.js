@@ -110,7 +110,22 @@ extendApp({
       ? this._flattenFindingLayers(finding)
       : [];
 
-    if (hasStitched && layers.length) {
+    // `_flattenFindingLayers` appends a trailing { kind:'overflow',
+    // truncatedCount, totalPickable } sentinel when the pre-cap tree
+    // contained more pickable nodes than the hard cap (App.LAYER_PICKER_MAX_ITEMS).
+    // Pull it out of the layers list so the per-layer loop below stays
+    // simple, and emit a dedicated non-clickable menu row at the end.
+    // Bruteforce-mode decode of a benign source-code blob can produce
+    // O(10^5) descendants; rendering one <button> per node hangs the
+    // tab. The sentinel is the analyst-visible breadcrumb that the
+    // tree was truncated.
+    let overflow = null;
+    if (layers.length && layers[layers.length - 1] && layers[layers.length - 1].kind === 'overflow') {
+      overflow = layers.pop();
+    }
+    const hasLayerRows = layers.length > 0;
+
+    if (hasStitched && (hasLayerRows || overflow)) {
       items.push({ kind: 'sep' });
     }
 
@@ -169,7 +184,24 @@ extendApp({
       });
     }
 
-    return { items, hasStitched, hasLayers };
+    if (overflow) {
+      // Trailing non-clickable info row. No `action` — the click handler
+      // in `_openLayerPickerMenu` is gated on `it.action` so this row
+      // never fires. The label mentions the count of suppressed entries
+      // and points the analyst at the narrower-selection escape hatch.
+      const n = (overflow.truncatedCount || 0).toLocaleString();
+      items.push({
+        kind: 'overflow',
+        icon: '⚠',
+        label: `… and ${n} more layers (truncated)`,
+        sublabel: 'Tree too large to display safely · narrow your selection and try again',
+        severity: 'info',
+        truncatedCount: overflow.truncatedCount || 0,
+        totalPickable: overflow.totalPickable || 0,
+      });
+    }
+
+    return { items, hasStitched, hasLayers, overflow };
   },
 
   // ── Layer-picker menu primitive ────────────────────────────────────────
@@ -195,17 +227,55 @@ extendApp({
     this._closeLayerPickerMenu();
     if (!anchorBtn || !Array.isArray(items) || !items.length) return;
 
+    // Defensive belt-and-braces cap. `_flattenFindingLayers` already
+    // truncates to App.LAYER_PICKER_MAX_ITEMS and tacks on a single
+    // overflow sentinel, so `items` should never exceed cap + stitched
+    // + sep + overflow ≈ cap + 3. If a future regression bypasses the
+    // flatten cap, this guard prevents the menu from synchronously
+    // building tens of thousands of DOM buttons and hanging the tab.
+    const HARD_DOM_CAP = ((typeof App !== 'undefined' && App.LAYER_PICKER_MAX_ITEMS) || 200) + 8;
+    let renderItems = items;
+    if (items.length > HARD_DOM_CAP) {
+      renderItems = items.slice(0, HARD_DOM_CAP);
+    }
+
     const menu = document.createElement('div');
     menu.className = 'tb-menu tb-menu--layer';
     menu.setAttribute('role', 'menu');
 
     const itemEls = [];
-    for (const it of items) {
+    for (const it of renderItems) {
       if (it.kind === 'sep') {
         const sep = document.createElement('div');
         sep.className = 'tb-menu-sep';
         sep.setAttribute('role', 'separator');
         menu.appendChild(sep);
+        continue;
+      }
+      if (it.kind === 'overflow') {
+        // Non-clickable trailing info row. Rendered as a <div> (not a
+        // <button>) and without `role="menuitem"` so it never gets
+        // keyboard focus from the arrow-key walker below — analysts
+        // tab/arrow past it as if it were a separator. Visually
+        // distinct via `.tb-menu-item-overflow`.
+        const row = document.createElement('div');
+        row.className = 'tb-menu-item tb-menu-item-overflow';
+        if (it.severity) row.classList.add(`tb-menu-item-sev-${it.severity}`);
+        const iconSpan = document.createElement('span');
+        iconSpan.className = 'tb-menu-icon';
+        iconSpan.textContent = it.icon || '⚠';
+        row.appendChild(iconSpan);
+        const labelSpan = document.createElement('span');
+        labelSpan.className = 'tb-menu-label';
+        labelSpan.textContent = it.label || '';
+        row.appendChild(labelSpan);
+        if (it.sublabel) {
+          const subSpan = document.createElement('span');
+          subSpan.className = 'tb-menu-sublabel';
+          subSpan.textContent = it.sublabel;
+          row.appendChild(subSpan);
+        }
+        menu.appendChild(row);
         continue;
       }
       const btn = document.createElement('button');
@@ -2159,10 +2229,25 @@ extendApp({
         caretBtn.textContent = '▾';
         caretBtn.setAttribute('aria-haspopup', 'menu');
         caretBtn.setAttribute('aria-expanded', 'false');
-        const entryCount = pickerBundle.items.filter(i => i.kind !== 'sep').length;
+        // Count actionable entries (stitched + layer rows); separators
+        // and the trailing overflow sentinel don't count toward the
+        // "N options" tally because the overflow row isn't clickable.
+        const entryCount = pickerBundle.items.filter(
+          i => i.kind !== 'sep' && i.kind !== 'overflow'
+        ).length;
         const tipBits = ['Open a different layer'];
         if (pickerBundle.hasStitched) tipBits.push('includes stitched script');
-        caretBtn.title = `${tipBits.join(' — ')} (${entryCount} option${entryCount !== 1 ? 's' : ''})`;
+        // When the flatten cap kicked in, the tooltip surfaces the
+        // pre-cap total so the analyst sees "showing N of M" rather
+        // than just "N options". Without this, a 124K-descendant tree
+        // looks identical in the tooltip to a 5-descendant tree.
+        if (pickerBundle.overflow) {
+          const total = pickerBundle.overflow.totalPickable
+            || (entryCount + (pickerBundle.overflow.truncatedCount || 0));
+          caretBtn.title = `${tipBits.join(' — ')} (${entryCount} of ${total.toLocaleString()} options — truncated)`;
+        } else {
+          caretBtn.title = `${tipBits.join(' — ')} (${entryCount} option${entryCount !== 1 ? 's' : ''})`;
+        }
         caretBtn.addEventListener('click', (ev) => {
           ev.stopPropagation();
           this._toggleLayerPickerMenu(caretBtn, pickerBundle.items);
