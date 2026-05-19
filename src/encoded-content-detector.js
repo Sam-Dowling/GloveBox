@@ -47,10 +47,22 @@
 //
 // Cross-shell vocabulary (bash / sh / python / php / ruby / perl) is
 // included so payloads decoded by bash-obfuscation.js / python-obfuscation.js
-// / php-obfuscation.js survive `_pruneFindings`. The pattern is a single
-// safeRegex builtin — keep additions strictly literal alternations to
-// avoid catastrophic-backtracking hazards.
-const _EXEC_INTENT_RE = /\b(eval|exec|invoke|iex|powershell|pwsh|cmd\.exe|wscript|cscript|mshta|regsvr32|rundll32|certutil|bitsadmin|schtasks|wmic|finger|tftp|curl|wget|nltest|installutil|msbuild|downloadstring|downloadfile|frombase64string|new-object|start-process|shellexecute|invoke-expression|invoke-webrequest|set-executionpolicy|encodedcommand|fromcharcode|bash|zsh|ksh|dash|nc|ncat|netcat|socat|ssh|scp|rsync|telnet|chmod|chattr|crontab|systemctl|sudo|setuid|os\.system|os\.popen|subprocess|pty\.spawn|__import__|marshal\.loads|zlib\.decompress|codecs\.decode|base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|shell_exec|passthru|proc_open|preg_replace|create_function|file_get_contents|fsockopen|backtick)\b|https?:\/\/|\/dev\/tcp\/|php:\/\/|data:[^,]*;base64,/i; /* safeRegex: builtin */
+// / php-obfuscation.js survive `_pruneFindings`.
+//
+// Script-shape vocabulary (`import X`, `from X import`, `require(`,
+// `def foo`, `function foo`, `#include`, `using System`, `package`,
+// `module`, `class`, `process.env`, `sys.argv`, `os.environ`, …) is
+// included so a decoded source-code blob with no IOCs and no LOLBin
+// keywords (e.g. a benign-looking Python / JS / Bash module that happens
+// to be the deobfuscated final stage of a packer chain) survives the
+// prune pass. Without these alternations, a Base64 → text payload that
+// classifies as generic UTF-8 with no URL / IP / email and no
+// PowerShell-flavoured cmdlet vocabulary would silently disappear from
+// the sidebar even though the decode itself is meaningful.
+//
+// The pattern is a single safeRegex builtin — keep additions strictly
+// literal alternations to avoid catastrophic-backtracking hazards.
+const _EXEC_INTENT_RE = /\b(eval|exec|invoke|iex|powershell|pwsh|cmd\.exe|wscript|cscript|mshta|regsvr32|rundll32|certutil|bitsadmin|schtasks|wmic|finger|tftp|curl|wget|nltest|installutil|msbuild|downloadstring|downloadfile|frombase64string|new-object|start-process|shellexecute|invoke-expression|invoke-webrequest|set-executionpolicy|encodedcommand|fromcharcode|bash|zsh|ksh|dash|nc|ncat|netcat|socat|ssh|scp|rsync|telnet|chmod|chattr|crontab|systemctl|sudo|setuid|os\.system|os\.popen|os\.environ|sys\.argv|sys\.exit|asyncio\.run|subprocess|pty\.spawn|__import__|marshal\.loads|zlib\.decompress|codecs\.decode|base64_decode|gzinflate|gzuncompress|gzdecode|str_rot13|shell_exec|passthru|proc_open|preg_replace|create_function|file_get_contents|fsockopen|backtick|process\.env|process\.argv|require_once)\b|\bimport\s+\w|\bfrom\s+[\w.]+\s+import\b|\brequire\s*\(|\busing\s+(?:System|namespace)\b|\b(?:async\s+)?def\s+\w|\bfunction\s+\w|\bclass\s+\w|\bmodule\s+\w|\bpackage\s+\w|#include\s*[<"]|https?:\/\/|\/dev\/tcp\/|php:\/\/|data:[^,]*;base64,/i; /* safeRegex: builtin */
 
 // `_RETAIN_CLASSIFICATIONS` lists decoded-content classifications that are
 // always worth surfacing even without an IOC or exec-keyword match (PE/ELF
@@ -454,12 +466,40 @@ class EncodedContentDetector {
     // Find compressed-blob candidates in the raw bytes (zlib / gzip / etc.).
     const compressedCandidates = this._findCompressedBlobCandidates(rawBytes, context);
 
+    // ── Cross-finder dedupe: Hex-inside-Base64 ───────────────────────────
+    // The Base64 alphabet ([A-Za-z0-9+/-_]) is a strict superset of the
+    // Hex alphabet ([0-9a-fA-F]) on the lowercase / decimal subset. Any
+    // long contiguous Base64 run that happens to contain a window of
+    // pure [0-9a-f] characters produces a shadow Hex candidate at an
+    // overlapping offset. Both go on to recurse independently in
+    // `_processCandidate`, producing two top-level findings against
+    // the same byte range — and in bruteforce mode the shadow Hex
+    // recursion contributes disproportionately to the innerFindings
+    // tree (it interprets the base64 bytes as hex, gets garbled bytes,
+    // and continues scanning).
+    //
+    // Drop any Hex candidate whose [offset, offset+length) is fully
+    // contained inside a Base64 candidate's span. The Base64 reading
+    // is structurally correct here — the underlying bytes ARE base64-
+    // alphabet, and the hex interpretation is a coincidence of the
+    // subset overlap. A legitimate Base64 → Hex chain (where the
+    // base64 decodes to a hex string) is still discovered via the
+    // recursive inner scan inside `_processCandidate`.
+    const _hexFiltered = [];
+    for (const h of hexCandidates) {
+      const hEnd = h.offset + h.length;
+      const swallowed = b64Candidates.some(b =>
+        h.offset >= b.offset && hEnd <= (b.offset + b.length)
+      );
+      if (!swallowed) _hexFiltered.push(h);
+    }
+
     // Decode and classify every candidate.
     for (const cand of b64Candidates) {
       const result = await this._processCandidate(cand, 0);
       if (result) findings.push(result);
     }
-    for (const cand of hexCandidates) {
+    for (const cand of _hexFiltered) {
       const result = await this._processCandidate(cand, 0);
       if (result) findings.push(result);
     }
@@ -832,7 +872,20 @@ class EncodedContentDetector {
         offset: candidate.offset,
         length: candidate.length,
         decodedSize: decoded.length,
-        decodedBytes: candidate.autoDecoded ? decoded : null,
+        // Decoded bytes are always preserved on the finding. The prune
+        // pass (`_pruneFindings` → `_shouldRetainFinding` → Rule 5)
+        // scans every plausible text representation of the decoded
+        // payload for exec-intent / script-shape vocabulary; gating
+        // this field behind `autoDecoded` meant Rule 5 never got to
+        // read the bytes for low-confidence Base64 / Hex candidates
+        // (no high-conf prefix, no PowerShell context), so a decoded
+        // benign-looking source-code blob with no IOCs and no LOLBin
+        // keywords was silently dropped. The analyst-facing lazy
+        // decode UX is gated separately via `autoDecoded` / `canLoad`
+        // — keeping the bytes here adds at most O(decodedSize) per
+        // finding to the postMessage payload, bounded by the per-type
+        // candidate cap.
+        decodedBytes: decoded,
         chain: [...chain, 'high-entropy binary'],
         classification: { type: 'Encrypted/Packed Data', ext: '.bin' },
         entropy: finalEntropy,
@@ -1034,7 +1087,12 @@ class EncodedContentDetector {
       offset: candidate.offset,
       length: candidate.length,
       decodedSize: decoded.length,
-      decodedBytes: candidate.autoDecoded ? decoded : null,
+      // Decoded bytes are always preserved on the finding (see the
+      // matching comment in the high-entropy-binary branch above for
+      // the full rationale). `rawCandidate` is still cleared on
+      // auto-decoded findings so the sidebar's two-tier preview stack
+      // doesn't show the same content twice.
+      decodedBytes: decoded,
       rawCandidate: candidate.autoDecoded ? null : candidate.raw,
       chain,
       classification,
