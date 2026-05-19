@@ -478,19 +478,44 @@ class EncodedContentDetector {
     // tree (it interprets the base64 bytes as hex, gets garbled bytes,
     // and continues scanning).
     //
-    // Drop any Hex candidate whose [offset, offset+length) is fully
-    // contained inside a Base64 candidate's span. The Base64 reading
-    // is structurally correct here — the underlying bytes ARE base64-
-    // alphabet, and the hex interpretation is a coincidence of the
-    // subset overlap. A legitimate Base64 → Hex chain (where the
-    // base64 decodes to a hex string) is still discovered via the
-    // recursive inner scan inside `_processCandidate`.
+    // Drop a Hex candidate whose [offset, offset+length) is fully
+    // contained inside a Base64 candidate's span ONLY when the
+    // swallowing Base64 span actually contains at least one character
+    // outside the hex subset [0-9a-fA-F]: uppercase G-Z, lowercase
+    // g-z, or base64 punctuation (`+`, `/`, `=`, URL-safe `-`, `_`).
+    // Any such character proves the bytes can only be read as base64,
+    // so the shadow Hex finding is a coincidence of the alphabet
+    // overlap and is safely dropped.
+    //
+    // When the swallowing Base64 span is itself pure [0-9a-fA-F]
+    // (e.g. an outer hex blob in a Hex → Base64 → … onion: contiguous
+    // hex characters are simultaneously valid base64), keep BOTH
+    // candidates and let `_processCandidate` recurse. The Hex reading
+    // is the more specific one (16-char vs 64-char alphabet) and is
+    // typically what discovers the inner Base64 → script chain on
+    // these fixtures — dropping it silently loses the entire
+    // recursion subtree. A legitimate Base64 → Hex chain (mixed-
+    // alphabet base64 that decodes to a hex string) is still
+    // discovered via the recursive inner scan inside
+    // `_processCandidate` on the kept Base64 candidate.
     const _hexFiltered = [];
+    // Match any base64-alphabet character NOT in the hex subset
+    // [0-9a-fA-F]: uppercase G-Z, lowercase g-z, base64 punctuation
+    // (`+`, `/`, `=`, URL-safe `-` and `_`). If `b.raw` contains at
+    // least one such character, the bytes can only be base64 and the
+    // overlapping Hex finding is a coincidence of the alphabet overlap.
+    // If `b.raw` is entirely [0-9a-fA-F], the two readings are
+    // ambiguous; keep the Hex candidate so its recursion root survives
+    // (a Hex → Base64 → … onion whose outer layer is contiguous hex
+    // characters is also valid base64 by coincidence).
+    const _NON_HEX_B64_CHAR = /[G-Zg-z+/=_-]/; /* safeRegex: builtin */
     for (const h of hexCandidates) {
       const hEnd = h.offset + h.length;
-      const swallowed = b64Candidates.some(b =>
-        h.offset >= b.offset && hEnd <= (b.offset + b.length)
-      );
+      const swallowed = b64Candidates.some(b => {
+        if (!(h.offset >= b.offset && hEnd <= (b.offset + b.length))) return false;
+        const bRaw = b.raw || '';
+        return _NON_HEX_B64_CHAR.test(bRaw);
+      });
       if (!swallowed) _hexFiltered.push(h);
     }
 
